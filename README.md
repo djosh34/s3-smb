@@ -24,7 +24,9 @@ The [planning map](https://github.com/djosh34/s3-time-machine/issues/1) and its 
 
 The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
 
-Dependency packaging belongs to this project. Do not submit or request upstream JuiceFS fixes, or make our release wait for them.
+Keep pinned JuiceFS and customized dependency source in ordinary packages in this repository. Preserve their behavior and adapt imports for packaging. Record source revisions and retain licenses/notices. Do not rewrite SQL behavior merely to avoid module replacements.
+
+Do not submit or request upstream JuiceFS fixes, maintain a collection of separate dependency forks, or make our release wait for upstream changes. The chosen source layout still needs a clean versioned-install test.
 
 The [handoff](docs/smb-s3-time-machine-handoff.md) preserves research and earlier proposals with the current scope noted at the top. Unconfirmed recommendations are not requirements, and source inspection is not compatibility evidence.
 
