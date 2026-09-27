@@ -7,6 +7,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 ## First-release direction
 
 - Install with remote `go install ...@version`, without a checkout; no GUI.
+- Run in the foreground. The user manages the process; no launchd/systemd integration, service installer, or daemonization.
 - Portable bundled C/CGo code is allowed. Installation may need a normal C compiler and platform SDK, but no separately installed third-party native libraries.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching. Explicitly support remote datasets larger than the daemon's available local storage.
