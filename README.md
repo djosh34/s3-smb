@@ -14,7 +14,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - Linux/ARM64 development and testing first. Preserve go-smb2's Time Machine-related SMB features. The user will test with a Mac later.
 - Access files through SMB. No custom browser or migration tool.
 - Use JuiceFS encryption and automatically back up its metadata to S3.
-- Recover on a fresh installation using S3 and externally saved secrets, without any files from the old machine. The allowed loss of recent writes is still undecided.
+- Recover on a fresh installation using S3 and externally saved secrets, without any files from the old machine. Losing changes since the last successful metadata backup is acceptable. Prefer JuiceFS's native periodic backups over per-write remote metadata synchronization.
 - No separate backup-management product, Time Machine scheduler, or custom backup-history browser.
 
 ## Planning
