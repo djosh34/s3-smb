@@ -2,9 +2,9 @@
 
 Historical research input, updated with the confirmed first-release boundary. No application has been built or tested. Current decisions live in the [GitHub planning map](https://github.com/djosh34/s3-time-machine/issues/1).
 
-**Current scope:** a terminal-only SMB server installed with `go install`, with SQLite as its only CGo dependency. Bind to `127.0.0.1` with simple authentication. Store files in S3 through embedded JuiceFS, using its native cache and no FUSE dependency. The remote dataset may exceed available local storage. Build and test on Linux/ARM64 first. Preserve go-smb2's existing Time Machine-related SMB features; the user will test with a Mac later.
+**Current scope:** a terminal-only SMB server installed with `go install`, with SQLite as its only CGo dependency. Default to `127.0.0.1` with simple authentication, and allow explicit `0.0.0.0` binding. Store files in S3 through embedded JuiceFS, using its native cache and no FUSE dependency. The remote dataset may exceed available local storage. Build and test on Linux/ARM64 first. Preserve go-smb2's existing Time Machine-related SMB features; the user will test with a Mac later.
 
-**The user rejected custom snapshots, backup scheduling, recovery-point management, and restore workflows.** The sections below preserve earlier research and proposals, not an implementation plan. Do not turn them into requirements. The current setup ticket asks whether to retain JuiceFS encryption.
+**Use JuiceFS encryption and automatically save metadata backups to S3.** A fresh installation must recover using S3 and externally saved secrets, without local files from the old machine. The user clarified that this recovery support is required, but a separate backup-management product, Time Machine scheduler, and custom backup-history browser are not. The allowed loss of recent writes is still undecided. The sections below preserve earlier research and proposals, not approved backup intervals, retention periods, or implementation details.
 
 ## Start here
 

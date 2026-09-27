@@ -10,11 +10,12 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - SQLite is the only permitted CGo dependency, including transitive dependencies.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching. Explicitly support remote datasets larger than the daemon's available local storage.
-- Bind to `127.0.0.1` with simple authentication.
+- Default to `127.0.0.1` with simple authentication. Allow explicit `0.0.0.0` binding.
 - Linux/ARM64 development and testing first. Preserve go-smb2's Time Machine-related SMB features. The user will test with a Mac later.
 - Access files through SMB. No custom browser or migration tool.
-- No custom snapshot commands, backup scheduler, recovery-point manager, or restore workflow.
-- Whether to retain the handoff's JuiceFS encryption requirement remains an open setup question.
+- Use JuiceFS encryption and automatically back up its metadata to S3.
+- Recover on a fresh installation using S3 and externally saved secrets, without any files from the old machine. The allowed loss of recent writes is still undecided.
+- No separate backup-management product, Time Machine scheduler, or custom backup-history browser.
 
 ## Planning
 
