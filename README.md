@@ -29,7 +29,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Wayfinding map](https://github.com/djosh34/s3-smb/issues/1): decision index.
 - [Implementation backlog](https://github.com/djosh34/s3-smb/issues/18): ten implementation sub-issues with native dependencies, acceptance tests and review requirements.
 - [Implementation contract](docs/implementation-plan.md): detailed behavior and release acceptance matrix.
-- [Remaining choices](https://github.com/djosh34/s3-smb/issues/17): credential refresh, initial encryption-key handling and exact license grant.
+- [Remaining choices](https://github.com/djosh34/s3-smb/issues/17): credential refresh and initial encryption-key handling. AGPL-3.0-only is confirmed.
 - [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): blocks all implementation until shared understanding is confirmed.
 
 The backlog is a complete draft, not an approved execution plan. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
@@ -42,4 +42,4 @@ Do not submit or request upstream JuiceFS fixes, maintain a collection of separa
 
 The [handoff](docs/smb-s3-time-machine-handoff.md) preserves research and earlier proposals with the current scope noted at the top. Unconfirmed recommendations are not requirements, and source inspection is not compatibility evidence.
 
-AGPLv3 is the planned license direction; the exact grant and dependency notices remain to be finalized before implementation/distribution.
+AGPL-3.0-only is the confirmed license for original project code. Full license text, dependency notices and source-distribution information remain implementation requirements.

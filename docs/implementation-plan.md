@@ -4,7 +4,7 @@ Status: draft for approval. This specifies application work, not agent coordinat
 
 [Decide credential refresh, first-run key handling, and license grant](https://github.com/djosh34/s3-smb/issues/17) holds the remaining user choices. [Approve the implementation-ready s3-smb backlog](https://github.com/djosh34/s3-smb/issues/29) blocks every implementation task until shared understanding is confirmed.
 
-Three choices remain for the user: credential refresh, initial encryption-key handling, and the exact AGPL grant. Defaults below that depend on those answers are marked pending. The rest are concrete implementation defaults for review, not new claims of user approval.
+Two choices remain for the user: credential refresh and initial encryption-key handling. The user approved `AGPL-3.0-only`. Defaults below that depend on the remaining answers are marked pending. The rest are concrete implementation defaults for review, not new claims of user approval. Four independent plan audits are in progress; final approval also depends on resolving their material findings.
 
 ## Release scope
 
@@ -30,7 +30,7 @@ Pins:
 
 The Linux module-proxy fixture already demonstrated untagged versioned installation. The real published module must repeat that test from an empty directory and fresh caches. No upstream requests or release dependency on upstream acceptance.
 
-Pending license choice: use `AGPL-3.0-only` for original project code, with full dependency license text, notices and an appropriate source offer. Do not relicense upstream files.
+Confirmed license choice: use `AGPL-3.0-only` for original project code, with full dependency license text, notices and an appropriate source offer. Do not relicense upstream files.
 
 ## Command and configuration
 
@@ -77,11 +77,13 @@ The third form is `value: "literal credential"`. Source combinations are indepen
 
 Execute the argument array directly, never through an implicit shell or command-string parser. Supply no interactive stdin. Capture stdout privately and keep stderr out of application output. Use a bounded helper lifetime, initially 30 seconds, a 64 KiB output limit and bounded pipe cleanup. Do not log argv, stdout, stderr, raw execution errors or secret values. File/command failures do not fall back to another source. Helper paths and arguments come only from the user's config, never SMB requests or remote metadata.
 
-Pending refresh choice: resolve at startup and retain those values until restart. Do not imply that expiring credentials work indefinitely. If uninterrupted rotation is required, revise this contract with an explicit refresh/session-token policy before implementation.
+Pending refresh choice: resolve at startup and retain those values until restart. This question concerns S3 access credentials, not certificate rotation. Ordinary access keys can remain valid until replaced or revoked; temporary session credentials expire. Do not imply that expiring credentials work indefinitely. If uninterrupted rotation is required, revise this contract with an explicit refresh/session-token policy before implementation.
 
 ### Initial key handling
 
-Pending choice: the user supplies the encryption passphrase through a value/file/command source in YAML. After confirmed initialization, generate a native-compatible RSA private key and write its passphrase-protected PEM to the configured key path with owner-only permissions. Never overwrite an existing key or print secret material. Reuse maintained native-compatible encoding and crypto; no home-grown encryption.
+Unapproved proposal under review: the user supplies the encryption passphrase through a value/file/command source in YAML. The user asks whether recovery can instead require only a passphrase as the encryption secret, without retaining a separate key file. Review a standard passphrase-protected key stored in S3 before treating external key-file retention as mandatory. S3 access credentials remain separately necessary in either case.
+
+The previous proposed workflow follows; it is not the selected design yet. After confirmed initialization, generate a native-compatible RSA private key and write its passphrase-protected PEM to the configured key path with owner-only permissions. Never overwrite an existing key or print secret material. Reuse maintained native-compatible encoding and crypto; no home-grown encryption.
 
 Tell the user to retain the PEM, passphrase, volume identity, encryption algorithm, S3 connection settings and access credentials outside the machine. A password alone cannot restore the dataset. The normal config can be saved with those materials; no custom recovery archive format or password-manager integration is required. Recovery reads the restored PEM and configured passphrase and never generates a replacement key for existing remote data.
 
