@@ -1,6 +1,6 @@
 # SMB-to-S3 storage
 
-The daemon exposes remote file data through SMB. It preserves the upstream SMB server's Time Machine features. Tests with a real Time Machine client come later.
+The planned daemon exposes remote file data through SMB and must preserve the upstream SMB server's Time Machine features. Tests with a real Time Machine client come later.
 
 ## Language
 

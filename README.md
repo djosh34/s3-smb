@@ -30,6 +30,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Implementation backlog](https://github.com/djosh34/s3-smb/issues/18): ten implementation sub-issues with native dependencies, acceptance tests and review requirements.
 - [Implementation contract](docs/implementation-plan.md): detailed behavior and release acceptance matrix.
 - [Remaining choices](https://github.com/djosh34/s3-smb/issues/17): credential refresh and initial encryption-key handling. AGPL-3.0-only is confirmed.
+- [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews, with accepted corrections and the remaining questions.
 - [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): blocks all implementation until shared understanding is confirmed.
 
 The backlog is a complete draft, not an approved execution plan. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
