@@ -2,7 +2,9 @@
 
 Historical research input, updated with the confirmed first-release boundary. No application has been built or tested. Current decisions live in the [GitHub planning map](https://github.com/djosh34/s3-time-machine/issues/1).
 
-**Current scope:** a terminal-only daemon installed with `go install`, with SQLite as its only CGo dependency. Build and test the SMB → embedded JuiceFS → S3 machinery on Linux/ARM64 first. The user will test macOS later; actual Time Machine integration is deferred. Reuse JuiceFS's in-process cache, with no FUSE dependency. Explicitly support remote data exceeding available local storage. Time Machine-specific procedures below are historical proposals, not first-release acceptance criteria.
+**Current scope:** a terminal-only SMB server installed with `go install`, with SQLite as its only CGo dependency. Bind to `127.0.0.1` with simple authentication. Store files in S3 through embedded JuiceFS, using its native cache and no FUSE dependency. The remote dataset may exceed available local storage. Build and test on Linux/ARM64 first. Preserve go-smb2's existing Time Machine-related SMB features; the user will test with a Mac later.
+
+**The user rejected custom snapshots, backup scheduling, recovery-point management, and restore workflows.** The sections below preserve earlier research and proposals, not an implementation plan. Do not turn them into requirements. The current setup ticket asks whether to retain JuiceFS encryption.
 
 ## Start here
 

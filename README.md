@@ -1,6 +1,6 @@
 # S3 Time Machine
 
-A terminal-operated Go daemon exposing an SMB filesystem backed by S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
+A terminal-only Go SMB server that stores files in S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
 
 **Status: planning only. Nothing has been implemented or validated. Do not use this project for real backups yet.**
 
@@ -10,13 +10,15 @@ A terminal-operated Go daemon exposing an SMB filesystem backed by S3-compatible
 - SQLite is the only permitted CGo dependency, including transitive dependencies.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching. Explicitly support remote datasets larger than the daemon's available local storage.
-- Linux/ARM64 development and testing first. The user will test macOS later; real Time Machine integration is deferred.
-- File browsing/restoration through SMB, not a custom browser or whole-machine migration tool.
-- Client-controlled encryption and recoverability after losing all local application state remain design requirements. Their precise contracts are still being decided.
+- Bind to `127.0.0.1` with simple authentication.
+- Linux/ARM64 development and testing first. Preserve go-smb2's Time Machine-related SMB features. The user will test with a Mac later.
+- Access files through SMB. No custom browser or migration tool.
+- No custom snapshot commands, backup scheduler, recovery-point manager, or restore workflow.
+- Whether to retain the handoff's JuiceFS encryption requirement remains an open setup question.
 
 ## Planning
 
-The canonical [planning map](https://github.com/djosh34/s3-time-machine/issues/1) and its child decision issues live on GitHub. Use wayfinder, grilling, and domain-modeling; update issue bodies after each round.
+The [planning map](https://github.com/djosh34/s3-time-machine/issues/1) and its child decision issues live on GitHub. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
 
 The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
 
