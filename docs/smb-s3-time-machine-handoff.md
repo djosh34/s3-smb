@@ -2,7 +2,7 @@
 
 Historical research input, updated with the confirmed first-release boundary. No application has been built or tested. Current decisions live in the [GitHub planning map](https://github.com/djosh34/s3-time-machine/issues/1).
 
-**Current scope:** a terminal-only SMB server installed with `go install`, with SQLite as its only CGo dependency. Default to `127.0.0.1` with simple authentication, and allow explicit `0.0.0.0` binding. Store files in S3 through embedded JuiceFS, using its native cache and no FUSE dependency. The remote dataset may exceed available local storage. Build and test on Linux/ARM64 first. Preserve go-smb2's existing Time Machine-related SMB features; the user will test with a Mac later.
+**Current scope:** a terminal-only SMB server installed with `go install`. Portable bundled C/CGo code is allowed, provided installation needs no extra third-party native libraries beyond a normal compiler and platform SDK. Default to `127.0.0.1` with simple authentication, and allow explicit `0.0.0.0` binding. Store files in S3 through embedded JuiceFS, using its native cache and no FUSE dependency. The remote dataset may exceed available local storage. Build and test on Linux/ARM64 first. Preserve go-smb2's existing Time Machine-related SMB features; the user will test with a Mac later.
 
 **Use JuiceFS encryption and automatically save metadata backups to S3.** A fresh installation must recover using S3 and externally saved secrets, without local files from the old machine. The user clarified that this recovery support is required, but a separate backup-management product, Time Machine scheduler, and custom backup-history browser are not. Losing changes since the last successful metadata backup is acceptable. Prefer JuiceFS's native periodic backups; do not add per-write remote metadata synchronization. The sections below preserve earlier research and proposals, not approved backup intervals, retention periods, or implementation details.
 
@@ -26,7 +26,7 @@ The proposed safety policy is 14-day JuiceFS trash retention, hourly metadata ex
 | FUSE | Explicit exclusion | No FUSE dependency or mount. |
 | Filesystem engine | Explicit user choice | JuiceFS. |
 | Metadata engine | Latest explicit user choice | Official JuiceFS SQLite backend. |
-| Language | Confirmed direction | Go; SQLite is the only permitted CGo dependency, including the transitive build graph. |
+| Language | Confirmed direction | Go with portable bundled C/CGo dependencies allowed. A normal compiler/SDK is acceptable; separately installed third-party native libraries are not. |
 | SMB integration | Current project direction | Focused go-smb2 fork and direct in-process JuiceFS adapter. Preserve the protocol implementation and patch correctness issues. |
 | Project license | Planned choice | AGPLv3 for our combined application. The user proposed this and requested clarification; see licensing below. No repository license file has been created yet. |
 | Development | Explicit user willingness | Writing the app and integration code ourselves is acceptable. |
