@@ -6,7 +6,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 
 ## First-release direction
 
-- Install with `go install`; no GUI.
+- Install with remote `go install ...@version`, without a checkout; no GUI.
 - Portable bundled C/CGo code is allowed. Installation may need a normal C compiler and platform SDK, but no separately installed third-party native libraries.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching. Explicitly support remote datasets larger than the daemon's available local storage.
@@ -23,6 +23,8 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 The [planning map](https://github.com/djosh34/s3-time-machine/issues/1) and its child decision issues live on GitHub. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
 
 The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
+
+Dependency packaging belongs to this project. Do not submit or request upstream JuiceFS fixes, or make our release wait for them.
 
 The [handoff](docs/smb-s3-time-machine-handoff.md) preserves research and earlier proposals with the current scope noted at the top. Unconfirmed recommendations are not requirements, and source inspection is not compatibility evidence.
 
