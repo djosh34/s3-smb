@@ -1,10 +1,12 @@
 # Handoff: macOS Time Machine to S3 through a local SMB server
 
-Updated 2026-09-27, including the subsequent SMB source inspection and the user's acceptance of SQLite/CGo. It is the starting point for refining the design and then implementing it. No application has been built or tested.
+Historical research input, updated with the confirmed first-release boundary. No application has been built or tested. Current decisions live in the [GitHub planning map](https://github.com/djosh34/s3-time-machine/issues/1).
+
+**Current scope:** a terminal-only daemon installed with `go install`, with SQLite as its only CGo dependency. Build and test the SMB → embedded JuiceFS → S3 machinery on Linux/ARM64 first. The user will test macOS later; actual Time Machine integration is deferred. Reuse JuiceFS's in-process cache, with no FUSE dependency. Explicitly support remote data exceeding available local storage. Time Machine-specific procedures below are historical proposals, not first-release acceptance criteria.
 
 ## Start here
 
-Build a macOS application that presents an SMB destination to Time Machine on the same Mac. Store the backup data in S3-compatible object storage through embedded JuiceFS, using its officially supported SQLite metadata backend. Avoid a separate server and a FUSE mount. The user accepts losing an unfinished backup but wants previously completed recovery points to survive loss of the Mac and its local database/cache.
+Build a terminal-operated SMB-to-S3 daemon. The eventual motivating client is Time Machine on the same Mac, but first validate the storage machinery independently on Linux. Store the backup data in S3-compatible object storage through embedded JuiceFS, using its officially supported SQLite metadata backend. Avoid a separate server and a FUSE mount. The user accepts losing an unfinished backup but wants previously completed recovery points to survive loss of the Mac and its local database/cache.
 
 The user explicitly accepts CGo for the official SQLite backend. The SMB direction is a focused go-smb2 fork with a direct JuiceFS adapter. Source inspection found an ignored flush error and optional no-op locking that must be addressed. AGPLv3 is the planned project license. SlateDB is no longer the preferred initial approach. Outstanding work includes remote metadata backups, data retention, recovery on another Mac, and validation of the local SMB integration.
 
@@ -14,18 +16,15 @@ The proposed safety policy is 14-day JuiceFS trash retention, hourly metadata ex
 
 | Topic | Status | Decision or context |
 | --- | --- | --- |
-| Workload | User requirement | Native macOS Time Machine backups. |
+| Workload | First-release scope | SMB filesystem operations backed by S3. Native Time Machine integration comes later. |
 | Storage | User requirement | S3-compatible object storage, including services such as Backblaze B2. A provider has not been selected. |
-| Local capacity | User constraint | Cannot keep the full backup locally. Initial cache budget is approximately 20 GB. |
-| Backup size | User estimate | Approximately 2 TB. Clarify whether that means source data or desired retained backup capacity when sizing storage. |
-| Network | User report | 2 Gbit/s or faster internet. Actual sustained upload and provider latency are unmeasured. |
-| Hardware | User context | No dedicated cache SSD yet. User is open to adding one. |
-| Deployment | Accepted project direction | Run on the MacBook being backed up, without a separate server. |
-| Interface | Accepted project direction | Expose SMB locally so Time Machine can use its normal network destination interface. |
-| FUSE | User preference | Avoid FUSE. Embed filesystem functionality behind the SMB server's filesystem interface. |
+| Local storage | Explicit requirement | The remote dataset may exceed the daemon's available local storage; use JuiceFS's own in-process caching. |
+| Deployment | Confirmed first-release direction | Terminal-only daemon, installed with `go install`; Linux/ARM64 testing first, macOS testing later. |
+| Interface | Confirmed direction | Expose SMB through a direct in-process filesystem adapter. |
+| FUSE | Explicit exclusion | No FUSE dependency or mount. |
 | Filesystem engine | Explicit user choice | JuiceFS. |
 | Metadata engine | Latest explicit user choice | Official JuiceFS SQLite backend. |
-| Language | Confirmed direction | Go application. The user explicitly accepts the standard SQLite driver's CGo dependency; the complete app need not be CGo-free. |
+| Language | Confirmed direction | Go; SQLite is the only permitted CGo dependency, including the transitive build graph. |
 | SMB integration | Current project direction | Focused go-smb2 fork and direct in-process JuiceFS adapter. Preserve the protocol implementation and patch correctness issues. |
 | Project license | Planned choice | AGPLv3 for our combined application. The user proposed this and requested clarification; see licensing below. No repository license file has been created yet. |
 | Development | Explicit user willingness | Writing the app and integration code ourselves is acceptable. |
@@ -147,23 +146,11 @@ JuiceFS normally exports metadata hourly to the bucket's `meta` prefix. The inte
 
 Completed-run SQLite copies, success tracking and the cleanup-age guard would be our app's additions. The stock trash default is one day. [S9]
 
-## 5. Capacity and performance context
+## 5. Native caching and remote storage
 
-### Metadata size
+The S3 dataset may exceed the daemon's available local storage. Reuse JuiceFS's in-process cache and retrieve uncached contents on demand; do not introduce FUSE or a parallel cache implementation.
 
-JuiceFS gives an approximate SQL metadata baseline of 600 bytes per small file without extended attributes. Larger files, fragmentation, frequent edits and extended attributes increase it. Thus 10,000 / 100,000 / 1 million simple files imply roughly 6 / 60 / 600 MB before workload-specific overhead. These are generic estimates, not a Time Machine benchmark. [S10]
-
-For this workload, count outer band files, chunk mappings and retained obsolete-slice records. Do not multiply the source Mac's document count by that estimate. The actual SQLite size for a 2 TB backup is unknown. The assistant proposed reserving a few GB for SQLite, WAL and temporary copies, separately from the 20 GB data cache. Confirm whether 20 GB is the total local budget or only the data-cache budget.
-
-### Retention cost
-
-Extra object storage roughly follows daily bytes retired multiplied by retention days when churn is steady. Include compaction, overwrites and deletes. Illustrative only: 20 GB/day retired implies about 140 GB with 7 days or 280 GB with 14 days. Retention does not mean fourteen complete 2 TB copies. Metadata backup storage and cache space are separate.
-
-### Performance expectations
-
-Fast internet improves sustained transfers; serial request latency can still dominate flushes and cache misses. The 20 GB cache need not contain the full backup. It will affect browse latency, read amplification and restore speed. Initial backup, incremental writes, compaction churn and actual SMB flush frequency require measurement against the chosen provider.
-
-JuiceFS uses logical chunks, slices and immutable object blocks. Its documented defaults are 64 MiB logical chunks and 4 MiB object blocks; random edits produce new slices instead of requiring whole-file replacement. Re-check settings against the pinned release. [S8]
+Verify cache configuration, eviction, disk-pressure behavior, and background lifecycle in the selected embedded JuiceFS version. Exercise a dataset larger than the configured cache and confirm evicted data remains readable from S3. Request latency, flush frequency, compaction, and cache misses need measurement rather than assumed throughput guarantees. [S8]
 
 ## 6. Encryption and recovery secrets
 
@@ -189,12 +176,14 @@ JuiceFS's documentation distinguishes encrypted automatic metadata backups from 
 - A hosted metadata database or separate NAS is outside the chosen initial deployment direction.
 - Restic is explicitly unwanted.
 
-## 8. Next work, in order
+## 8. Historical next-work proposals
 
-1. Validate the local SMB route on the intended macOS release with a small local backend. Completion means Time Machine accepts it, completes two backups, browses history and restores a file.
+The current Linux-first daemon backlog supersedes this order. Actual Time Machine validation is deferred.
+
+1. Later macOS phase: validate the local SMB route. Time Machine acceptance, backup completion, browsing and file restoration are separate integration evidence.
 2. Pin SMB/JuiceFS versions and map filesystem operations. Fix the identified flush-error path, implement adapter flush/locking semantics, and test failed flushes and write-through handling. Completion means a concrete adapter plan and evidence that storage failures cannot be silently acknowledged.
 3. Specify the SQLite recovery-point state machine and cleanup guard. Completion means each crash boundary has an explicit recoverable previous state and no cleanup can outrun it.
-4. Resolve provider, encryption, key recovery, local disk budget and retention defaults without reopening settled architecture unnecessarily.
+4. Resolve provider configuration, encryption, key recovery and retention without reopening settled architecture unnecessarily.
 5. Build the smallest end-to-end prototype with a small bucket and dataset. Keep production backup data out of the experiment.
 6. Test loss of all local state during a later backup and restore a prior completed point from bucket plus recovery secrets. Also test metadata-upload failures, app restart after retention-age thresholds, cache exhaustion, compaction and interrupted recovery-point publication.
 7. Measure initial/incremental throughput, browse latency, restore speed, DB/WAL sizes and object churn. Use results to refine caching and retention.
