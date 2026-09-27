@@ -2,12 +2,15 @@
 
 A terminal-only Go SMB server that stores files in S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
 
-**Status: planning only. Nothing has been implemented or validated. Do not use this project for real backups yet.**
+**Status: planning only. Research probes have run, but the application has not been implemented or tested end to end. Do not use this project for real backups yet.**
 
 ## First-release direction
 
 - Install with remote `go install ...@version`, without a checkout; no GUI.
-- Run in the foreground. The user manages the process; no launchd/systemd integration, service installer, or daemonization.
+- Run `serve` in the foreground. The user manages the process; no launchd/systemd integration, service installer, or daemonization.
+- No separate `init` command. When the configured dataset is genuinely new, `serve` asks for `y/n` confirmation before creating it. Missing local SQLite alone must not trigger a new dataset over existing remote data.
+- Use one YAML config at `$XDG_CONFIG_HOME/s3-time-machine/config.yaml`, or `~/.config/s3-time-machine/config.yaml` when unset. Accept `-c <path>`.
+- Use standard `log/slog`, with text and JSON-only log-output modes. Keep interactive prompts and secrets out of the JSON log stream.
 - Portable bundled C/CGo code is allowed. Installation may need a normal C compiler and platform SDK, but no separately installed third-party native libraries.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching. Explicitly support remote datasets larger than the daemon's available local storage.
