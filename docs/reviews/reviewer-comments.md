@@ -2,7 +2,7 @@
 
 This is the complete comment index for the four final plan reviews. It includes alternatives, minor observations, cautions and disagreements, not only the recommendations chosen for the plan. Repeated questions are mapped to their findings rather than counted twice.
 
-The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) remains the draft specification; [the unified audit](plan-audit.md) groups overlapping findings.
+The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) remains the draft specification; [the unified audit](plan-audit.md) groups overlapping findings. Subsequent user updates require passwordless SMB, decimal units and zero-cache tests, permissions-as-warnings, local Docker-first testing and a final hosted-Mac Time Machine test. These later changes were not audited by the four original reports.
 
 ## Full reports
 
@@ -22,7 +22,7 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 5. **A prescribed root-run route or changing the default port.** Early DeepSeek feedback treated low-port binding as universally root-only. That premise was corrected. The current XNU check distinguishes specific addresses from wildcard binds; Linux policy is configurable. The plan keeps the explicit bind choices, records platform tests and documents permission failures. It does not silently widen the bind, install privilege machinery or require a new user decision based on the original blanket claim.
 6. **Reject, warn about or remove short-lived session credentials.** DeepSeek readiness suggested this alongside startup-only loading. The user has permanent keys and confirmed startup-only loading. No renewal workflow or expiry-policy feature is needed. A manually supplied optional token remains static; the app does not claim to renew it or infer an opaque token's expiry.
 7. **A mandatory read-only rehearsal before the Mac interruption test.** DeepSeek contract suggested a rehearsal in a throwaway state directory. It is a useful optional precaution and is recorded in the release checklist, not a mandatory recovery mode. The actual interruption/recovery test must use disposable data and stop the old writer.
-8. **A new performance target or a separate correctness-first product decision.** DeepSeek contract asked for measurements and raised whether a correctness-first release was acceptable. Measurements are included. No unsupported latency target, sizing questionnaire or extra release mode was added. The already selected Linux-first milestone and later Mac validation remain.
+8. **A new performance target or a separate correctness-first product decision.** DeepSeek contract asked for measurements and raised whether a correctness-first release was acceptable. Measurements are included. No unsupported latency target, sizing questionnaire or extra release mode was added. Linux remains first; the user now requires hosted-Mac Time Machine validation as the final implementation task.
 9. **Fail whenever the native UUID marker is missing.** DeepSeek contract proposed stopping if data or backups exist without it. The no-overwrite concern is included, but a valid backup can supply the native UUID during confirmed recovery. The absence of a redundant marker must not itself make otherwise recoverable data inaccessible. Unknown or conflicting state still fails safely.
 10. **Different backup naming and age-policy implementations.** Astra storage offered unique names with a retention-parser change as an alternative to collision checks. The plan chose unused native timestamps with bounded waiting/failure. DeepSeek contract suggested a broad retention-minus-margin startup window; the plan chose a stricter recent-point reuse rule and explicit operation/deletion deadlines. Both underlying concerns are included. These alternatives were not silently treated as defects.
 
@@ -52,7 +52,7 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 | 5. The backup helper ignores gzip finalization errors. | Included with the overlapping Astra storage finding. |
 | Certificate replacement is distinct from S3 credential renewal. | Included. Local TLS files load at startup; normal server-certificate renewal is not an S3 credential change. |
 | Existing direct-argv, bounded-output and secret-safe logging requirements are sensible. | Retained. No additional logging framework or credential manager was requested. |
-| Remote encryption does not protect local SQLite/WAL/cache/staging or a compromised running process. | Included in security documentation and permission tests. No local-disk encryption product was added. |
+| Remote encryption does not protect local SQLite/WAL/cache/staging or a compromised running process. | Included in security documentation. Remote metadata backups are encrypted when enabled; whether to add local database/staging encryption is being clarified, not silently added. |
 | No evidence for password-derived RSA, mandatory external PEM, allocator redesign or a second dataset. | Retained as limits on scope. |
 | Two final questions about key location and credential renewal. | Answered by the user. Their answers do not prove the unimplemented encrypted-key round trip; its tests remain required. |
 
@@ -64,10 +64,10 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 | 2. Port 445 needs platform evidence and a usable documented path. | Included as a platform check and clear bind/config-path diagnostics. A universal root requirement was corrected, not adopted. |
 | 3. Remote-state classification lacks marker/key/backup rules. | Included. Partial states are nonempty. Unlike the proposed blanket stop, a validated backup can recover a missing marker's UUID. |
 | 4. A fresh export at every ordinary restart is unnecessarily strict; the age gate is vague. | Included. Reuse a verified recent point without resetting its schedule, otherwise make a new one. Define and test deletion deadlines. |
-| 5. Shared temporary staging and native secret wrapping are not adequate local protection. | Included. Private staging, exact file permissions, cleanup and an explicit local-plaintext warning. |
+| 5. Shared temporary staging and native secret wrapping are not adequate local protection. | Included with a later user change: create private staging/files, but warn about existing owner/mode issues rather than reject readable files. Keep cleanup and the explicit distinction between remote encryption and local plaintext. |
 | 6. The Mac test must restore an interrupted backup, then resume and restore new data. | Included. The suggested read-only rehearsal is optional, not a new product restriction. |
 | 7. Browsing and export performance have no measured evidence. | Included. Record basic measurements. No new performance promise or extra correctness-first approval question was added. |
-| 8. Existing insecure secret files have no exact accept/reject rule. | Included. Specify ownership and 0400/0600 modes for secret-bearing files; distinguish public certificates. |
+| 8. Existing insecure secret files have no exact accept/reject rule. | Superseded in part by the user's explicit request. Existing secret-file ownership/0400/0600 checks now warn, not reject. New files are private by default; public certificates are not secret files. |
 | Smaller observation: the install fixture kept SMB external. | Included. The plan now narrows that proof and tests the bundled SMB closure separately. |
 | Smaller observation: use an S3 heartbeat to detect another writer. | Not selected. It remains visible above; a heartbeat is not a fencing mechanism. |
 | Smaller observation: CONTEXT described the unimplemented daemon in present tense. | Corrected to describe the planned daemon. |
@@ -75,7 +75,7 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 
 The contract reviewer also listed five explicitly unverified concerns. None is silently converted into a demonstrated bug:
 
-- Time Machine behavior after metadata rollback remains a user-run compatibility test.
+- Time Machine behavior after metadata rollback remains unproven. The user now requires automated hosted-Mac full-backup/crash/restore acceptance as the final task, not a later manual-user test.
 - Large-namespace export memory, duration and write contention remain measurement requirements.
 - The eventual S3 provider's behavior still needs evidence. A fixture is not a claim about every provider.
 - Credential/passphrase helper programs may be unavailable or logged out on a fresh machine. Recovery documentation must explain that they are user-supplied and that literal/file sources are available; it must not assume the old helper session survives.

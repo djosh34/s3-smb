@@ -1,6 +1,6 @@
 # SMB-to-S3 storage
 
-The planned daemon exposes remote file data through SMB and must preserve the upstream SMB server's Time Machine features. Tests with a real Time Machine client come later.
+The daemon exposes a remote dataset through SMB. That dataset can contain a Mac client's Time Machine backups, distinct from the daemon's own metadata backups.
 
 ## Language
 
@@ -12,6 +12,9 @@ The locally retained subset of remote file data used to avoid repeated downloads
 
 **Metadata backup**:
 A saved copy of the filesystem's directory entries, file attributes, and data mappings needed to recover access to its files. It is not a SQLite WAL checkpoint or a Time Machine backup.
+
+**Time Machine backup**:
+A backup created by Apple's Time Machine client and stored as file data in the remote dataset. Recovering the daemon's metadata alone does not prove that this client backup can be restored.
 
 **Recovery point**:
 The filesystem state recorded by a successful metadata backup. It is usable only while its referenced data remains available.

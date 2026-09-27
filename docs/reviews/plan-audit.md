@@ -15,6 +15,8 @@ The [implementation contract](../implementation-plan.md) and [implementation bac
 
 [Every reviewer comment and its disposition](reviewer-comments.md) includes alternatives, minor observations, cautions and links to all four complete final reports. Comments not selected as requirements are preserved there, not silently omitted.
 
+Later user changes also require passwordless SMB, decimal MB/GB, tested native zero cache, warnings for existing file-permission issues, local Docker/MinIO-first tests and a required hosted-Mac Time Machine test as the final task. The contract now specifies outcomes and necessary native integration/fixes rather than prescribing ordinary JuiceFS mechanics or illustrative internal constants. These changes postdate the four reviews.
+
 ## Direct answers
 
 ### S3 credentials are not TLS certificates
@@ -37,7 +39,7 @@ The encrypted key must remain available in S3. Losing it and all optional copies
 
 The native PEM exporter uses deprecated, unauthenticated legacy encryption with fast MD5-based password expansion. The selected PKCS#8 library also has weak defaults for this purpose: CBC and 2,048 PBKDF2 iterations. Merely saying "use native encryption" does not choose safe protection for a cloud-held private key. [S1][S2]
 
-For the now-selected S3-held key in encrypted mode, the plan specifies authenticated encrypted PKCS#8 with explicit scrypt/AES-GCM parameters through the existing dependency. It also specifies a bounded key object, parameter validation before costly password derivation, one stable bootstrap location outside native data/backup cleanup, upload/readback verification, and no replacement key on failed recovery. A missing or damaged key must not trigger initialization.
+For the now-selected S3-held key in encrypted mode, the plan requires authenticated encrypted PKCS#8 through the compatible dependency, with explicitly reviewed password-derivation parameters rather than weak defaults. The earlier scrypt/AES-GCM profile remains a source-supported candidate; implementation must pin and test the chosen profile. It also specifies a bounded key object, parameter validation before costly password derivation, one stable bootstrap location outside native data/backup cleanup, upload/readback verification, and no replacement key on failed recovery. A missing or damaged key must not trigger initialization.
 
 The key-location choice is now confirmed. Native-parser and fresh-install tests are still required. Unencrypted mode must bypass key generation, fetching and passphrase resolution entirely. It does not need a new encryption protocol, password-derived RSA, or key-management service.
 
@@ -71,7 +73,7 @@ Work belongs in [metadata protection](https://github.com/djosh34/s3-smb/issues/2
 
 A fresh backup alone does not stop an SMB client using a root native context from purging trash. Nor does `NoBGJob` stop all native deletion work: workers start separately, and reads can trigger compaction. After a long suspension, cleanup may resume before the backup timer. [S6]
 
-The plan now requires an unprivileged client identity, protection of the resolved trash namespace, and a live check before native reference retirement and object deletion, including queued work. It defines the protection age and retention inequality instead of leaving "sufficiently recent" undefined. A test must release cleanup before the delayed backup callback and prove the protected point still restores.
+The plan now requires an unprivileged client identity, protection of the resolved trash namespace, and a live check before native reference retirement and object deletion, including queued work. Implementation must define and test a bounded protection/deletion policy against actual operation and shutdown budgets and effective retention. The earlier illustrative constants/formula are not a new product requirement. A test must release cleanup before the delayed backup callback and prove the protected point still restores.
 
 Work belongs in [storage](https://github.com/djosh34/s3-smb/issues/21), [the adapter](https://github.com/djosh34/s3-smb/issues/22) and [metadata protection](https://github.com/djosh34/s3-smb/issues/24). No user decision is needed.
 
@@ -83,7 +85,7 @@ The plan now prohibits reusing an existing or ambiguously uploaded name. Wait fo
 
 Work belongs in [metadata protection](https://github.com/djosh34/s3-smb/issues/24). No user decision is needed.
 
-### 7. Medium: a 30-second shutdown is not provided by native Close calls
+### 7. Medium: bounded shutdown is not provided by native Close calls
 
 Native flush/close paths can wait longer than the proposed shutdown bound, some loops live for the process lifetime, and closing a metadata session is distinct from closing the SQL engine. A wrapper timeout alone can leave writers alive after their resources or state lock are released. [S7]
 
@@ -113,7 +115,7 @@ Work belongs in [metadata protection](https://github.com/djosh34/s3-smb/issues/2
 
 Native backup staging uses the system temp directory and default file permissions. Remote encryption does not encrypt local SQLite/WAL, cached contents or temporary exports. Native format-field wrapping is not local-disk encryption. [S5][S9]
 
-The plan now requires application-owned 0700 staging, 0600 files, safe abandoned-file cleanup and exact accept/reject rules for existing secret files. Public CA/certificate files are not private keys. Credential helpers run with the daemon's privileges, so config trust still matters even without a shell.
+The latest user requirement keeps private creation defaults and safe abandoned-file cleanup, but changes existing secret-file ownership/permission checks to warnings, not startup rejection. Actual staging/read/write failures remain errors. Public CA/certificate files are not private keys. Credential helpers run with the daemon's privileges, so config trust still matters even without a shell.
 
 Work belongs in [configuration](https://github.com/djosh34/s3-smb/issues/20), [storage](https://github.com/djosh34/s3-smb/issues/21), [metadata protection](https://github.com/djosh34/s3-smb/issues/24) and [release documentation](https://github.com/djosh34/s3-smb/issues/28). No user decision is needed.
 
@@ -127,11 +129,11 @@ Work belongs in [metadata protection](https://github.com/djosh34/s3-smb/issues/2
 
 ### 12. Medium: the Mac test must include interrupted-backup recovery
 
-Mounting, reconnecting and reading files do not establish that an outer-filesystem rollback leaves Time Machine usable. The later user-run test must interrupt a backup, discard local daemon state, recover the prior metadata point, read older files, resume backup and restore from a new backup. It must use disposable data with the old writer stopped.
+Mounting, reconnecting and reading files do not establish that an outer-filesystem rollback leaves Time Machine usable. The now-required final hosted-Mac test must complete a baseline backup, interrupt a later backup during S3 writes, discard local daemon state, recover through the normal policy, restore older files, resume backup and restore from a new backup. It also requires normal recovery and whole-fixture verification. It must use disposable data with the old writer stopped.
 
 One reviewer initially claimed all low-port binds require root on macOS/Linux. That was too broad. Current XNU source checks reserved-port privilege for a specific address, including loopback, but treats wildcard binding differently. Linux policy is also configurable. This is source evidence, not a Mac runtime test. Keep the loopback default, record actual bind results and never silently switch to a wildcard address. No new root-run policy or privilege-management feature is approved. [S10]
 
-Work belongs in [release validation](https://github.com/djosh34/s3-smb/issues/28). The Mac test stays separate from the Linux milestone. No new user decision is needed now.
+Work now belongs in [Last: prove Time Machine full backup and crash recovery on GitHub macOS](https://github.com/djosh34/s3-smb/issues/34), blocked by every earlier implementation task. Hosted-runner prerequisites are researched but untested. The exact full-backup source scope is being clarified; no generic SMB or manual-user substitute is authorized.
 
 ### 13. Low: narrow the installation proof to what actually ran
 
