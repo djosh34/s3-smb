@@ -15,13 +15,13 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - Portable bundled C/CGo code is allowed. Installation may need a normal C compiler and platform SDK, but no separately installed third-party native libraries.
 - Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
 - Reuse JuiceFS's native caching, including tested cache size `0`. Use decimal MB/GB for settings and display. Support remote datasets larger than the daemon's available local storage.
-- Default to `127.0.0.1`. Support passwordless SMB as well as account/password access, and allow explicit `0.0.0.0` binding. The named-empty-password versus anonymous requirement is being clarified.
+- Default to `127.0.0.1`. Support passwordless SMB as well as account/password access, and allow explicit `0.0.0.0` binding. Passwordless means a named account with an explicitly empty password; no anonymous mode is required.
 - Create private local files by default, but warn rather than reject existing secret files solely because of ownership or permission modes such as 0400/0600.
 - Linux/ARM64 development first. Run almost all tests locally on the VM in Docker with MinIO and the application. GitHub Linux CI repeats the exact same suite as extra verification, not the primary debugging loop.
-- Actual Time Machine full backup, normal recovery and crash-during-write recovery on GitHub-hosted macOS is the final required task, after everything else passes. Runner capabilities and the full-backup source scope are explicit checks, not assumed compatibility.
+- Actual Time Machine full backup, normal recovery and crash-during-write recovery on GitHub-hosted macOS is the final required task, after everything else passes. Back up the Mac runner's normally eligible contents, not just a controlled test dataset. Hosted-runner runtime capability is still unverified, not established as impossible.
 - Access files through SMB. No custom browser or migration tool.
 - Offer optional JuiceFS encryption, on by default in the draft config. When enabled, keep the passphrase-protected key in S3; no separately retained key file is required. Explicit `encryption.enabled: false` means anyone with sufficient S3 read access can read the data and metadata. TLS, S3 authentication and the selected SMB access policy still apply.
-- Encrypt remote metadata backups in encryption-enabled mode with the same native key used for data. Live local SQLite/WAL and export staging are different; whether to encrypt those locally remains an open scope question.
+- Encrypt remote metadata backups in encryption-enabled mode with the same native key used for data. The user confirmed that only the remote backups were the concern; live local SQLite/WAL and staging remain native and unencrypted.
 - Back up metadata to S3 hourly and retain deleted/replaced data through JuiceFS trash for 14 days by default. Both settings are configurable and apply in either encryption mode.
 - Stop with a clear error if a scheduled metadata backup fails after normal retries. Preserve the previous usable backup; do not silently keep running without protection.
 - If local metadata is missing but the remote dataset exists, `serve` offers confirmed recovery through JuiceFS's native restore path, then resumes normal writes to the same dataset. Also support an optional read-only mode. Verify the recovery path before claiming compatibility.
@@ -34,8 +34,8 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Implementation backlog](https://github.com/djosh34/s3-smb/issues/18): eleven implementation sub-issues with native dependencies, acceptance tests and review requirements.
 - [Implementation contract](docs/implementation-plan.md): required behavior, native integration work, necessary fixes and the local-first acceptance sequence. Follow JuiceFS for ordinary implementation details.
 - [Passwordless and zero-cache research](docs/research/guest-and-zero-cache.md): named-empty NTLM passed a small probe; cache-zero behavior is source-verified, not yet application-tested.
-- [Hosted-Mac Time Machine prerequisites](docs/research/github-macos-time-machine.md): service/permission and fixture constraints; no Mac CI run has happened.
-- [Remaining scope clarification](https://github.com/djosh34/s3-smb/issues/33): passwordless access semantics, local metadata encryption and full-backup scope.
+- [Hosted-Mac Time Machine prerequisites](docs/research/github-macos-time-machine.md): service/permission and storage constraints; no Mac CI run has happened. The earlier fixture-only recommendation was rejected.
+- [Confirmed scope clarification](https://github.com/djosh34/s3-smb/issues/33): named-empty SMB password, remote-only encryption concern and full Mac backup/restore scope.
 - [Confirmed credential, encryption and license choices](https://github.com/djosh34/s3-smb/issues/17): permanent credentials loaded at startup, optional encryption with an S3-held protected key when enabled, and AGPL-3.0-only.
 - [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews.
 - [Every reviewer comment](docs/reviews/reviewer-comments.md): complete summaries, disagreements, dispositions and the four final reports.

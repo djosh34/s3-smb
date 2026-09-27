@@ -129,11 +129,11 @@ Work belongs in [metadata protection](https://github.com/djosh34/s3-smb/issues/2
 
 ### 12. Medium: the Mac test must include interrupted-backup recovery
 
-Mounting, reconnecting and reading files do not establish that an outer-filesystem rollback leaves Time Machine usable. The now-required final hosted-Mac test must complete a baseline backup, interrupt a later backup during S3 writes, discard local daemon state, recover through the normal policy, restore older files, resume backup and restore from a new backup. It also requires normal recovery and whole-fixture verification. It must use disposable data with the old writer stopped.
+Mounting, reconnecting and reading files do not establish that an outer-filesystem rollback leaves Time Machine usable. The now-required final hosted-Mac test must complete a baseline backup, interrupt a later backup during S3 writes, discard local daemon state, recover through the normal policy, restore older files, resume backup and restore from a new backup. It also requires normal recovery from a full backup of the Mac runner's normally eligible contents. The user rejected reducing the Mac backup to a controlled fixture. It must use disposable data with the old writer stopped.
 
 One reviewer initially claimed all low-port binds require root on macOS/Linux. That was too broad. Current XNU source checks reserved-port privilege for a specific address, including loopback, but treats wildcard binding differently. Linux policy is also configurable. This is source evidence, not a Mac runtime test. Keep the loopback default, record actual bind results and never silently switch to a wildcard address. No new root-run policy or privilege-management feature is approved. [S10]
 
-Work now belongs in [Last: prove Time Machine full backup and crash recovery on GitHub macOS](https://github.com/djosh34/s3-smb/issues/34), blocked by every earlier implementation task. Hosted-runner prerequisites are researched but untested. The exact full-backup source scope is being clarified; no generic SMB or manual-user substitute is authorized.
+Work now belongs in [Last: prove Time Machine full backup and crash recovery on GitHub macOS](https://github.com/djosh34/s3-smb/issues/34), blocked by every earlier implementation task. Hosted-runner prerequisites are researched but untested. Full normal Mac backup scope is confirmed; a fixture-only, generic SMB or manual-user substitute is not authorized. Disabled-by-default Time Machine is not proof of an unsupported runner.
 
 ### 13. Low: narrow the installation proof to what actually ran
 

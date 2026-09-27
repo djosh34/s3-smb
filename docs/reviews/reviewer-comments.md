@@ -52,7 +52,7 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 | 5. The backup helper ignores gzip finalization errors. | Included with the overlapping Astra storage finding. |
 | Certificate replacement is distinct from S3 credential renewal. | Included. Local TLS files load at startup; normal server-certificate renewal is not an S3 credential change. |
 | Existing direct-argv, bounded-output and secret-safe logging requirements are sensible. | Retained. No additional logging framework or credential manager was requested. |
-| Remote encryption does not protect local SQLite/WAL/cache/staging or a compromised running process. | Included in security documentation. Remote metadata backups are encrypted when enabled; whether to add local database/staging encryption is being clarified, not silently added. |
+| Remote encryption does not protect local SQLite/WAL/cache/staging or a compromised running process. | Included in security documentation. Remote metadata backups are encrypted when enabled. The user confirmed that these remote copies were the concern, so supported native local SQLite/WAL/staging remain unchanged; no local encryption product is added. |
 | No evidence for password-derived RSA, mandatory external PEM, allocator redesign or a second dataset. | Retained as limits on scope. |
 | Two final questions about key location and credential renewal. | Answered by the user. Their answers do not prove the unimplemented encrypted-key round trip; its tests remain required. |
 
