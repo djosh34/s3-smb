@@ -11,7 +11,9 @@ Four reviewers audited plan revision `fa36915f6a0de6fdb12b1292cc2102a79349071d` 
 
 The reviewers inspected source and earlier research. They did not implement the application or run new storage/crypto probes. Their reports were checked, deduplicated and corrected where necessary. The findings below are the consolidated result, not four separate lists of requirements.
 
-The [implementation contract](../implementation-plan.md) and [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) now include the accepted technical corrections. They are still drafts. The two user choices at the end remain open; AGPL-3.0-only is approved.
+The [implementation contract](../implementation-plan.md) and [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) include the accepted technical corrections and still await final approval. The user has since confirmed startup-only permanent credentials, the S3-held protected key when encryption is enabled, and optional application encryption. AGPL-3.0-only is approved. Optional encryption was added after these reviews; do not attribute that later change to the reviewed revision.
+
+[Every reviewer comment and its disposition](reviewer-comments.md) includes alternatives, minor observations, cautions and links to all four complete final reports. Comments not selected as requirements are preserved there, not silently omitted.
 
 ## Direct answers
 
@@ -35,9 +37,9 @@ The encrypted key must remain available in S3. Losing it and all optional copies
 
 The native PEM exporter uses deprecated, unauthenticated legacy encryption with fast MD5-based password expansion. The selected PKCS#8 library also has weak defaults for this purpose: CBC and 2,048 PBKDF2 iterations. Merely saying "use native encryption" does not choose safe protection for a cloud-held private key. [S1][S2]
 
-If the S3-held key option is selected, the plan now specifies authenticated encrypted PKCS#8 with explicit scrypt/AES-GCM parameters through the existing dependency. It also specifies a bounded key object, parameter validation before costly password derivation, one stable bootstrap location outside native data/backup cleanup, upload/readback verification, and no replacement key on failed recovery. A missing or damaged key must not trigger initialization.
+For the now-selected S3-held key in encrypted mode, the plan specifies authenticated encrypted PKCS#8 with explicit scrypt/AES-GCM parameters through the existing dependency. It also specifies a bounded key object, parameter validation before costly password derivation, one stable bootstrap location outside native data/backup cleanup, upload/readback verification, and no replacement key on failed recovery. A missing or damaged key must not trigger initialization.
 
-This needs the user's key-location choice, followed by native-parser and fresh-install tests. It does not need a new encryption protocol, password-derived RSA, or key-management service.
+The key-location choice is now confirmed. Native-parser and fresh-install tests are still required. Unencrypted mode must bypass key generation, fetching and passphrase resolution entirely. It does not need a new encryption protocol, password-derived RSA, or key-management service.
 
 Work belongs in [encrypted storage](https://github.com/djosh34/s3-smb/issues/21), [metadata recovery](https://github.com/djosh34/s3-smb/issues/24), [serve startup](https://github.com/djosh34/s3-smb/issues/25) and [integration tests](https://github.com/djosh34/s3-smb/issues/27).
 
@@ -137,22 +139,20 @@ The packaging fixture bundled JuiceFS and its customized dependencies, but impor
 
 The contract now says exactly what passed. Both the bundled SMB layout and the actual public module remain acceptance checks in [source packaging](https://github.com/djosh34/s3-smb/issues/19) and [release validation](https://github.com/djosh34/s3-smb/issues/28).
 
-## Suggestions not adopted
+## Alternatives, disagreements and minor comments
 
-- No distributed heartbeat/lease was added. One writable metadata authority remains the explicit operating restriction. A heartbeat alone would not provide fencing.
-- No second key-management mode is required merely because a reviewer suggested one. Choose one first-release workflow. An optional independent copy of the encrypted S3 key is not a new application mode.
-- No automatic credential refresh, certificate watcher or mandatory temporary-token ban has been inferred from the user's questions.
-- No arbitrary namespace cap or replacement export format was selected without measurements demonstrating a need.
-- No sample-read check is presented as proof that every object exists or every file decrypts.
-- The legacy PEM KDF is weak, but it does use salt. An initial "unsalted" claim was corrected against the Go source.
-- No allocator redesign, separate recovery dataset, mandatory read-only recovery or upstream release dependency was introduced.
+The [complete comment index](reviewer-comments.md) records every main finding, smaller observation, speculative concern and repeated question. It identifies recommendations included in the plan, adopted with changes, deferred pending evidence or not selected. It also records corrected claims rather than presenting them as facts.
 
-## Remaining user decisions
+The recommendations not adopted as written include an external-key-default/two-mode design, an S3 heartbeat, mandatory recovery scans, hard namespace limits or binary fallback before measurement, a prescribed root-run route, token expiry features, a mandatory read-only rehearsal, another performance-target decision, blanket refusal when a UUID marker is missing, and alternative naming/freshness policies. Their authors, reasons and current treatment are summarized in that index.
 
-1. Can S3 credentials be resolved at startup, with a restart after replacement, or must temporary credentials renew while the daemon keeps running? Recommend startup-only unless uninterrupted temporary-credential use is needed.
-2. Should the application keep its passphrase-encrypted private key in S3, so the passphrase is the only encryption secret the user must retain? Recommend yes, with the bootstrap/security rules above. S3 access and connection details are still required.
+## User answers after review
 
-AGPL-3.0-only is confirmed. After these answers are incorporated, the user reviews [final plan approval](https://github.com/djosh34/s3-smb/issues/29). No further product decisions were established by this audit.
+1. Use the user's permanent S3 credentials and resolve them at startup. No automatic refresh or temporary-credential workflow is required.
+2. When encryption is enabled, store the protected key in S3 so the passphrase is the only separately retained encryption secret. S3 access and connection details are still required.
+3. Encryption is optional. With explicit `encryption.enabled: false`, data and metadata have no application encryption. The user accepts disclosure to anyone with sufficient S3 read access. TLS, authentication, backups and protection rules remain active. Both-mode acceptance tests have been added; the earlier reviews did not test this new choice.
+4. AGPL-3.0-only is confirmed.
+
+The remaining step is [final plan approval](https://github.com/djosh34/s3-smb/issues/29), including review of the full comment index. No implementation has been authorized.
 
 ## Sources and evidence limits
 

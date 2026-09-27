@@ -18,7 +18,8 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - Default to `127.0.0.1` with simple authentication. Allow explicit `0.0.0.0` binding.
 - Linux/ARM64 development and testing first. Preserve go-smb2's Time Machine-related SMB features. The user will test with a Mac later.
 - Access files through SMB. No custom browser or migration tool.
-- Use JuiceFS encryption. Back up metadata to S3 hourly and retain deleted/replaced data through JuiceFS trash for 14 days by default. Both settings are configurable.
+- Offer optional JuiceFS encryption, on by default in the draft config. When enabled, keep the passphrase-protected key in S3; no separately retained key file is required. Explicit `encryption.enabled: false` means anyone with sufficient S3 read access can read the data and metadata. TLS and authentication still apply.
+- Back up metadata to S3 hourly and retain deleted/replaced data through JuiceFS trash for 14 days by default. Both settings are configurable and apply in either encryption mode.
 - Stop with a clear error if a scheduled metadata backup fails after normal retries. Preserve the previous usable backup; do not silently keep running without protection.
 - If local metadata is missing but the remote dataset exists, `serve` offers confirmed recovery through JuiceFS's native restore path, then resumes normal writes to the same dataset. Also support an optional read-only mode. Verify the recovery path before claiming compatibility.
 - Recover on a fresh installation using S3 and externally saved secrets, without any files from the old machine. Losing changes since the last successful metadata backup is acceptable. Prefer JuiceFS's native periodic backups over per-write remote metadata synchronization.
@@ -29,8 +30,9 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Wayfinding map](https://github.com/djosh34/s3-smb/issues/1): decision index.
 - [Implementation backlog](https://github.com/djosh34/s3-smb/issues/18): ten implementation sub-issues with native dependencies, acceptance tests and review requirements.
 - [Implementation contract](docs/implementation-plan.md): detailed behavior and release acceptance matrix.
-- [Remaining choices](https://github.com/djosh34/s3-smb/issues/17): credential refresh and initial encryption-key handling. AGPL-3.0-only is confirmed.
-- [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews, with accepted corrections and the remaining questions.
+- [Confirmed credential, encryption and license choices](https://github.com/djosh34/s3-smb/issues/17): permanent credentials loaded at startup, optional encryption with an S3-held protected key when enabled, and AGPL-3.0-only.
+- [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews.
+- [Every reviewer comment](docs/reviews/reviewer-comments.md): complete summaries, disagreements, dispositions and the four final reports.
 - [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): blocks all implementation until shared understanding is confirmed.
 
 The backlog is a complete draft, not an approved execution plan. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
