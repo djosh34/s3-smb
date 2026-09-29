@@ -11,7 +11,7 @@ Four reviewers audited plan revision `fa36915f6a0de6fdb12b1292cc2102a79349071d` 
 
 The reviewers inspected source and earlier research. They did not implement the application or run new storage/crypto probes. Their reports were checked, deduplicated and corrected where necessary. The findings below are the consolidated result, not four separate lists of requirements.
 
-The [implementation contract](../implementation-plan.md) and [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) include the accepted technical corrections and still await final approval. The user has since confirmed startup-only permanent credentials, the S3-held protected key when encryption is enabled, and optional application encryption. AGPL-3.0-only is approved. Optional encryption was added after these reviews; do not attribute that later change to the reviewed revision.
+The [implementation contract](../implementation-plan.md) and [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) include the accepted technical corrections and have now been approved by the user. Execution is explicitly on hold until a later start instruction. The user has since confirmed startup-only permanent credentials, the S3-held protected key when encryption is enabled, and optional application encryption. AGPL-3.0-only is approved. Optional encryption was added after these reviews; do not attribute that later change to the reviewed revision.
 
 [Every reviewer comment and its disposition](reviewer-comments.md) includes alternatives, minor observations, cautions and links to all four complete final reports. Comments not selected as requirements are preserved there, not silently omitted.
 
@@ -154,7 +154,7 @@ The recommendations not adopted as written include an external-key-default/two-m
 3. Encryption is optional. With explicit `encryption.enabled: false`, data and metadata have no application encryption. The user accepts disclosure to anyone with sufficient S3 read access. TLS, authentication, backups and protection rules remain active. Both-mode acceptance tests have been added; the earlier reviews did not test this new choice.
 4. AGPL-3.0-only is confirmed.
 
-The remaining step is [final plan approval](https://github.com/djosh34/s3-smb/issues/29), including review of the full comment index. No implementation has been authorized.
+The user has given [final plan approval](https://github.com/djosh34/s3-smb/issues/29) and explicitly said not to execute yet. The approved requirements do not constitute completed implementation or test evidence.
 
 ## Sources and evidence limits
 

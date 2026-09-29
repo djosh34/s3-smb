@@ -2,7 +2,7 @@
 
 A terminal-only Go SMB server that stores files in S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
 
-**Status: planning only. Research probes have run, but the application has not been implemented or tested end to end. Do not use this project for real backups yet.**
+**Status: plan approved; execution on hold at the user's request. Research probes have run, but the application has not been implemented or tested end to end. Do not use this project for real backups yet.**
 
 ## First-release direction
 
@@ -20,7 +20,7 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - Linux/ARM64 development first. Run almost all tests locally on the VM in Docker with MinIO and the application. GitHub Linux CI repeats the exact same suite as extra verification, not the primary debugging loop.
 - Actual Time Machine full backup, normal recovery and crash-during-write recovery on GitHub-hosted macOS is the final required task, after everything else passes. Back up the Mac runner's normally eligible contents, not just a controlled test dataset. Hosted-runner runtime capability is still unverified, not established as impossible.
 - Access files through SMB. No custom browser or migration tool.
-- Offer optional JuiceFS encryption, on by default in the draft config. When enabled, keep the passphrase-protected key in S3; no separately retained key file is required. Explicit `encryption.enabled: false` means anyone with sufficient S3 read access can read the data and metadata. TLS, S3 authentication and the selected SMB access policy still apply.
+- Offer optional JuiceFS encryption, on by default. When enabled, keep the passphrase-protected key in S3; no separately retained key file is required. Explicit `encryption.enabled: false` means anyone with sufficient S3 read access can read the data and metadata. TLS, S3 authentication and the selected SMB access policy still apply.
 - Encrypt remote metadata backups in encryption-enabled mode with the same native key used for data. The user confirmed that only the remote backups were the concern; live local SQLite/WAL and staging remain native and unencrypted.
 - Back up metadata to S3 hourly and retain deleted/replaced data through JuiceFS trash for 14 days by default. Both settings are configurable and apply in either encryption mode.
 - Stop with a clear error if a scheduled metadata backup fails after normal retries. Preserve the previous usable backup; do not silently keep running without protection.
@@ -39,9 +39,27 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Confirmed credential, encryption and license choices](https://github.com/djosh34/s3-smb/issues/17): permanent credentials loaded at startup, optional encryption with an S3-held protected key when enabled, and AGPL-3.0-only.
 - [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews.
 - [Every reviewer comment](docs/reviews/reviewer-comments.md): complete summaries, disagreements, dispositions and the four final reports.
-- [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): blocks all implementation until shared understanding is confirmed.
+- [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): the user approved the plan and explicitly deferred execution.
 
-The backlog is a complete draft, not an approved execution plan. Use wayfinder, grilling, domain-modeling, and unslop. Update issue bodies after each round.
+The backlog is approved. Its `status:awaiting-execution` label records the user's hold, not an unresolved design question. Do not start until the user explicitly authorizes implementation.
+
+### Starting implementation later
+
+In this repository, give a coding agent this request; no special slash command is required:
+
+```text
+Start implementing the approved backlog:
+https://github.com/djosh34/s3-smb/issues/18
+
+This authorizes execution and releases the previous hold. Follow
+README.md, CONTEXT.md, docs/implementation-plan.md and the native issue
+dependencies. Meet each task's tests and review requirements before
+closing it. Run the shared Docker/MinIO tests locally before the same
+suite in GitHub CI. Keep full Mac Time Machine backup/crash/restore
+acceptance last. Do not reduce the agreed scope or silently skip failures.
+```
+
+That is a future invocation example, not authorization from this document.
 
 The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
 

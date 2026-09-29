@@ -1,6 +1,6 @@
 # s3-smb implementation contract
 
-Status: draft, not authorization to implement. The [wayfinding map](https://github.com/djosh34/s3-smb/issues/1) records decisions; the [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) tracks delivery. [Final approval](https://github.com/djosh34/s3-smb/issues/29) remains open.
+Status: approved by the user; execution explicitly on hold until a later instruction to start. The [wayfinding map](https://github.com/djosh34/s3-smb/issues/1) records decisions; the [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) tracks delivery. [Final approval](https://github.com/djosh34/s3-smb/issues/29) records agreement with the plan, not completed implementation or tests.
 
 This contract specifies required behavior, how the application uses JuiceFS, and necessary corrections. Follow the pinned upstream implementations for everything else. Do not turn descriptions of native internals into new application subsystems or rigid designs. The [review findings](reviews/plan-audit.md) and [complete comment record](reviews/reviewer-comments.md) retain the supporting evidence and alternatives.
 
@@ -25,7 +25,7 @@ Use strict YAML, clear errors, documented defaults and paths relative to the con
 | Units | Public size inputs, help and status use decimal units: 1 MB = 1,000,000 bytes; 1 GB = 1,000,000,000 bytes. Convert correctly at the native interface. A small positive capacity must not accidentally become zero because of unit conversion. |
 | S3 | Bucket, region, custom endpoint, `path_style`, independent access/secret sources and optional static session token. Explicit `path_style: true` and `false` must reach the S3 client and work in tests; omission may use native selection. |
 | TLS | HTTPS verification by default, custom CA file and optional client certificate/key. Add roots to the process trust pool, not OS trust. Certificate-file replacement takes effect after restart. Never silently downgrade verification or an endpoint to HTTP. Explicit HTTP is available for intentional local/test endpoints. |
-| Encryption | `enabled`, default true in the draft, and a passphrase source when enabled. Explicit false opts out of application encryption of both data and remote metadata backups. |
+| Encryption | `enabled`, default true, and a passphrase source when enabled. Explicit false opts out of application encryption of both data and remote metadata backups. |
 | Metadata protection | Hourly native metadata backups and 14-day native trash by default, both configurable. Apply retention to the actual native volume format, not just a local field. |
 | Logging | Standard `log/slog`, text or JSON, level and a CLI format override usable even for config errors. |
 
@@ -128,4 +128,4 @@ Pin JuiceFS v1.4.1 at `0b90c7db5a929ae6adc5faad948d108efd2c99f9` and SMB at `277
 
 Original project code uses AGPL-3.0-only. Include upstream notices and source-distribution information. Every implementation task needs tests, relevant documentation and review of both repository standards and the accepted spec. Record the tested/reviewed revision and distinguish source inspection from executed evidence.
 
-No unresolved data-loss, secret-exposure or false-compatibility claim is acceptable. The final Mac task is now required; passing Linux alone is not completion of this updated release plan. No agent-coordination scheme belongs here. Implementation stays blocked until the user approves the revised backlog.
+No unresolved data-loss, secret-exposure or false-compatibility claim is acceptable. The final Mac task is now required; passing Linux alone is not completion of this updated release plan. No agent-coordination scheme belongs here. The user approved this backlog but explicitly deferred execution. Start implementation only after a later user instruction authorizes it.

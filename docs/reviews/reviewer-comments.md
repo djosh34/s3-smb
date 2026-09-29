@@ -2,7 +2,7 @@
 
 This is the complete comment index for the four final plan reviews. It includes alternatives, minor observations, cautions and disagreements, not only the recommendations chosen for the plan. Repeated questions are mapped to their findings rather than counted twice.
 
-The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) remains the draft specification; [the unified audit](plan-audit.md) groups overlapping findings. Subsequent user updates require passwordless SMB, decimal units and zero-cache tests, permissions-as-warnings, local Docker-first testing and a final hosted-Mac Time Machine test. These later changes were not audited by the four original reports.
+The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) is the approved specification, with execution still on hold; [the unified audit](plan-audit.md) groups overlapping findings. Subsequent user updates require passwordless SMB, decimal units and zero-cache tests, permissions-as-warnings, local Docker-first testing and a final hosted-Mac Time Machine test. These later changes were not audited by the four original reports.
 
 ## Full reports
 
@@ -11,7 +11,7 @@ The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before
 - [DeepSeek contract, max](raw/deepseek-contract.md)
 - [DeepSeek readiness, max](raw/deepseek-readiness.md)
 
-"Included" below means added to planning requirements or tests, not implemented or experimentally proved. "Not selected" means the recommendation remains visible here but is not a current requirement. The user can challenge these dispositions before final approval.
+"Included" below means added to planning requirements or tests, not implemented or experimentally proved. "Not selected" means the recommendation remains visible here but is not a current requirement. The user has approved the resulting plan and explicitly deferred execution; these dispositions remain visible for traceability.
 
 ## Recommendations not adopted as written
 
@@ -111,4 +111,4 @@ The initial broad low-port/root claim was also corrected. The exact target Mac s
 
 After the reviews, the user confirmed permanent credentials and startup-only resolution. They selected the S3-held protected key and explicitly made encryption optional, accepting disclosure of data and metadata to anyone with sufficient S3 read access when disabled. The updated plan adds both-mode tests. Do not claim the four earlier reviews already tested or audited that later change.
 
-The remaining approval is [Approve the implementation-ready s3-smb backlog](https://github.com/djosh34/s3-smb/issues/29). All application work remains blocked until that approval.
+[Approve the implementation-ready s3-smb backlog](https://github.com/djosh34/s3-smb/issues/29) records the user's approval and explicit instruction not to execute yet. Application work awaits a later start instruction.
