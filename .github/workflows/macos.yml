@@ -24,7 +24,7 @@ concurrency:
 jobs:
   backup:
     name: ${{ inputs.scenario }} / full backup
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 360
     env:
       PUBLIC_VERSION: ${{ inputs.public_version }}
@@ -79,7 +79,7 @@ jobs:
   recover:
     name: ${{ inputs.scenario }} / fresh-Mac recovery
     needs: backup
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 360
     env:
       PUBLIC_VERSION: ${{ inputs.public_version }}

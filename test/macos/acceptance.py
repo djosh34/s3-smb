@@ -16,7 +16,7 @@ import traceback
 import urllib.request
 
 from manifest import manifest, compare
-from native import Commands, Daemon, utc, verify_tmutil_verb, progress
+from native import Commands, Daemon, utc, verify_tmutil_verb, progress, tm_status_numbers
 
 WORK = Path(os.environ['MAC_WORK']).resolve()
 EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
@@ -47,12 +47,20 @@ class Acceptance:
         self.fixture = BIN / 'fixture'
         self.serial = 0
         self.destination = None
+        self.task_bytes = {}
+        self.task_usage_count = 0
 
     def event(self, event, **fields):
+        # Latest of at most two bounded task-only observations, not fresh scans
+        # on every heartbeat. Missing observations remain unknown.
+        fields = {**self.task_bytes, **fields}
         fields.setdefault('scenario', self.scenario)
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
             f.write(json.dumps(dict(time=utc(), event=event, **fields), sort_keys=True) + '\n')
-        progress(EVIDENCE, event, scenario=self.scenario)
+        progress(EVIDENCE, event, scenario=self.scenario, tm_percent=fields.get('tm_percent'),
+                 tm_bytes=fields.get('tm_bytes'), tm_total_bytes=fields.get('tm_total_bytes'),
+                 task_store_bytes=fields.get('task_store_bytes'), task_daemon_bytes=fields.get('task_daemon_bytes'),
+                 task_evidence_bytes=fields.get('task_evidence_bytes'))
         print(event, fields, flush=True)
 
     def save(self, name, data):
@@ -234,6 +242,21 @@ logging:
         self.event('created-tree-reference-saved', path=str(proof))
         return proof
 
+    def observe_task_usage(self):
+        if self.task_usage_count >= 2:
+            return
+        self.task_usage_count += 1
+        self.task_bytes = {}
+        paths = {str(WORK / 'objects'): 'task_store_bytes', str(self.local): 'task_daemon_bytes',
+                 str(EVIDENCE): 'task_evidence_bytes'}
+        output, code = self.cmd.run(['/usr/bin/du', '-sk', *paths], timeout=30, diagnostic=True)
+        if code == 0:
+            for line in output.splitlines():
+                size, separator, path = line.partition('\t')
+                if separator and size.isdigit() and path in paths:
+                    self.task_bytes[paths[path]] = int(size) * 1024
+        self.event('task-usage-observed', exit=code)
+
     def confirm_backup_checkpoint(self):
         self.event('before-first-backup')
         checkpoint = json.loads((EVIDENCE / 'progress.json').read_text())['time']
@@ -268,14 +291,19 @@ logging:
         process, log = self.backup
         deadline = time.monotonic() + 5400
         next_observation = time.monotonic()
+        usage_observed = False
         while process.poll() is None:
             self.daemon.pump()
             now = time.monotonic()
             if now >= deadline:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')
+            if not usage_observed and now >= deadline - 5400 + 300:
+                self.observe_task_usage()
+                usage_observed = True
             if now >= next_observation:
                 status, code = self.cmd.run(['/usr/bin/tmutil', 'status'], diagnostic=True)
-                self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code)
+                self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code,
+                           **(tm_status_numbers(status) if code == 0 else {}))
                 next_observation = now + 60
             time.sleep(1)
         log.close()
@@ -411,6 +439,7 @@ logging:
             raise RuntimeError('initial application share not empty')
         self.configure_destination()
         proof = self.create_tree()
+        self.observe_task_usage()
         self.confirm_backup_checkpoint()
         self.start_backup('baseline')
         completed = self.complete_backup('baseline')

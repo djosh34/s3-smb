@@ -8,7 +8,8 @@ const revision = 'ea165f8d65b6e75b540449e92b4886f43607fa02';
 
 function safeSnapshot(value) {
   const result = {};
-  for (const key of ['time', 'event', 'scenario', 'command', 'exit', 'free_bytes', 'low_free_space']) {
+  const metrics = ['tm_percent', 'tm_bytes', 'tm_total_bytes', 'task_store_bytes', 'task_daemon_bytes', 'task_evidence_bytes'];
+  for (const key of ['time', 'event', 'scenario', 'command', 'exit', 'free_bytes', 'low_free_space', ...metrics]) {
     if (Object.hasOwn(value, key)) result[key] = value[key];
   }
   if (typeof result.time !== 'string' || typeof result.event !== 'string' ||
@@ -17,6 +18,11 @@ function safeSnapshot(value) {
   for (const key of ['time', 'event', 'scenario', 'command']) {
     if (result[key] !== undefined && (typeof result[key] !== 'string' || result[key].length > 128)) {
       throw new Error('Invalid progress label');
+    }
+  }
+  for (const key of metrics) {
+    if (result[key] !== undefined && (!Number.isFinite(result[key]) || result[key] < 0)) {
+      throw new Error('Invalid diagnostic metric');
     }
   }
   if (result.command !== undefined) result.command = path.basename(result.command);

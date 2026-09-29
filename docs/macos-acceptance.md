@@ -39,15 +39,41 @@ crash/resume**. No control or intermediate step is the finish line; issues #18/#
 stay open until all required stages pass. No completed normal backup or later
 stage is claimed by the destination-setup result above.
 
-Subsequent runs 36623413132 and 36631900733 lost communication with their hosted
-runner; no artifact or downloadable log survived. Their execution boundary and
-cause remain unknown—not proven disk-full, credential success or backup progress.
-The next attempt retains a small durable progress snapshot and actual free-space
-observations; these are diagnostics, not a capacity estimate or success claim.
+Runs 36623413132 and 36631900733 lost communication with their hosted runner;
+no artifact or downloadable log survived. Their boundary/cause remains unproven.
+[Run 36640633507](https://github.com/djosh34/s3-smb/actions/runs/36640633507)
+subsequently **proved disk exhaustion**: durable progress recorded Data-volume free
+space falling from 41.48 GB before backup to zero, and GitHub reported
+`System.IO.IOException: No space left on device` writing the runner diagnostic log.
+The earlier deaths are consistent with this cause, not independently proven.
+This is an operational capacity failure, not evidence of SMB incompatibility.
+Keep durable progress and actual free-space observations; neither is an estimator
+or a completed-backup claim.
+
+### Authorized CI-only capacity relief
+
+The selected next placement is the **standard `macos-15-intel` runner**, reusing
+qualified rc6. Its actual free space is **unknown**, not guaranteed greater than
+the previous ARM runner; published standard-runner specifications do not establish
+sufficient capacity for this backup.
+
+After building and preserving required binaries/provenance, delete **only exact
+disposable build/install/source roots created by this test attempt**. Record those
+paths/reasons and `df` before/after. The latest user directive supersedes the
+briefly proposed unused-Xcode cleanup, which was not implemented: **do not delete
+installed Xcode/SDKs, simulator runtimes, user content or the repository checkout**.
+Do not add exclusions to shrink the normal source or restrict it to the created
+tree. All installed SDKs remain part of the normal full-Mac source.
+
+Retain durable free-space observations, native Time Machine percent/byte counters
+when available, and a couple of bounded task-owned storage footprints. These are
+runtime diagnostics—not an eligible-source inventory, size estimator, capacity
+gate or guarantee. Do not repeat the ARM setup assuming a few GB of scratch
+cleanup is sufficient. Report the Intel run's actual outcome.
 
 ## Normal backup and fresh-Mac recovery first
 
-Use two dependent GitHub-hosted `macos-15` jobs; each runner is already a Mac VM.
+Use two dependent standard GitHub-hosted `macos-15-intel` jobs; each runner is already a Mac VM.
 No nested VM, external account, paid infrastructure or public service is needed.
 Use native MinIO pinned to the Linux fixture revision
 `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`, with loopback services.
@@ -58,9 +84,10 @@ Use native MinIO pinned to the Linux fixture revision
 2. Run an actual normal full-Mac Time Machine backup to the application-backed
    SMB share. The original named-empty requirement uses the `timemachine` account
    with an explicit empty password; the separately labelled positive control uses
-   a synthetic nonempty password. Keep native exclusions; exclude only recursion-producing test
-   infrastructure. Do not restrict backup input to the known tree or exclude
-   normal Apple, SDK, build or user content to shorten the run.
+   a synthetic nonempty password. Keep native exclusions; exclude only recursion-producing
+   test infrastructure. Only the attempt-owned scratch cleanup above is permitted
+   before backup; preserve installed SDKs, ordinary Apple/build/user content and
+   the checkout. Do not restrict backup input to the known tree.
 3. Require actual Time Machine completion and a completed remote backup. Wait
    separately for the application's successful native metadata backup containing
    that completed state. Metadata backup and Time Machine backup are different

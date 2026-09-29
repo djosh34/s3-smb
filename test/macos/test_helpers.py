@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from manifest import manifest, compare
-from native import Commands, Daemon, progress
+from native import Commands, Daemon, progress, tm_status_numbers
 
 
 class Helpers(unittest.TestCase):
@@ -132,6 +132,33 @@ class Helpers(unittest.TestCase):
         self.assertEqual(record['free_bytes'], 1_000_000_000)
         self.assertTrue(record['low_free_space'])
         self.assertEqual(record['scenario'], 'password-control')
+
+    def test_native_tm_numbers_are_observations_not_estimates(self):
+        status = '''Backup session status:
+{
+    Percent = "0.125";
+    Progress = {
+        bytes = 123456789;
+        totalBytes = 987654321;
+        "_raw_totalBytes" = 999999999;
+    };
+    DestinationID = "not-a-metric";
+}'''
+        numbers = tm_status_numbers(status)
+        self.assertEqual(numbers, dict(tm_percent=.125, tm_bytes=123456789, tm_total_bytes=987654321))
+        progress(self.base, 'time-machine-progress', **numbers)
+        snapshot = json.loads((self.base / 'progress.json').read_text())
+        for key, value in numbers.items():
+            self.assertEqual(snapshot[key], value)
+        self.assertNotIn('DestinationID', snapshot)
+        self.assertNotIn('_raw_totalBytes', snapshot)
+
+    def test_missing_or_nonfinite_tm_metrics_stay_unknown(self):
+        self.assertEqual(tm_status_numbers('Running = 1;'), {})
+        self.assertEqual(tm_status_numbers('Percent = nan;\nbytes = -1;\ntotalBytes = 1e999;'), {})
+        progress(self.base, 'time-machine-progress', tm_percent=float('nan'), tm_bytes=-1, tm_total_bytes=float('inf'))
+        self.assertFalse(any(key.startswith('tm_') for key in json.loads((self.base / 'progress.json').read_text())))
+        self.assertEqual(tm_status_numbers('Percent = 0;\nbytes = 0;'), dict(tm_percent=0, tm_bytes=0))
 
     def invoke_tmutil_prompt(self, body, timeout=2):
         executable = self.base / 'fake-tmutil.py'

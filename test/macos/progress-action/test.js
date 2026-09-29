@@ -20,6 +20,16 @@ test('rejects malformed measurements and nested labels', () => {
     assert.throws(() => safeSnapshot({...base, ...bad}));
   }
 });
+test('retains only finite nonnegative optional runtime metrics without scaling', () => {
+  const metrics = {tm_percent: 0.125, tm_bytes: 123, tm_total_bytes: 456,
+    task_store_bytes: 1000, task_daemon_bytes: 0, task_evidence_bytes: 900};
+  assert.deepEqual(safeSnapshot({...base, ...metrics}), {...base, ...metrics});
+  for (const key of Object.keys(metrics)) {
+    for (const value of [-1, Infinity, 'secret', {argv: 'private'}]) {
+      assert.throws(() => safeSnapshot({...base, [key]: value}));
+    }
+  }
+});
 test('native and uploader failures remain nonzero', async () => {
   assert.equal(await execute('/bin/sh', ['-c', 'exit 7'], process.env), 7);
   assert.equal(await execute('/bin/sh', ['-c', 'exit 0'], process.env), 0);

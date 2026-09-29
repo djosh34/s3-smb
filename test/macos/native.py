@@ -3,6 +3,7 @@
 """Bounded native command evidence and PTY consent."""
 import datetime
 import json
+import math
 import os
 from pathlib import Path
 import pty
@@ -19,7 +20,21 @@ def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
-def progress(evidence, event, *, command=None, exit_code=None, scenario=None):
+def tm_status_numbers(text):
+    """Observe only native numeric progress fields; unknown/absent is not a gate."""
+    result = {}
+    for native, key in (('Percent', 'tm_percent'), ('bytes', 'tm_bytes'), ('totalBytes', 'tm_total_bytes')):
+        match = re.search(rf'(?m)^\s*{native}\s*=\s*"?([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)"?\s*;', text)
+        if match:
+            number = float(match[1])
+            if math.isfinite(number) and number >= 0:
+                result[key] = number
+    return result
+
+
+def progress(evidence, event, *, command=None, exit_code=None, scenario=None,
+             tm_percent=None, tm_bytes=None, tm_total_bytes=None,
+             task_store_bytes=None, task_daemon_bytes=None, task_evidence_bytes=None):
     """Tiny credential-free snapshot for the workflow's durable progress upload."""
     evidence = Path(evidence)
     free = shutil.disk_usage(evidence).free
@@ -31,6 +46,11 @@ def progress(evidence, event, *, command=None, exit_code=None, scenario=None):
         record['exit'] = exit_code
     if scenario is not None:
         record['scenario'] = scenario
+    for key, value in (('tm_percent', tm_percent), ('tm_bytes', tm_bytes), ('tm_total_bytes', tm_total_bytes),
+                       ('task_store_bytes', task_store_bytes), ('task_daemon_bytes', task_daemon_bytes),
+                       ('task_evidence_bytes', task_evidence_bytes)):
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
+            record[key] = value
     temporary = evidence / 'progress.json.tmp'
     temporary.write_text(json.dumps(record, sort_keys=True) + '\n')
     # EVIDENCE remains runner-private; the ordinary artifact uploader

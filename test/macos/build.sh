@@ -19,10 +19,14 @@ git status --porcelain > "$MAC_ARTIFACTS/source-status"
 } > "$MAC_ARTIFACTS/platform.txt" 2>&1
 [[ "$(go env GOVERSION)" = go1.26.3 ]]
 export GOTOOLCHAIN=local CGO_ENABLED=1 GOWORK=off GOFLAGS='' GOMAXPROCS=3
+# Only this attempt's compiler scratch is disposable; leave global caches/SDKs alone.
+compile_cache=$(mktemp -d "$MAC_WORK/compile-cache.XXXXXX")
+export GOPATH="$compile_cache/gopath" GOMODCACHE="$compile_cache/modules" GOCACHE="$compile_cache/build"
 export MAC_BIN
 MAC_BIN=$(mktemp -d "$HOME/s3-smb-native-build.XXXXXX")
 printf '%s\n' "$MAC_BIN" > "$MAC_ARTIFACTS/native-build-root"
-# Fresh public caches and all normal source/build outputs remain outside exclusions.
+# A genuinely fresh public install; retain its binary/provenance before removing
+# only these exact attempt-generated scratch roots after all builds complete.
 install_root=$(mktemp -d "$HOME/s3-smb-public-install.XXXXXX")
 printf '%s\n' "$install_root" > "$MAC_ARTIFACTS/public-install-root"
 mkdir "$install_root/empty" "$install_root/bin"
@@ -51,3 +55,19 @@ git -C "$minio_src" checkout --detach FETCH_HEAD
 printf '%s\n' "$minio_revision" > "$MAC_ARTIFACTS/minio-revision"
 go version -m "$MAC_BIN/minio" >> "$MAC_ARTIFACTS/minio-build.log"
 go build -p 3 -o "$MAC_BIN/fixture" ./test/macos/fixture
+# No installed Xcode, simulator, SDK, user content or global cache is removed.
+# These are the exact mktemp roots created above, not inferred HOME patterns.
+{
+  /bin/df -k "$HOME"
+  free_before=$(python3 -c 'import shutil; print(shutil.disk_usage(".").free)')
+  for scratch in "$install_root" "$minio_src" "$compile_cache"; do
+    printf 'remove=%s reason=completed-attempt-build-scratch\n' "$scratch"
+    /usr/bin/du -sk "$scratch"
+  done
+  chmod -R u+w "$install_root" "$minio_src" "$compile_cache"
+  rm -rf "$install_root" "$minio_src" "$compile_cache"
+  free_after=$(python3 -c 'import shutil; print(shutil.disk_usage(".").free)')
+  printf 'free_before_bytes=%s\nfree_after_bytes=%s\nobserved_free_delta_bytes=%s\n' \
+    "$free_before" "$free_after" "$((free_after - free_before))"
+  /bin/df -k "$HOME"
+} > "$MAC_ARTIFACTS/build-scratch-reclamation.log" 2>&1

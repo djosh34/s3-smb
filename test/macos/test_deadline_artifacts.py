@@ -36,6 +36,36 @@ class DeadlineArtifacts(unittest.TestCase):
         time.sleep(1.1)
         self.assertFalse(marker.exists(), 'compiler child outlived the shared deadline')
 
+    def test_postbuild_cleanup_removes_only_exact_attempt_scratch(self):
+        protected = self.base / 'installed SDK and user content'
+        protected.mkdir()
+        keep = protected / 'keep'
+        keep.write_text('preserve selected SDK, user data, binaries and global caches')
+        keep.chmod(0o444)
+        evidence = self.base / 'evidence'
+        evidence.mkdir()
+        env = dict(os.environ, HOME=str(self.base), MAC_ARTIFACTS=str(evidence))
+        roots = []
+        for variable in ('install_root', 'minio_src', 'compile_cache'):
+            root = self.base / (variable + ' scratch')
+            root.mkdir()
+            (root / 'readonly-module').write_text('disposable')
+            (root / 'readonly-module').chmod(0o444)
+            (root / 'outside-alias').symlink_to(protected, target_is_directory=True)
+            root.chmod(0o555)
+            env[variable] = str(root)
+            roots.append(root)
+        script = Path(__file__).with_name('build.sh').read_text().split('# No installed Xcode,', 1)[1]
+        script = '# No installed Xcode,' + script
+        subprocess.run(['/bin/bash', '-euc', script], env=env, cwd=self.base, check=True)
+        self.assertTrue(all(not root.exists() for root in roots))
+        self.assertEqual(keep.read_text(), 'preserve selected SDK, user data, binaries and global caches')
+        self.assertEqual(stat.S_IMODE(keep.stat().st_mode), 0o444)
+        log = (evidence / 'build-scratch-reclamation.log').read_text()
+        for root in roots:
+            self.assertIn(f'remove={root} reason=completed-attempt-build-scratch', log)
+        self.assertIn('observed_free_delta_bytes=', log)
+
     def test_build_failure_is_not_changed_to_success(self):
         evidence = self.base / 'deadline.json'
         self.assertEqual(run_until([sys.executable, '-c', 'raise SystemExit(7)'], time.time() + 5, evidence), 7)
