@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import pty
 import re
-import select
 import signal
 import subprocess
 import time
@@ -114,6 +113,7 @@ class Daemon:
         self.phase = phase
         self.confirmed = False
         self.reaped = False
+        self.exit_status = None
         self.reader_error = None
         self.ready_seen = False
         self.reader = threading.Thread(target=self.drain, daemon=True)
@@ -149,6 +149,7 @@ class Daemon:
         pid, status = os.waitpid(self.pid, os.WNOHANG)
         if pid:
             self.reaped = True
+            self.exit_status = status
             self.close_evidence()
             raise RuntimeError(f'application exited unexpectedly: {status}')
 
@@ -172,19 +173,26 @@ class Daemon:
         if self.reader_error:
             raise self.reader_error
 
-    def stop(self, abrupt=False):
+    def stop(self, abrupt=False, timeout=45):
         if self.reaped:
             return
         os.kill(self.pid, signal.SIGKILL if abrupt else signal.SIGTERM)
-        deadline = time.monotonic() + 45
-        while time.monotonic() < deadline:
-            time.sleep(.1)
+        deadline = time.monotonic() + timeout
+        forced = False
+        while True:
             pid, status = os.waitpid(self.pid, os.WNOHANG)
             if pid:
                 self.reaped = True
+                self.exit_status = status
                 self.close_evidence()
                 expected = os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL if abrupt else os.WIFEXITED(status) and os.WEXITSTATUS(status) == 0
-                if not expected:
-                    raise RuntimeError(f'unexpected application stop status: {status}')
+                if forced or not expected:
+                    raise RuntimeError(f'application shutdown failed (forced={forced}, status={status})')
                 return
-        raise RuntimeError('application did not stop within 45s; state must not be wiped')
+            if time.monotonic() >= deadline:
+                if forced:
+                    raise RuntimeError('application could not be reaped within forced-kill deadline')
+                os.kill(self.pid, signal.SIGKILL)
+                forced = True
+                deadline = time.monotonic() + 5
+            time.sleep(.1)

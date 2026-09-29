@@ -75,9 +75,12 @@ with their status/output explicitly retained.
    boundary; it does not claim an uncommitted object was lost. Stop the client,
    detach stale mounts, wipe local daemon data again, recover normal policy, and
    restore/compare the complete original baseline again.
-7. Resume Time Machine, require a different completed backup and subsequent
-   native point, cold-recover again, and perform another complete native remote
-   restore including the changed/added/deleted proof-file state.
+7. Resume Time Machine, capture its different completed identifier and **complete
+   independent manifest before wiping**, then require the subsequent native point.
+   Cold-recover again and require that exact completed identifier, with its entire
+   post-recovery backup manifest equal to the pre-wipe one. Perform another full
+   native remote restore, including ordinary contents and changed/added/deleted
+   proof-file state. Expectations are never derived solely from recovered data.
 
 The application kill is not VM power loss, MinIO disk failure or S3 storage loss.
 No object/backup repair or handpicked older application recovery point is used.
@@ -124,8 +127,15 @@ tunnels, buy infrastructure or shrink the source to avoid reporting uncertainty.
 Full restores are sequential. Remove only verified task-owned restored copies,
 after preserving their complete evidence; do not delete baseline/native remote
 objects or ordinary runner files. Default retention is not weakened for space.
-The 330-minute internal deadline includes builds and leaves diagnostic/artifact
-headroom within the six-hour hosted limit; unfinished phases are not successes.
+The shared 330-minute deadline covers all stages: `deadline.py` supervises the
+build/fetch/public-install process group in `build.sh`, and native acceptance
+uses the same absolute deadline. A stalled build's entire process group is
+terminated and its owned leader reaped, not merely its shell killed. Native finalization independently stops
+and bounds/reaps the client, application and services, retains all outcomes,
+and aggregates cleanup failures into a nonzero exit. Forced daemon termination
+is a cleanup failure, never graceful success. Final acceptance success is emitted
+only after cleanup succeeds. Diagnostic/artifact headroom remains within the
+six-hour hosted limit; unfinished phases are not successes.
 
 ## Manifest and evidence contract
 
@@ -156,20 +166,37 @@ captured separately around `tmutil restore` itself: earlier manifest reads alone
 do not pass the remote-read gate. Proxy JSONL preserves every actual request.
 The [fixture README](../test/macos/fixture/README.md) defines exact observations.
 
+On both success and failure, the entrypoint finalizer inventories/hashes every
+produced artifact after evidence writers stop, then hands only that task-owned
+real-file evidence tree back to the original runner (directories0700/files0600).
+It does not make root evidence world-readable or alter system permissions.
+Before upload, a separate `always()` workflow step runs as the actual ordinary
+uploader identity and reads/hashes every file, checking exact inventory,
+ownership and private modes. Missing/unreadable/changed evidence fails the gate;
+artifact upload still runs to retain whatever failure evidence is available.
+
 ## Portable validation (not Mac proof)
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/macos -p 'test_*.py' -v
-bash -n test/macos/run.sh
-shellcheck test/macos/run.sh
+bash -n test/macos/run.sh test/macos/build.sh
+shellcheck test/macos/run.sh test/macos/build.sh
 actionlint .github/workflows/macos.yml
 # Under the shared heavy-work lock on the development VM:
 GOMAXPROCS=2 go test -p 2 -race ./test/macos/fixture
 ```
 
-Portable helpers check full manifest changes/missing/extra data, xattrs/modes,
+Run Python helpers as an ordinary local user with `sudo -n` available: the
+ownership regression deliberately creates a task-owned root0600 artifact and
+checks its initially denied read, private handoff, then complete read/hash as the
+actual uploader. No privileged operations outside test-owned temporary data.
+Portable helpers also check full manifest changes/missing/extra data, xattrs/modes,
 hardlinks, observational fields, exclusion/error handling, capacity arithmetic,
-bounded command evidence and continuous PTY draining/consent. Fixture tests use
+bounded command evidence and continuous PTY draining/consent. Review regressions
+exercise real stalled-build child cleanup and unresponsive daemon reaping,
+aggregated service/client failures, success-after-cleanup ordering and ordinary
+resumed-entry loss/change against the independent pre-wipe expectation.
+Fixture tests use
 ordinary local HTTP/SDK fixtures, not actual Apple/Time Machine. First helper run
 failed because the *test executable* incorrectly opened `/dev/tty` read/write as
 a seekable Python stream; that failure is retained separately from the corrected

@@ -37,6 +37,11 @@ jobs:
           MAC_ARTIFACTS: ${{ runner.temp }}/s3-smb-mac-evidence
           MAC_WORK: ${{ runner.temp }}/s3-smb-mac-work
         run: test/macos/run.sh
+      - name: Verify complete private evidence as the artifact uploader
+        if: always()
+        env:
+          MAC_ARTIFACTS: ${{ runner.temp }}/s3-smb-mac-evidence
+        run: python3 test/macos/artifacts.py verify "$MAC_ARTIFACTS"
       - name: Retain complete evidence on success or failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

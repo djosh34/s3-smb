@@ -408,10 +408,11 @@ logging:
             raise RuntimeError('not a completed remote backup directory')
         return selected, before
 
-    def baseline_before_wipe(self):
-        selected, _ = self.remote_backup('baseline-before-wipe')
-        manifest(selected, EVIDENCE / 'baseline-before-wipe-manifest.jsonl')
-        self.verify_source_coverage(selected)
+    def completed_before_wipe(self, label):
+        selected, _ = self.remote_backup(label + '-before-wipe')
+        manifest(selected, EVIDENCE / (label + '-before-wipe-manifest.jsonl'))
+        if label == 'baseline':
+            self.verify_source_coverage(selected)
         identifier = selected.name
         self.detach_clients()
         self.mount_share()
@@ -444,7 +445,7 @@ logging:
         if missing:
             raise RuntimeError(f'{missing} eligible source entries absent from completed backup; inspect coverage evidence')
 
-    def restore_full(self, label, identifier=None, compare_baseline=False):
+    def restore_full(self, label, identifier, compare_to):
         selected, before = self.remote_backup(label, identifier)
         restore = WORK / 'restore'
         restore.mkdir(mode=0o700)  # Must be absent/empty each time.
@@ -458,9 +459,8 @@ logging:
         counts = manifest(selected, expected)
         if not counts['files']:
             raise RuntimeError('empty backup manifest cannot establish full source coverage')
-        if compare_baseline:
-            compare(EVIDENCE / 'baseline-before-wipe-manifest.jsonl', expected,
-                    EVIDENCE / (label + '-baseline-differences.jsonl'))
+        compare(EVIDENCE / (compare_to + '-manifest.jsonl'), expected,
+                EVIDENCE / (label + '-prewipe-differences.jsonl'))
         restore_reads_before = self.control()
         self.event('native-full-restore-start', label=label)
         for root in roots:
@@ -553,50 +553,97 @@ logging:
         self.source_changes()
         self.start_backup('baseline')
         completed = self.complete_backup('baseline')
-        self.baseline = self.baseline_before_wipe()
+        self.baseline = self.completed_before_wipe('baseline')
         self.metadata_point(completed, 'baseline')
         self.cold_recover('normal')
-        self.restore_full('normal', self.baseline, compare_baseline=True)
+        self.restore_full('normal', self.baseline, compare_to='baseline-before-wipe')
         self.crash_during_later_backup()
         self.cold_recover('crash', abrupt=True)
-        self.restore_full('crash', self.baseline, compare_baseline=True)
+        self.restore_full('crash', self.baseline, compare_to='baseline-before-wipe')
         self.start_backup('resumed')
         completed = self.complete_backup('resumed')
+        resumed = self.completed_before_wipe('resumed')
         self.metadata_point(completed, 'resumed')
         self.cold_recover('resumed')
-        final = self.restore_full('resumed')
+        final = self.restore_full('resumed', resumed, compare_to='resumed-before-wipe')
         if final == self.baseline:
             raise RuntimeError('resumed backup did not produce a new completed identifier')
         self.inventory('final-objects')
-        self.event('acceptance-passed', baseline=self.baseline, resumed=final,
-                   limitation='application SIGKILL only; not VM power loss or S3 storage loss')
+        return dict(baseline=self.baseline, resumed=final,
+                    limitation='application SIGKILL only; not VM power loss or S3 storage loss')
 
     def finish(self):
-        # Diagnostic failures are retained and never substitute for a gate.
-        for argv in ([ '/usr/bin/tmutil', 'status'], ['/sbin/mount'],
+        errors = []
+        outcomes = []
+
+        def attempt(label, action):
+            try:
+                return action()
+            except Exception as e:
+                errors.append(f'{label}: {e}')
+                return None
+
+        def reap(process, label, service=False):
+            initial = process.poll()
+            if service and initial is not None:
+                errors.append(f'{label} exited before cleanup: {initial}')
+            if initial is None:
+                attempt(label + ' terminate', process.terminate)
+            try:
+                code = process.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                errors.append(f'{label} exceeded graceful shutdown deadline')
+                attempt(label + ' kill', process.kill)
+                code = attempt(label + ' reap after kill', lambda: process.wait(timeout=5))
+            outcomes.append(dict(process=label, pid=process.pid, exit=code))
+            if service and code != 0:
+                errors.append(f'{label} unsuccessful exit: {code}')
+
+        if self.backup:
+            errors.append('owned Time Machine startbackup still active at final cleanup')
+            process, log = self.backup
+            attempt('Time Machine stopbackup', lambda: self.cmd.run(['/usr/bin/tmutil', 'stopbackup'], timeout=60))
+            attempt('Time Machine client reap', lambda: reap(process, 'startbackup'))
+            attempt('Time Machine client log close', log.close)
+            self.backup = None
+        if self.daemon and not self.daemon.reaped:
+            attempt('application stop', self.daemon.stop)
+            outcomes.append(dict(process='application', pid=self.daemon.pid,
+                                 reaped=self.daemon.reaped, status=self.daemon.exit_status))
+        for process, log in reversed(self.services):
+            attempt('service reap', lambda p=process: reap(p, str(p.args[0]), service=True))
+            attempt('service log close', log.close)
+        # Diagnostics remain bounded observations, never substitute for a gate.
+        for argv in (['/usr/bin/tmutil', 'status'], ['/sbin/mount'],
                      ['/usr/bin/hdiutil', 'info', '-plist'], ['/bin/df', '-k'],
                      ['/usr/bin/log', 'show', '--style', 'json', '--last', '6h',
                       '--predicate', 'process == "backupd" OR process == "backupd-helper"']):
             try:
                 self.cmd.run(argv, timeout=90, diagnostic=True, capture=False)
             except Exception as e:
-                self.event('diagnostic-failed', error=str(e))
-        if self.backup:
-            self.cmd.run(['/usr/bin/tmutil', 'stopbackup'], timeout=60, diagnostic=True)
-        if self.daemon and not self.daemon.reaped:
+                attempt('diagnostic evidence', lambda: self.event('diagnostic-failed', error=str(e)))
+        attempt('cleanup evidence', lambda: self.save('cleanup.json', dict(outcomes=outcomes, errors=errors.copy())))
+        if errors:
+            raise RuntimeError('cleanup failed: ' + '; '.join(errors))
+
+    def execute(self):
+        failures = []
+        result = None
+        try:
+            result = self.run()
+        except BaseException:
+            failures.append(traceback.format_exc())
+        finally:
+            signal.alarm(0)
             try:
-                self.daemon.stop()
-            except Exception as e:
-                self.event('cleanup-application-failed', error=str(e))
-        for process, log in reversed(self.services):
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-            log.close()
+                self.finish()
+            except BaseException:
+                failures.append(traceback.format_exc())
+        if failures:
+            (EVIDENCE / 'failure.txt').write_text('\n'.join(failures))
+            self.event('acceptance-failed', failures=len(failures))
+            raise RuntimeError('acceptance failed; see failure.txt and cleanup.json')
+        self.event('acceptance-passed', **result)
 
 
 if __name__ == '__main__':
@@ -606,13 +653,4 @@ if __name__ == '__main__':
         raise TimeoutError('final acceptance internal deadline reached; remaining stages are NOT passed')
     signal.signal(signal.SIGALRM, deadline_reached)
     signal.alarm(max(1, int(os.environ['MAC_DEADLINE_EPOCH']) - int(time.time())))
-    acceptance = Acceptance()
-    try:
-        acceptance.run()
-    except BaseException as e:
-        acceptance.event('acceptance-failed', error=str(e))
-        (EVIDENCE / 'failure.txt').write_text(traceback.format_exc())
-        raise
-    finally:
-        signal.alarm(0)
-        acceptance.finish()
+    Acceptance().execute()
