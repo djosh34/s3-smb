@@ -24,6 +24,21 @@ named-empty Time Machine requirement or establish unexecuted crash/recovery stag
 Harness-only control changes do not require a new application release or repeated
 Linux qualification. No authentication framework or speculative policy is needed.
 
+Observed boundary in [run 36622072611](https://github.com/djosh34/s3-smb/actions/runs/36622072611):
+port 1445 allowed destination setup with a nonempty destination ID, but the actual
+backup failed when background `backupd` tried to mount it. Native logs report
+missing usable persisted credentials (`SecItemCopyMatching -25300`), `OpenSession` error
+80 and `BACKUP_FAILED_AUTHENTICATION_ERROR (29)`. Destination setup is not backup
+completion. Resolve this concrete credential-persistence boundary through the
+native documented route rather than trying blind URL/port/authentication variants.
+
+The full remaining chain is **completed normal full-Mac backup → native metadata
+backup and clean stopped-store export → artifact handoff to second fresh Mac →
+fresh install/native S3 recovery → Apple restore and created-tree comparison →
+crash/resume**. No control or intermediate step is the finish line; issues #18/#34
+stay open until all required stages pass. No completed normal backup or later
+stage is claimed by the destination-setup result above.
+
 ## Normal backup and fresh-Mac recovery first
 
 Use two dependent GitHub-hosted `macos-15` jobs; each runner is already a Mac VM.

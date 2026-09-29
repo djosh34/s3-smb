@@ -115,6 +115,16 @@ class TmutilContract(unittest.TestCase):
             a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine'])
             a.cmd.set_destination_empty_password.assert_not_called()
             self.assertEqual(a.destination, 'control-destination')
+            keychain = '/Library/Keychains/System.keychain'
+            attributes = ['-s', '127.0.0.1', '-a', 'timemachine', '-P', '1445', '-r', 'smb ', '-p', 'TimeMachine']
+            security_calls = [entry for entry in a.cmd.run.call_args_list if entry.args[0][0] == '/usr/bin/security']
+            self.assertEqual(len(security_calls), 3)
+            self.assertEqual(security_calls[0].args[0], ['/usr/bin/security', 'find-internet-password', '-s', '127.0.0.1', '-a', 'timemachine', keychain])
+            self.assertTrue(security_calls[0].kwargs['diagnostic'])
+            self.assertEqual(security_calls[1].args[0], ['/usr/bin/security', 'add-internet-password', '-U', *attributes,
+                             '-T', '/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent',
+                             '-T', '/System/Library/CoreServices/TimeMachine/backupd', '-w', 'synthetic-tm-control', keychain])
+            self.assertEqual(security_calls[2].args[0], ['/usr/bin/security', 'find-internet-password', *attributes, keychain])
 
     def test_destination_uses_documented_empty_password_prompt(self):
         import plistlib
@@ -126,6 +136,7 @@ class TmutilContract(unittest.TestCase):
         a.configure_destination()
         a.cmd.set_destination_empty_password.assert_called_once_with('smb://timemachine@127.0.0.1:1445/TimeMachine')
         self.assertEqual(a.destination, 'test-destination')
+        self.assertFalse(any(entry.args[0][0] == '/usr/bin/security' for entry in a.cmd.run.call_args_list))
 
     def test_destination_empty_dict_is_native_rejection_not_schema_error(self):
         import plistlib

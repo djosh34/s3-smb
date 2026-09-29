@@ -201,6 +201,21 @@ logging:
         if len(destinations) != 1 or not isinstance(destinations[0].get('ID'), str) or not destinations[0]['ID']:
             raise RuntimeError('tmutil did not configure exactly one Time Machine destination with an ID')
         self.destination = destinations[0]['ID']
+        if self.scenario == 'password-control':
+            # tmutil authenticated interactively, but backupd's later mount had
+            # no usable persisted credential. Inspect only this synthetic
+            # account's attributes, then store it via the standard security CLI.
+            # No password readback, broad -A ACL, keychain unlock or partition edit.
+            keychain = '/Library/Keychains/System.keychain'
+            self.cmd.run(['/usr/bin/security', 'find-internet-password', '-s', '127.0.0.1',
+                          '-a', 'timemachine', keychain], diagnostic=True)
+            attributes = ['-s', '127.0.0.1', '-a', 'timemachine', '-P', str(SMB_PORT),
+                          '-r', 'smb ', '-p', 'TimeMachine']
+            self.cmd.run(['/usr/bin/security', 'add-internet-password', '-U', *attributes,
+                          '-T', '/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent',
+                          '-T', '/System/Library/CoreServices/TimeMachine/backupd',
+                          '-w', self.password, keychain])
+            self.cmd.run(['/usr/bin/security', 'find-internet-password', *attributes, keychain])
 
     def create_tree(self):
         proof = HOME / 's3-smb-acceptance-proof'
