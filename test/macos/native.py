@@ -81,8 +81,9 @@ def eligible_source(root, output, raw_output):
             batch, pending = pending[:100], pending[100:]
             if any('\n' in str(p) or '\r' in str(p) for p in batch):
                 raise RuntimeError('tmutil text eligibility cannot unambiguously represent newline path')
-            r = subprocess.run(['/usr/bin/tmutil', 'isexcluded', *map(str, batch)],
-                               capture_output=True, timeout=120)
+            argv = ['/usr/bin/tmutil', 'isexcluded', *map(str, batch)]
+            raw.write(('# argv: ' + json.dumps(argv) + '\n').encode())
+            r = subprocess.run(argv, capture_output=True, timeout=120)
             raw.write(r.stdout + r.stderr)
             if r.returncode:
                 raise RuntimeError('tmutil isexcluded failed; see full eligibility log')
@@ -91,7 +92,14 @@ def eligible_source(root, output, raw_output):
                 raise RuntimeError('unexpected tmutil isexcluded output count')
             for path, line in zip(batch, lines):
                 m = re.fullmatch(r'\[(Included|Excluded)\]\s+(.*)', line)
-                if not m or m[2] != str(path):
+                matches = m is not None and m[2] == str(path)
+                if m and not matches:
+                    # Accept alternate spellings only when the OS confirms identity.
+                    try:
+                        matches = path.samefile(m[2])
+                    except OSError:
+                        pass
+                if not matches:
                     raise RuntimeError(f'unrecognized native eligibility result: {line!r}')
                 included = m[1] == 'Included'
                 row = {'path': str(path), 'included': included}
