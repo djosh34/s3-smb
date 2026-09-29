@@ -79,19 +79,25 @@ def eligible_source(root, output, raw_output):
         pending = [root]
         while pending:
             batch, pending = pending[:100], pending[100:]
-            if any('\n' in str(p) or '\r' in str(p) for p in batch):
-                raise RuntimeError('tmutil text eligibility cannot unambiguously represent newline path')
+            # Query CR/LF names alone so embedded newlines are not record separators.
+            for i, path in enumerate(batch):
+                if '\n' in str(path) or '\r' in str(path):
+                    end = max(1, i)
+                    pending = batch[end:] + pending
+                    batch = batch[:end]
+                    break
             argv = ['/usr/bin/tmutil', 'isexcluded', *map(str, batch)]
             raw.write(('# argv: ' + json.dumps(argv) + '\n').encode())
             r = subprocess.run(argv, capture_output=True, timeout=120)
             raw.write(r.stdout + r.stderr)
             if r.returncode:
                 raise RuntimeError('tmutil isexcluded failed; see full eligibility log')
-            lines = r.stdout.decode().splitlines()
+            text = r.stdout.decode()
+            lines = [text.removesuffix('\n')] if len(batch) == 1 else text.splitlines()
             if len(lines) != len(batch):
                 raise RuntimeError('unexpected tmutil isexcluded output count')
             for path, line in zip(batch, lines):
-                m = re.fullmatch(r'\[(Included|Excluded)\]\s+(.*)', line)
+                m = re.fullmatch(r'\[(Included|Excluded)\]\s+(.*)', line, re.DOTALL)
                 matches = m is not None and m[2] == str(path)
                 if m and not matches:
                     # Accept alternate spellings only when the OS confirms identity.

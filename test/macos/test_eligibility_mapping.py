@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -53,6 +54,51 @@ class EligibilityMapping(unittest.TestCase):
                 queries = [json.loads(line.removeprefix('# argv: '))
                            for line in (base / 'raw').read_text().splitlines() if line.startswith('# argv: ')]
                 self.assertIn(['/usr/bin/tmutil', 'isexcluded', str(app), str(source / 'ordinary')], queries)
+
+    def test_cr_lf_paths_use_single_queries_without_losing_source_contents(self):
+        # Portable fake CLI, not the unknown filename from run36599466224.
+        for separator in ('\r', '\n'):
+            with self.subTest(separator=repr(separator)), tempfile.TemporaryDirectory() as temp:
+                base = Path(temp)
+                source = base / 'source'
+                source.mkdir()
+                ordinary = [source / f'ordinary{i:03d}' for i in range(100)]
+                for path in ordinary:
+                    path.write_bytes(b'abc')
+                sdk = source / ('sdk' + separator)
+                sdk.mkdir()
+                (sdk / 'content').write_bytes(b'12345')
+                excluded = source / ('z-excluded' + separator)
+                excluded.mkdir()
+                (excluded / 'not-eligible').write_bytes(b'native exclusion only')
+                queries = []
+                run = subprocess.run
+                fake_cli = '''import sys
+for path in sys.argv[2:]:
+    decision = 'Excluded' if path == sys.argv[1] else 'Included'
+    sys.stdout.buffer.write(f'[{decision}]  {path}\\n'.encode())
+'''
+
+                def tmutil(argv, **kwargs):
+                    queries.append(argv)
+                    return run([sys.executable, '-c', fake_cli, str(excluded), *argv[2:]], **kwargs)
+
+                with patch('native.subprocess.run', side_effect=tmutil):
+                    counts = eligible_source(source, base / 'inventory', base / 'raw')
+                rows = {row['path']: row for row in map(json.loads, (base / 'inventory').read_text().splitlines())}
+                self.assertEqual(set(rows), {str(p) for p in [source, *ordinary, sdk, sdk / 'content', excluded]})
+                self.assertTrue(rows[str(sdk / 'content')]['included'])
+                self.assertFalse(rows[str(excluded)]['included'])
+                self.assertEqual(counts['files'], 101)
+                self.assertEqual(counts['logical_bytes'], 305)
+                self.assertEqual(counts['excluded'], 1)
+                self.assertIn(100, [len(argv) - 2 for argv in queries])
+                for argv in queries:
+                    if any(separator in p for p in argv[2:]):
+                        self.assertEqual(len(argv), 3)
+                logged = [json.loads(line.removeprefix('# argv: '))
+                          for line in (base / 'raw').read_text().splitlines() if line.startswith('# argv: ')]
+                self.assertEqual(logged, queries)
 
     def test_unrelated_response_cannot_become_source_coverage(self):
         with tempfile.TemporaryDirectory() as temp:
