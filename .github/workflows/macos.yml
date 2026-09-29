@@ -8,6 +8,14 @@ on:
         required: true
         default: v0.1.0-rc.6
         type: string
+      scenario:
+        description: Labelled password control is not named-empty Time Machine acceptance
+        required: true
+        default: password-control
+        type: choice
+        options:
+          - password-control
+          - named-empty
 permissions:
   contents: read
 concurrency:
@@ -15,11 +23,13 @@ concurrency:
   cancel-in-progress: false
 jobs:
   backup:
+    name: ${{ inputs.scenario }} / full backup
     runs-on: macos-15
     timeout-minutes: 360
     env:
       PUBLIC_VERSION: ${{ inputs.public_version }}
       MAC_PHASE: backup
+      MAC_SCENARIO: ${{ inputs.scenario }}
     steps:
       - name: Set task paths
         run: |
@@ -40,7 +50,7 @@ jobs:
       - name: Preserve independent created-tree reference
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-reference-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-reference-${{ github.run_attempt }}
           path: ${{ env.MAC_TRANSFER }}/reference
           if-no-files-found: error
           retention-days: 1
@@ -48,7 +58,7 @@ jobs:
       - name: Transfer complete stopped MinIO store (no daemon-local state)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-store-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-store-${{ github.run_attempt }}
           path: ${{ env.MAC_TRANSFER }}/store
           if-no-files-found: error
           compression-level: 0
@@ -61,18 +71,20 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-backup-${{ github.sha }}-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-backup-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.MAC_ARTIFACTS }}
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
   recover:
+    name: ${{ inputs.scenario }} / fresh-Mac recovery
     needs: backup
     runs-on: macos-15
     timeout-minutes: 360
     env:
       PUBLIC_VERSION: ${{ inputs.public_version }}
       MAC_PHASE: recover
+      MAC_SCENARIO: ${{ inputs.scenario }}
     steps:
       - name: Set task paths
         run: |
@@ -90,11 +102,11 @@ jobs:
           cache: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-reference-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-reference-${{ github.run_attempt }}
           path: ${{ env.MAC_TRANSFER }}/reference
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-store-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-store-${{ github.run_attempt }}
           path: ${{ env.MAC_TRANSFER }}/store
       - name: Fresh-install S3 recovery, native restore, created-tree comparison
         run: test/macos/run.sh
@@ -105,7 +117,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-recover-${{ github.sha }}-${{ github.run_attempt }}
+          name: mac-${{ inputs.scenario }}-recover-${{ github.sha }}-${{ github.run_attempt }}
           path: ${{ env.MAC_ARTIFACTS }}
           if-no-files-found: error
           retention-days: 14

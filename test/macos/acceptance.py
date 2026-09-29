@@ -27,6 +27,12 @@ TRANSFER = Path(os.environ.get('MAC_TRANSFER', str(WORK / 'transfer'))).resolve(
 
 class Acceptance:
     def __init__(self):
+        self.scenario = os.environ.get('MAC_SCENARIO', 'named-empty')
+        if self.scenario not in ('named-empty', 'password-control'):
+            raise RuntimeError('MAC_SCENARIO must be named-empty or password-control')
+        # Public synthetic loopback fixture only. The control is not evidence
+        # that Apple's Time Machine accepts the separately tested empty route.
+        self.password = 'synthetic-tm-control' if self.scenario == 'password-control' else ''
         self.cmd = Commands(EVIDENCE)
         self.daemon = None
         self.services = []
@@ -39,6 +45,7 @@ class Acceptance:
         self.destination = None
 
     def event(self, event, **fields):
+        fields.setdefault('scenario', self.scenario)
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
             f.write(json.dumps(dict(time=utc(), event=event, **fields), sort_keys=True) + '\n')
         print(event, fields, flush=True)
@@ -140,7 +147,7 @@ class Acceptance:
   listen: 127.0.0.1:445
   share: TimeMachine
   username: timemachine
-  password: ""
+  password: "{self.password}"
 storage:
   state_dir: "{self.local / 'state'}"
   cache_dir: "{self.local / 'cache'}"
@@ -169,15 +176,18 @@ logging:
 
     def mount_share(self):
         self.share.mkdir(exist_ok=True)
-        self.cmd.run(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', self.share])
+        self.cmd.run(['/sbin/mount_smbfs', '-N', f'//timemachine:{self.password}@127.0.0.1/TimeMachine', self.share])
         self.cmd.run(['/usr/bin/smbutil', 'statshares', '-a'])
         self.cmd.run(['/sbin/mount'])
 
     def configure_destination(self):
-        # URL-with-empty-password and mounted-path forms both failed natively.
-        # Use the documented -p prompt once with the same deliberately empty
-        # password; there is no fallback to another identity/password/keychain.
-        output = self.cmd.set_destination_empty_password('smb://timemachine@127.0.0.1/TimeMachine')
+        if self.scenario == 'password-control':
+            # Explicit independently labelled positive control, not a fallback
+            # after failed empty-password authentication in this run.
+            output, _ = self.cmd.run(['/usr/bin/tmutil', 'setdestination',
+                                     f'smb://timemachine:{self.password}@127.0.0.1/TimeMachine'])
+        else:
+            output = self.cmd.set_destination_empty_password('smb://timemachine@127.0.0.1/TimeMachine')
         if 'The backup destination could not be set.' in output:
             raise RuntimeError('tmutil reported the backup destination could not be set despite exit 0')
         text, _ = self.cmd.run(['/usr/bin/tmutil', 'destinationinfo', '-X'])
@@ -362,7 +372,7 @@ logging:
         self.mount_share()
         selected = self.remote_backup('baseline')
         text, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', '/System/Volumes/Data'])
-        recovery = dict(baseline=selected.name, source_relative=str(proof.relative_to('/')),
+        recovery = dict(scenario=self.scenario, baseline=selected.name, source_relative=str(proof.relative_to('/')),
                         source_volume_name=plistlib.loads(text.encode())['VolumeName'])
         self.detach_clients()
         self.metadata_point(completed)
@@ -377,6 +387,8 @@ logging:
         if marker.get('clean_shutdown') is not True:
             raise RuntimeError('store was not cleanly stopped')
         recovery = json.loads((TRANSFER / 'store/recovery.json').read_text())
+        if recovery.get('scenario') != self.scenario:
+            raise RuntimeError('recovery scenario does not match the backup; refusing mixed authentication evidence')
         self.platform()
         with tarfile.open(TRANSFER / 'store/minio.tar.gz', 'r:gz') as archive:
             # The only transported payload is stopped MinIO storage. Reject a

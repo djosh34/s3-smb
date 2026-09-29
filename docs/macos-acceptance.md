@@ -5,6 +5,25 @@
 [#18](https://github.com/djosh34/s3-smb/issues/18) supersedes older Mac plans.
 A build, helper test or successful metadata import is not Time Machine evidence.
 
+## Current execution: labelled positive control
+
+The user authorized continued autonomous execution after the failed empty-password
+Time Machine destination attempts; the earlier stop rule is rescinded. Use the
+qualified **v0.1.0-rc.6** application for a clearly labelled **synthetic nonempty
+password positive control** of normal full backup, fresh-Mac stopped-store recovery
+and created-tree restore, then crash/resume after that normal path passes. This
+is not a fallback silently satisfying the named-empty Time Machine requirement.
+
+Native named-empty Apple SMB mounting has passed. Empty-password Time Machine
+destination setup remains unresolved: tested URL, mounted-path and prompted-empty
+routes did not establish a destination. Keep that requirement separately pending
+and investigate concrete failures without blocking the labelled control on it.
+Record the authentication mode with each result. A positive-control PASS proves
+only the executed password-authenticated path; it cannot close the original
+named-empty Time Machine requirement or establish unexecuted crash/recovery stages.
+Harness-only control changes do not require a new application release or repeated
+Linux qualification. No authentication framework or speculative policy is needed.
+
 ## Normal backup and fresh-Mac recovery first
 
 Use two dependent GitHub-hosted `macos-15` jobs; each runner is already a Mac VM.
@@ -16,8 +35,9 @@ Use native MinIO pinned to the Linux fixture revision
    known tree containing multiple files, nested folders and empty folders. Save
    an independent reference separately from the object store for transfer.
 2. Run an actual normal full-Mac Time Machine backup to the application-backed
-   SMB share. Exercise the named `timemachine` account with an explicit empty
-   password. Keep native exclusions; exclude only recursion-producing test
+   SMB share. The original named-empty requirement uses the `timemachine` account
+   with an explicit empty password; the separately labelled positive control uses
+   a synthetic nonempty password. Keep native exclusions; exclude only recursion-producing test
    infrastructure. Do not restrict backup input to the known tree or exclude
    normal Apple, SDK, build or user content to shorten the run.
 3. Require actual Time Machine completion and a completed remote backup. Wait

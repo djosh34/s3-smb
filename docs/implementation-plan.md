@@ -114,6 +114,8 @@ The user-approved replacement in [#34](https://github.com/djosh34/s3-smb/issues/
 
 First remove the superseded exhaustive eligible-source scan, native eligibility parser/path association, capacity estimator/size gate, full-source coverage assertion and whole-backup metadata comparisons, including their obsolete helpers/tests. Do not hide them behind flags or add another planning/comparison framework. Preserve useful native commands, application/Linux tests and historical failure evidence.
 
+The user subsequently authorized a labelled synthetic-nonempty-password positive control using qualified rc6 to advance the normal path, then crash/resume. Native named-empty Apple SMB mounting has passed, but named-empty Time Machine destination setup remains separately unresolved; control success must not be claimed as satisfying it. The earlier execution stop rule is rescinded. Keep authentication mode explicit in evidence, avoid an authentication framework, and do not repeat Linux/release qualification for control-only harness changes. See [current execution](macos-acceptance.md#current-execution-labelled-positive-control).
+
 The normal path uses two dependent fresh GitHub-hosted Mac jobs:
 
 1. Create a small known tree on Mac A with multiple files, nested folders and empty folders; retain an independent reference separately. Complete an actual normal full-Mac Time Machine backup through the application-backed SMB share to native local MinIO. Keep native exclusions and exclude only recursion-producing test infrastructure. Do not narrow the source to the known tree or remove normal SDK/user content.

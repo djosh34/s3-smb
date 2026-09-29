@@ -29,7 +29,7 @@ class Lifecycle(unittest.TestCase):
             patcher = patch.object(acceptance, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
-        patcher = patch.dict(os.environ, MAC_PHASE='recover')
+        patcher = patch.dict(os.environ, MAC_PHASE='recover', MAC_SCENARIO='named-empty')
         patcher.start()
         self.addCleanup(patcher.stop)
         self.a = acceptance.Acceptance()
@@ -139,7 +139,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_recovery_rejects_local_state_in_archive(self):
         (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
-        (self.transfer / 'store/recovery.json').write_text('{}')
+        (self.transfer / 'store/recovery.json').write_text('{"scenario": "named-empty"}')
         with tarfile.open(self.transfer / 'store/minio.tar.gz', 'w:gz') as archive:
             entry = tarfile.TarInfo('daemon/database')
             entry.size = 0
@@ -151,7 +151,7 @@ class Lifecycle(unittest.TestCase):
 
     def test_fresh_recovery_extracts_only_objects_then_recovers(self):
         (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
-        recovery = dict(baseline='baseline')
+        recovery = dict(baseline='baseline', scenario='named-empty')
         (self.transfer / 'store/recovery.json').write_text(json.dumps(recovery))
         payload = self.base / 'payload'
         payload.write_bytes(b'surviving S3 object')
@@ -165,6 +165,24 @@ class Lifecycle(unittest.TestCase):
                          call.start_daemon('recover'), call.mount_share(), call.restore_tree(recovery), call.detach_clients()])
         self.assertEqual((self.work / 'objects/bucket/payload').read_bytes(), payload.read_bytes())
         self.assertFalse(self.a.local.exists())
+
+    def test_recovery_cannot_mix_authentication_scenarios(self):
+        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
+        (self.transfer / 'store/recovery.json').write_text('{"scenario": "password-control"}')
+        self.a.platform = Mock()
+        with self.assertRaisesRegex(RuntimeError, 'scenario does not match'):
+            self.a.recover_phase()
+        self.a.platform.assert_not_called()
+        self.a.cmd.run.assert_not_called()
+
+    def test_password_control_config_is_explicit_and_events_labelled(self):
+        with patch.dict(os.environ, MAC_SCENARIO='password-control'):
+            instance = acceptance.Acceptance()
+        with patch.object(acceptance, 'Daemon', return_value=Mock(pid=42)):
+            instance.start_daemon('initialize')
+        self.assertIn('password: "synthetic-tm-control"', (instance.local / 'config.yaml').read_text())
+        event = json.loads((self.base / 'acceptance.jsonl').read_text())
+        self.assertEqual(event['scenario'], 'password-control')
 
     def test_restore_calls_native_only_for_created_tree(self):
         selected = self.base / 'remote/baseline'

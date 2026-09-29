@@ -9,8 +9,10 @@ repo=$PWD
 : "${MAC_WORK:?absolute task-owned work directory required}"
 : "${PUBLIC_VERSION:?immutable published version required}"
 : "${MAC_PHASE:?backup or recover required}"
+: "${MAC_SCENARIO:?password-control or named-empty label required}"
 : "${MAC_TRANSFER:?absolute transfer directory required}"
 [[ "$MAC_PHASE" = backup || "$MAC_PHASE" = recover ]]
+[[ "$MAC_SCENARIO" = password-control || "$MAC_SCENARIO" = named-empty ]]
 [[ "$MAC_ARTIFACTS" = /* && "$MAC_WORK" = /* && "$MAC_WORK" != / && "$MAC_TRANSFER" = /* && "$MAC_TRANSFER" != / ]]
 [[ ! -e "$MAC_WORK" && ! -e "$MAC_ARTIFACTS" ]]
 if [[ "$MAC_PHASE" = backup ]]; then
@@ -41,6 +43,7 @@ record_exit() {
   exit "$rc"
 }
 trap record_exit EXIT
+printf '%s\n' "$MAC_SCENARIO" > "$MAC_ARTIFACTS/scenario"
 # Exclude Actions' transient control/credential files, never the workspace as
 # a whole: it contains ordinary source which remains in the full-Mac backup.
 # The hosted agent installation is CI infrastructure, not user source/content.
@@ -74,6 +77,7 @@ IFS= read -r MAC_BIN < "$MAC_ARTIFACTS/native-build-root"
 sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_RUNNER_HOME=$HOME" "MAC_DEADLINE_EPOCH=$MAC_DEADLINE_EPOCH" \
   "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_TRANSFER=$MAC_TRANSFER" \
+  "MAC_SCENARIO=$MAC_SCENARIO" \
   PYTHONDONTWRITEBYTECODE=1 \
   python3 "$repo/test/macos/acceptance.py"
 if [[ "$MAC_PHASE" = backup ]]; then

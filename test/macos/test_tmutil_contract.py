@@ -20,6 +20,9 @@ class PastSetdestinationCheck(Exception):
 
 class TmutilContract(unittest.TestCase):
     def setUp(self):
+        scenario = patch.dict(os.environ, MAC_SCENARIO='named-empty')
+        scenario.start()
+        self.addCleanup(scenario.stop)
         self.manual = (FIXTURES / 'macos-15.7.9-man-contract-excerpt.txt').read_text()
 
     def test_recorded_help_reaches_next_check_in_real_platform_path(self):
@@ -96,6 +99,22 @@ class TmutilContract(unittest.TestCase):
             a.cmd = Mock()
             a.mount_share()
             a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', a.share])
+
+    def test_password_control_uses_same_explicit_synthetic_password(self):
+        import plistlib
+        import tempfile
+        with patch.dict(os.environ, MAC_SCENARIO='password-control'), tempfile.TemporaryDirectory() as directory:
+            a = acceptance.Acceptance()
+            a.share = Path(directory) / 'smb'
+            a.cmd = Mock()
+            a.cmd.run.return_value = (plistlib.dumps({'Destinations': [{'ID': 'control-destination'}]}).decode(), 0)
+            a.save = Mock()
+            a.mount_share()
+            a.configure_destination()
+            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:synthetic-tm-control@127.0.0.1/TimeMachine', a.share])
+            a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:synthetic-tm-control@127.0.0.1/TimeMachine'])
+            a.cmd.set_destination_empty_password.assert_not_called()
+            self.assertEqual(a.destination, 'control-destination')
 
     def test_destination_uses_documented_empty_password_prompt(self):
         import plistlib
