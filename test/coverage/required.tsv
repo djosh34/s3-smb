@@ -1,0 +1,30 @@
+# Contract case<TAB>exact go-test package/TestName; UNIMPLEMENTED never passes.
+SMB encrypted zero-cache cold recovery full hashes resumed writes second recovery	github.com/djosh34/s3-smb/test/e2e/TestRecovery/encrypted
+SMB plaintext zero-cache cold recovery full hashes resumed writes second recovery	github.com/djosh34/s3-smb/test/e2e/TestRecovery/plaintext
+SMB normal password and wrong-password rejection	github.com/djosh34/s3-smb/test/e2e/TestAuthentication/password
+SMB named-empty required signing and wrong-name rejection	github.com/djosh34/s3-smb/test/e2e/TestAuthentication/named-empty
+SMB read-only rejects writes	github.com/djosh34/s3-smb/test/e2e/TestReadOnly
+SMB directory rename truncate attributes	UNIMPLEMENTED
+SMB conflicting locks and connection cleanup	UNIMPLEMENTED
+SMB write-through flush close xattr fault status and malformed requests	UNIMPLEMENTED
+S3 independent nine permanent credential source combinations	UNIMPLEMENTED
+S3 explicit path-style true and false	UNIMPLEMENTED
+S3 TLS default verification custom CA mTLS and replacement on restart	UNIMPLEMENTED
+Decimal capacity omitted versus zero small positive conversion	UNIMPLEMENTED
+Zero-cache stale disk nonuse unwritable directory restart remote refetch	UNIMPLEMENTED
+Positive-cache eviction and refetch data exceeds capacity	UNIMPLEMENTED
+Plaintext bypasses failing passphrase helper	github.com/djosh34/s3-smb/test/e2e/TestRecovery/plaintext
+Recovery after crash during observed S3 writes	UNIMPLEMENTED
+Partial remote initialization and failed listing never format	UNIMPLEMENTED
+Wrong secrets missing corrupt key metadata and data fail without regeneration	UNIMPLEMENTED
+Missing data returns explicit SMB read error	UNIMPLEMENTED
+Full staging gzip-finalization failure preserves prior recoverable point	UNIMPLEMENTED
+Backup timestamp collision backward clock lost response never overwrites	UNIMPLEMENTED
+Scheduled backup fail-stop and stuck overdue protection	UNIMPLEMENTED
+Suspension cleanup race trash aliases retirement and queued deletion guards	UNIMPLEMENTED
+SQLite effective FULL and synchronization-error propagation	UNIMPLEMENTED
+Permission ownership warnings readable secrets still work	UNIMPLEMENTED
+JSON both streams synthetic secrets helper config SQL xattr failures	UNIMPLEMENTED
+Stalled native I/O bounded process shutdown	UNIMPLEMENTED
+Cold warm list write export memory staging duration measurements	UNIMPLEMENTED
+Representative deliberate-failure artifact collection	UNIMPLEMENTED

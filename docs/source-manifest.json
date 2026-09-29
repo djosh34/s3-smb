@@ -1,0 +1,2567 @@
+{
+  "description": "Pinned upstream files before intentional application patches; relocated_sha256 includes only import-prefix rewriting. Reconstruct in an empty directory with scripts/source-snapshot.py.",
+  "module": "github.com/djosh34/s3-smb",
+  "imports": {
+    "github.com/juicedata/juicefs": "github.com/djosh34/s3-smb/internal/juicefs",
+    "github.com/macos-fuse-t/go-smb2": "github.com/djosh34/s3-smb/internal/smb2",
+    "github.com/urfave/cli/v2": "github.com/djosh34/s3-smb/internal/thirdparty/cli",
+    "github.com/vbauerster/mpb/v7": "github.com/djosh34/s3-smb/internal/thirdparty/mpb",
+    "xorm.io/xorm": "github.com/djosh34/s3-smb/internal/thirdparty/xorm",
+    "github.com/hashicorp/golang-lru/v2": "github.com/djosh34/s3-smb/internal/thirdparty/lru"
+  },
+  "snapshots": {
+    "github.com/juicedata/juicefs": {
+      "source": "github.com/juicedata/juicefs",
+      "version": "v1.4.1",
+      "sum": "h1:sz7DmNvKRjJRnlTeRd2EAqgrSSEz5u5G39WPJZA4xKw=",
+      "go_mod_sum": "h1:3s7IeXpxx8g7+mFGIxotSP/zt493jIjYIIMa/vZmu8c=",
+      "commit": "0b90c7db5a929ae6adc5faad948d108efd2c99f9"
+    },
+    "github.com/urfave/cli/v2": {
+      "source": "github.com/juicedata/cli/v2",
+      "version": "v2.19.4-0.20230605075551-9c9c5c0dce83",
+      "sum": "h1:RyHTka3jCnTaUqfRYjlwcQlr53aasmkvHEbYLXthqr8=",
+      "go_mod_sum": "h1:1CNUng3PtjQMtRzJO4FMXBQvkGtuYRxxiR9xMa7jMwI="
+    },
+    "github.com/vbauerster/mpb/v7": {
+      "source": "github.com/juicedata/mpb/v7",
+      "version": "v7.0.4-0.20231024073412-2b8d31be510b",
+      "sum": "h1:0/6suPNZnrOlRlBaU/Bnitu8HiKkkLSzQhHbwQ9AysM=",
+      "go_mod_sum": "h1:NXGsfPGx6G2JssqvEcULtDqUrxuuYs4llpv8W6ZUpzk="
+    },
+    "xorm.io/xorm": {
+      "source": "gitea.com/davies/xorm",
+      "version": "v1.0.8-0.20220528043536-552d84d1b34a",
+      "sum": "h1:awR9qREIs6qSnKr/cmSewVwDo74/kQ32x0CDEXUtiB8=",
+      "go_mod_sum": "h1:uF9EtbhODq5kNWxMbnBEj8hRRZnlcNSz2t2N7HW/+A4="
+    },
+    "github.com/hashicorp/golang-lru/v2": {
+      "source": "github.com/juicedata/golang-lru/v2",
+      "version": "v2.0.8-0.20251126062551-1b321869f904",
+      "sum": "h1:oNtkL1jwrNMMcBlHNW1fhdl4quK7p1EdR7o1Rja5xpM=",
+      "go_mod_sum": "h1:qnbgnNzfydwuHjSCApF4bdul+tZ8T3y1MkZG/OFczLA="
+    },
+    "github.com/macos-fuse-t/go-smb2": {
+      "source": "github.com/macos-fuse-t/go-smb2",
+      "version": "v0.0.0-20260921092600-277a93004112",
+      "commit": "277a9300411249a881a05f7a910f5a83ae3395f2",
+      "sum": "h1:c8GoVYJsm/vgHT09kv6qcQ/5jvdyIwXnBzDJYkVq2HI=",
+      "go_mod_sum": "h1:uuaCnBNqDHH0WcjKjxYbZaO65a9rxUk0k1YyTOGP8gs="
+    }
+  },
+  "files": [
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "LICENSE",
+      "destination": "internal/juicefs/LICENSE",
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+      "relocated_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "go.mod",
+      "destination": "internal/juicefs/UPSTREAM-go.mod.txt",
+      "sha256": "63e83a3a79c5a6864549a96764c55b463fd58cf2eb1a0e3f107492be90e380db",
+      "relocated_sha256": "63e83a3a79c5a6864549a96764c55b463fd58cf2eb1a0e3f107492be90e380db"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "go.sum",
+      "destination": "internal/juicefs/UPSTREAM-go.sum.txt",
+      "sha256": "aea51515e8ab9caab6b965992a8ee17105a811b7a6a033dc196b6432328f7037",
+      "relocated_sha256": "aea51515e8ab9caab6b965992a8ee17105a811b7a6a033dc196b6432328f7037"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/acl/acl.go",
+      "destination": "internal/juicefs/pkg/acl/acl.go",
+      "sha256": "8c2dc640fa080ec0a9fdc29bfd09ad8c90209bba374f49a4f7e2bfd671bb36e0",
+      "relocated_sha256": "339b69247c41a87871f3ef34a2865eef98501ed7a193a27d3033b82f8a08ff09"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/acl/cache.go",
+      "destination": "internal/juicefs/pkg/acl/cache.go",
+      "sha256": "1f3fa41c66e81e1d1512924a5cf0637633a4cd872662791546ec4689a1f8178d",
+      "relocated_sha256": "1f3fa41c66e81e1d1512924a5cf0637633a4cd872662791546ec4689a1f8178d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/cache_eviction.go",
+      "destination": "internal/juicefs/pkg/chunk/cache_eviction.go",
+      "sha256": "586495e0cc568898d82068031c9899407fa53bd52565f041c62088adf0ef341d",
+      "relocated_sha256": "586495e0cc568898d82068031c9899407fa53bd52565f041c62088adf0ef341d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/cached_store.go",
+      "destination": "internal/juicefs/pkg/chunk/cached_store.go",
+      "sha256": "33a9ebbc5b18d0527b542b8953ec20eb1d51413d67fcce066542ac9e6e00d649",
+      "relocated_sha256": "6c4572125696278486891eb96ee1be4098c9acc49907509a1d11793bd6e99bf9"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/chunk.go",
+      "destination": "internal/juicefs/pkg/chunk/chunk.go",
+      "sha256": "c67c72a6021b0b7fae2f5de42e569a4fbad9a1fea0e91b2a20a5a3037dbfef28",
+      "relocated_sha256": "6d71ceecd72ee98b77255d2a3928adecd8193ab19a823e5e5164c88fd7eeb54d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/disk_cache.go",
+      "destination": "internal/juicefs/pkg/chunk/disk_cache.go",
+      "sha256": "30d11ddf2b81bfacef702c92aaf6977f242d7e43d71b2eb83d80ebf9590bf59b",
+      "relocated_sha256": "feddca05ea3db98bc9297a192437da96e44d0b1f6e51d7b0555c41353bde337a"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/disk_cache_state.go",
+      "destination": "internal/juicefs/pkg/chunk/disk_cache_state.go",
+      "sha256": "993af69e79fbd04d04a589e68481d8ef5d33f71189aba2c5bd07e21ba589cf44",
+      "relocated_sha256": "993af69e79fbd04d04a589e68481d8ef5d33f71189aba2c5bd07e21ba589cf44"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/mem_cache.go",
+      "destination": "internal/juicefs/pkg/chunk/mem_cache.go",
+      "sha256": "3c85bd05b975cc6cc4b9eed9f234e5c2cee980090a41f2f5f221e36fc29e7a4d",
+      "relocated_sha256": "3c85bd05b975cc6cc4b9eed9f234e5c2cee980090a41f2f5f221e36fc29e7a4d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/metrics.go",
+      "destination": "internal/juicefs/pkg/chunk/metrics.go",
+      "sha256": "20cd7b9a7a2fd4b66c2c1c70a2bef19f8fc44825daca4d5299d72e59f9a585bb",
+      "relocated_sha256": "20cd7b9a7a2fd4b66c2c1c70a2bef19f8fc44825daca4d5299d72e59f9a585bb"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/page.go",
+      "destination": "internal/juicefs/pkg/chunk/page.go",
+      "sha256": "28ccaa6c9ade10b56392958ee77fe82cef80c0d23d0f0b1bce3af98b3d44071b",
+      "relocated_sha256": "18b200716921febf5a3cd264f2c6973b1aea917e1184c25ae8af6ebec55f575b"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/prefetch.go",
+      "destination": "internal/juicefs/pkg/chunk/prefetch.go",
+      "sha256": "a6f29db236f0b7ccfba3a6cbf42231764b480646902c58e12770f14c869ad745",
+      "relocated_sha256": "a6f29db236f0b7ccfba3a6cbf42231764b480646902c58e12770f14c869ad745"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/singleflight.go",
+      "destination": "internal/juicefs/pkg/chunk/singleflight.go",
+      "sha256": "c5d481a9761f56f79e5eb95e91ec422de94199230421da68308cfe7e9e67c482",
+      "relocated_sha256": "c5d481a9761f56f79e5eb95e91ec422de94199230421da68308cfe7e9e67c482"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/utils_darwin.go",
+      "destination": "internal/juicefs/pkg/chunk/utils_darwin.go",
+      "sha256": "f30d66136e496b6cc5f349a12e1084a39cd54d96eebdca925e358b0abf5e5e75",
+      "relocated_sha256": "f30d66136e496b6cc5f349a12e1084a39cd54d96eebdca925e358b0abf5e5e75"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/utils_linux.go",
+      "destination": "internal/juicefs/pkg/chunk/utils_linux.go",
+      "sha256": "3829e2213123b328b5fa81dd84dbf500d2077d2ad4264985f73a1d737a49f38c",
+      "relocated_sha256": "3829e2213123b328b5fa81dd84dbf500d2077d2ad4264985f73a1d737a49f38c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/utils_unix.go",
+      "destination": "internal/juicefs/pkg/chunk/utils_unix.go",
+      "sha256": "7b042179d2dbe205b56e3ef656edea0550ebc26f6444e44b3dc3ec96c3287214",
+      "relocated_sha256": "7b042179d2dbe205b56e3ef656edea0550ebc26f6444e44b3dc3ec96c3287214"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/chunk/utils_windows.go",
+      "destination": "internal/juicefs/pkg/chunk/utils_windows.go",
+      "sha256": "bc6cae1a5680ae58e66dbe558b245ff47371d7fea7df985530b9b370f13ae853",
+      "relocated_sha256": "bc6cae1a5680ae58e66dbe558b245ff47371d7fea7df985530b9b370f13ae853"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/compress/compress.go",
+      "destination": "internal/juicefs/pkg/compress/compress.go",
+      "sha256": "c76dbba515e697b9bfc1421d85ad87725bda3590b004f2da9d2632ef5fdea091",
+      "relocated_sha256": "c76dbba515e697b9bfc1421d85ad87725bda3590b004f2da9d2632ef5fdea091"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/fs/fs.go",
+      "destination": "internal/juicefs/pkg/fs/fs.go",
+      "sha256": "180889d6f7e7e29398acd8b0fe50eb5efb8a73790c35f0c47b1855c79cc4ccdc",
+      "relocated_sha256": "e141e76eb027faa356fdf8640c69619ac4b5d5613db07cc497cbbc507f8457f4"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/fs/http.go",
+      "destination": "internal/juicefs/pkg/fs/http.go",
+      "sha256": "961af46cdaf5b4f36a17fd39b449a43b7204622e6a67f1c03f851954a0b32f7d",
+      "relocated_sha256": "80bd3aee50ebb4038910be30a755cca8fba6503f5c55e9c711f5013fc94f10a5"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/fs/metrics.go",
+      "destination": "internal/juicefs/pkg/fs/metrics.go",
+      "sha256": "6cbce5af181d95562ac910cafb5e56a39daee3428f2a8e8e14765dc33b0405db",
+      "relocated_sha256": "6cbce5af181d95562ac910cafb5e56a39daee3428f2a8e8e14765dc33b0405db"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/backup.go",
+      "destination": "internal/juicefs/pkg/meta/backup.go",
+      "sha256": "7b3771b759bea1e83a5159e44360b0bac3177610a8747dd7350cfd819a3502ea",
+      "relocated_sha256": "c86bada149f7ce76e321af5ab05a755abcdaf81a115dfabff4da7ab80f5ece11"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/base.go",
+      "destination": "internal/juicefs/pkg/meta/base.go",
+      "sha256": "936c52e48b50a148bb9f7885ca66cbb50c0d83b3f23bd94b07a9826e4a03b1e0",
+      "relocated_sha256": "ea386cbf203b1f0aae84b215233a9c4759dceaabf33fcea3a92f1d6d11acc7cf"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/config.go",
+      "destination": "internal/juicefs/pkg/meta/config.go",
+      "sha256": "cd0e65744ea655a9e02ac4a445295907d94fe1a421bec9c4532c785105ad5ec7",
+      "relocated_sha256": "b17405d9dc5eddb26600ba8a2eedf85db5c458e7c2b244d97900e3d78cab6255"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/context.go",
+      "destination": "internal/juicefs/pkg/meta/context.go",
+      "sha256": "b393e31c04fa44339f2f81c31cc664713c6393a23e3cf9310280c3824091ae4f",
+      "relocated_sha256": "b393e31c04fa44339f2f81c31cc664713c6393a23e3cf9310280c3824091ae4f"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/dump.go",
+      "destination": "internal/juicefs/pkg/meta/dump.go",
+      "sha256": "1268cb97744c6366c94a74e0cee33b13808e960260ac7f793565356184a2cc19",
+      "relocated_sha256": "855c6cb4bebaf94ee0f57654b6fb966be6a56de21e86cb43f41df83538848fa9"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/info.go",
+      "destination": "internal/juicefs/pkg/meta/info.go",
+      "sha256": "8e83f6bc9ba2f5cb4303372a5a421aa70ddca328ed5951efab03e2a2dc090386",
+      "relocated_sha256": "8e83f6bc9ba2f5cb4303372a5a421aa70ddca328ed5951efab03e2a2dc090386"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/interface.go",
+      "destination": "internal/juicefs/pkg/meta/interface.go",
+      "sha256": "3ac1b92dd2fcee5732e41981483e35bddb755438f873c66b8f817fae3a67f7e2",
+      "relocated_sha256": "b9aba32a0e0032a4d50de9cbf86929e705f542672ce336b98cddf10385b468c8"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/metadata-sub.sample",
+      "destination": "internal/juicefs/pkg/meta/metadata-sub.sample",
+      "sha256": "cf7645577add391cfe5ecf46cf385b396dc34b9f9853ab21289b6bb2fd35a567",
+      "relocated_sha256": "cf7645577add391cfe5ecf46cf385b396dc34b9f9853ab21289b6bb2fd35a567"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/metadata.sample",
+      "destination": "internal/juicefs/pkg/meta/metadata.sample",
+      "sha256": "a408ccbc85c014225b78ad5a9f3e135f4186bcdcefbce4aab161daac6d39a123",
+      "relocated_sha256": "a408ccbc85c014225b78ad5a9f3e135f4186bcdcefbce4aab161daac6d39a123"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/openfile.go",
+      "destination": "internal/juicefs/pkg/meta/openfile.go",
+      "sha256": "fc6dca658e4153070e129e5e44f6ce0510c13a81f5225e4cd6f12abff56fc32d",
+      "relocated_sha256": "fc6dca658e4153070e129e5e44f6ce0510c13a81f5225e4cd6f12abff56fc32d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/pb/backup.pb.go",
+      "destination": "internal/juicefs/pkg/meta/pb/backup.pb.go",
+      "sha256": "36c28db3a75d5ed14ec1e5862371992a2775a1703bea5ddbace4e6b934962126",
+      "relocated_sha256": "36c28db3a75d5ed14ec1e5862371992a2775a1703bea5ddbace4e6b934962126"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/pb/backup.proto",
+      "destination": "internal/juicefs/pkg/meta/pb/backup.proto",
+      "sha256": "48a83ba2e27fe7451b49637ae981dd348fc39006e0fbd0f092b8c32ff5b94a81",
+      "relocated_sha256": "48a83ba2e27fe7451b49637ae981dd348fc39006e0fbd0f092b8c32ff5b94a81"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/quota.go",
+      "destination": "internal/juicefs/pkg/meta/quota.go",
+      "sha256": "55176ec4e71b0f1a15e676947f35c6bd5aee31726a2ccab77989b491e8f36327",
+      "relocated_sha256": "55176ec4e71b0f1a15e676947f35c6bd5aee31726a2ccab77989b491e8f36327"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/slice.go",
+      "destination": "internal/juicefs/pkg/meta/slice.go",
+      "sha256": "c1646c9fa811cde3fde13e88be42a6ba846699b88fa4081e324a8c889e332226",
+      "relocated_sha256": "e7ceeb7995f14d3f0dc31221c4e8ab75a4b7af97e1ce10edb2de7007cf79b066"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/sql.go",
+      "destination": "internal/juicefs/pkg/meta/sql.go",
+      "sha256": "653807edd8bd488b0fecacb7d5e758dd0d0758d28c1fab7c419625c71e966d45",
+      "relocated_sha256": "308d7332deb01310bf0cd4c0aecb6d231d99a4da093b1a49631425e2b761de63"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/sql_bak.go",
+      "destination": "internal/juicefs/pkg/meta/sql_bak.go",
+      "sha256": "bc8a50f4440a4de8c589f6d83e3487c88cc537db21b1b2a297e95c0090778337",
+      "relocated_sha256": "e6cd834815559469f165dae762a7f9349b254e114e5faebe2c114665f092983d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/sql_lock.go",
+      "destination": "internal/juicefs/pkg/meta/sql_lock.go",
+      "sha256": "b90c25dc5e9f4ffe4d018a03d613185c41151df14ab2a4a43044be2fcb427612",
+      "relocated_sha256": "b8ef27026923d6222427c2bc186706aaab1e67c975d127b9f6674ef90fc373d3"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/sql_sqlite.go",
+      "destination": "internal/juicefs/pkg/meta/sql_sqlite.go",
+      "sha256": "252070e0e5df73427eb9196cb593bdc0ee77124894f7b095510fd8d5df65fa56",
+      "relocated_sha256": "252070e0e5df73427eb9196cb593bdc0ee77124894f7b095510fd8d5df65fa56"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/status.go",
+      "destination": "internal/juicefs/pkg/meta/status.go",
+      "sha256": "1808cb4f668f8522df7e37e61b8ac30e433d33bd7c2d4ebe205177d6d6d6ed52",
+      "relocated_sha256": "ae50abf8ee5b075ff7c3e35d559520111bc869e8c629645bd52355f6477dfc19"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/utils.go",
+      "destination": "internal/juicefs/pkg/meta/utils.go",
+      "sha256": "69b2487a06f2828bc122e0152a2827b272a02d5dfefb67d174e61ed8c86ae3ad",
+      "relocated_sha256": "c25b0ebdcd51f79dcf9731c1532d02abc08a6e83686f6d08c94dcc0eb711e1e4"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/utils_darwin.go",
+      "destination": "internal/juicefs/pkg/meta/utils_darwin.go",
+      "sha256": "f9ee2a2775ec1c7e8e4b3e042f54a6046359ed16ce690787d022fcfb74a03aef",
+      "relocated_sha256": "f9ee2a2775ec1c7e8e4b3e042f54a6046359ed16ce690787d022fcfb74a03aef"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/utils_linux.go",
+      "destination": "internal/juicefs/pkg/meta/utils_linux.go",
+      "sha256": "6f86a0b274b243ab93a6e730fffafb63eea4ca53ae79260e3ae44c1ab7a53638",
+      "relocated_sha256": "6f86a0b274b243ab93a6e730fffafb63eea4ca53ae79260e3ae44c1ab7a53638"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/meta/utils_windows.go",
+      "destination": "internal/juicefs/pkg/meta/utils_windows.go",
+      "sha256": "e11b11e1bc6d03cbc554e6abc2a1f2c627ce72f559aeda4ffdede40d93ebca05",
+      "relocated_sha256": "e11b11e1bc6d03cbc554e6abc2a1f2c627ce72f559aeda4ffdede40d93ebca05"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/checksum.go",
+      "destination": "internal/juicefs/pkg/object/checksum.go",
+      "sha256": "4dba591e026572f93d87c0545be766c3be26ad0bc0dba1cdd425a91dd73ddb4e",
+      "relocated_sha256": "4dba591e026572f93d87c0545be766c3be26ad0bc0dba1cdd425a91dd73ddb4e"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/encrypt.go",
+      "destination": "internal/juicefs/pkg/object/encrypt.go",
+      "sha256": "3eaa909b3ef7255f89c0ce67ac8ad3900a4c09bda8945a5326a61e5de8d56f4f",
+      "relocated_sha256": "3eaa909b3ef7255f89c0ce67ac8ad3900a4c09bda8945a5326a61e5de8d56f4f"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/encrypt_chunked.go",
+      "destination": "internal/juicefs/pkg/object/encrypt_chunked.go",
+      "sha256": "30746e25b356214d39080a66b53275df1e2f1824e79e392090681d212ac4e21a",
+      "relocated_sha256": "30746e25b356214d39080a66b53275df1e2f1824e79e392090681d212ac4e21a"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/file.go",
+      "destination": "internal/juicefs/pkg/object/file.go",
+      "sha256": "40023936db9b73159bd0e9abc2fc3c72282d8fd982731e3bd7466d9fc721bd1c",
+      "relocated_sha256": "e785491380d709600d93ab9aea9ea6b4da5b608a98f5e2396cede14a77bcd7b6"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/file_darwin.go",
+      "destination": "internal/juicefs/pkg/object/file_darwin.go",
+      "sha256": "3423559794e0c89e54ed8a98bfcf0e5a52665ea39406776a1fd06281c2e8d174",
+      "relocated_sha256": "3423559794e0c89e54ed8a98bfcf0e5a52665ea39406776a1fd06281c2e8d174"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/file_linux.go",
+      "destination": "internal/juicefs/pkg/object/file_linux.go",
+      "sha256": "936e6bec43b744e822e9c426798cd968c90a17f33dcc8677c6edd67947d15f78",
+      "relocated_sha256": "936e6bec43b744e822e9c426798cd968c90a17f33dcc8677c6edd67947d15f78"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/file_unix.go",
+      "destination": "internal/juicefs/pkg/object/file_unix.go",
+      "sha256": "a579ed71c2b11b9444e7a934ad5ca2e3ad4a0909446fa4be7bdccfbfa2f0eb9f",
+      "relocated_sha256": "685c9ef3fc8074b1e9c2a8ec69d0952e37290706ec3f087cbd21b7ce0440d003"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/file_windows.go",
+      "destination": "internal/juicefs/pkg/object/file_windows.go",
+      "sha256": "6106fe0e886017f469e6943a5311a13e1c3b70ff193383d0ab8e5da894e869ba",
+      "relocated_sha256": "6106fe0e886017f469e6943a5311a13e1c3b70ff193383d0ab8e5da894e869ba"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/interface.go",
+      "destination": "internal/juicefs/pkg/object/interface.go",
+      "sha256": "ced4d369dae5daab3241615644ee2caf07bf915fa7c7175b589b634e48db81a0",
+      "relocated_sha256": "ced4d369dae5daab3241615644ee2caf07bf915fa7c7175b589b634e48db81a0"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/mem.go",
+      "destination": "internal/juicefs/pkg/object/mem.go",
+      "sha256": "028a35d4c7483604c3e47cfa3948d1ad4d2d54238b4b17ee2a76cef319c81b8d",
+      "relocated_sha256": "028a35d4c7483604c3e47cfa3948d1ad4d2d54238b4b17ee2a76cef319c81b8d"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/object_storage.go",
+      "destination": "internal/juicefs/pkg/object/object_storage.go",
+      "sha256": "283eab6f99f8ffc944ef09b1a8bbec83aaf8a4585ded013eb22bd696896762d1",
+      "relocated_sha256": "559a33fc1fcb0e8469df374bfcf12031f982eb9ac26dc3da9836d392e7a665e6"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/prefix.go",
+      "destination": "internal/juicefs/pkg/object/prefix.go",
+      "sha256": "f17a21b6a4226af6bb4d3a3737ae6937932beaefe1e1188111e1bfae9b0a32af",
+      "relocated_sha256": "f17a21b6a4226af6bb4d3a3737ae6937932beaefe1e1188111e1bfae9b0a32af"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/response_attrs.go",
+      "destination": "internal/juicefs/pkg/object/response_attrs.go",
+      "sha256": "1fc572f9e4f1cae82dcf832ba7a47caa385b9e3723720f6aaa1f076b5cbf2a28",
+      "relocated_sha256": "1fc572f9e4f1cae82dcf832ba7a47caa385b9e3723720f6aaa1f076b5cbf2a28"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/restful.go",
+      "destination": "internal/juicefs/pkg/object/restful.go",
+      "sha256": "db365ed360446383fbb81d6ac5e6c56fd1c934ac65ee544486ec173a657932f4",
+      "relocated_sha256": "db365ed360446383fbb81d6ac5e6c56fd1c934ac65ee544486ec173a657932f4"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/s3.go",
+      "destination": "internal/juicefs/pkg/object/s3.go",
+      "sha256": "5a243faeb415f664596412b6612e4a2450b405b963b0e952b10b263e357b5adb",
+      "relocated_sha256": "92bf5b01d48cf67de5087d962e9d585dee97d828a2789aa0ae8c6cfdba714856"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/object/sharding.go",
+      "destination": "internal/juicefs/pkg/object/sharding.go",
+      "sha256": "8dec2578da582414631635e535ee64f4e0b66dd9f0b7b7517bcec6c82d0d61fe",
+      "relocated_sha256": "8dec2578da582414631635e535ee64f4e0b66dd9f0b7b7517bcec6c82d0d61fe"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/sync/checkpoint.go",
+      "destination": "internal/juicefs/pkg/sync/checkpoint.go",
+      "sha256": "470f817cfe5850ff0b8c4cab643dad5427aba529f0c3bbb4c136d0ade8a40b1a",
+      "relocated_sha256": "b3b0bd5652bd782cb6d80cdd721210ea647ff31caef8cd9da1f9672273acda59"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/sync/cluster.go",
+      "destination": "internal/juicefs/pkg/sync/cluster.go",
+      "sha256": "e15b9fba1e6aaed036456f1e384c33de1a98a2e8988cab8bd2e2828e72508dc5",
+      "relocated_sha256": "14653950e77f69c4b7b1857edd6937ad630210b887e7a15c7c7fcbe67f854e38"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/sync/config.go",
+      "destination": "internal/juicefs/pkg/sync/config.go",
+      "sha256": "c47bcd7458adc61fd9d12167114e63858697d751ecada15644d45a34ee084537",
+      "relocated_sha256": "ae87c492c9b4fb9c76439d5df7ebfe3f4d794d0e74c7193b2fefec8c08680e68"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/sync/download.go",
+      "destination": "internal/juicefs/pkg/sync/download.go",
+      "sha256": "9c15036e7851a2041b3b4ff4141c8dd61ad7b7dfe545a372d66ee8ba5a096bff",
+      "relocated_sha256": "a4ff36efe6f7097c72ff26d2504bbec2ebc315cd53038bda925c6580f36f5305"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/sync/sync.go",
+      "destination": "internal/juicefs/pkg/sync/sync.go",
+      "sha256": "b39790b3789f821a4c990b5c5a2260228417b5847a082cfa305757948a0aad3e",
+      "relocated_sha256": "454d53de38f4803a89123edac8aa703fef4e6682a2639d8101951a0ba44cdbce"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/alloc.go",
+      "destination": "internal/juicefs/pkg/utils/alloc.go",
+      "sha256": "3bb7f37fe5b8cc9ca8f6899b0c9911a120fb647c3db2073b3910d0ac2bb1f46c",
+      "relocated_sha256": "3bb7f37fe5b8cc9ca8f6899b0c9911a120fb647c3db2073b3910d0ac2bb1f46c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/buffer.go",
+      "destination": "internal/juicefs/pkg/utils/buffer.go",
+      "sha256": "bc114ca0faa9b69abc4c4407f6c3360fc98fa1fa22b4331f1a5dac1131b3f424",
+      "relocated_sha256": "bc114ca0faa9b69abc4c4407f6c3360fc98fa1fa22b4331f1a5dac1131b3f424"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/clock_unix.go",
+      "destination": "internal/juicefs/pkg/utils/clock_unix.go",
+      "sha256": "5a2518fd86bacc31ee3951d18d1b8bd8be14def13044b477e54dc2f426e5daf3",
+      "relocated_sha256": "5a2518fd86bacc31ee3951d18d1b8bd8be14def13044b477e54dc2f426e5daf3"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/clock_windows.go",
+      "destination": "internal/juicefs/pkg/utils/clock_windows.go",
+      "sha256": "237bf8cbe554097ec70cc154fa434bb39bdebbe2a2d6cf7e0ec842a434446697",
+      "relocated_sha256": "237bf8cbe554097ec70cc154fa434bb39bdebbe2a2d6cf7e0ec842a434446697"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/cond.go",
+      "destination": "internal/juicefs/pkg/utils/cond.go",
+      "sha256": "4e5ecae27d748579e5ac64171fdc72d307cef2b24fb854360692806fb17fe903",
+      "relocated_sha256": "4e5ecae27d748579e5ac64171fdc72d307cef2b24fb854360692806fb17fe903"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/errors.go",
+      "destination": "internal/juicefs/pkg/utils/errors.go",
+      "sha256": "da153179f58289dc4ce422aaff8ac3474e4a7b5bb9dc236d145aac44e86b7f84",
+      "relocated_sha256": "da153179f58289dc4ce422aaff8ac3474e4a7b5bb9dc236d145aac44e86b7f84"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/general.go",
+      "destination": "internal/juicefs/pkg/utils/general.go",
+      "sha256": "63ecabb05f2b4309c9f66558415c41f9bfdb4c646d12b48c02707f5a6612ac1c",
+      "relocated_sha256": "63ecabb05f2b4309c9f66558415c41f9bfdb4c646d12b48c02707f5a6612ac1c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/humanize.go",
+      "destination": "internal/juicefs/pkg/utils/humanize.go",
+      "sha256": "114e1c89479478f6082fe8f23666db9a2a0b9470d0a324ea22fa25c24787ce70",
+      "relocated_sha256": "2b69332c125cddaaa8c5f6e6c31bda84368d72910b5135dc54f625bffea3d6f2"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/logger.go",
+      "destination": "internal/juicefs/pkg/utils/logger.go",
+      "sha256": "43e8d9f4732c1e1ec99194355805f8c08a80401a5861334b8698478760d19bdf",
+      "relocated_sha256": "43e8d9f4732c1e1ec99194355805f8c08a80401a5861334b8698478760d19bdf"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/logger_syslog.go",
+      "destination": "internal/juicefs/pkg/utils/logger_syslog.go",
+      "sha256": "00478ec09fb8cd710ede51bae22ab68f73fecddb61c4c5304416ff3fade71e9c",
+      "relocated_sha256": "00478ec09fb8cd710ede51bae22ab68f73fecddb61c4c5304416ff3fade71e9c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/logger_windows.go",
+      "destination": "internal/juicefs/pkg/utils/logger_windows.go",
+      "sha256": "909efd4c0819040facd3ae51bc8ae70d7d883c2083e9f384f7e1890f87fe953b",
+      "relocated_sha256": "909efd4c0819040facd3ae51bc8ae70d7d883c2083e9f384f7e1890f87fe953b"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/memusage.go",
+      "destination": "internal/juicefs/pkg/utils/memusage.go",
+      "sha256": "da352d1d356d66bcd1103f3b44fe1b46a2f3ed6da160f9f36bd546af36cc92cb",
+      "relocated_sha256": "da352d1d356d66bcd1103f3b44fe1b46a2f3ed6da160f9f36bd546af36cc92cb"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/memusage_windows.go",
+      "destination": "internal/juicefs/pkg/utils/memusage_windows.go",
+      "sha256": "85c9e2017fa41bbb259f49a8317b09fd0b6288117f03a2bb8a015f5a60937af1",
+      "relocated_sha256": "85c9e2017fa41bbb259f49a8317b09fd0b6288117f03a2bb8a015f5a60937af1"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/proc_title.go",
+      "destination": "internal/juicefs/pkg/utils/proc_title.go",
+      "sha256": "4e94eb0592981ec3fc8175401506fd2668398ba401563a5a9b9f5c558e2ffdb4",
+      "relocated_sha256": "4e94eb0592981ec3fc8175401506fd2668398ba401563a5a9b9f5c558e2ffdb4"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/proc_title_noop.go",
+      "destination": "internal/juicefs/pkg/utils/proc_title_noop.go",
+      "sha256": "edef78220319fc16419fdbdef3582bfff3cb1c106c7b998047145cf6a8d385ea",
+      "relocated_sha256": "edef78220319fc16419fdbdef3582bfff3cb1c106c7b998047145cf6a8d385ea"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/progress.go",
+      "destination": "internal/juicefs/pkg/utils/progress.go",
+      "sha256": "91454e0b49d9701cad3e6f9d3739bb65c0cbf4503189cc9a82a927b7b2fdb198",
+      "relocated_sha256": "1aa0ed2eabf8e0ca72672b6ad14147aa5309e350f07deb6eea06f9bfabc250f5"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/rusage.go",
+      "destination": "internal/juicefs/pkg/utils/rusage.go",
+      "sha256": "6342e2814b0562d7215240be5d12c8bd15bcd611503e58c1de278eaa49233411",
+      "relocated_sha256": "6342e2814b0562d7215240be5d12c8bd15bcd611503e58c1de278eaa49233411"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/rusage_windows.go",
+      "destination": "internal/juicefs/pkg/utils/rusage_windows.go",
+      "sha256": "8b6fddb9674bfd0a20b49751ea313360af1ee2928919aab86dc6380d791c1147",
+      "relocated_sha256": "8b6fddb9674bfd0a20b49751ea313360af1ee2928919aab86dc6380d791c1147"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/utils.go",
+      "destination": "internal/juicefs/pkg/utils/utils.go",
+      "sha256": "12a42982eb6bdeaa1a61c3f2de040bebf84e36958cec133dc026ac52fbe74806",
+      "relocated_sha256": "12a42982eb6bdeaa1a61c3f2de040bebf84e36958cec133dc026ac52fbe74806"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/utils_darwin.go",
+      "destination": "internal/juicefs/pkg/utils/utils_darwin.go",
+      "sha256": "95aeb04c319d443586a7da7e3268ef3639eb1a570bcab454d23360ee4f3d560c",
+      "relocated_sha256": "95aeb04c319d443586a7da7e3268ef3639eb1a570bcab454d23360ee4f3d560c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/utils_linux.go",
+      "destination": "internal/juicefs/pkg/utils/utils_linux.go",
+      "sha256": "608ca47f4b3e3bd87035ad8552f461d6faac79f1d88c1e958e8729db1213b61f",
+      "relocated_sha256": "608ca47f4b3e3bd87035ad8552f461d6faac79f1d88c1e958e8729db1213b61f"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/utils/utils_unix.go",
+      "destination": "internal/juicefs/pkg/utils/utils_unix.go",
+      "sha256": "7b641023065c427de0b2d74fb8971229e64b2436758ec4a18e734cbc9162f03b",
+      "relocated_sha256": "7b641023065c427de0b2d74fb8971229e64b2436758ec4a18e734cbc9162f03b"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/version/version.go",
+      "destination": "internal/juicefs/pkg/version/version.go",
+      "sha256": "3f54704704ff671fe6bff0bb6de96e7f96d873ce4551af5ef011402d79df1259",
+      "relocated_sha256": "3f54704704ff671fe6bff0bb6de96e7f96d873ce4551af5ef011402d79df1259"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/accesslog.go",
+      "destination": "internal/juicefs/pkg/vfs/accesslog.go",
+      "sha256": "8ba36fd5cd76175fe107d520c34f00acb951664c917d105c33f031010c389120",
+      "relocated_sha256": "a2405da6e8a361f40298a4fa63a044031ee3ca4de7f94445d63155fe1db5f2f2"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/backup.go",
+      "destination": "internal/juicefs/pkg/vfs/backup.go",
+      "sha256": "c89aae52beb2c78a4256fbb4dd86de7fc9a543e5de0207834997eb01a6b88663",
+      "relocated_sha256": "4c0d72bf66513ae0e509a9d633a3f166f95d58babe5985977f99e1e6fcce1a5c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/compact.go",
+      "destination": "internal/juicefs/pkg/vfs/compact.go",
+      "sha256": "0a86142d3bb26e5240183ff37d1fcd2d4d0267d80b7733f0f9fb83a137b59566",
+      "relocated_sha256": "4a1ae86b4c2f5e778b4190b1c10fcaed3aa478f72bde86cd8393d142c93b60ff"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/fill.go",
+      "destination": "internal/juicefs/pkg/vfs/fill.go",
+      "sha256": "f68b258d6c43aa436f1700058f1a34942d2678ba48cd013ee105a821279dd2a4",
+      "relocated_sha256": "a7c578d7436e8862565f0b3b3b48116335093da3aaa353d7acfd12edc3757aaf"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/handle.go",
+      "destination": "internal/juicefs/pkg/vfs/handle.go",
+      "sha256": "c02300974defe4baed06c8d40b318e9265e04e9c562c0510ac0f7d7b3815345d",
+      "relocated_sha256": "c9c4b96c59a6099ef2585222801d5d46e1aea6038cd80c4ab664e83c6587840b"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/helpers.go",
+      "destination": "internal/juicefs/pkg/vfs/helpers.go",
+      "sha256": "222889ee7c9cd3511a527d13721e41afa56a4547ef5e00a3f1d323378410bb5b",
+      "relocated_sha256": "36e24840d3bb59668e3d0e9d4597faf8ea51da4d502fb46ab0aff4649106ad10"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/internal.go",
+      "destination": "internal/juicefs/pkg/vfs/internal.go",
+      "sha256": "70a0aeab315f48d989b77f91fac8f17c4fe0f373932151de2f49515230845dd9",
+      "relocated_sha256": "40e396cb5c1ee8aa552884acd5ae9623fbab6600c83e1e8142df43ab0952190f"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/reader.go",
+      "destination": "internal/juicefs/pkg/vfs/reader.go",
+      "sha256": "97ba6860b568fdc44d7cb28ef59d87b1b960c0ec62679364dea704eedbff5e7d",
+      "relocated_sha256": "a0cfaef25083fea82ef6f4c0330d8d3c298514fc67c83b05beee228f0be9094c"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/vfs.go",
+      "destination": "internal/juicefs/pkg/vfs/vfs.go",
+      "sha256": "c5a565bcad64375c39b7ba2c3f3caefb57bb28b4a50360e5fdce5d52a4c9bbbc",
+      "relocated_sha256": "20f878518a5239cc3e1da6ee33438bb7694970759b0d71e3077a29bb1db465c5"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/vfs_unix.go",
+      "destination": "internal/juicefs/pkg/vfs/vfs_unix.go",
+      "sha256": "fc113aa4d5c7f8e6c3ba6d7e5e38b043b3a59deccbecfb4a4b91a3e3fcc6bf0c",
+      "relocated_sha256": "29d98183cf490db7d2d31624de5bd928e77e371b2a03ed2bf4b8bcc6b4b54e2f"
+    },
+    {
+      "module": "github.com/juicedata/juicefs",
+      "source": "pkg/vfs/writer.go",
+      "destination": "internal/juicefs/pkg/vfs/writer.go",
+      "sha256": "ea349dfecd7a787cbebb7e5f10dc05cdf4af146361856e67ecd0ed7e6aa838fe",
+      "relocated_sha256": "e954e09652075238602555cf82c6f2e7d2dca58233028e58c17cb3d7c7cb69f3"
+    },
+    {
+      "source": "Attributions.txt",
+      "destination": "internal/smb2/Attributions.txt",
+      "sha256": "e7852228edf5dba8f252a265bcdda5684f8e177425fbd56cd701204f59e669cc",
+      "relocated_sha256": "e7852228edf5dba8f252a265bcdda5684f8e177425fbd56cd701204f59e669cc",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "LICENSE",
+      "destination": "internal/smb2/LICENSE",
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "relocated_sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "README.md",
+      "destination": "internal/smb2/README.md",
+      "sha256": "7edfa4a66095577d3a65e307d077012d00cfe097769ce126097e85edaadf8f5a",
+      "relocated_sha256": "7edfa4a66095577d3a65e307d077012d00cfe097769ce126097e85edaadf8f5a",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/ccm/cbc_mac.go",
+      "destination": "internal/smb2/internal/crypto/ccm/cbc_mac.go",
+      "sha256": "cbdcb9e4d45e3226b6947df671b052c125a697210aac3dd494fbf96972f0ae53",
+      "relocated_sha256": "cbdcb9e4d45e3226b6947df671b052c125a697210aac3dd494fbf96972f0ae53",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/ccm/ccm.go",
+      "destination": "internal/smb2/internal/crypto/ccm/ccm.go",
+      "sha256": "53ee77641c4ca73412bb6747e5f88eba7a0208eab7ad8f06eeff5c793dbe5240",
+      "relocated_sha256": "53ee77641c4ca73412bb6747e5f88eba7a0208eab7ad8f06eeff5c793dbe5240",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/ccm/ccm_test.go",
+      "destination": "internal/smb2/internal/crypto/ccm/ccm_test.go",
+      "sha256": "1a0e4ebfba88a94ebaedad120bf3cd9ea994f19092b4ab15df69e1c6962c54c2",
+      "relocated_sha256": "1a0e4ebfba88a94ebaedad120bf3cd9ea994f19092b4ab15df69e1c6962c54c2",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/ccm/util.go",
+      "destination": "internal/smb2/internal/crypto/ccm/util.go",
+      "sha256": "d0061260ab0f07f82207656b0915c1e24944641e95729ca03e2f31d9ea3829bf",
+      "relocated_sha256": "d0061260ab0f07f82207656b0915c1e24944641e95729ca03e2f31d9ea3829bf",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/cmac/cmac.go",
+      "destination": "internal/smb2/internal/crypto/cmac/cmac.go",
+      "sha256": "d645c1ac68c24712c9688331d4b18f9831f9a0a637319ecb0c93f897233f7200",
+      "relocated_sha256": "d645c1ac68c24712c9688331d4b18f9831f9a0a637319ecb0c93f897233f7200",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/crypto/cmac/cmac_test.go",
+      "destination": "internal/smb2/internal/crypto/cmac/cmac_test.go",
+      "sha256": "3bd3faa298dbe281cb2cb42e894e8afee8a7fef0e92b57d534d21b4e7fac0ae4",
+      "relocated_sha256": "3bd3faa298dbe281cb2cb42e894e8afee8a7fef0e92b57d534d21b4e7fac0ae4",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/erref/erref.go",
+      "destination": "internal/smb2/internal/erref/erref.go",
+      "sha256": "7661d338c5fefed6406f61a0a4a55a71effff7f49521ac8f78a90e576752028c",
+      "relocated_sha256": "7661d338c5fefed6406f61a0a4a55a71effff7f49521ac8f78a90e576752028c",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/erref/mkntstatus.go",
+      "destination": "internal/smb2/internal/erref/mkntstatus.go",
+      "sha256": "6e91955b31e87c6aafbf54e55342104b7b7d3a3992dce6e45d103761cc585c3d",
+      "relocated_sha256": "6e91955b31e87c6aafbf54e55342104b7b7d3a3992dce6e45d103761cc585c3d",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/erref/ntstatus.go",
+      "destination": "internal/smb2/internal/erref/ntstatus.go",
+      "sha256": "286c35ee6bb5d3d3a074bd00f022dacc14cad90e06dfbda9b98b6aa4856549be",
+      "relocated_sha256": "286c35ee6bb5d3d3a074bd00f022dacc14cad90e06dfbda9b98b6aa4856549be",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/msrpc/msrpc.go",
+      "destination": "internal/smb2/internal/msrpc/msrpc.go",
+      "sha256": "2c70a8cfa79038f5527f1d7b4dba29e9bc833aa6ea80f39a0db5d157d7416832",
+      "relocated_sha256": "06c47f2d81f25b4ca54330e444a446829ac4522132b823a61d7d01fac5a53cba",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/ntlm/client.go",
+      "destination": "internal/smb2/internal/ntlm/client.go",
+      "sha256": "7667076c2312b79558cdf030e5a257286b8576eee6ae342ed722b0d9fe695707",
+      "relocated_sha256": "cba712738ef2ee71d2c483fb1b1ebf765e8ffa6a9c058400a7705f2c853b0294",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/ntlm/ntlm.go",
+      "destination": "internal/smb2/internal/ntlm/ntlm.go",
+      "sha256": "2caf635747a7777f53fdb4cf219d72500e179676b15b847537d72c4ec9eeea1f",
+      "relocated_sha256": "2caf635747a7777f53fdb4cf219d72500e179676b15b847537d72c4ec9eeea1f",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/ntlm/ntlm_test.go",
+      "destination": "internal/smb2/internal/ntlm/ntlm_test.go",
+      "sha256": "50b5e122ed25fb77a16b498b81806b2a5483081278f97ca63c24f4ab0c6cdaec",
+      "relocated_sha256": "f28122fbc047777da290e81db619524a9977207e7e19da445aba0eb3eb06a495",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/ntlm/server.go",
+      "destination": "internal/smb2/internal/ntlm/server.go",
+      "sha256": "64174af5274d5e7085361ac37deef46193013f8ab04c4a879144030808e89cd1",
+      "relocated_sha256": "91679702864de844bd00bd618ff8ae10ab9c0dce4680494ffe2f0317f18c43a3",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/ntlm/session.go",
+      "destination": "internal/smb2/internal/ntlm/session.go",
+      "sha256": "04583e3c1078a509059b2adb783ba2dd45f3b46ef4431bcc57c8ee81527fdf81",
+      "relocated_sha256": "14a2db0ebb32abfaec7c73eb2c3b50083432076c22e1d72524b8b27265507ac8",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/const.go",
+      "destination": "internal/smb2/internal/smb2/const.go",
+      "sha256": "4cc226bbb8557385d743720f02271f8306fc0b9f52bd59f29442bbae5501b211",
+      "relocated_sha256": "4cc226bbb8557385d743720f02271f8306fc0b9f52bd59f29442bbae5501b211",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/create_context_test.go",
+      "destination": "internal/smb2/internal/smb2/create_context_test.go",
+      "sha256": "baec9dc2b9458b33ad71717373f6df5361d3633e613f9813a598b3aece99338a",
+      "relocated_sha256": "baec9dc2b9458b33ad71717373f6df5361d3633e613f9813a598b3aece99338a",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/dcerpc.go",
+      "destination": "internal/smb2/internal/smb2/dcerpc.go",
+      "sha256": "07cd3a75bc644422f2b1d92b2dfac6fc0feb39a2f4d3f80bf85b21add536d7e7",
+      "relocated_sha256": "26e8203f2801a67f59fe73f9d282b128fe62aada419fb2cd35ac67bb58e7b60b",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/dtyp.go",
+      "destination": "internal/smb2/internal/smb2/dtyp.go",
+      "sha256": "8917dc91e5d81fc54cb96f7e64b3d170caa8c9d0ff1ff9f81e76d8cfaac33612",
+      "relocated_sha256": "8917dc91e5d81fc54cb96f7e64b3d170caa8c9d0ff1ff9f81e76d8cfaac33612",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/fscc.go",
+      "destination": "internal/smb2/internal/smb2/fscc.go",
+      "sha256": "fa8d2e26b079f27bbac3dcbb4092f9f062b8291e3063b28b11ed9edd623dd4cf",
+      "relocated_sha256": "2274e5f94d7f46e36354b4bf2ea805a5331dae450628389144e58372a2314382",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/iface.go",
+      "destination": "internal/smb2/internal/smb2/iface.go",
+      "sha256": "c91999fe606d8535a6d1c265941f1a10ad7941f001fde0047e343f188a65a1af",
+      "relocated_sha256": "c91999fe606d8535a6d1c265941f1a10ad7941f001fde0047e343f188a65a1af",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/lock_test.go",
+      "destination": "internal/smb2/internal/smb2/lock_test.go",
+      "sha256": "e1398ebd07195181927dcd65b7ee9f9027ad08f5a552f4bfe2571552326c6bf6",
+      "relocated_sha256": "e1398ebd07195181927dcd65b7ee9f9027ad08f5a552f4bfe2571552326c6bf6",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/oplock.go",
+      "destination": "internal/smb2/internal/smb2/oplock.go",
+      "sha256": "ff894e1f5f7720b97c0a304f173ae849e1f49405261fd5a48645c04b4c6f3072",
+      "relocated_sha256": "ff894e1f5f7720b97c0a304f173ae849e1f49405261fd5a48645c04b4c6f3072",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/packet.go",
+      "destination": "internal/smb2/internal/smb2/packet.go",
+      "sha256": "8eccbb5d5ac84d71dd2d9650a7b331ee209da7543f562043d9f8b18cea4b095f",
+      "relocated_sha256": "8eccbb5d5ac84d71dd2d9650a7b331ee209da7543f562043d9f8b18cea4b095f",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/packet_test.go",
+      "destination": "internal/smb2/internal/smb2/packet_test.go",
+      "sha256": "da6a964aa4f01ff54e6684b17ac3f0ea84c3b61f4f4c8e902d2b524edb643014",
+      "relocated_sha256": "da6a964aa4f01ff54e6684b17ac3f0ea84c3b61f4f4c8e902d2b524edb643014",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/posix_test.go",
+      "destination": "internal/smb2/internal/smb2/posix_test.go",
+      "sha256": "683631b2b681f63f576955d7ecb71c7b6964507202c52296d0aa386971d1e370",
+      "relocated_sha256": "683631b2b681f63f576955d7ecb71c7b6964507202c52296d0aa386971d1e370",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/request.go",
+      "destination": "internal/smb2/internal/smb2/request.go",
+      "sha256": "885945eabf853dec140f2d44dbf8eb1a480c1eb51a041e159ab6db98b99b7898",
+      "relocated_sha256": "d4fafdc2126d3704b60b627e2031ded7c3dbb4449c993e3419068bff62cc42be",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/response.go",
+      "destination": "internal/smb2/internal/smb2/response.go",
+      "sha256": "b0af3de0d579ed198d243725963da444e1fac286cba30d8118886fa3126b67a5",
+      "relocated_sha256": "c09125b8c8ab8449067dd9caffe6f7a92c1b525bec3db0267309477bc604c23e",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/smb2.go",
+      "destination": "internal/smb2/internal/smb2/smb2.go",
+      "sha256": "0ef58fbe0dc54ed8b3fde82de0a20afe399fd1605ffb2fc1a347d97c3f838f27",
+      "relocated_sha256": "0ef58fbe0dc54ed8b3fde82de0a20afe399fd1605ffb2fc1a347d97c3f838f27",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/smb2/util.go",
+      "destination": "internal/smb2/internal/smb2/util.go",
+      "sha256": "bef550b116dac24b2028690bbb72cbdea662a0fac85d39027c1b6bb9d2edd411",
+      "relocated_sha256": "dc32b37bf9cfffd967512c0c2e4f7ba7e4d52f30492b18eb6b1274e3d712bf44",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/spnego/spnego.go",
+      "destination": "internal/smb2/internal/spnego/spnego.go",
+      "sha256": "3f0dac53b55e829589a2820d8701cfc2622475b4a6f87348eff79ab4b96eaeba",
+      "relocated_sha256": "3f0dac53b55e829589a2820d8701cfc2622475b4a6f87348eff79ab4b96eaeba",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/spnego/spnego_test.go",
+      "destination": "internal/smb2/internal/spnego/spnego_test.go",
+      "sha256": "53d92eccbfad43a6e78aa3b717ff41110592b0b90458cb13853715d84331a271",
+      "relocated_sha256": "0913074eed3144efd030fde43c9b29446ba5fda77509249cbedc2fa4b278c3a1",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "internal/utf16le/utf16le.go",
+      "destination": "internal/smb2/internal/utf16le/utf16le.go",
+      "sha256": "055738ac3482790a900b498ad70d2e843e13aee452aa31f847722a07ec531fee",
+      "relocated_sha256": "055738ac3482790a900b498ad70d2e843e13aee452aa31f847722a07ec531fee",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/acl.go",
+      "destination": "internal/smb2/server/acl.go",
+      "sha256": "581471b9ab5f6f1f27bd43092ede467a2ac95f43317c30f8adc48252ee7e357b",
+      "relocated_sha256": "9bd404adedee1d8af13f1b009a8c66c03a82101c1d7a5ea6042ea5b1185d3238",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/authenticator.go",
+      "destination": "internal/smb2/server/authenticator.go",
+      "sha256": "7442a0df4146e33102bd6861e849e73b5309aedcda934d7ed6206cca3e580f4e",
+      "relocated_sha256": "ee9623e560504127a5431dc6e71e820fcdd7c47a7181125e2b4e6ac600dd673e",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/close_test.go",
+      "destination": "internal/smb2/server/close_test.go",
+      "sha256": "ca3dc1c386347b2176d9be185cbb2ffabbe44ffe9a85cd7ef728ec5f7237872a",
+      "relocated_sha256": "92807c646ae0b52008dc4c9c35c3ad57e7be813e90426e660a089e24603d49cf",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/compound.go",
+      "destination": "internal/smb2/server/compound.go",
+      "sha256": "9f378a4b107ca01b7c79691ca1ddb919b79655fde436242e2680ae1a9bedb107",
+      "relocated_sha256": "2d0aab6f1acb796ff86576a9d80717921a45eccea735cc4aea07b12b32078462",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/conn.go",
+      "destination": "internal/smb2/server/conn.go",
+      "sha256": "3bc4d9606f7add49af4a1697292d69455d99b34dbb793749bceccacf6f44f68c",
+      "relocated_sha256": "433cc8bad3506168cb5ed2a169000f11f4b8433645179d567d4b49595d0d820d",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/conn_test.go",
+      "destination": "internal/smb2/server/conn_test.go",
+      "sha256": "c45dbc180178af2d3506064643ae574d335dd32c187c890d48752cebc86480df",
+      "relocated_sha256": "5a23a645c45fe94a2ae9fff9d2d5405e347023aba604564c83899165799b8ccc",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/credit.go",
+      "destination": "internal/smb2/server/credit.go",
+      "sha256": "f2df1e7dcd681b8aab5fa9119fa9cb268cf11d3d52f318113ccce242b01dcf14",
+      "relocated_sha256": "f2df1e7dcd681b8aab5fa9119fa9cb268cf11d3d52f318113ccce242b01dcf14",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/delete_disposition_test.go",
+      "destination": "internal/smb2/server/delete_disposition_test.go",
+      "sha256": "7f6a64162b7f59c4b57209859829f1485f31e1e89a0add4cbaa96635123e4af1",
+      "relocated_sha256": "3cd16d653c61bdf3d51b1383191b5c60fb3bfd0e20712eaafd99386f7a1a4a26",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/errors.go",
+      "destination": "internal/smb2/server/errors.go",
+      "sha256": "19d9d57a3e2192fcc4506ec7818d1892c5ed90ed0a43212cd6d6443f2d2676f3",
+      "relocated_sha256": "6f0995e9b5db503c8ba6f36e8adab401ed496689d45d4a2f9f0f35452bb24d84",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/feature.go",
+      "destination": "internal/smb2/server/feature.go",
+      "sha256": "16f44225797dd602f2cc1530f402bdebaa20180943ee16b151ed4e78daec058f",
+      "relocated_sha256": "95d708839f5460af0678f3efef6de474914ad4fcb7c91248a100592e88aee85a",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/file_attributes_test.go",
+      "destination": "internal/smb2/server/file_attributes_test.go",
+      "sha256": "f7dbae209d76f0e379d4074499e0e135a07d74f0a87c2427587610df88c8e258",
+      "relocated_sha256": "9336fe64539ae02b5f0dbfda11fe2dedf171cbe90820968e57f52b518108d98b",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/file_tree.go",
+      "destination": "internal/smb2/server/file_tree.go",
+      "sha256": "b24743f388a19591b06f9ce8b75e98fe4dd1138b5ffbcc14b181421499c365ad",
+      "relocated_sha256": "8851afd98c25c152f273f53136d70474f43c834dfa6a663b45c32629d1f1b5db",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/info_fs.go",
+      "destination": "internal/smb2/server/info_fs.go",
+      "sha256": "d5aad27558e297dc8137b8d5ee152332144bc4fa4a23ae9e22144c1f5a3da992",
+      "relocated_sha256": "28c525cdcc103029d9ce86875ff26bd7e93f2ca6d05ab83b3b6a805560bc1639",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/info_fs_test.go",
+      "destination": "internal/smb2/server/info_fs_test.go",
+      "sha256": "042372a465b3371775351e3f0d180010d9d3c4f62aa44211db95761352917f61",
+      "relocated_sha256": "042372a465b3371775351e3f0d180010d9d3c4f62aa44211db95761352917f61",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/ipc_tree.go",
+      "destination": "internal/smb2/server/ipc_tree.go",
+      "sha256": "96ba00726b629dc794214ef9411b1996bf63a0bd4056c92470668912be173a07",
+      "relocated_sha256": "6723b57b836ef70bd85139ab18684f9ed31c98244667df5b811145b9989b6288",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/kdf.go",
+      "destination": "internal/smb2/server/kdf.go",
+      "sha256": "38839fa5e0b677a09e15cfec16938be98114e7db2ce0a666c693610f3f67e5ea",
+      "relocated_sha256": "38839fa5e0b677a09e15cfec16938be98114e7db2ce0a666c693610f3f67e5ea",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/kdf_test.go",
+      "destination": "internal/smb2/server/kdf_test.go",
+      "sha256": "5547153ec201425cfda8941c2704fe25046d8e831d8966994f573a9aa5768493",
+      "relocated_sha256": "5547153ec201425cfda8941c2704fe25046d8e831d8966994f573a9aa5768493",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/locking.go",
+      "destination": "internal/smb2/server/locking.go",
+      "sha256": "8d4574e752ac500b26b052dcef9a0921096ea29787458a19e4809e709ca88fb2",
+      "relocated_sha256": "83d0b43422c652f9b83b98f10a9de9789bf04c7ac5163b73c30448a3a29a3458",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/locking_test.go",
+      "destination": "internal/smb2/server/locking_test.go",
+      "sha256": "4c8f15bc87c498370544b2f598e88143918e8b9be6f05ebe05e1a13a6fdc9207",
+      "relocated_sha256": "0e0e50c285e3fe073cb54a00105b79c95d649c9da16a437fc6a701ce0786119b",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/log.go",
+      "destination": "internal/smb2/server/log.go",
+      "sha256": "6bb34e938ad7ffb1cbe47441d834df819fb836a75231a6161ce535698264f159",
+      "relocated_sha256": "6bb34e938ad7ffb1cbe47441d834df819fb836a75231a6161ce535698264f159",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/log_test.go",
+      "destination": "internal/smb2/server/log_test.go",
+      "sha256": "bc7a905761761bff7bba01e6b2c537c7f56a6d1a58259cbe1c602afc1c99a907",
+      "relocated_sha256": "bc7a905761761bff7bba01e6b2c537c7f56a6d1a58259cbe1c602afc1c99a907",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/path.go",
+      "destination": "internal/smb2/server/path.go",
+      "sha256": "3ca42270de0a5dfff02d3c3b288dbdd5a352def1e8891af61a912731a1886118",
+      "relocated_sha256": "3ca42270de0a5dfff02d3c3b288dbdd5a352def1e8891af61a912731a1886118",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/posix_test.go",
+      "destination": "internal/smb2/server/posix_test.go",
+      "sha256": "b423065bf94910f12d19f946b10b0cb9ea58add71a284409f999beb52dd74d83",
+      "relocated_sha256": "04a78b7dcc0eb5dfbe2fed0b8d43f3a3ed893134b665cd621194f224902f107e",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/server.go",
+      "destination": "internal/smb2/server/server.go",
+      "sha256": "39894a13d0f59fc6f5130a22454ddbb34b122be402ddefc5420274602f8e8188",
+      "relocated_sha256": "b8ee145acbf0a4d67f5abffd3e54c9bd912513d0664b352e15bff30371c51b62",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/session.go",
+      "destination": "internal/smb2/server/session.go",
+      "sha256": "24936b58f274e64e4be1edeb3737827a72f346708c5b5bfebe5787cb616e33c5",
+      "relocated_sha256": "e633efc3ae187129f060c93de26019045bd86df2b078af7f1ff037664aa80998",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/sign_test.go",
+      "destination": "internal/smb2/server/sign_test.go",
+      "sha256": "367ae5872d92cfa24fef9bdb972b662dc95e452e384b05a26cd83a89afd3ce0c",
+      "relocated_sha256": "2935983dc3c68e55af5e01740ed30f5fe9231849be41d761c30bee03541bb86b",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/spnego.go",
+      "destination": "internal/smb2/server/spnego.go",
+      "sha256": "8acc8d8fae186ded414466118a874f860c7695cd6bf14145547bb193a08a39c0",
+      "relocated_sha256": "c261d53ff52847c633b5fc8a815c7c3cd6b5e7789b396b02a7a04b11e88c3c99",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/transport.go",
+      "destination": "internal/smb2/server/transport.go",
+      "sha256": "31cdc9c420dc8f954c3ab7071f31caf4a048e660439ed3de0dc46cbae347fd4b",
+      "relocated_sha256": "31cdc9c420dc8f954c3ab7071f31caf4a048e660439ed3de0dc46cbae347fd4b",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "server/tree.go",
+      "destination": "internal/smb2/server/tree.go",
+      "sha256": "21af99531f71f0b0f641f6e8f517b06de669514533622d5b241063705043074a",
+      "relocated_sha256": "21af99531f71f0b0f641f6e8f517b06de669514533622d5b241063705043074a",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "stats/srv.go",
+      "destination": "internal/smb2/stats/srv.go",
+      "sha256": "ac741ca6d4ac7a8d178875f1815dd4966807449db0779c924063e7f90e71e55a",
+      "relocated_sha256": "ac741ca6d4ac7a8d178875f1815dd4966807449db0779c924063e7f90e71e55a",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/attributes.go",
+      "destination": "internal/smb2/vfs/attributes.go",
+      "sha256": "31d4c25a0fff60a5ccdad8774fa05c0d7afd6c9dc550ea76bb8d49bc304d714d",
+      "relocated_sha256": "31d4c25a0fff60a5ccdad8774fa05c0d7afd6c9dc550ea76bb8d49bc304d714d",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/file_type.go",
+      "destination": "internal/smb2/vfs/file_type.go",
+      "sha256": "3ea4de22bd1cff2428365c15448c1ab89027d7a45444ffd3db51e783fb59a683",
+      "relocated_sha256": "3ea4de22bd1cff2428365c15448c1ab89027d7a45444ffd3db51e783fb59a683",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/fileinfo.go",
+      "destination": "internal/smb2/vfs/fileinfo.go",
+      "sha256": "31d83f1944cbf80148e3d0977ced272b9117a5b5497b07d22198121fa55a904f",
+      "relocated_sha256": "31d83f1944cbf80148e3d0977ced272b9117a5b5497b07d22198121fa55a904f",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/fileinfo_darwin.go",
+      "destination": "internal/smb2/vfs/fileinfo_darwin.go",
+      "sha256": "532b517d87b2421d5827cdb6be7a8850eee5689b039a62bffc316a2e7403f793",
+      "relocated_sha256": "532b517d87b2421d5827cdb6be7a8850eee5689b039a62bffc316a2e7403f793",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/fileinfo_linux.go",
+      "destination": "internal/smb2/vfs/fileinfo_linux.go",
+      "sha256": "0695e1033f95efc2094bf2f5676d38156212b4c408e1087ac18a8a55ed6612eb",
+      "relocated_sha256": "0695e1033f95efc2094bf2f5676d38156212b4c408e1087ac18a8a55ed6612eb",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/fileinfo_windows.go",
+      "destination": "internal/smb2/vfs/fileinfo_windows.go",
+      "sha256": "1bb272eecd6d1d5a54e70c2031086d8336c2ff6415c96ccbf57cb9e2d7f777bb",
+      "relocated_sha256": "1bb272eecd6d1d5a54e70c2031086d8336c2ff6415c96ccbf57cb9e2d7f777bb",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/fs_attributes.go",
+      "destination": "internal/smb2/vfs/fs_attributes.go",
+      "sha256": "250cbfd57383399dc072cbba55b21b1493ed776fecc9b7e090de3a546771b544",
+      "relocated_sha256": "250cbfd57383399dc072cbba55b21b1493ed776fecc9b7e090de3a546771b544",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/permissions.go",
+      "destination": "internal/smb2/vfs/permissions.go",
+      "sha256": "ec8418f5096dbfe2b50bf2e094f611497b58f2933873130a40a2f7db585f19f3",
+      "relocated_sha256": "ec8418f5096dbfe2b50bf2e094f611497b58f2933873130a40a2f7db585f19f3",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "source": "vfs/vfs.go",
+      "destination": "internal/smb2/vfs/vfs.go",
+      "sha256": "9447fb088d77608ec048068a067a8c516c31f0e048dd70a6b815a59b7c41a19c",
+      "relocated_sha256": "9447fb088d77608ec048068a067a8c516c31f0e048dd70a6b815a59b7c41a19c",
+      "module": "github.com/macos-fuse-t/go-smb2"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "CODE_OF_CONDUCT.md",
+      "destination": "internal/thirdparty/cli/CODE_OF_CONDUCT.md",
+      "sha256": "46525dcf7b6d021f61f4b791073a5659ccdeb658fc61db90745932c82bf9ccb2",
+      "relocated_sha256": "46525dcf7b6d021f61f4b791073a5659ccdeb658fc61db90745932c82bf9ccb2"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "LICENSE",
+      "destination": "internal/thirdparty/cli/LICENSE",
+      "sha256": "3e64f5c2419b8150badd1c21a143806db894a51e0ec7ffd1560ddd6819f2aa37",
+      "relocated_sha256": "3e64f5c2419b8150badd1c21a143806db894a51e0ec7ffd1560ddd6819f2aa37"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "Makefile",
+      "destination": "internal/thirdparty/cli/Makefile",
+      "sha256": "b4e16a4b0a16efda6b048438606b3edaadff6e5146f920be9d3f5fa344f014d6",
+      "relocated_sha256": "b4e16a4b0a16efda6b048438606b3edaadff6e5146f920be9d3f5fa344f014d6"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "README.md",
+      "destination": "internal/thirdparty/cli/README.md",
+      "sha256": "c4b46278de7493376c105c499155be34d2dbda183eb13d821a07cfe86e6f578f",
+      "relocated_sha256": "c4b46278de7493376c105c499155be34d2dbda183eb13d821a07cfe86e6f578f"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "go.mod",
+      "destination": "internal/thirdparty/cli/UPSTREAM-go.mod.txt",
+      "sha256": "f9604327ba81f30b12ba288d8229fceaea294a76daafbcdc367a265f0ad15248",
+      "relocated_sha256": "f9604327ba81f30b12ba288d8229fceaea294a76daafbcdc367a265f0ad15248"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "go.sum",
+      "destination": "internal/thirdparty/cli/UPSTREAM-go.sum.txt",
+      "sha256": "529b436b10529f66d032aa917f4de8d6a014b06a25743357aa061dc29fb08e48",
+      "relocated_sha256": "529b436b10529f66d032aa917f4de8d6a014b06a25743357aa061dc29fb08e48"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "app.go",
+      "destination": "internal/thirdparty/cli/app.go",
+      "sha256": "4c864274edd9be9d63386af1ab1767de9305154ee3c4c9013905e2b4f9e2d1b3",
+      "relocated_sha256": "4c864274edd9be9d63386af1ab1767de9305154ee3c4c9013905e2b4f9e2d1b3"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "args.go",
+      "destination": "internal/thirdparty/cli/args.go",
+      "sha256": "cf820ff6354d5d166e9b1ec86c90e555e25bc5969f112d497fefcfe8f2cd2eda",
+      "relocated_sha256": "cf820ff6354d5d166e9b1ec86c90e555e25bc5969f112d497fefcfe8f2cd2eda"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "category.go",
+      "destination": "internal/thirdparty/cli/category.go",
+      "sha256": "0ecfcd6fc4b53f51d19b7596738c93ce8d587c68462fac409cffef37cf13d9e9",
+      "relocated_sha256": "0ecfcd6fc4b53f51d19b7596738c93ce8d587c68462fac409cffef37cf13d9e9"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "cli.go",
+      "destination": "internal/thirdparty/cli/cli.go",
+      "sha256": "8322f9d47849bf3db46d6902c8f141c2d678375dcd117ca7f4974f9dfef4328d",
+      "relocated_sha256": "8322f9d47849bf3db46d6902c8f141c2d678375dcd117ca7f4974f9dfef4328d"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "command.go",
+      "destination": "internal/thirdparty/cli/command.go",
+      "sha256": "74348a4dacd853838a26e138dc6f2d17e2c1158548ad591f0085ffec6e03b5f4",
+      "relocated_sha256": "74348a4dacd853838a26e138dc6f2d17e2c1158548ad591f0085ffec6e03b5f4"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "context.go",
+      "destination": "internal/thirdparty/cli/context.go",
+      "sha256": "3180f42f5995e8736bcb6b8bb638197827d8276a64b1d5502edee46c0969ce5d",
+      "relocated_sha256": "3180f42f5995e8736bcb6b8bb638197827d8276a64b1d5502edee46c0969ce5d"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "docs.go",
+      "destination": "internal/thirdparty/cli/docs.go",
+      "sha256": "c80bbc998107d7757b12f35587637304ca7a1a923cd7105267e93516e3aea2b8",
+      "relocated_sha256": "c80bbc998107d7757b12f35587637304ca7a1a923cd7105267e93516e3aea2b8"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "errors.go",
+      "destination": "internal/thirdparty/cli/errors.go",
+      "sha256": "e0693df045c29af3a2d1f8d47a9aed50794914a52bb50b85fa873ea26d66377c",
+      "relocated_sha256": "e0693df045c29af3a2d1f8d47a9aed50794914a52bb50b85fa873ea26d66377c"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "fish.go",
+      "destination": "internal/thirdparty/cli/fish.go",
+      "sha256": "8974c4d1a0d65c2fb9318fb6caa0c12a34cb262536038c4d3011a13634b2ae5a",
+      "relocated_sha256": "8974c4d1a0d65c2fb9318fb6caa0c12a34cb262536038c4d3011a13634b2ae5a"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag-spec.yaml",
+      "destination": "internal/thirdparty/cli/flag-spec.yaml",
+      "sha256": "f0e888a7cf88996a17277b219e50f67bdf026f1697c4d36ec26d571879d6721d",
+      "relocated_sha256": "f0e888a7cf88996a17277b219e50f67bdf026f1697c4d36ec26d571879d6721d"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag.go",
+      "destination": "internal/thirdparty/cli/flag.go",
+      "sha256": "eada18840be6d0140059b79bd35a882b384a6ada59631e02aa11d1bf59c08901",
+      "relocated_sha256": "eada18840be6d0140059b79bd35a882b384a6ada59631e02aa11d1bf59c08901"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_bool.go",
+      "destination": "internal/thirdparty/cli/flag_bool.go",
+      "sha256": "17fbb44ce4a8395992a8ba42c234b1b2426ce8063d3a36da865032c4ad163f89",
+      "relocated_sha256": "17fbb44ce4a8395992a8ba42c234b1b2426ce8063d3a36da865032c4ad163f89"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_duration.go",
+      "destination": "internal/thirdparty/cli/flag_duration.go",
+      "sha256": "0a0071046829819f5f74711953830c067065b28329d85abdc98349ffbc136b40",
+      "relocated_sha256": "0a0071046829819f5f74711953830c067065b28329d85abdc98349ffbc136b40"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_float64.go",
+      "destination": "internal/thirdparty/cli/flag_float64.go",
+      "sha256": "053bb08568b31cafcb83751560ad8f4e6486baf730b4bd8866fd405990c159a9",
+      "relocated_sha256": "053bb08568b31cafcb83751560ad8f4e6486baf730b4bd8866fd405990c159a9"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_float64_slice.go",
+      "destination": "internal/thirdparty/cli/flag_float64_slice.go",
+      "sha256": "5afcaa8e23d1bc96e5f8cc81fcf428eef990433a1dcf945bfa82e31f7a7abd31",
+      "relocated_sha256": "5afcaa8e23d1bc96e5f8cc81fcf428eef990433a1dcf945bfa82e31f7a7abd31"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_generic.go",
+      "destination": "internal/thirdparty/cli/flag_generic.go",
+      "sha256": "7d877a756d2f2e1c4487482d2b4ba2bc197cb94a8d93db9a6332e5b11ab9f552",
+      "relocated_sha256": "7d877a756d2f2e1c4487482d2b4ba2bc197cb94a8d93db9a6332e5b11ab9f552"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_int.go",
+      "destination": "internal/thirdparty/cli/flag_int.go",
+      "sha256": "43e3f25812765375da09f61e90250161a59d4c4de0e8cab7e71c03a89ca940f7",
+      "relocated_sha256": "43e3f25812765375da09f61e90250161a59d4c4de0e8cab7e71c03a89ca940f7"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_int64.go",
+      "destination": "internal/thirdparty/cli/flag_int64.go",
+      "sha256": "1a5bcb70551b4ce1bbe093383a89e3b264e4086f7b660a55ae9c46d7762cf4a4",
+      "relocated_sha256": "1a5bcb70551b4ce1bbe093383a89e3b264e4086f7b660a55ae9c46d7762cf4a4"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_int64_slice.go",
+      "destination": "internal/thirdparty/cli/flag_int64_slice.go",
+      "sha256": "889d326dc1cea833b595b32f0b838ffd01332adc619deb1816a4c5bb5a5f98c3",
+      "relocated_sha256": "889d326dc1cea833b595b32f0b838ffd01332adc619deb1816a4c5bb5a5f98c3"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_int_slice.go",
+      "destination": "internal/thirdparty/cli/flag_int_slice.go",
+      "sha256": "5f0ebcb27ef7cbe09aded283ff1d818d5aaa688b0eada96a925d7ccb901ee5d8",
+      "relocated_sha256": "5f0ebcb27ef7cbe09aded283ff1d818d5aaa688b0eada96a925d7ccb901ee5d8"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_path.go",
+      "destination": "internal/thirdparty/cli/flag_path.go",
+      "sha256": "010db4d066435dc085eabd096592d369949ded124b33e4f551d7a10541dcaf67",
+      "relocated_sha256": "010db4d066435dc085eabd096592d369949ded124b33e4f551d7a10541dcaf67"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_string.go",
+      "destination": "internal/thirdparty/cli/flag_string.go",
+      "sha256": "a46731632a3e3beda900c0c86afd060d24c0d8bb441c55dd4982c91f9c2a0b81",
+      "relocated_sha256": "a46731632a3e3beda900c0c86afd060d24c0d8bb441c55dd4982c91f9c2a0b81"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_string_slice.go",
+      "destination": "internal/thirdparty/cli/flag_string_slice.go",
+      "sha256": "416b75f081dcc7a17bf540669911b06a77f2b9ccbebda33cc352949a95597980",
+      "relocated_sha256": "416b75f081dcc7a17bf540669911b06a77f2b9ccbebda33cc352949a95597980"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_timestamp.go",
+      "destination": "internal/thirdparty/cli/flag_timestamp.go",
+      "sha256": "16a717879cdf08f743a1fe19b88375de47fa091a8c27877d2c04ed41d0cd2759",
+      "relocated_sha256": "16a717879cdf08f743a1fe19b88375de47fa091a8c27877d2c04ed41d0cd2759"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_uint.go",
+      "destination": "internal/thirdparty/cli/flag_uint.go",
+      "sha256": "43152004c087bbbb9582aa306bbdd8b97d3a4bd79976d82c9b8adc2b71ee2cd4",
+      "relocated_sha256": "43152004c087bbbb9582aa306bbdd8b97d3a4bd79976d82c9b8adc2b71ee2cd4"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_uint64.go",
+      "destination": "internal/thirdparty/cli/flag_uint64.go",
+      "sha256": "7c0d5e7895713d2bbdd273ece662e49b8466a23e673cbc778fdd59745115afd0",
+      "relocated_sha256": "7c0d5e7895713d2bbdd273ece662e49b8466a23e673cbc778fdd59745115afd0"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_uint64_slice.go",
+      "destination": "internal/thirdparty/cli/flag_uint64_slice.go",
+      "sha256": "95c5b0b046f2b9d140c3c5e3f4bfbb64d44e9e6a309a23af498c5ad0a968202c",
+      "relocated_sha256": "95c5b0b046f2b9d140c3c5e3f4bfbb64d44e9e6a309a23af498c5ad0a968202c"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "flag_uint_slice.go",
+      "destination": "internal/thirdparty/cli/flag_uint_slice.go",
+      "sha256": "af2ca7acdf15df95a19c450c5340cfca913896578ce64d8bdf1f9e8c2714850d",
+      "relocated_sha256": "af2ca7acdf15df95a19c450c5340cfca913896578ce64d8bdf1f9e8c2714850d"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "funcs.go",
+      "destination": "internal/thirdparty/cli/funcs.go",
+      "sha256": "eb258273a06eafb7c1cb27796e3e1fe630c11f3d4557e7d9d8d7638a7c62fcf2",
+      "relocated_sha256": "eb258273a06eafb7c1cb27796e3e1fe630c11f3d4557e7d9d8d7638a7c62fcf2"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "godoc-current.txt",
+      "destination": "internal/thirdparty/cli/godoc-current.txt",
+      "sha256": "e816240ab0ad67af76ed38e09ac007aab44a2f42cc7fe286176f295cde287486",
+      "relocated_sha256": "e816240ab0ad67af76ed38e09ac007aab44a2f42cc7fe286176f295cde287486"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "help.go",
+      "destination": "internal/thirdparty/cli/help.go",
+      "sha256": "c2a0e68a64c94a83199838cd662d4c476fa2b0eb2164d0b443db5d0a5111f5d9",
+      "relocated_sha256": "c2a0e68a64c94a83199838cd662d4c476fa2b0eb2164d0b443db5d0a5111f5d9"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "mkdocs-requirements.txt",
+      "destination": "internal/thirdparty/cli/mkdocs-requirements.txt",
+      "sha256": "7cb0c1b823b46becadb97299cfae73d55f9daf7590f0082b9850f30c97d5706d",
+      "relocated_sha256": "7cb0c1b823b46becadb97299cfae73d55f9daf7590f0082b9850f30c97d5706d"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "mkdocs.yml",
+      "destination": "internal/thirdparty/cli/mkdocs.yml",
+      "sha256": "ed844182ad7476af37cd3deb30313c723df33207429d8469db0f13710034a850",
+      "relocated_sha256": "ed844182ad7476af37cd3deb30313c723df33207429d8469db0f13710034a850"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "parse.go",
+      "destination": "internal/thirdparty/cli/parse.go",
+      "sha256": "b1a51c2fb0b1980a025883e344aa3eaeed8efa4f399db4a4678110dc03a4dcfd",
+      "relocated_sha256": "b1a51c2fb0b1980a025883e344aa3eaeed8efa4f399db4a4678110dc03a4dcfd"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "sliceflag.go",
+      "destination": "internal/thirdparty/cli/sliceflag.go",
+      "sha256": "68e718561826e83f24786d418b1d518298f39cfb061a409cef29e3a17e45d424",
+      "relocated_sha256": "68e718561826e83f24786d418b1d518298f39cfb061a409cef29e3a17e45d424"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "sliceflag_pre18.go",
+      "destination": "internal/thirdparty/cli/sliceflag_pre18.go",
+      "sha256": "82689fff4dc2725c757da1b2abe8f001d752cab7754af9090bbadabea34cbd08",
+      "relocated_sha256": "82689fff4dc2725c757da1b2abe8f001d752cab7754af9090bbadabea34cbd08"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "sort.go",
+      "destination": "internal/thirdparty/cli/sort.go",
+      "sha256": "ff2263c00f11f59db67ee44d841100b273a76b9d7a17de3eeb67c6d94d72383f",
+      "relocated_sha256": "ff2263c00f11f59db67ee44d841100b273a76b9d7a17de3eeb67c6d94d72383f"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "suggestions.go",
+      "destination": "internal/thirdparty/cli/suggestions.go",
+      "sha256": "ecf428bcadf798edf39da37df688787016d134c6fc82cad712930844849d0339",
+      "relocated_sha256": "ecf428bcadf798edf39da37df688787016d134c6fc82cad712930844849d0339"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "template.go",
+      "destination": "internal/thirdparty/cli/template.go",
+      "sha256": "d0316a57f1b3be28ff1dfe3dae945513092a34ac27525660c9c244d8071b443e",
+      "relocated_sha256": "d0316a57f1b3be28ff1dfe3dae945513092a34ac27525660c9c244d8071b443e"
+    },
+    {
+      "module": "github.com/urfave/cli/v2",
+      "source": "zz_generated.flags.go",
+      "destination": "internal/thirdparty/cli/zz_generated.flags.go",
+      "sha256": "3bccb38d38bb94977859e6f911b7fcd22a85f6ecd26daed5f8a6866a0c9f5f18",
+      "relocated_sha256": "3bccb38d38bb94977859e6f911b7fcd22a85f6ecd26daed5f8a6866a0c9f5f18"
+    },
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "source": "LICENSE",
+      "destination": "internal/thirdparty/lru/LICENSE",
+      "sha256": "ac1ab827be43d6fd0b2b85116d82d0fd7011ae5d81d6f561ad398e5748cc80e1",
+      "relocated_sha256": "ac1ab827be43d6fd0b2b85116d82d0fd7011ae5d81d6f561ad398e5748cc80e1"
+    },
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "source": "go.mod",
+      "destination": "internal/thirdparty/lru/UPSTREAM-go.mod.txt",
+      "sha256": "cdcf99b07e4f440140b8ef19f5a361a71edf79b42fb9027ffb0c8f9eef96282c",
+      "relocated_sha256": "cdcf99b07e4f440140b8ef19f5a361a71edf79b42fb9027ffb0c8f9eef96282c"
+    },
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "source": "expirable/expirable_lru.go",
+      "destination": "internal/thirdparty/lru/expirable/expirable_lru.go",
+      "sha256": "cdf721624dbf8f3bb94002dd626d35c926adf912cb1f9402551c81309d6b906c",
+      "relocated_sha256": "228d90b2919eccec77aba8f7d7a153fc887513ba4bb5801ae1c47dd6cbf7abe0"
+    },
+    {
+      "module": "github.com/hashicorp/golang-lru/v2",
+      "source": "internal/list.go",
+      "destination": "internal/thirdparty/lru/internal/list.go",
+      "sha256": "81db950294579bcaeccc75b3167149dce5c170007c5316145d802cedf93f80a9",
+      "relocated_sha256": "81db950294579bcaeccc75b3167149dce5c170007c5316145d802cedf93f80a9"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "README.md",
+      "destination": "internal/thirdparty/mpb/README.md",
+      "sha256": "7f9bd44a768f69c298e3dabd97954912ea339015b89a71a7f57cede7c74f2382",
+      "relocated_sha256": "7f9bd44a768f69c298e3dabd97954912ea339015b89a71a7f57cede7c74f2382"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "UNLICENSE",
+      "destination": "internal/thirdparty/mpb/UNLICENSE",
+      "sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c",
+      "relocated_sha256": "7e12e5df4bae12cb21581ba157ced20e1986a0508dd10d0e8a4ab9a4cf94e85c"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "go.mod",
+      "destination": "internal/thirdparty/mpb/UPSTREAM-go.mod.txt",
+      "sha256": "bc41222fcead84787e8c806bb8c9986a51fbb4342fc3b0bb47e3104a3bcbcdd3",
+      "relocated_sha256": "bc41222fcead84787e8c806bb8c9986a51fbb4342fc3b0bb47e3104a3bcbcdd3"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "go.sum",
+      "destination": "internal/thirdparty/mpb/UPSTREAM-go.sum.txt",
+      "sha256": "d05e22f7182f89324c21e94a1472307124be3137112f452181b8b7c28418939e",
+      "relocated_sha256": "d05e22f7182f89324c21e94a1472307124be3137112f452181b8b7c28418939e"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "bar.go",
+      "destination": "internal/thirdparty/mpb/bar.go",
+      "sha256": "6a7c50c4f0a6ec0d266fbbf12a30897f70496f928a1f663058d95c87071b3a03",
+      "relocated_sha256": "357a0939d374b6584ed8d4d398a1f2d4910b3104e6ae48d16635df44b66598be"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "bar_filler.go",
+      "destination": "internal/thirdparty/mpb/bar_filler.go",
+      "sha256": "c57ab02c0efdcccb0d3e22a52ae1eecf3fdd06b5fbbe1d092407df37e74b9bd4",
+      "relocated_sha256": "52fcd8443742c3c4515bb3f5534f59abac606e545b24d68bf3ff1dbbb10108f0"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "bar_filler_bar.go",
+      "destination": "internal/thirdparty/mpb/bar_filler_bar.go",
+      "sha256": "837f365fa95bc35abc85a741c7de01613589c9721b13b5736c5a42d64452db88",
+      "relocated_sha256": "0b00d2011dbe4fbcacadbf1523ac97a0ed84d435b0dadaf160ff1c6e089013c7"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "bar_filler_spinner.go",
+      "destination": "internal/thirdparty/mpb/bar_filler_spinner.go",
+      "sha256": "c057ef352861c7bd368f69f59dd59a4cbcca035ac17bca4d78527b8913da5c9c",
+      "relocated_sha256": "a0262bb40713f473648325c5d6a08b69c953e36871dce1c3f4a398582d4f2fb5"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "bar_option.go",
+      "destination": "internal/thirdparty/mpb/bar_option.go",
+      "sha256": "16f957f91092d44bbb72c26c2d14ad39fdd94a10feac9c0fe41e388b1788db74",
+      "relocated_sha256": "432a86a8f9e25c18626e167ec2a37761cd6ada028244865ba13e94deb95af083"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "container_option.go",
+      "destination": "internal/thirdparty/mpb/container_option.go",
+      "sha256": "852c1efd97361343aef72ba6e4cf3c616913079fa96adbc2829542cffd2c7a38",
+      "relocated_sha256": "28c6a2b9de48221bb02930eff78f9aff48de02fa698f0d51cadaa5d077aef18b"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/doc.go",
+      "destination": "internal/thirdparty/mpb/cwriter/doc.go",
+      "sha256": "41ee496de59fb49e2f7916c8ebbd3c2fba8ac052ec44948ec8fba19f7fd99997",
+      "relocated_sha256": "41ee496de59fb49e2f7916c8ebbd3c2fba8ac052ec44948ec8fba19f7fd99997"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/util_bsd.go",
+      "destination": "internal/thirdparty/mpb/cwriter/util_bsd.go",
+      "sha256": "506c0d8a3fe0dabf0aee0aa0c0b90e2c84601c2bdb0e751b06d9cc9bcfa73a26",
+      "relocated_sha256": "506c0d8a3fe0dabf0aee0aa0c0b90e2c84601c2bdb0e751b06d9cc9bcfa73a26"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/util_linux.go",
+      "destination": "internal/thirdparty/mpb/cwriter/util_linux.go",
+      "sha256": "89ae38621268b863d9a54233efde7eeac1a0a31281f6dde778f668d44a432e60",
+      "relocated_sha256": "89ae38621268b863d9a54233efde7eeac1a0a31281f6dde778f668d44a432e60"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/util_solaris.go",
+      "destination": "internal/thirdparty/mpb/cwriter/util_solaris.go",
+      "sha256": "5c770a2bfcf23fc929b2e4945924fa8c3ab05b5ffc232e6f605f8b9a37a194e0",
+      "relocated_sha256": "5c770a2bfcf23fc929b2e4945924fa8c3ab05b5ffc232e6f605f8b9a37a194e0"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/util_zos.go",
+      "destination": "internal/thirdparty/mpb/cwriter/util_zos.go",
+      "sha256": "51900caa2dfd4bc69522f1bf1c24546b7484f0f51b8a7d821c056413e124e5cd",
+      "relocated_sha256": "51900caa2dfd4bc69522f1bf1c24546b7484f0f51b8a7d821c056413e124e5cd"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/writer.go",
+      "destination": "internal/thirdparty/mpb/cwriter/writer.go",
+      "sha256": "85f725587bf88c4ee84b481afd62d8fec80feef98d174fc0e4601837c81248f5",
+      "relocated_sha256": "85f725587bf88c4ee84b481afd62d8fec80feef98d174fc0e4601837c81248f5"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/writer_posix.go",
+      "destination": "internal/thirdparty/mpb/cwriter/writer_posix.go",
+      "sha256": "fec05b20d9fa70bf68c65bcab126146294441a47516ed08f934913c0da7e2a63",
+      "relocated_sha256": "fec05b20d9fa70bf68c65bcab126146294441a47516ed08f934913c0da7e2a63"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "cwriter/writer_windows.go",
+      "destination": "internal/thirdparty/mpb/cwriter/writer_windows.go",
+      "sha256": "120bd493e47206a44b9135f9381335c48740422e6680375d60fe48b5041e2ab5",
+      "relocated_sha256": "120bd493e47206a44b9135f9381335c48740422e6680375d60fe48b5041e2ab5"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/any.go",
+      "destination": "internal/thirdparty/mpb/decor/any.go",
+      "sha256": "9a0968d49a0b4db6f5af8165725109209317f0749832efefeee5bc5433990741",
+      "relocated_sha256": "9a0968d49a0b4db6f5af8165725109209317f0749832efefeee5bc5433990741"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/counters.go",
+      "destination": "internal/thirdparty/mpb/decor/counters.go",
+      "sha256": "196a0c5b04e16dbcacba48ce344ea0ef1cba03cc1727ea784c9ba20f6fcbd40d",
+      "relocated_sha256": "196a0c5b04e16dbcacba48ce344ea0ef1cba03cc1727ea784c9ba20f6fcbd40d"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/decorator.go",
+      "destination": "internal/thirdparty/mpb/decor/decorator.go",
+      "sha256": "d68c855a0db6731d45efd0a1d9deb0efa520ff776c6c1a0eb910eff886aae674",
+      "relocated_sha256": "d68c855a0db6731d45efd0a1d9deb0efa520ff776c6c1a0eb910eff886aae674"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/doc.go",
+      "destination": "internal/thirdparty/mpb/decor/doc.go",
+      "sha256": "a90781d1a91afc7ce846f76836f447fe181ca0f18ce37de1e4986415e989e0a3",
+      "relocated_sha256": "dcab02d1820955f84d0be78a6f8f1fb5411bec40c88f718b007b08b74c83fba7"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/elapsed.go",
+      "destination": "internal/thirdparty/mpb/decor/elapsed.go",
+      "sha256": "df74436f3b6b8f70ff4229d0d1dd2da53517f2ecdf4de862eada8dc9104666d5",
+      "relocated_sha256": "df74436f3b6b8f70ff4229d0d1dd2da53517f2ecdf4de862eada8dc9104666d5"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/eta.go",
+      "destination": "internal/thirdparty/mpb/decor/eta.go",
+      "sha256": "2ae2f230af35be20e8acf4caffabb528da8707a7fb2666c071f7ae2ff5826c19",
+      "relocated_sha256": "2ae2f230af35be20e8acf4caffabb528da8707a7fb2666c071f7ae2ff5826c19"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/merge.go",
+      "destination": "internal/thirdparty/mpb/decor/merge.go",
+      "sha256": "37f304a0640466801cc13f345c43e69b0f0375c3f8de43f0d256df13c2aeef89",
+      "relocated_sha256": "37f304a0640466801cc13f345c43e69b0f0375c3f8de43f0d256df13c2aeef89"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/moving_average.go",
+      "destination": "internal/thirdparty/mpb/decor/moving_average.go",
+      "sha256": "a5a5a2d27d17b19a21d6d8bd0659b679f599cca10784a2fc71e8565c5cdaaf61",
+      "relocated_sha256": "a5a5a2d27d17b19a21d6d8bd0659b679f599cca10784a2fc71e8565c5cdaaf61"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/name.go",
+      "destination": "internal/thirdparty/mpb/decor/name.go",
+      "sha256": "088718f2178ff82c26c06d2b7322c60ba3d40dff43a4a6fb1302039feb92194f",
+      "relocated_sha256": "088718f2178ff82c26c06d2b7322c60ba3d40dff43a4a6fb1302039feb92194f"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/on_complete.go",
+      "destination": "internal/thirdparty/mpb/decor/on_complete.go",
+      "sha256": "057cdcf1b8f983f08c184f4ea1452becc9832452da0ee9959191004ce9ca98d6",
+      "relocated_sha256": "057cdcf1b8f983f08c184f4ea1452becc9832452da0ee9959191004ce9ca98d6"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/percentage.go",
+      "destination": "internal/thirdparty/mpb/decor/percentage.go",
+      "sha256": "3df37c90a82f2119d119673b08a15568d557f357b0daac41e08dea7295e42643",
+      "relocated_sha256": "b3df4eb9155615cbe2077d17e823bd7fc124fe26d74041c56b26ced8d015da72"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/size_type.go",
+      "destination": "internal/thirdparty/mpb/decor/size_type.go",
+      "sha256": "6cfe0240f7251fef412ff4803e87f6c8abf19b87f0ce1afc0db4487ae0ce3be3",
+      "relocated_sha256": "6cfe0240f7251fef412ff4803e87f6c8abf19b87f0ce1afc0db4487ae0ce3be3"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/sizeb1000_string.go",
+      "destination": "internal/thirdparty/mpb/decor/sizeb1000_string.go",
+      "sha256": "a01aa60eb30038d754edf22217a9cb3d21ff3806e86a97609f78aa53fc58cedf",
+      "relocated_sha256": "a01aa60eb30038d754edf22217a9cb3d21ff3806e86a97609f78aa53fc58cedf"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/sizeb1024_string.go",
+      "destination": "internal/thirdparty/mpb/decor/sizeb1024_string.go",
+      "sha256": "04eddb88ecc7c9bd2288ff80918f3274809598faf2e990b3e46a58635a1510d6",
+      "relocated_sha256": "04eddb88ecc7c9bd2288ff80918f3274809598faf2e990b3e46a58635a1510d6"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/speed.go",
+      "destination": "internal/thirdparty/mpb/decor/speed.go",
+      "sha256": "80f7c24b628a53dd2e4d76ad5d2aeb1ed43a97ba5332deec3b40e2c87ca8f870",
+      "relocated_sha256": "80f7c24b628a53dd2e4d76ad5d2aeb1ed43a97ba5332deec3b40e2c87ca8f870"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "decor/spinner.go",
+      "destination": "internal/thirdparty/mpb/decor/spinner.go",
+      "sha256": "e9a108cdec5c87eb152802a3db919045c635c0d0ab63364bf5ed3abc6ad23c1e",
+      "relocated_sha256": "e9a108cdec5c87eb152802a3db919045c635c0d0ab63364bf5ed3abc6ad23c1e"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "doc.go",
+      "destination": "internal/thirdparty/mpb/doc.go",
+      "sha256": "72f7d13a882d72465021cda03b7e36e27d296b8bc76c63df4a3b48bb991ffe00",
+      "relocated_sha256": "72f7d13a882d72465021cda03b7e36e27d296b8bc76c63df4a3b48bb991ffe00"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "internal/percentage.go",
+      "destination": "internal/thirdparty/mpb/internal/percentage.go",
+      "sha256": "07f529e11633503ad780d26cd0ffa7e8b2663769df6c1cd8b65d325d5f62385a",
+      "relocated_sha256": "07f529e11633503ad780d26cd0ffa7e8b2663769df6c1cd8b65d325d5f62385a"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "internal/predicate.go",
+      "destination": "internal/thirdparty/mpb/internal/predicate.go",
+      "sha256": "68e1681d2435d43ab7ea909e46cfcac78173f2fe48709dfb32c22556b00e6891",
+      "relocated_sha256": "68e1681d2435d43ab7ea909e46cfcac78173f2fe48709dfb32c22556b00e6891"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "internal/width.go",
+      "destination": "internal/thirdparty/mpb/internal/width.go",
+      "sha256": "c8b1376a7c87c9fa44201ae38f2fcc01614b578cc9d8a00122cbbabc292f4200",
+      "relocated_sha256": "c8b1376a7c87c9fa44201ae38f2fcc01614b578cc9d8a00122cbbabc292f4200"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "priority_queue.go",
+      "destination": "internal/thirdparty/mpb/priority_queue.go",
+      "sha256": "16d26103a255d682ec75688237280be3497d2e0bf5ab6ba5739795732642b550",
+      "relocated_sha256": "16d26103a255d682ec75688237280be3497d2e0bf5ab6ba5739795732642b550"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "progress.go",
+      "destination": "internal/thirdparty/mpb/progress.go",
+      "sha256": "dbc928d347b49d1f2b795344242564e0c33023040ce5e491a3b480ffc71000e7",
+      "relocated_sha256": "36b41070a1c3ef241de9fa69c774c0ff5ddb42bbaac97823e4cff9401ce40c99"
+    },
+    {
+      "module": "github.com/vbauerster/mpb/v7",
+      "source": "proxyreader.go",
+      "destination": "internal/thirdparty/mpb/proxyreader.go",
+      "sha256": "2da280e39d51e93339bd8c5fc9d759bab78ab4bc6ecd3a25d9ace95750756ee9",
+      "relocated_sha256": "2da280e39d51e93339bd8c5fc9d759bab78ab4bc6ecd3a25d9ace95750756ee9"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "CHANGELOG.md",
+      "destination": "internal/thirdparty/xorm/CHANGELOG.md",
+      "sha256": "972c5108332d85ee81d216dff288021fa5da6513c94fcbb43e5fddfbf1bfa19d",
+      "relocated_sha256": "972c5108332d85ee81d216dff288021fa5da6513c94fcbb43e5fddfbf1bfa19d"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "CONTRIBUTING.md",
+      "destination": "internal/thirdparty/xorm/CONTRIBUTING.md",
+      "sha256": "78a7888995b987024aba2b89c08ce3bf263f090adfbf9169aca16b65e48071a1",
+      "relocated_sha256": "78a7888995b987024aba2b89c08ce3bf263f090adfbf9169aca16b65e48071a1"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "LICENSE",
+      "destination": "internal/thirdparty/xorm/LICENSE",
+      "sha256": "41289a3aae885599b0854b26f3366e531b4664580d7bc245ce7b75bdd5e5f67c",
+      "relocated_sha256": "41289a3aae885599b0854b26f3366e531b4664580d7bc245ce7b75bdd5e5f67c"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "Makefile",
+      "destination": "internal/thirdparty/xorm/Makefile",
+      "sha256": "5aa6e861db518b8b2ddb9df3ed2c2c019e664ac005ccf5ce428c13e1ced3894a",
+      "relocated_sha256": "5aa6e861db518b8b2ddb9df3ed2c2c019e664ac005ccf5ce428c13e1ced3894a"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "README.md",
+      "destination": "internal/thirdparty/xorm/README.md",
+      "sha256": "3fb48b9c1c0ec53d09c8c7676d76bb1e4a6028957e4ada53bcb00c20a955cc9d",
+      "relocated_sha256": "3fb48b9c1c0ec53d09c8c7676d76bb1e4a6028957e4ada53bcb00c20a955cc9d"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "README_CN.md",
+      "destination": "internal/thirdparty/xorm/README_CN.md",
+      "sha256": "20f14ca221c99eec6a18c2f8d7ae978b86934952482880bbeb89bba3a272e71e",
+      "relocated_sha256": "20f14ca221c99eec6a18c2f8d7ae978b86934952482880bbeb89bba3a272e71e"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "go.mod",
+      "destination": "internal/thirdparty/xorm/UPSTREAM-go.mod.txt",
+      "sha256": "e264b2ce1bd24139ab32dd676517040a0351dab84217164db5d0792aa0f0e5d6",
+      "relocated_sha256": "e264b2ce1bd24139ab32dd676517040a0351dab84217164db5d0792aa0f0e5d6"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "go.sum",
+      "destination": "internal/thirdparty/xorm/UPSTREAM-go.sum.txt",
+      "sha256": "9b858379844e37e9bf19209b7252f5e87b016d135bee8f7a45831ca94166de8a",
+      "relocated_sha256": "9b858379844e37e9bf19209b7252f5e87b016d135bee8f7a45831ca94166de8a"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/cache.go",
+      "destination": "internal/thirdparty/xorm/caches/cache.go",
+      "sha256": "4331544ae1967f60ca56581ac1c1f905905332a528df944f6af2187c39071e66",
+      "relocated_sha256": "8719a5e411ff611cc1a88106acfb4c1815b6163df2f78bfa0a720441c571c0e7"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/encode.go",
+      "destination": "internal/thirdparty/xorm/caches/encode.go",
+      "sha256": "30ccebae8941f455be9884037dcc58beb417fe39e2c9a37a057ea60008d29d1d",
+      "relocated_sha256": "30ccebae8941f455be9884037dcc58beb417fe39e2c9a37a057ea60008d29d1d"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/leveldb.go",
+      "destination": "internal/thirdparty/xorm/caches/leveldb.go",
+      "sha256": "d874e733c518a3c34087ac8ac83c12aebbc9c7ebb35340c23e7a16074426e651",
+      "relocated_sha256": "d874e733c518a3c34087ac8ac83c12aebbc9c7ebb35340c23e7a16074426e651"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/lru.go",
+      "destination": "internal/thirdparty/xorm/caches/lru.go",
+      "sha256": "6a1dff3344f8269f4d2d50ed05ac20dd6814402ed7f96e4eed3105c2a10151ff",
+      "relocated_sha256": "6a1dff3344f8269f4d2d50ed05ac20dd6814402ed7f96e4eed3105c2a10151ff"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/manager.go",
+      "destination": "internal/thirdparty/xorm/caches/manager.go",
+      "sha256": "428332603117a542b5d3bc55e0cfa7a008e03ad429345f4afaa14b9ff4fe999c",
+      "relocated_sha256": "428332603117a542b5d3bc55e0cfa7a008e03ad429345f4afaa14b9ff4fe999c"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "caches/memory_store.go",
+      "destination": "internal/thirdparty/xorm/caches/memory_store.go",
+      "sha256": "c108367f4b173004d9507408a026e3ece2f1c17f31b59b06421073fd37eed020",
+      "relocated_sha256": "c108367f4b173004d9507408a026e3ece2f1c17f31b59b06421073fd37eed020"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "contexts/context_cache.go",
+      "destination": "internal/thirdparty/xorm/contexts/context_cache.go",
+      "sha256": "0251e524192e2350079dea0317b30dd07cc42de8133aecc0a0ad184799d37158",
+      "relocated_sha256": "0251e524192e2350079dea0317b30dd07cc42de8133aecc0a0ad184799d37158"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "contexts/hook.go",
+      "destination": "internal/thirdparty/xorm/contexts/hook.go",
+      "sha256": "cbcd94699974334ce28397ead10283230a849ad48d064228d2c5f58fd94d1ef7",
+      "relocated_sha256": "cbcd94699974334ce28397ead10283230a849ad48d064228d2c5f58fd94d1ef7"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "convert.go",
+      "destination": "internal/thirdparty/xorm/convert.go",
+      "sha256": "3c11204986c03517424901b000d8eb58c03da1857cb9dd258efae4d012eed472",
+      "relocated_sha256": "3c11204986c03517424901b000d8eb58c03da1857cb9dd258efae4d012eed472"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "convert/conversion.go",
+      "destination": "internal/thirdparty/xorm/convert/conversion.go",
+      "sha256": "608665060660347fe1929f5848bce0e97b991dbe8e0aedd5cca71df5a74673cd",
+      "relocated_sha256": "608665060660347fe1929f5848bce0e97b991dbe8e0aedd5cca71df5a74673cd"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/db.go",
+      "destination": "internal/thirdparty/xorm/core/db.go",
+      "sha256": "ea50da247d9d75e6db38840a17d03c6b5d9c247a19035b35d2fd37a5cc2d419d",
+      "relocated_sha256": "200910cf25d6770699a776263218764b355ef01709cb7b855b5e4139f91e29c9"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/error.go",
+      "destination": "internal/thirdparty/xorm/core/error.go",
+      "sha256": "0a5e775a2869e608a09c6eaf0585894e0669e7eadc1ed08039ddb179e84f1d64",
+      "relocated_sha256": "0a5e775a2869e608a09c6eaf0585894e0669e7eadc1ed08039ddb179e84f1d64"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/interface.go",
+      "destination": "internal/thirdparty/xorm/core/interface.go",
+      "sha256": "5378892778ec7db600cbb48844e6a44b1b9f1c14ee01beec7447a8453474a1eb",
+      "relocated_sha256": "5378892778ec7db600cbb48844e6a44b1b9f1c14ee01beec7447a8453474a1eb"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/rows.go",
+      "destination": "internal/thirdparty/xorm/core/rows.go",
+      "sha256": "d1d2d59edcc409d767b4ed0fde6f89d7ad1c242f80d3f13e06363ea6fa7b700d",
+      "relocated_sha256": "d1d2d59edcc409d767b4ed0fde6f89d7ad1c242f80d3f13e06363ea6fa7b700d"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/scan.go",
+      "destination": "internal/thirdparty/xorm/core/scan.go",
+      "sha256": "4cd5000b83721112530923019e169d65fa3674087ec192ca70214b3087c3627f",
+      "relocated_sha256": "4cd5000b83721112530923019e169d65fa3674087ec192ca70214b3087c3627f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/stmt.go",
+      "destination": "internal/thirdparty/xorm/core/stmt.go",
+      "sha256": "f7de30aefe8f0229f2fa8aaf6886c568ac16295c4145dfac022732ae99d782e8",
+      "relocated_sha256": "6186f459a7a5f70ab394f011d52df8c8313cd334d16b445f80e723dc3c08ea7f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "core/tx.go",
+      "destination": "internal/thirdparty/xorm/core/tx.go",
+      "sha256": "518dba8c9470205b620c7019e7442cc6ec1739a286cf256affce58302171d39f",
+      "relocated_sha256": "3898c033f9cfcdb491115f01bd9d1cb684974835ead45209eac5be4382fb2fc3"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/dialect.go",
+      "destination": "internal/thirdparty/xorm/dialects/dialect.go",
+      "sha256": "c8b764c090c14ec42c25b8d1806344442b7830a3b5c6b2f01b4115442599853f",
+      "relocated_sha256": "cd783228c27c180bd7cc473f862e293452dd3acaede3bfc751861436351a2be5"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/driver.go",
+      "destination": "internal/thirdparty/xorm/dialects/driver.go",
+      "sha256": "0b9c57a2bf5f1c7efcc1ae685338b1c32bbbafcfc485c584ab67cad98649da95",
+      "relocated_sha256": "0b9c57a2bf5f1c7efcc1ae685338b1c32bbbafcfc485c584ab67cad98649da95"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/filter.go",
+      "destination": "internal/thirdparty/xorm/dialects/filter.go",
+      "sha256": "cd096140e9263128ffcd0cf021b6c6e366cae2693795fecb789f66a8b1112893",
+      "relocated_sha256": "cd096140e9263128ffcd0cf021b6c6e366cae2693795fecb789f66a8b1112893"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/gen_reserved.sh",
+      "destination": "internal/thirdparty/xorm/dialects/gen_reserved.sh",
+      "sha256": "9b32904a0604ab39907ed81582f8e5d0952053795147942bd9780a72271d3933",
+      "relocated_sha256": "9b32904a0604ab39907ed81582f8e5d0952053795147942bd9780a72271d3933"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/mssql.go",
+      "destination": "internal/thirdparty/xorm/dialects/mssql.go",
+      "sha256": "db8fe3e93a50bc5ab70da1179b223282aee5ca562c20ca790cec12a945ff4f14",
+      "relocated_sha256": "ba313a98045967431f3c615411ddce76753f6834a5e94f90c2e7fae382a09d81"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/mysql.go",
+      "destination": "internal/thirdparty/xorm/dialects/mysql.go",
+      "sha256": "47f60aba14c7969669229f1615c24c25c18c923b3d449a52970441e5681069ca",
+      "relocated_sha256": "72310ec54d3acf6ee4b583f06b3146b30c1fc63e8e7502b4f0fa34da52527c06"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/oracle.go",
+      "destination": "internal/thirdparty/xorm/dialects/oracle.go",
+      "sha256": "13923c88e1d779dd6d784b496f9e500241046afac33b373c3e8ee802efcaaf88",
+      "relocated_sha256": "765989669828821ec9a71e62ea5285555e5e496ae1ce89c2e9a4f786d6a8d4bb"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/pg_reserved.txt",
+      "destination": "internal/thirdparty/xorm/dialects/pg_reserved.txt",
+      "sha256": "a3f8c52f153f584e989895aca1acfac6a35bbd150c6bc4d49dded5a50c9e61d0",
+      "relocated_sha256": "a3f8c52f153f584e989895aca1acfac6a35bbd150c6bc4d49dded5a50c9e61d0"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/postgres.go",
+      "destination": "internal/thirdparty/xorm/dialects/postgres.go",
+      "sha256": "0c45ac7f268ffc6d432a2b498fcccc9d270c6f6bbf929b6c57327262bc6c5472",
+      "relocated_sha256": "d61f5aa6d26c80358f5e5c52376112bd911704316a50f115bd9faa63aa59c361"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/quote.go",
+      "destination": "internal/thirdparty/xorm/dialects/quote.go",
+      "sha256": "3f134c3d1d2fdda5c03275d40f5df2913f085797a2b9b5ab0da788ce606439ad",
+      "relocated_sha256": "3f134c3d1d2fdda5c03275d40f5df2913f085797a2b9b5ab0da788ce606439ad"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/sqlite3.go",
+      "destination": "internal/thirdparty/xorm/dialects/sqlite3.go",
+      "sha256": "35ed2b1b3699c6504e35e6140c3002807df980547cd48cc1e9a97e61f1e4560d",
+      "relocated_sha256": "370615bc80585db9513c89fb316199dbab9e275afe34221e1e4435dc2a38ed59"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/table_name.go",
+      "destination": "internal/thirdparty/xorm/dialects/table_name.go",
+      "sha256": "4a5c01fb77d58b1e8a6c3e2836710cf4411b8bdd51418e8b463f317a484fcc88",
+      "relocated_sha256": "8cee25ac01e64f9d2b9d98df476dc6b499233d5d1ddf7d9a83a4ca3a770f6822"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "dialects/time.go",
+      "destination": "internal/thirdparty/xorm/dialects/time.go",
+      "sha256": "7035100f73bd01c19d6dbe5b62572a3ebad6340d4f83f4d47cce863ab9570174",
+      "relocated_sha256": "89775008649a04ef096c9047472a3f57d238245940980b8efc280949ea69864f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "doc.go",
+      "destination": "internal/thirdparty/xorm/doc.go",
+      "sha256": "4c63e0d41741f988af4827c3bc0549512becf093827c061010b09d4080ecc186",
+      "relocated_sha256": "f4155ce676ba5910d7b9785d3a77bf80dbf540746ee798b41b54cd59ea05c17d"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "engine.go",
+      "destination": "internal/thirdparty/xorm/engine.go",
+      "sha256": "293e6b947ae910b7f9dd36a4b695123429b0b56050e917de27ba147eb8b3640c",
+      "relocated_sha256": "87210c8e4f19b8ca51e984fc93b22c958d425b2d791e064f7882828eac28f97f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "engine_group.go",
+      "destination": "internal/thirdparty/xorm/engine_group.go",
+      "sha256": "a3f03e804b7050f17b5fc02d7ab54e04218a6b8b7485cd370e3cd3cf2601eca0",
+      "relocated_sha256": "92085fb2b5747997439147724b8bbc4633c3a69ca459c5223bd2ea5fd9f853e7"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "engine_group_policy.go",
+      "destination": "internal/thirdparty/xorm/engine_group_policy.go",
+      "sha256": "04fa087096c3b13f30aab436082be7573154fb01dcd313c24f085451135f8764",
+      "relocated_sha256": "04fa087096c3b13f30aab436082be7573154fb01dcd313c24f085451135f8764"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "error.go",
+      "destination": "internal/thirdparty/xorm/error.go",
+      "sha256": "8acb62ece037c4e2d4ec2144695a86514fa50e9371897e1be2415808419b5d47",
+      "relocated_sha256": "8acb62ece037c4e2d4ec2144695a86514fa50e9371897e1be2415808419b5d47"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "interface.go",
+      "destination": "internal/thirdparty/xorm/interface.go",
+      "sha256": "f0755dc391015f1b9d01c93ef0145321f3bf2c25537d9e876fa5fa346c4cf86b",
+      "relocated_sha256": "37f9480d00bf3d50f0a1237ee79648c80bb66ff5c96259dad29bb3b154e65182"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/json/json.go",
+      "destination": "internal/thirdparty/xorm/internal/json/json.go",
+      "sha256": "fdcf59b5313b37f8e29562517aee9a6c40dd26043a4cec26256cc19e08a0eab5",
+      "relocated_sha256": "fdcf59b5313b37f8e29562517aee9a6c40dd26043a4cec26256cc19e08a0eab5"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/cache.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/cache.go",
+      "sha256": "6515435f4b728df18169ac96e31b1e8533d559226cdcb5f63cdfa6daedd4ca3b",
+      "relocated_sha256": "08a466a15288861936ed67c4f1c05e93b5a7f71f9d4876cfeaeaf0d619b7b7de"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/column_map.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/column_map.go",
+      "sha256": "e5340dde5fb567c359999f62e1cb698aeda0f6aeaae7abed1a51ce1e572578be",
+      "relocated_sha256": "b100ba2369ec63c5de894ede36b5a13dcb7735beb134b5930d56c8bae6aeed04"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/expr_param.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/expr_param.go",
+      "sha256": "7edf9121e877c86be83c18f017a2d8eaf9999a655900bc8b712101c1188c1708",
+      "relocated_sha256": "aedf810162d191b5f4087329989006c6de006441ce80fb730b9a593589801617"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/insert.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/insert.go",
+      "sha256": "e4c65163413612eda20192bfc47a8d6710022058b0c767ddf7f5435b64c512c0",
+      "relocated_sha256": "458a47705f6dadec8ff54d8b26c1fd2b6c5aac868e536df764e7e9296c10b698"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/pk.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/pk.go",
+      "sha256": "17d314949b8b1b02a8bac6fa19cf75cb2f3dcde3fb25a2175be425c16b250433",
+      "relocated_sha256": "f3a4ccd4f5c1a9a5058522fbc3452eb0ce91d0f96a3ccbbee0a1d33708edb3ed"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/query.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/query.go",
+      "sha256": "94817a5eeca2aba9f48a4c651c1b544166fae93bd5cb81afb331fa79c07ab321",
+      "relocated_sha256": "90fd26247d37254fe7f134fe9a42fafc86f726d22d92dbc9835eaf566857d1d2"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/statement.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/statement.go",
+      "sha256": "4973199297dec8658630832e994e69bf89c8f21490ba2e24dc9554f5ae1d6278",
+      "relocated_sha256": "f8e7ff17fdae96fdfbcb02d72eeaa679dd7e9a86029b04b75cd63775ff752eac"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/statement_args.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/statement_args.go",
+      "sha256": "8b4d9fc7273e28bcd492eaef5c64c48067691aef8cdd8dbe0e23cde59d1a72b2",
+      "relocated_sha256": "a8c6f1780d67ee416f83fc674d162a2fbd5ee528b7be914359533c78febc3038"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/update.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/update.go",
+      "sha256": "bacae38401200d564fb7ff730ba5d8e335b9be952cb0b5c7f5d3d054fd7b716b",
+      "relocated_sha256": "fa0f6b13b5dd7396941ed56e9a8b10fda7e31aa513ac3f68dc41b680cfb5d6e2"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/statements/values.go",
+      "destination": "internal/thirdparty/xorm/internal/statements/values.go",
+      "sha256": "84a632777261928659647aad8a37003d2b95759524f45880c85c400568476b91",
+      "relocated_sha256": "7a69aea743eb0b0f0e46a5b8d034626b224e7f142eab38add33dcd6371324096"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/name.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/name.go",
+      "sha256": "d6148cbdd6d14ff7a9a36af683ec67a055fc9cde6e458e79e7d7972b1c80463f",
+      "relocated_sha256": "d6148cbdd6d14ff7a9a36af683ec67a055fc9cde6e458e79e7d7972b1c80463f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/reflect.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/reflect.go",
+      "sha256": "80f7be1a1d5003179202f356eb6210708e7f7def98db6d64bd642d636d2b8ce4",
+      "relocated_sha256": "80f7be1a1d5003179202f356eb6210708e7f7def98db6d64bd642d636d2b8ce4"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/slice.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/slice.go",
+      "sha256": "3087371e43c9c2bdc4f81db9e8efafbd1f21067d717d75f3b8c6da3e90873062",
+      "relocated_sha256": "3087371e43c9c2bdc4f81db9e8efafbd1f21067d717d75f3b8c6da3e90873062"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/sql.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/sql.go",
+      "sha256": "4368f634aa2d391331a25eca29bf946ae31bac6e2eb75c238927d3ade8118126",
+      "relocated_sha256": "4368f634aa2d391331a25eca29bf946ae31bac6e2eb75c238927d3ade8118126"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/strings.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/strings.go",
+      "sha256": "6c62251bd3fa8a64f603aa2300ff7db177157c713bf25c70130bc5763e5b415f",
+      "relocated_sha256": "6c62251bd3fa8a64f603aa2300ff7db177157c713bf25c70130bc5763e5b415f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "internal/utils/zero.go",
+      "destination": "internal/thirdparty/xorm/internal/utils/zero.go",
+      "sha256": "865786bcb7d5b7aa4ee30158270002a8c703bbebcc51723e967fafee2e669ef1",
+      "relocated_sha256": "865786bcb7d5b7aa4ee30158270002a8c703bbebcc51723e967fafee2e669ef1"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "log/logger.go",
+      "destination": "internal/thirdparty/xorm/log/logger.go",
+      "sha256": "ca1800dcbc38aa7c62517c17fb839da555ceb4147c146e5e4281c21d7753ad12",
+      "relocated_sha256": "ca1800dcbc38aa7c62517c17fb839da555ceb4147c146e5e4281c21d7753ad12"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "log/logger_context.go",
+      "destination": "internal/thirdparty/xorm/log/logger_context.go",
+      "sha256": "5115e98cffa364d6034eaa3c9f99936c728a350ce041de95ee3fc1858c113365",
+      "relocated_sha256": "827234f8c5a23b2eecc217dc4e4fff74a4f829e7c7d74c8455474240dddbaf79"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "log/syslogger.go",
+      "destination": "internal/thirdparty/xorm/log/syslogger.go",
+      "sha256": "cdfe0eda83250d674d7440ca76f58d67107d6f8fd52ab4b36022c900deb4a122",
+      "relocated_sha256": "cdfe0eda83250d674d7440ca76f58d67107d6f8fd52ab4b36022c900deb4a122"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "names/mapper.go",
+      "destination": "internal/thirdparty/xorm/names/mapper.go",
+      "sha256": "d8ab8055c52b00fa921357af54f0fd579be3df8de9570b91050666830b22f171",
+      "relocated_sha256": "d8ab8055c52b00fa921357af54f0fd579be3df8de9570b91050666830b22f171"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "names/table_name.go",
+      "destination": "internal/thirdparty/xorm/names/table_name.go",
+      "sha256": "81ee62d040803539bc8e22a8a5a6a837d1fe3867b8b988a870eee68529f7a3c6",
+      "relocated_sha256": "81ee62d040803539bc8e22a8a5a6a837d1fe3867b8b988a870eee68529f7a3c6"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "processors.go",
+      "destination": "internal/thirdparty/xorm/processors.go",
+      "sha256": "02c14d302ad1d596c5a2872d69db11fa8b5f05de97f0e662617c7c9e20db0637",
+      "relocated_sha256": "02c14d302ad1d596c5a2872d69db11fa8b5f05de97f0e662617c7c9e20db0637"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "rows.go",
+      "destination": "internal/thirdparty/xorm/rows.go",
+      "sha256": "3c96dbb53e1d62989245c12efcc5ac3ce4722a854bb054d809a6f98823b0d282",
+      "relocated_sha256": "cd4bf6bc6d69ada0e976c2e830048528437c06331dd1a952bff979efb036dde9"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/column.go",
+      "destination": "internal/thirdparty/xorm/schemas/column.go",
+      "sha256": "d4ce028103f9fd554bb79f92178af4b5038e42fcef31b38035c765719e81d766",
+      "relocated_sha256": "d4ce028103f9fd554bb79f92178af4b5038e42fcef31b38035c765719e81d766"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/index.go",
+      "destination": "internal/thirdparty/xorm/schemas/index.go",
+      "sha256": "8b4e99f6dc582ba0ae1d85dea52b4ea025f14c426e936c6004522fe6190632a7",
+      "relocated_sha256": "8b4e99f6dc582ba0ae1d85dea52b4ea025f14c426e936c6004522fe6190632a7"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/pk.go",
+      "destination": "internal/thirdparty/xorm/schemas/pk.go",
+      "sha256": "4fdc0f65ade925a6005b063fc3c94fcda6abb99a6d9538ba653f9bb49dead379",
+      "relocated_sha256": "2085e2092a2828c8ab5185a64b9db61c33f5bbec9861989add8dc9e539de32a2"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/quote.go",
+      "destination": "internal/thirdparty/xorm/schemas/quote.go",
+      "sha256": "143023031b1dc9479c53a9a18ab3855b66f4083669d4a7e287cfcc9e61b0daea",
+      "relocated_sha256": "143023031b1dc9479c53a9a18ab3855b66f4083669d4a7e287cfcc9e61b0daea"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/table.go",
+      "destination": "internal/thirdparty/xorm/schemas/table.go",
+      "sha256": "4576987bf108b063c686d6688bb091b07cfd1012799611ce78e20bc4871f34ee",
+      "relocated_sha256": "4576987bf108b063c686d6688bb091b07cfd1012799611ce78e20bc4871f34ee"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "schemas/type.go",
+      "destination": "internal/thirdparty/xorm/schemas/type.go",
+      "sha256": "4351277eb190c43a68b7cade2c94a662564f1baea8fbd6c0e7e28d16f734edc4",
+      "relocated_sha256": "4351277eb190c43a68b7cade2c94a662564f1baea8fbd6c0e7e28d16f734edc4"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session.go",
+      "destination": "internal/thirdparty/xorm/session.go",
+      "sha256": "5aa82f7db119520276079052c70ca279d3b344b3d4fbbc3c7fa99b036cd56bef",
+      "relocated_sha256": "329f0b757b791262073a3d4bef042cfc0a84d9f25322ae983aecabde5f7512da"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_cols.go",
+      "destination": "internal/thirdparty/xorm/session_cols.go",
+      "sha256": "194975913514b001e051ff6c1762015922db8c1734ea78c074b952918c707e43",
+      "relocated_sha256": "0a4f20303e8191c5558fef177ea6061e0014b9ed19ebcbcb6f9688164a6ee122"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_cond.go",
+      "destination": "internal/thirdparty/xorm/session_cond.go",
+      "sha256": "f4e05ad70e8018dbbdf71d1caffdaf0a30e38822bcf2409e209293b1a8c004a2",
+      "relocated_sha256": "f4e05ad70e8018dbbdf71d1caffdaf0a30e38822bcf2409e209293b1a8c004a2"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_convert.go",
+      "destination": "internal/thirdparty/xorm/session_convert.go",
+      "sha256": "ccff69a3478a70dae6fbcd848f22c0dea3512175ba9b04ad57b07b7f53238188",
+      "relocated_sha256": "6ccb12b033b2a9a12b5d7210aa5219b65da529de6dea464dfa7ceb3c49a20543"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_delete.go",
+      "destination": "internal/thirdparty/xorm/session_delete.go",
+      "sha256": "efe8e40df2eb85b47c7bb513dcabaf8a51707b61031ff040e194c0f1231803d6",
+      "relocated_sha256": "f2219b79bd69c450c76dd2552b98d577a2ff2de51c449e9b85e75f112d0a4741"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_exist.go",
+      "destination": "internal/thirdparty/xorm/session_exist.go",
+      "sha256": "e17f8adefbf4130b6d1aa46307742b4ad10902f23e381c43d081f5d3683ef0a6",
+      "relocated_sha256": "e17f8adefbf4130b6d1aa46307742b4ad10902f23e381c43d081f5d3683ef0a6"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_find.go",
+      "destination": "internal/thirdparty/xorm/session_find.go",
+      "sha256": "51f4069ff380e1a51c1a50d18c6d2989bc22589acc9f72ba170181c9474eda0c",
+      "relocated_sha256": "d6c2475e229c31e69c30540cb154c4e8ad1514d0025abe0e170d92a85d4852e6"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_get.go",
+      "destination": "internal/thirdparty/xorm/session_get.go",
+      "sha256": "a615830e6e04cf85dcea702569b05ac84b97e46477779c226d7cea6e453c704f",
+      "relocated_sha256": "e45f5659a92fe65cf4a1cee41fa07ee4859f5bff3a7f7130c1f1e40c8feb5bc8"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_insert.go",
+      "destination": "internal/thirdparty/xorm/session_insert.go",
+      "sha256": "07c9b592fc1803161f32c1ba1bcc291f25be894c459b8355a3fecc1496d3c4f0",
+      "relocated_sha256": "90fa1882f3eb77655d916ae76484fd10d5106dda481a31fc7dc53ce462a7a0dd"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_iterate.go",
+      "destination": "internal/thirdparty/xorm/session_iterate.go",
+      "sha256": "20c699a44b80e3af45e71f634777b525d0f57891e61999cb1fd43f1d30266d20",
+      "relocated_sha256": "cfe0a292f4525e8700c6802e914ffc100130633f3c6119548c98d0d93f19cd1f"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_query.go",
+      "destination": "internal/thirdparty/xorm/session_query.go",
+      "sha256": "2af911063bab53c3392f538dd52168d50e4ba8f900cf5ec883d15c7f0bb04a8c",
+      "relocated_sha256": "f1618515e6dfc1f5031e8df10d2caf5f25e4c6dfe0371c8c409427fd1a1ae3a3"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_raw.go",
+      "destination": "internal/thirdparty/xorm/session_raw.go",
+      "sha256": "f448cd861e9997de462aae465163ad7d021b55b2306702154d52ededd062fbed",
+      "relocated_sha256": "f3f98c9b6f4b95c878116f9c65760ed817a50301ddc74b15c921698fcda2008a"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_schema.go",
+      "destination": "internal/thirdparty/xorm/session_schema.go",
+      "sha256": "97acc067d11b04191d50f302a54deecf69904b8fa21c9ea70ce680d32d052e21",
+      "relocated_sha256": "5f65ecf25a65c7ae1d1fbac727e6aad2bd384bc63b84026e98de4648bd723ffe"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_stats.go",
+      "destination": "internal/thirdparty/xorm/session_stats.go",
+      "sha256": "390045ff0dba22980cb9cfc70c9e0e3eb2f0557a3ccf89af7f45e42141324d02",
+      "relocated_sha256": "390045ff0dba22980cb9cfc70c9e0e3eb2f0557a3ccf89af7f45e42141324d02"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_tx.go",
+      "destination": "internal/thirdparty/xorm/session_tx.go",
+      "sha256": "2901830f809c82a8219c5888558ce2a40ab402f1c0a83e08b3d6280b55713569",
+      "relocated_sha256": "2901830f809c82a8219c5888558ce2a40ab402f1c0a83e08b3d6280b55713569"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "session_update.go",
+      "destination": "internal/thirdparty/xorm/session_update.go",
+      "sha256": "f47447611e0b46fb5ee70cd0b6f2c8c5fc67b9e423c434fbace4edff954401ea",
+      "relocated_sha256": "173ff2333140e515c34054e377127dbbdeb86280a0ba5c92c3f23fdf679be825"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "tags/parser.go",
+      "destination": "internal/thirdparty/xorm/tags/parser.go",
+      "sha256": "432a0cc2c54a66cd563abd1addd59c666cbd9538cfad5e8b0878ab4b1bf6ce51",
+      "relocated_sha256": "7b93a598d3d343a2e8d88a9f1ee259998c19b3f49c3512948526ae0553847bba"
+    },
+    {
+      "module": "xorm.io/xorm",
+      "source": "tags/tag.go",
+      "destination": "internal/thirdparty/xorm/tags/tag.go",
+      "sha256": "ed6e7690aa3c351458a59b0e1ba92801cbd76f41803ea37e826091cdd0872b92",
+      "relocated_sha256": "b1a64b7af008451862a3e3fb971cb4859444c1cda8760262dae31fcf52a04ddb"
+    }
+  ]
+}

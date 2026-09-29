@@ -1,0 +1,629 @@
+//go:build !nos3
+// +build !nos3
+
+/*
+ * JuiceFS, Copyright 2018 Juicedata, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+package object
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/middleware"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
+	smithymiddleware "github.com/aws/smithy-go/middleware"
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/utils"
+	"github.com/djosh34/s3-smb/internal/logging"
+	"github.com/pkg/errors"
+)
+
+const awsDefaultRegion = "us-east-1"
+const s3RequestIDKey = "X-Amz-Request-Id"
+
+type s3client struct {
+	tierStorage
+	s3              *s3.Client
+	bucket          string
+	region          string
+	disableChecksum bool
+}
+
+func (s *s3client) String() string {
+	if s.s3.Options().BaseEndpoint != nil {
+		endpoint := *s.s3.Options().BaseEndpoint
+		if idx := strings.Index(endpoint, "://"); idx >= 0 {
+			endpoint = endpoint[idx+3:]
+		}
+		return fmt.Sprintf("s3://%s/%s/", endpoint, s.bucket)
+	}
+	return fmt.Sprintf("s3://%s/", s.bucket)
+}
+
+func (s *s3client) Limits() Limits {
+	return Limits{
+		IsSupportMultipartUpload: true,
+		IsSupportUploadPartCopy:  true,
+		MinPartSize:              5 << 20,
+		MaxPartSize:              5 << 30,
+		MaxPartCount:             10000,
+	}
+}
+
+func isExists(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "BucketAlreadyExists") || strings.Contains(msg, "BucketAlreadyOwnedByYou")
+}
+
+func (s *s3client) Create(ctx context.Context) error {
+	if _, _, _, err := s.List(ctx, "", "", "", "", 1, true); err == nil {
+		return nil
+	}
+	_, err := s.s3.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: &s.bucket,
+		CreateBucketConfiguration: &types.CreateBucketConfiguration{
+			LocationConstraint: types.BucketLocationConstraint(s.region),
+		}})
+	if err != nil && isExists(err) {
+		err = nil
+	}
+	return err
+}
+
+func (s *s3client) Head(ctx context.Context, key string) (Object, error) {
+	param := s3.HeadObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	}
+	r, err := s.s3.HeadObject(ctx, &param)
+	if err != nil {
+		var notFound *types.NotFound
+		if errors.As(err, &notFound) {
+			err = os.ErrNotExist
+		}
+		return nil, err
+	}
+	return &obj{
+		key,
+		aws.ToInt64(r.ContentLength),
+		aws.ToTime(r.LastModified),
+		strings.HasSuffix(key, "/"),
+		getOrDefaultScValue(string(r.StorageClass), string(types.StorageClassStandard)),
+		aws.ToString(r.Restore),
+	}, nil
+}
+
+func (s *s3client) Get(ctx context.Context, key string, off, limit int64, getters ...AttrGetter) (io.ReadCloser, error) {
+	params := &s3.GetObjectInput{Bucket: &s.bucket, Key: &key}
+	if off > 0 || limit > 0 {
+		var r string
+		if limit > 0 {
+			r = fmt.Sprintf("bytes=%d-%d", off, off+limit-1)
+		} else {
+			r = fmt.Sprintf("bytes=%d-", off)
+		}
+		params.Range = &r
+	}
+	attrs := ApplyGetters(getters...)
+	resp, err := s.s3.GetObject(ctx, params)
+	if err != nil {
+		var re s3.ResponseError
+		if errors.As(err, &re) {
+			attrs.SetRequestID(re.ServiceRequestID())
+		}
+		return nil, err
+	}
+	if reqID, ok := middleware.GetRequestIDMetadata(resp.ResultMetadata); ok {
+		attrs.SetRequestID(reqID)
+	}
+	if off == 0 && limit == -1 && !s.disableChecksum {
+		cs := resp.Metadata[strings.ToLower(checksumAlgr)]
+		if cs != "" && resp.ContentLength != nil {
+			resp.Body = verifyChecksum(resp.Body, cs, *resp.ContentLength)
+		}
+	}
+	attrs.SetStorageClass(string(resp.StorageClass))
+	return resp.Body, nil
+}
+
+func (s *s3client) Put(ctx context.Context, key string, in io.Reader, getters ...AttrGetter) error {
+	t := s.getRuntimeTier(ctx)
+	var body io.ReadSeeker
+	if b, ok := in.(io.ReadSeeker); ok {
+		body = b
+	} else {
+		data, err := io.ReadAll(in)
+		if err != nil {
+			return err
+		}
+		body = bytes.NewReader(data)
+	}
+	mimeType := utils.GuessMimeType(key)
+	params := &s3.PutObjectInput{
+		Bucket:            &s.bucket,
+		Key:               &key,
+		Body:              body,
+		ContentType:       &mimeType,
+		StorageClass:      types.StorageClass(t.Sc),
+		ChecksumAlgorithm: "", // X-Amz-Content-Sha256: UNSIGNED-PAYLOAD
+	}
+	if t.encodedTag != "" {
+		params.Tagging = aws.String(t.encodedTag)
+	}
+	if !s.disableChecksum {
+		checksum := generateChecksum(body)
+		params.Metadata = map[string]string{checksumAlgr: checksum}
+	}
+	attrs := ApplyGetters(getters...)
+	attrs.SetStorageClass(t.Sc)
+	resp, err := s.s3.PutObject(ctx, params)
+	if err != nil {
+		var re s3.ResponseError
+		if errors.As(err, &re) {
+			attrs.SetRequestID(re.ServiceRequestID())
+		}
+		return err
+	}
+	if reqID, ok := middleware.GetRequestIDMetadata(resp.ResultMetadata); ok {
+		attrs.SetRequestID(reqID)
+	}
+	return err
+}
+
+func (s *s3client) Copy(ctx context.Context, dst, src string) error {
+	t := s.getRuntimeTier(ctx)
+	sc := getOrDefaultScValue(t.Sc, string(types.StorageClassStandard))
+	src = s.bucket + "/" + src
+	params := &s3.CopyObjectInput{
+		Bucket:       &s.bucket,
+		Key:          &dst,
+		CopySource:   &src,
+		StorageClass: types.StorageClass(sc),
+	}
+	if t.encodedTag != "" {
+		params.TaggingDirective = types.TaggingDirectiveReplace
+		params.Tagging = aws.String(t.encodedTag)
+	}
+	_, err := s.s3.CopyObject(ctx, params)
+	return err
+}
+
+func (s *s3client) Delete(ctx context.Context, key string, getters ...AttrGetter) error {
+	param := s3.DeleteObjectInput{
+		Bucket: &s.bucket,
+		Key:    &key,
+	}
+	resp, err := s.s3.DeleteObject(ctx, &param)
+	attrs := ApplyGetters(getters...)
+	if err != nil {
+		var re s3.ResponseError
+		if errors.As(err, &re) {
+			attrs.SetRequestID(re.ServiceRequestID())
+		}
+		if strings.Contains(err.Error(), "NoSuchKey") {
+			err = nil
+		}
+	} else {
+		if reqID, ok := middleware.GetRequestIDMetadata(resp.ResultMetadata); ok {
+			attrs.SetRequestID(reqID)
+		}
+	}
+	return err
+}
+
+func (s *s3client) List(ctx context.Context, prefix, start, token, delimiter string, limit int64, followLink bool) ([]Object, bool, string, error) {
+	if limit > 1000 {
+		limit = 1000
+	}
+	param := s3.ListObjectsV2Input{
+		Bucket:       &s.bucket,
+		Prefix:       &prefix,
+		MaxKeys:      aws.Int32(int32(limit)),
+		EncodingType: types.EncodingTypeUrl,
+		StartAfter:   aws.String(start),
+		Delimiter:    aws.String(delimiter),
+	}
+	if token != "" {
+		param.ContinuationToken = aws.String(token)
+	}
+	resp, err := s.s3.ListObjectsV2(ctx, &param)
+	if err != nil {
+		return nil, false, "", err
+	}
+	n := len(resp.Contents)
+	objs := make([]Object, n)
+	for i := 0; i < n; i++ {
+		o := resp.Contents[i]
+		rawKey := aws.ToString(o.Key)
+		oKey, err := decodeKey(rawKey, aws.String(string(resp.EncodingType)))
+		if err != nil {
+			return nil, false, "", errors.WithMessagef(err, "failed to decode key %s", rawKey)
+		}
+		if !strings.HasPrefix(oKey, prefix) || oKey < start {
+			return nil, false, "", fmt.Errorf("found invalid key %s from List, prefix: %s, marker: %s", oKey, prefix, start)
+		}
+		objs[i] = &obj{
+			oKey,
+			aws.ToInt64(o.Size),
+			aws.ToTime(o.LastModified),
+			strings.HasSuffix(oKey, "/"),
+			getOrDefaultScValue(string(o.StorageClass), string(types.ObjectStorageClassStandard)),
+			"",
+		}
+	}
+	if delimiter != "" {
+		for _, p := range resp.CommonPrefixes {
+			rawPrefix := aws.ToString(p.Prefix)
+			prefix, err := decodeKey(rawPrefix, aws.String(string(resp.EncodingType)))
+			if err != nil {
+				return nil, false, "", errors.WithMessagef(err, "failed to decode commonPrefixes %s", rawPrefix)
+			}
+			objs = append(objs, &obj{prefix, 0, time.Unix(0, 0), true, "", ""})
+		}
+		sort.Slice(objs, func(i, j int) bool { return objs[i].Key() < objs[j].Key() })
+	}
+	return objs, aws.ToBool(resp.IsTruncated), aws.ToString(resp.NextContinuationToken), nil
+}
+
+func (s *s3client) ListAll(ctx context.Context, prefix, marker string, followLink bool) (<-chan Object, error) {
+	return nil, notSupported
+}
+
+func (s *s3client) CreateMultipartUpload(ctx context.Context, key string) (*MultipartUpload, error) {
+	params := &s3.CreateMultipartUploadInput{
+		Bucket:       &s.bucket,
+		Key:          &key,
+		StorageClass: types.StorageClass(s.tiers[0].Sc),
+	}
+	resp, err := s.s3.CreateMultipartUpload(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	uploadID := aws.ToString(resp.UploadId)
+	if uploadID == "" {
+		return nil, fmt.Errorf("s3: CreateMultipartUpload returned empty UploadId for %s", key)
+	}
+	return &MultipartUpload{UploadID: uploadID, MinPartSize: 5 << 20, MaxCount: 10000}, nil
+}
+
+func (s *s3client) UploadPart(ctx context.Context, key string, uploadID string, num int, body []byte) (*Part, error) {
+	params := &s3.UploadPartInput{
+		Bucket:            &s.bucket,
+		Key:               &key,
+		UploadId:          &uploadID,
+		Body:              bytes.NewReader(body),
+		PartNumber:        aws.Int32(int32(num)),
+		ChecksumAlgorithm: "", // X-Amz-Content-Sha256: UNSIGNED-PAYLOAD
+	}
+	resp, err := s.s3.UploadPart(ctx, params)
+	if err != nil {
+		return nil, err
+	}
+	return &Part{Num: num, ETag: aws.ToString(resp.ETag)}, nil
+}
+
+func (s *s3client) UploadPartCopy(ctx context.Context, key string, uploadID string, num int, srcKey string, off, size int64) (*Part, error) {
+	resp, err := s.s3.UploadPartCopy(ctx, &s3.UploadPartCopyInput{
+		Bucket:          aws.String(s.bucket),
+		CopySource:      aws.String(s.bucket + "/" + srcKey),
+		CopySourceRange: aws.String(fmt.Sprintf("bytes=%d-%d", off, off+size-1)),
+		Key:             aws.String(key),
+		PartNumber:      aws.Int32(int32(num)),
+		UploadId:        aws.String(uploadID),
+	})
+	if err != nil {
+		return nil, err
+	}
+	if resp.CopyPartResult == nil {
+		return nil, fmt.Errorf("s3: UploadPartCopy returned no CopyPartResult for %s part %d", key, num)
+	}
+	return &Part{Num: num, ETag: aws.ToString(resp.CopyPartResult.ETag)}, nil
+}
+
+func (s *s3client) AbortUpload(ctx context.Context, key string, uploadID string) {
+	params := &s3.AbortMultipartUploadInput{
+		Bucket:   &s.bucket,
+		Key:      &key,
+		UploadId: &uploadID,
+	}
+	_, _ = s.s3.AbortMultipartUpload(ctx, params)
+}
+
+func (s *s3client) CompleteUpload(ctx context.Context, key string, uploadID string, parts []*Part) error {
+	var s3Parts []types.CompletedPart
+	for i := range parts {
+		s3Parts = append(s3Parts, types.CompletedPart{ETag: &parts[i].ETag, PartNumber: aws.Int32(int32(parts[i].Num))})
+	}
+	params := &s3.CompleteMultipartUploadInput{
+		Bucket:          &s.bucket,
+		Key:             &key,
+		UploadId:        &uploadID,
+		MultipartUpload: &types.CompletedMultipartUpload{Parts: s3Parts},
+	}
+	_, err := s.s3.CompleteMultipartUpload(ctx, params)
+	return err
+}
+
+func (s *s3client) ListUploads(ctx context.Context, marker string) ([]*PendingPart, string, error) {
+	input := &s3.ListMultipartUploadsInput{
+		Bucket:    aws.String(s.bucket),
+		KeyMarker: aws.String(marker),
+	}
+
+	result, err := s.s3.ListMultipartUploads(ctx, input)
+	if err != nil {
+		return nil, "", err
+	}
+	parts := make([]*PendingPart, len(result.Uploads))
+	for i, u := range result.Uploads {
+		parts[i] = &PendingPart{aws.ToString(u.Key), aws.ToString(u.UploadId), aws.ToTime(u.Initiated)}
+	}
+	return parts, aws.ToString(result.NextKeyMarker), nil
+}
+
+func (s *s3client) Restore(ctx context.Context, key string, days int32) error {
+	_, err := s.s3.RestoreObject(ctx, &s3.RestoreObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(key),
+		RestoreRequest: &types.RestoreRequest{
+			Days:                 aws.Int32(days),
+			GlacierJobParameters: &types.GlacierJobParameters{Tier: types.TierStandard},
+		},
+	})
+	return err
+}
+
+// defaultChecksumOpts returns AWS SDK load options that set checksum calculation
+// and validation to "when_required" by default. If the user has explicitly set
+// AWS_REQUEST_CHECKSUM_CALCULATION or AWS_RESPONSE_CHECKSUM_VALIDATION, those
+// env vars take precedence and we skip the corresponding programmatic default,
+// because config.WithXxx options have higher priority than environment variables
+// in the AWS SDK v2 resolution order.
+func defaultChecksumOpts() []func(*config.LoadOptions) error {
+	var opts []func(*config.LoadOptions) error
+	if os.Getenv("AWS_REQUEST_CHECKSUM_CALCULATION") == "" {
+		opts = append(opts, config.WithRequestChecksumCalculation(aws.RequestChecksumCalculationWhenRequired))
+	}
+	if os.Getenv("AWS_RESPONSE_CHECKSUM_VALIDATION") == "" {
+		opts = append(opts, config.WithResponseChecksumValidation(aws.ResponseChecksumValidationWhenRequired))
+	}
+	return opts
+}
+
+func autoS3Region(bucketName, accessKey, secretKey, token string) (string, error) {
+	var cfg aws.Config
+	var err error
+	if accessKey != "" {
+		loadOpts := []func(*config.LoadOptions) error{config.WithLogger(logging.SDKLogger{})}
+		loadOpts = append(loadOpts, defaultChecksumOpts()...)
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, token)))
+		cfg, err = config.LoadDefaultConfig(ctx, loadOpts...)
+	} else {
+		cfg, err = config.LoadDefaultConfig(ctx, append(defaultChecksumOpts(), config.WithLogger(logging.SDKLogger{}))...)
+	}
+	if err != nil {
+		return "", err
+	}
+	cfg.HTTPClient = httpClient
+	var regions []string
+	if r := os.Getenv("AWS_DEFAULT_REGION"); r != "" {
+		regions = []string{r}
+	} else {
+		regions = []string{awsDefaultRegion, "cn-north-1"}
+	}
+	var result *s3.GetBucketLocationOutput
+	for _, r := range regions {
+		// try to get bucket location
+		cfg.Region = r
+		client := s3.NewFromConfig(cfg)
+		result, err = client.GetBucketLocation(ctx, &s3.GetBucketLocationInput{
+			Bucket: aws.String(bucketName),
+		})
+		if err == nil {
+			logger.Debugf("Get location of bucket %q from region %q endpoint success: %s",
+				bucketName, r, result.LocationConstraint)
+			return string(result.LocationConstraint), nil
+		}
+		// continue to try other regions if the credentials are invalid, otherwise stop trying.
+		var err1 *smithy.GenericAPIError
+		if errors.As(err, &err1) {
+			if err1.Code != "SignatureDoesNotMatch" && err1.Code != "InvalidAccessKeyId" {
+				return "", err
+			}
+		}
+		logger.Debugf("Fail to get location of bucket %q from region %q endpoint: %s", bucketName, r, err)
+	}
+	return "", err
+}
+
+func parseRegion(endpoint string) string {
+	if strings.HasPrefix(endpoint, "s3-") || strings.HasPrefix(endpoint, "s3.") {
+		endpoint = endpoint[3:]
+	}
+	if strings.HasPrefix(endpoint, "dualstack") {
+		endpoint = endpoint[len("dualstack."):]
+	}
+	if endpoint == "amazonaws.com" {
+		endpoint = awsDefaultRegion + "." + endpoint
+	}
+	region := strings.Split(endpoint, ".")[0]
+	if region == "external-1" {
+		region = awsDefaultRegion
+	}
+	return region
+}
+
+func defaultPathStyle() bool {
+	v := os.Getenv("JFS_S3_VHOST_STYLE")
+	return v == "" || v == "0" || v == "false"
+}
+
+var oracleCompileRegexp = `.*\.compat.objectstorage\.(.*)\.oraclecloud\.com`
+var OVHCompileRegexp = `^s3\.(\w*)(\.\w*)?\.cloud\.ovh\.net$`
+
+func newS3(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) {
+	if !strings.Contains(endpoint, "://") {
+		if len(strings.Split(endpoint, ".")) > 1 && !strings.HasSuffix(endpoint, ".amazonaws.com") {
+			endpoint = fmt.Sprintf("http://%s", endpoint)
+		} else {
+			endpoint = fmt.Sprintf("https://%s", endpoint)
+		}
+	}
+	endpoint = strings.Trim(endpoint, "/")
+	uri, err := url.ParseRequestURI(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("Invalid endpoint %s: %s", endpoint, err.Error())
+	}
+
+	var (
+		bucketName string
+		region     string
+		ep         string
+	)
+
+	if uri.Path != "" {
+		// [ENDPOINT]/[BUCKET]
+		pathParts := strings.Split(uri.Path, "/")
+		bucketName = pathParts[1]
+		if strings.Contains(uri.Host, ".amazonaws.com") {
+			// standard s3
+			// s3-[REGION].[REST_OF_ENDPOINT]/[BUCKET]
+			// s3.[REGION].amazonaws.com[.cn]/[BUCKET]
+			endpoint = uri.Host
+			region = parseRegion(endpoint)
+		} else {
+			// compatible s3
+			ep = uri.Host
+		}
+	} else {
+		// [BUCKET].[ENDPOINT]
+		hostParts := strings.SplitN(uri.Host, ".", 2)
+		if len(hostParts) == 1 {
+			// take endpoint as bucketname
+			bucketName = hostParts[0]
+			if region, err = autoS3Region(bucketName, accessKey, secretKey, token); err != nil {
+				return nil, fmt.Errorf("Can't guess your region for bucket %s: %s", bucketName, err)
+			}
+		} else {
+			// get region or endpoint
+			if strings.Contains(uri.Host, ".amazonaws.com") {
+				vpcCompile := regexp.MustCompile(`^.*\.(.*)\.vpce\.amazonaws\.com`)
+				// vpc link
+				if vpcCompile.MatchString(uri.Host) {
+					bucketName = hostParts[0]
+					ep = hostParts[1]
+					if submatch := vpcCompile.FindStringSubmatch(uri.Host); len(submatch) == 2 {
+						region = submatch[1]
+					}
+				} else {
+					// standard s3
+					// [BUCKET].s3-[REGION].[REST_OF_ENDPOINT]
+					// [BUCKET].s3.[REGION].amazonaws.com[.cn]
+					hostParts = strings.SplitN(uri.Host, ".s3", 2)
+					bucketName = hostParts[0]
+					endpoint = "s3" + hostParts[1]
+					region = parseRegion(endpoint)
+				}
+			} else {
+				// compatible s3
+				bucketName = hostParts[0]
+				ep = hostParts[1]
+
+				for _, compileRegexp := range []string{oracleCompileRegexp, OVHCompileRegexp} {
+					compile := regexp.MustCompile(compileRegexp)
+					if compile.MatchString(ep) {
+						if submatch := compile.FindStringSubmatch(ep); len(submatch) >= 2 {
+							region = submatch[1]
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	if region == "" {
+		region = os.Getenv("AWS_REGION")
+	}
+	if region == "" {
+		region = os.Getenv("AWS_DEFAULT_REGION")
+	}
+	if region == "" {
+		region = awsDefaultRegion
+	}
+	var optFns []func(*s3.Options)
+	ssl := strings.ToLower(uri.Scheme) == "https"
+	optFns = append(optFns, func(options *s3.Options) {
+		options.EndpointOptions.DisableHTTPS = !ssl
+		options.Region = region
+		options.APIOptions = append(options.APIOptions, func(stack *smithymiddleware.Stack) error {
+			return v4.SwapComputePayloadSHA256ForUnsignedPayloadMiddleware(stack)
+		})
+		options.RetryMaxAttempts = 1
+	})
+
+	disable100Continue := strings.EqualFold(uri.Query().Get("disable-100-continue"), "true")
+	if disable100Continue {
+		logger.Infof("HTTP header 100-Continue is disabled")
+		optFns = append(optFns, func(options *s3.Options) {
+			options.ContinueHeaderThresholdBytes = -1
+		})
+	}
+	disableChecksum := strings.EqualFold(uri.Query().Get("disable-checksum"), "true")
+	if disableChecksum {
+		logger.Infof("default CRC checksum is disabled")
+	}
+
+	if ep != "" {
+		optFns = append(optFns, func(options *s3.Options) {
+			options.BaseEndpoint = aws.String(uri.Scheme + "://" + ep)
+			options.UsePathStyle = defaultPathStyle()
+		})
+	}
+	var cfg aws.Config
+	loadOpts := []func(*config.LoadOptions) error{config.WithLogger(logging.SDKLogger{})}
+	loadOpts = append(loadOpts, defaultChecksumOpts()...)
+	if accessKey == "anonymous" {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(aws.AnonymousCredentials{}))
+	} else if accessKey != "" {
+		loadOpts = append(loadOpts, config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(accessKey, secretKey, token)))
+	}
+	cfg, err = config.LoadDefaultConfig(ctx, loadOpts...)
+	if err != nil {
+		return nil, err
+	}
+
+	cfg.HTTPClient = httpClient
+	client := s3.NewFromConfig(cfg, optFns...)
+	return &s3client{bucket: bucketName, s3: client, disableChecksum: disableChecksum, region: region}, nil
+}
+
+func init() {
+	Register("s3", newS3)
+}
