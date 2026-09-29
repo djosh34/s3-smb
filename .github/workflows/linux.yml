@@ -1,0 +1,35 @@
+name: Linux acceptance
+# CI is extra verification, never the development/debugging loop. Dispatch only
+# after the exact revision passes scripts/test-linux.sh release locally.
+on:
+  workflow_dispatch:
+    inputs:
+      local_tested_sha:
+        description: Full commit SHA that passed the local release suite
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
+    steps:
+      - name: Require matching local evidence revision
+        env:
+          TESTED: ${{ inputs.local_tested_sha }}
+          REVISION: ${{ github.sha }}
+        run: test "$TESTED" = "$REVISION"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Same local Docker entrypoint and complete release gate
+        env:
+          S3_SMB_TEST_ARTIFACTS: ${{ runner.temp }}/s3-smb-artifacts
+        run: scripts/test-linux.sh release
+      - name: Preserve identical logs and evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: linux-${{ github.sha }}
+          path: ${{ runner.temp }}/s3-smb-artifacts
+          if-no-files-found: error
+          retention-days: 14
