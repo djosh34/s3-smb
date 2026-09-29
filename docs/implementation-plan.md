@@ -1,6 +1,6 @@
 # s3-smb implementation contract
 
-Status: approved by the user; execution explicitly on hold until a later instruction to start. The [wayfinding map](https://github.com/djosh34/s3-smb/issues/1) records decisions; the [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) tracks delivery. [Final approval](https://github.com/djosh34/s3-smb/issues/29) records agreement with the plan, not completed implementation or tests.
+Status: approved and execution authorized by the user's explicit start instruction on 2026-09-29. Implementation and acceptance are in progress; authorization is not evidence of completion. The [wayfinding map](https://github.com/djosh34/s3-smb/issues/1) records decisions; the [implementation backlog](https://github.com/djosh34/s3-smb/issues/18) tracks delivery. [Final approval](https://github.com/djosh34/s3-smb/issues/29) records agreement with the plan, not completed implementation or tests.
 
 This contract specifies required behavior, how the application uses JuiceFS, and necessary corrections. Follow the pinned upstream implementations for everything else. Do not turn descriptions of native internals into new application subsystems or rigid designs. The [review findings](reviews/plan-audit.md) and [complete comment record](reviews/reviewer-comments.md) retain the supporting evidence and alternatives.
 
@@ -128,4 +128,4 @@ Pin JuiceFS v1.4.1 at `0b90c7db5a929ae6adc5faad948d108efd2c99f9` and SMB at `277
 
 Original project code uses AGPL-3.0-only. Include upstream notices and source-distribution information. Every implementation task needs tests, relevant documentation and review of both repository standards and the accepted spec. Record the tested/reviewed revision and distinguish source inspection from executed evidence.
 
-No unresolved data-loss, secret-exposure or false-compatibility claim is acceptable. The final Mac task is now required; passing Linux alone is not completion of this updated release plan. No agent-coordination scheme belongs here. The user approved this backlog but explicitly deferred execution. Start implementation only after a later user instruction authorizes it.
+No unresolved data-loss, secret-exposure or false-compatibility claim is acceptable. The final Mac task is now required; passing Linux alone is not completion of this updated release plan. No agent-coordination scheme belongs here. The user approved this backlog and subsequently released the execution hold on 2026-09-29. Keep unfinished acceptance requirements open until their evidence is recorded.

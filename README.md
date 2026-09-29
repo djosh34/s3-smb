@@ -2,7 +2,7 @@
 
 A terminal-only Go SMB server that stores files in S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
 
-**Status: plan approved; execution on hold at the user's request. Research probes have run, but the application has not been implemented or tested end to end. Do not use this project for real backups yet.**
+**Status: implementation authorized and in progress. The user released the execution hold on 2026-09-29. Release acceptance, including actual Mac Time Machine recovery, is not complete. Do not use this project for real backups yet.**
 
 ## First-release direction
 
@@ -41,9 +41,9 @@ A terminal-only Go SMB server that stores files in S3-compatible storage through
 - [Every reviewer comment](docs/reviews/reviewer-comments.md): complete summaries, disagreements, dispositions and the four final reports.
 - [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): the user approved the plan and explicitly deferred execution.
 
-The backlog is approved. Its `status:awaiting-execution` label records the user's hold, not an unresolved design question. Do not start until the user explicitly authorizes implementation.
+The backlog is approved and the user has explicitly authorized implementation. Follow the contract and issue dependencies; close tasks only after their tests and independent reviews pass.
 
-### Starting implementation later
+### Implementation invocation
 
 In this repository, give a coding agent this request; no special slash command is required:
 
@@ -59,7 +59,7 @@ suite in GitHub CI. Keep full Mac Time Machine backup/crash/restore
 acceptance last. Do not reduce the agreed scope or silently skip failures.
 ```
 
-That is a future invocation example, not authorization from this document.
+The user supplied this authorization on 2026-09-29. The historical plan approval remains distinct from implementation and test evidence.
 
 The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
 
