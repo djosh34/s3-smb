@@ -1,0 +1,48 @@
+name: Final hosted Mac acceptance
+# Manual, last gate only. No earlier Mac capability-probe workflow.
+on:
+  workflow_dispatch:
+    inputs:
+      reviewed_sha:
+        description: Exact immutable SHA with clean review handoff
+        required: true
+        type: string
+      public_version:
+        description: Published immutable application version matching this source
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: final-hosted-mac
+  cancel-in-progress: false
+jobs:
+  time-machine:
+    runs-on: macos-15
+    timeout-minutes: 360
+    steps:
+      - name: Require reviewed immutable revision
+        env:
+          REVIEWED: ${{ inputs.reviewed_sha }}
+          REVISION: ${{ github.sha }}
+        run: test "$REVIEWED" = "$REVISION"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - name: Native installation, measured platform gates, complete acceptance
+        env:
+          PUBLIC_VERSION: ${{ inputs.public_version }}
+          MAC_ARTIFACTS: ${{ runner.temp }}/s3-smb-mac-evidence
+          MAC_WORK: ${{ runner.temp }}/s3-smb-mac-work
+        run: test/macos/run.sh
+      - name: Retain complete evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/s3-smb-mac-evidence
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true
