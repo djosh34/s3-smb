@@ -64,17 +64,19 @@ async function main() {
   for (const key of ['ACTIONS_RUNTIME_TOKEN', 'ACTIONS_ID_TOKEN_REQUEST_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN']) delete nativeEnv[key];
   let finished = false;
   const native = execute('/bin/bash', ['test/macos/run.sh'], nativeEnv).finally(() => { finished = true; });
-  let uploadFailed = false;
   do {
     if (fs.existsSync(source)) {
       try { await publish(JSON.parse(fs.readFileSync(source, 'utf8')), true); }
-      catch { uploadFailed = true; console.error('Progress publication failed; native cleanup remains responsible for its processes.'); }
+      catch { console.warn('Optional progress publication failed; native result remains authoritative.'); }
     }
     if (!finished) await Promise.race([native, delay(60000, undefined, {ref: false})]);
   } while (!finished);
   const code = await native;
-  if (fs.existsSync(source)) await publish(JSON.parse(fs.readFileSync(source, 'utf8')), true);
-  process.exitCode = code || (uploadFailed ? 1 : 0);
+  if (fs.existsSync(source)) {
+    try { await publish(JSON.parse(fs.readFileSync(source, 'utf8')), true); }
+    catch { console.warn('Optional final progress publication failed; native result remains authoritative.'); }
+  }
+  process.exitCode = code;
 }
 
 module.exports = {safeSnapshot, execute};
