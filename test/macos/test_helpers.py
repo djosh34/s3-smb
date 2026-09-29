@@ -104,6 +104,44 @@ class Helpers(unittest.TestCase):
         self.assertEqual([row['exit'] for row in rows], [7, 124])
         self.assertIn('before timeout', (self.base / rows[1]['output']).read_text())
 
+    def invoke_tmutil_prompt(self, body, timeout=2):
+        executable = self.base / 'fake-tmutil.py'
+        executable.write_text('import getpass, sys, time\n' + body)
+        original_execv = os.execv
+        def execute(command, argv):
+            original_execv(sys.executable, [sys.executable, str(executable), *argv[1:]])
+        with patch('native.os.execv', side_effect=execute):
+            return Commands(self.base).set_destination_empty_password('smb://timemachine@127.0.0.1/TimeMachine', timeout=timeout)
+
+    def test_real_pty_password_prompt_receives_only_empty_password(self):
+        output = self.invoke_tmutil_prompt('''assert sys.argv[1:] == ['setdestination', '-p', 'smb://timemachine@127.0.0.1/TimeMachine']
+assert getpass.getpass('Enter password: ') == ''
+print('configured fixture only')
+''')
+        self.assertIn('configured fixture only', output)
+        record = json.loads((self.base / 'commands.jsonl').read_text())
+        self.assertEqual(record['exit'], 0)
+        self.assertTrue(record['empty_password_answered'])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(record['pid'], 0)
+
+    def test_prompt_nonzero_exit_is_retained_and_fails(self):
+        with self.assertRaisesRegex(RuntimeError, 'failed \\(22, answered=True\\)'):
+            self.invoke_tmutil_prompt("assert getpass.getpass('Password: ') == ''\nprint('No password specified. (error -50)')\nsys.exit(22)\n")
+        self.assertIn('No password specified.', (self.base / '0001-tmutil-password.log').read_text())
+
+    def test_prompt_success_without_actual_prompt_is_not_pass(self):
+        with self.assertRaisesRegex(RuntimeError, 'answered=False'):
+            self.invoke_tmutil_prompt("print('no prompt')\n")
+
+    def test_second_prompt_is_not_answered_and_process_is_reaped(self):
+        with self.assertRaisesRegex(RuntimeError, 'failed \\(124, answered=True\\)'):
+            self.invoke_tmutil_prompt("assert getpass.getpass('Password: ') == ''\ngetpass.getpass('Password: ')\n", timeout=.5)
+        record = json.loads((self.base / 'commands.jsonl').read_text())
+        self.assertEqual(record['exit'], 124)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(record['pid'], 0)
+
     def test_pty_consent_and_continuous_drain(self):
         executable = self.base / 'fake-application'
         executable.write_text(f'''#!{sys.executable}

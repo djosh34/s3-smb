@@ -59,7 +59,7 @@ class Acceptance:
             raise RuntimeError('native Darwin administrative execution required')
         manual, _ = self.cmd.run(['/bin/sh', '-c', 'MANPAGER=cat MANWIDTH=160 man tmutil | col -b'])
         required = {
-            'setdestination': [], 'destinationinfo': ['-X'],
+            'setdestination': ['-p'], 'destinationinfo': ['-X'],
             'startbackup': ['--block', '--destination'], 'stopbackup': [],
             'listbackups': ['-d', '-m'], 'latestbackup': ['-d', '-m'],
             'restore': ['-v'], 'isexcluded': [], 'addexclusion': ['-p'],
@@ -174,18 +174,19 @@ logging:
         self.cmd.run(['/sbin/mount'])
 
     def configure_destination(self):
-        # The explicit empty-password URL was rejected by tmutil before auth.
-        # Try its mount-point form on the existing named-empty SMB mount. The
-        # manual describes local volumes for this form; network acceptance is
-        # an actual runtime test, not an inferred/documented compatibility claim.
-        self.cmd.run(['/usr/bin/tmutil', 'setdestination', self.share])
+        # URL-with-empty-password and mounted-path forms both failed natively.
+        # Use the documented -p prompt once with the same deliberately empty
+        # password; there is no fallback to another identity/password/keychain.
+        output = self.cmd.set_destination_empty_password('smb://timemachine@127.0.0.1/TimeMachine')
+        if 'The backup destination could not be set.' in output:
+            raise RuntimeError('tmutil reported the backup destination could not be set despite exit 0')
         text, _ = self.cmd.run(['/usr/bin/tmutil', 'destinationinfo', '-X'])
         info = plistlib.loads(text.encode())
-        destinations = info['Destinations']
-        if len(destinations) != 1:
-            raise RuntimeError('expected only task-owned Time Machine destination')
-        self.destination = destinations[0]['ID']
         self.save('destination.json', info)
+        destinations = info.get('Destinations', [])
+        if len(destinations) != 1 or not isinstance(destinations[0].get('ID'), str) or not destinations[0]['ID']:
+            raise RuntimeError('tmutil did not configure exactly one Time Machine destination with an ID')
+        self.destination = destinations[0]['ID']
 
     def create_tree(self):
         proof = HOME / 's3-smb-acceptance-proof'

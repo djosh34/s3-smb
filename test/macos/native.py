@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import pty
 import re
+import select
 import signal
 import subprocess
 import time
@@ -66,6 +67,59 @@ class Commands:
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
+
+    def set_destination_empty_password(self, url, timeout=120):
+        """One documented tmutil -p attempt, answering its real prompt empty."""
+        self.seq += 1
+        name = f'{self.seq:04d}-tmutil-password'
+        path = self.evidence / (name + '.log')
+        argv = ['/usr/bin/tmutil', 'setdestination', '-p', url]
+        start = utc()
+        answered, reaped, eof = False, False, False
+        code = None
+        buffer = b''
+        with path.open('xb', buffering=0) as log:
+            pid, fd = pty.fork()
+            if pid == 0:
+                os.execv(argv[0], argv)
+            deadline = time.monotonic() + timeout
+            try:
+                while not (reaped and eof):
+                    if time.monotonic() >= deadline:
+                        code = 124
+                        break
+                    if not eof and select.select([fd], [], [], .05)[0]:
+                        try:
+                            data = os.read(fd, 65536)
+                        except OSError as error:
+                            if error.errno != 5:  # Linux PTY EOF; Darwin returns empty.
+                                raise
+                            data = b''
+                        eof = not data
+                        if data:
+                            log.write(data)
+                            buffer = (buffer + data)[-4096:]
+                            if not answered and re.search(rb'(?i)password[^\r\n]*:\s*$', buffer):
+                                os.write(fd, b'\n')
+                                answered = True
+                    if not reaped:
+                        child, status = os.waitpid(pid, os.WNOHANG)
+                        if child:
+                            reaped = True
+                            code = os.waitstatus_to_exitcode(status)
+                    if eof and not reaped:
+                        time.sleep(.05)
+            finally:
+                if not reaped:
+                    os.kill(pid, signal.SIGKILL)
+                    os.waitpid(pid, 0)
+                os.close(fd)
+                with (self.evidence / 'commands.jsonl').open('a') as out:
+                    out.write(json.dumps(dict(argv=argv, pid=pid, start=start, end=utc(), exit=code,
+                                             empty_password_answered=answered, output=name + '.log')) + '\n')
+        if code != 0 or not answered:
+            raise RuntimeError(f'tmutil -p empty-password attempt failed ({code}, answered={answered}); see {name}.log')
+        return path.read_text()
 
 
 class Daemon:

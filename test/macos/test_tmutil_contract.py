@@ -97,15 +97,37 @@ class TmutilContract(unittest.TestCase):
             a.mount_share()
             a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', a.share])
 
-    def test_destination_uses_already_authenticated_mount(self):
+    def test_destination_uses_documented_empty_password_prompt(self):
         import plistlib
         a = acceptance.Acceptance()
         a.cmd = Mock()
+        a.cmd.set_destination_empty_password.return_value = ''
         a.cmd.run.return_value = (plistlib.dumps({'Destinations': [{'ID': 'test-destination'}]}).decode(), 0)
         a.save = Mock()
         a.configure_destination()
-        a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', a.share])
+        a.cmd.set_destination_empty_password.assert_called_once_with('smb://timemachine@127.0.0.1/TimeMachine')
         self.assertEqual(a.destination, 'test-destination')
+
+    def test_destination_empty_dict_is_native_rejection_not_schema_error(self):
+        import plistlib
+        a = acceptance.Acceptance()
+        a.cmd = Mock()
+        a.cmd.set_destination_empty_password.return_value = ''
+        a.cmd.run.return_value = (plistlib.dumps({}).decode(), 0)
+        a.save = Mock()
+        with self.assertRaisesRegex(RuntimeError, 'did not configure'):
+            a.configure_destination()
+        self.assertIsNone(a.destination)
+        a.save.assert_called_once_with('destination.json', {})
+
+    def test_destination_reported_failure_cannot_be_success_at_exit_zero(self):
+        a = acceptance.Acceptance()
+        a.cmd = Mock()
+        a.cmd.set_destination_empty_password.return_value = '(null) (error 0)\\nThe backup destination could not be set.\\n'
+        a.save = Mock()
+        with self.assertRaisesRegex(RuntimeError, 'could not be set'):
+            a.configure_destination()
+        self.assertIsNone(a.destination)
 
 
 if __name__ == '__main__':
