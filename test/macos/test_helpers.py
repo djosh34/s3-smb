@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 from manifest import manifest, compare
-from native import Commands, Daemon
+from native import Commands, Daemon, progress
 
 
 class Helpers(unittest.TestCase):
@@ -114,6 +114,24 @@ class Helpers(unittest.TestCase):
         self.assertIn('native-command-exit', output.getvalue())
         self.assertIn('code=0', output.getvalue())
         self.assertNotIn('synthetic-sensitive-output', output.getvalue())
+        snapshot = self.base / 'progress.json'
+        record = json.loads(snapshot.read_text())
+        self.assertEqual(set(record), {'time', 'event', 'free_bytes', 'low_free_space', 'command', 'exit'})
+        self.assertEqual(record['event'], 'native-command-exit')
+        self.assertEqual(record['exit'], 0)
+        self.assertGreaterEqual(record['free_bytes'], 0)
+        self.assertNotIn('synthetic-sensitive-output', snapshot.read_text())
+        self.assertEqual(snapshot.stat().st_mode & 0o777, 0o644)
+        self.assertFalse((self.base / 'progress.json.tmp').exists())
+
+    def test_progress_records_low_free_space_without_a_gate(self):
+        from types import SimpleNamespace
+        with patch('native.shutil.disk_usage', return_value=SimpleNamespace(free=1_000_000_000)):
+            progress(self.base, 'time-machine-progress', scenario='password-control')
+        record = json.loads((self.base / 'progress.json').read_text())
+        self.assertEqual(record['free_bytes'], 1_000_000_000)
+        self.assertTrue(record['low_free_space'])
+        self.assertEqual(record['scenario'], 'password-control')
 
     def invoke_tmutil_prompt(self, body, timeout=2):
         executable = self.base / 'fake-tmutil.py'

@@ -1,0 +1,5 @@
+name: Native Mac with durable progress
+description: Run the unchanged native harness and retain small safe progress artifacts.
+runs:
+  using: node20
+  main: index.js

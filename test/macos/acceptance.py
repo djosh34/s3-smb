@@ -16,7 +16,7 @@ import traceback
 import urllib.request
 
 from manifest import manifest, compare
-from native import Commands, Daemon, utc, verify_tmutil_verb
+from native import Commands, Daemon, utc, verify_tmutil_verb, progress
 
 WORK = Path(os.environ['MAC_WORK']).resolve()
 EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
@@ -52,6 +52,7 @@ class Acceptance:
         fields.setdefault('scenario', self.scenario)
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
             f.write(json.dumps(dict(time=utc(), event=event, **fields), sort_keys=True) + '\n')
+        progress(EVIDENCE, event, scenario=self.scenario)
         print(event, fields, flush=True)
 
     def save(self, name, data):
@@ -233,6 +234,22 @@ logging:
         self.event('created-tree-reference-saved', path=str(proof))
         return proof
 
+    def confirm_backup_checkpoint(self):
+        self.event('before-first-backup')
+        checkpoint = json.loads((EVIDENCE / 'progress.json').read_text())['time']
+        deadline = time.monotonic() + 180
+        while True:
+            try:
+                uploaded = json.loads((WORK / 'progress-uploaded.json').read_text())
+            except FileNotFoundError:
+                uploaded = {}
+            if uploaded.get('time') == checkpoint:
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError('durable before-first-backup checkpoint was not uploaded within 180 seconds')
+            self.daemon.pump()
+            time.sleep(.2)
+
     def start_backup(self, label):
         if self.backup:
             raise RuntimeError('backup already active')
@@ -394,6 +411,7 @@ logging:
             raise RuntimeError('initial application share not empty')
         self.configure_destination()
         proof = self.create_tree()
+        self.confirm_backup_checkpoint()
         self.start_backup('baseline')
         completed = self.complete_backup('baseline')
         # Detach backupd's image before attaching a read-only view.

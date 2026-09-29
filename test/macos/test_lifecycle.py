@@ -116,7 +116,7 @@ class Lifecycle(unittest.TestCase):
     def test_backup_waits_native_point_before_cleanup(self):
         sequence = Mock()
         for name in ('platform', 'start_services', 'start_daemon', 'mount_share', 'configure_destination',
-                     'start_backup', 'complete_backup', 'detach_clients', 'remote_backup', 'metadata_point'):
+                     'confirm_backup_checkpoint', 'start_backup', 'complete_backup', 'detach_clients', 'remote_backup', 'metadata_point'):
             setattr(self.a, name, getattr(sequence, name))
         self.a.share.mkdir()
         self.a.create_tree = Mock(return_value=Path('/Users/runner/s3-smb-acceptance-proof'))
@@ -127,6 +127,7 @@ class Lifecycle(unittest.TestCase):
         result = self.a.backup_phase()
         self.assertEqual(result['baseline'], 'baseline')
         calls = sequence.mock_calls
+        self.assertLess(calls.index(call.confirm_backup_checkpoint()), calls.index(call.start_backup('baseline')))
         self.assertLess(calls.index(call.complete_backup('baseline')), calls.index(call.metadata_point('completed')))
         self.assertEqual(calls[-2:], [call.detach_clients(), call.metadata_point('completed')])
         self.assertEqual(self.a.start_services.call_args, call(fresh=True))
@@ -215,6 +216,25 @@ class Lifecycle(unittest.TestCase):
                                      (mounted, 0), ('', 0), ('', 0)]
         self.a.detach_clients()
         self.a.cmd.run.assert_any_call(['/sbin/umount', mountpoint], timeout=120)
+
+    def test_before_backup_requires_upload_of_exact_checkpoint(self):
+        from native import progress
+        self.a.event.side_effect = lambda name: progress(self.base, name, scenario='named-empty')
+        self.a.daemon = Mock()
+        acknowledgment = self.work / 'progress-uploaded.json'
+        with patch('native.utc', return_value='checkpoint-time'):
+            acknowledgment.write_text('{"time": "checkpoint-time"}')
+            self.a.confirm_backup_checkpoint()
+        self.a.daemon.pump.assert_not_called()
+        for stale in (None, 'previous-checkpoint'):
+            with self.subTest(acknowledgment=stale):
+                if stale is None:
+                    acknowledgment.unlink()
+                else:
+                    acknowledgment.write_text(json.dumps({'time': stale}))
+                with patch('native.utc', return_value='checkpoint-time'), patch.object(acceptance.time, 'monotonic', side_effect=[0, 181]):
+                    with self.assertRaisesRegex(RuntimeError, 'checkpoint was not uploaded within 180'):
+                        self.a.confirm_backup_checkpoint()
 
     def test_backup_progress_is_bounded_diagnostic_not_success_gate(self):
         process, log = Mock(), Mock()

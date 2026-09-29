@@ -9,6 +9,7 @@ import pty
 import re
 import select
 import signal
+import shutil
 import subprocess
 import time
 import threading
@@ -16,6 +17,26 @@ import threading
 
 def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def progress(evidence, event, *, command=None, exit_code=None, scenario=None):
+    """Tiny credential-free snapshot for the workflow's durable progress upload."""
+    evidence = Path(evidence)
+    free = shutil.disk_usage(evidence).free
+    record = dict(time=utc(), event=event, free_bytes=free,
+                  low_free_space=free < 2_000_000_000)  # Diagnostic only, never a gate.
+    if command is not None:
+        record['command'] = Path(command).name  # Never argv or command output.
+    if exit_code is not None:
+        record['exit'] = exit_code
+    if scenario is not None:
+        record['scenario'] = scenario
+    temporary = evidence / 'progress.json.tmp'
+    temporary.write_text(json.dumps(record, sort_keys=True) + '\n')
+    # EVIDENCE remains runner-private; the ordinary artifact uploader
+    # can read this one safe root-written snapshot, not other private logs.
+    temporary.chmod(0o644)
+    temporary.replace(evidence / 'progress.json')
 
 
 def verify_tmutil_verb(manual, verb, required_options, help_code):
@@ -53,6 +74,7 @@ class Commands:
         name = f'{self.seq:04d}-{Path(argv[0]).name}'
         start = utc()
         path = self.evidence / (name + '.log')
+        progress(self.evidence, 'native-command-start', command=argv[0])
         print(f'native-command-start {name} {start}', flush=True)
         with path.open('xb') as log:
             try:
@@ -65,6 +87,7 @@ class Commands:
         with (self.evidence / 'commands.jsonl').open('a') as f:
             f.write(json.dumps(dict(argv=[str(x) for x in argv], start=start, end=utc(),
                                    exit=code, diagnostic=diagnostic, output=name + '.log')) + '\n')
+        progress(self.evidence, 'native-command-exit', command=argv[0], exit_code=code)
         print(f'native-command-exit {name} code={code} {utc()}', flush=True)
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')

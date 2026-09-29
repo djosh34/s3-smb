@@ -39,6 +39,12 @@ crash/resume**. No control or intermediate step is the finish line; issues #18/#
 stay open until all required stages pass. No completed normal backup or later
 stage is claimed by the destination-setup result above.
 
+Subsequent runs 36623413132 and 36631900733 lost communication with their hosted
+runner; no artifact or downloadable log survived. Their execution boundary and
+cause remain unknown—not proven disk-full, credential success or backup progress.
+The next attempt retains a small durable progress snapshot and actual free-space
+observations; these are diagnostics, not a capacity estimate or success claim.
+
 ## Normal backup and fresh-Mac recovery first
 
 Use two dependent GitHub-hosted `macos-15` jobs; each runner is already a Mac VM.

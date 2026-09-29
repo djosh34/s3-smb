@@ -45,8 +45,8 @@ jobs:
         with:
           go-version: '1.26.3'
           cache: false
-      - name: Full normal Time Machine backup and stopped-store export
-        run: test/macos/run.sh
+      - name: Full normal backup with durable safe progress
+        uses: ./test/macos/progress-action
       - name: Preserve independent created-tree reference
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -108,8 +108,8 @@ jobs:
         with:
           name: mac-${{ inputs.scenario }}-store-${{ github.run_attempt }}
           path: ${{ env.MAC_TRANSFER }}/store
-      - name: Fresh-install S3 recovery, native restore, created-tree comparison
-        run: test/macos/run.sh
+      - name: Fresh-install recovery and restore with durable safe progress
+        uses: ./test/macos/progress-action
       - name: Verify evidence as uploader
         if: always()
         run: python3 test/macos/artifacts.py verify "$MAC_ARTIFACTS"
