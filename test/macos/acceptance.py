@@ -16,7 +16,7 @@ import traceback
 import urllib.request
 
 from manifest import manifest, compare
-from native import Commands, Daemon, capacity_requirement, eligible_source, utc
+from native import Commands, Daemon, capacity_requirement, eligible_source, utc, verify_tmutil_verb
 
 WORK = Path(os.environ['MAC_WORK']).resolve()
 EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
@@ -65,20 +65,18 @@ class Acceptance:
         # Establish actual installed CLI, not a remembered internet man page.
         manual, _ = self.cmd.run(['/bin/sh', '-c', 'MANPAGER=cat MANWIDTH=160 man tmutil | col -b'])
         required = {
-            'setdestination': ['smb'], 'destinationinfo': ['-X'],
+            'setdestination': [], 'destinationinfo': ['-X'],
             'startbackup': ['--block', '--destination'], 'stopbackup': [],
             'listbackups': ['-d'], 'latestbackup': ['-d'],
             'restore': ['-v'], 'isexcluded': [], 'addexclusion': ['-p'],
-            'status': [],
         }
         for verb, options in required.items():
-            help_text, code = self.cmd.run(['/usr/bin/tmutil', 'help', verb], diagnostic=True)
-            # Help may intentionally return usage status; require actual verb and
-            # option contract in its output. Never use this for acceptance work.
-            if code not in (0, 1) or verb not in help_text or any(x not in help_text for x in options):
-                raise RuntimeError(f'installed tmutil help does not establish {verb} {options}')
-        if 'restore' not in manual:
-            raise RuntimeError('installed tmutil manual missing restore contract')
+            _, code = self.cmd.run(['/usr/bin/tmutil', 'help', verb], diagnostic=True)
+            verify_tmutil_verb(manual, verb, options, code)
+        # status succeeds in the captured platform output but is absent from its
+        # manual. Require the actual read-only operation and parsed status, not
+        # an invented requirement that its brief help enumerate the verb.
+        self.status()
         self.cmd.run(['/sbin/mount'])
         source_info, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', '/System/Volumes/Data'])
         self.source_volume_name = plistlib.loads(source_info.encode())['VolumeName']

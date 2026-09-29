@@ -1,0 +1,13 @@
+VERBS
+     setdestination [-ap] arg
+	     Configure a local HFS+ or APFS volume, AFP share, or SMB share as a backup destination. Requires root and Full Disk Access privileges.
+	     protocol://user[:pass]@host/share
+     destinationinfo [-X]
+     addexclusion [-pv] item ...
+     isexcluded [-X] item ...
+     startbackup [-a | --auto] [-b | --block] [-r | --rotation] [-d | --destination dest_id]
+     stopbackup
+     restore [-v] src ... dst
+     latestbackup [-d backup_mount_point [-m [-t]]]
+     listbackups [-d backup_mount_point [-m [-t]]]
+EXIT STATUS

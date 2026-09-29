@@ -17,6 +17,31 @@ def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def verify_tmutil_verb(manual, verb, required_options, help_code):
+    """Brief help is evidence, not an exhaustive capability/option listing.
+
+    The delivered manual supplies each verb's contract. Real operations remain
+    the acceptance gate; documentation alone never proves SMB compatibility.
+    """
+    if help_code not in (0, 1):
+        raise RuntimeError(f'cannot collect installed tmutil help for {verb}: {help_code}')
+    section = re.search(rf'(?ms)^ {{5}}{re.escape(verb)}\b.*?(?=^ {{5}}[a-z][a-z0-9]*\b|^[A-Z][A-Z ]*$|\Z)', manual)
+    if not section:
+        raise RuntimeError(f'installed tmutil manual does not document {verb}')
+    text = section.group()
+    # Native usage often groups short options, e.g. [-pv]. Do not require a
+    # particular synopsis spelling or infer absence from terse per-verb help.
+    options = set(re.findall(r'(?<![\w-])--[a-z][a-z-]*', text))
+    for group in re.findall(r'(?<![\w-])-(?!-)([A-Za-z]+)\b', text):
+        options.update('-' + letter for letter in group)
+    if not set(required_options) <= options:
+        raise RuntimeError(f'installed tmutil manual does not establish {verb} {required_options}')
+    if verb == 'setdestination' and not (
+            re.search(r'\bSMB\b', text, re.IGNORECASE) and
+            re.search(r'(?:protocol|smb)://user\[:pass\]@host/share', text, re.IGNORECASE)):
+        raise RuntimeError('installed tmutil manual does not establish the SMB destination URL form')
+
+
 class Commands:
     def __init__(self, evidence):
         self.evidence = Path(evidence)

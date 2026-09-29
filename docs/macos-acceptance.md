@@ -1,9 +1,13 @@
 # Final hosted-Mac acceptance (#34)
 
-**Implementation, not executed Mac evidence.** Linux at
-`139b80da357f84c21bb83eb79a863b8545e2c800` passed local/identical CI 108/108 and
-public fresh-cache `v0.1.0-rc.1` installation. That prerelease remains Mac-pending.
-Do not close #34/#18 or advertise Time Machine compatibility from helper tests.
+**Full Mac acceptance is still pending.** Linux baseline139b80d and final harness
+`cb49ec8360a397658542ea042533c1d7b990a169` passed complete local/identical CI108/108
+and same-source public installation (rc1/rc2 respectively). The first actual Mac
+[run36584525709](https://github.com/djosh34/s3-smb/actions/runs/36584525709) passed
+native build/public rc2 install, then failed a harness help-wording assertion
+before any Time Machine work. The [narrow disposition](reviews/mac-tmutil-help-disposition.md)
+separates those results and preserves the failure. Issues34/18 remain OPEN;
+helper/build successes do not establish Time Machine compatibility.
 The [contract](implementation-plan.md) and [research](research/github-macos-time-machine.md)
 remain authoritative. The research is not executed CLI proof.
 
@@ -37,7 +41,11 @@ installed public binary is the executable under test. MinIO is compiled natively
 from Linux-matching commit `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`.
 
 `acceptance.py` records installed `man tmutil`, per-verb help, platform/image,
-service, mount and disk information. It checks exact options before using them.
+service, mount and disk information. It checks required options against the
+correct verb section of the installed manual, not an assumed exhaustive list in
+brief help. SMB and its URL form must be documented for setdestination; actual
+named-empty SMB/TM operations must still succeed. The real read-only status
+operation/parsed result is required even if its verb is absent from the manual.
 Service enable/bootstrap is ordinary administration of the existing Apple
 service if it is absent; it is not a Full Disk Access grant. Actual native
 commands must succeed. Permission denial, unexpected CLI/schema/layout,

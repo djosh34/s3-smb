@@ -1,0 +1,5 @@
+Backup session status:
+{
+    ClientID = "com.apple.backupd";
+    Running = 0;
+}
