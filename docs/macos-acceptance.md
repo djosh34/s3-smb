@@ -74,6 +74,11 @@ cleanup is sufficient. Report the Intel run's actual outcome.
 ## Normal backup and fresh-Mac recovery first
 
 Use two dependent standard GitHub-hosted `macos-15-intel` jobs; each runner is already a Mac VM.
+The in-flight run at immutable harness **68110a9** still uses the local tar handoff
+and is not modified or cancelled for the change below. The user-authorized
+**future harness** prepares direct stopped-store artifact transfer to avoid a
+second local dataset copy. Its transfer/recovery is not yet runtime-proven, and
+the current store's exact footprint is not yet established.
 No nested VM, external account, paid infrastructure or public service is needed.
 Use native MinIO pinned to the Linux fixture revision
 `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`, with loopback services.
@@ -92,13 +97,19 @@ Use native MinIO pinned to the Linux fixture revision
    separately for the application's successful native metadata backup containing
    that completed state. Metadata backup and Time Machine backup are different
    events. Keep normal application recovery policy.
-4. Cleanly stop clients, application and MinIO before archiving the complete
-   MinIO data directory. Upload this stopped-store archive and the independent
-   reference as separate GitHub Actions artifacts.
-5. On a **second fresh Mac B**, download the artifacts, start the same pinned
-   MinIO with that store, freshly install the application and recover through
-   its documented S3 recovery inputs and confirmation. Do not transfer Mac A's
-   daemon-local database, cache, configuration, receipt or local key files.
+4. Cleanly stop clients, application and MinIO before exporting the complete
+   MinIO data directory. The prepared direct-store path renames `WORK/objects`
+   to `TRANSFER/store/objects` without creating a local tar copy. Hand off store
+   and independent reference separately, each with the existing artifact inventory
+   included. The official artifact uploader includes hidden files and uses
+   compression level zero; no second full dataset is staged locally.
+5. On a **second fresh Mac B**, download the artifacts. Recreate empty directories
+   omitted by artifact transport using the existing shipped inventory guard,
+   verify the store, and move the direct tree into the fresh MinIO location.
+   Start the same pinned MinIO, freshly install the application and recover through
+   its documented S3 inputs and confirmation. No new manifest framework is needed.
+   Do not transfer Mac A's daemon-local database, cache, configuration, receipt
+   or local key files; the existing handoff rejects symlinks.
 6. Select the completed backup in the remote Time Machine image and use Apple's
    actual `tmutil restore` into a fresh output location. Restore and verify only
    the deliberately created tree. Compare paths, entry types and file contents,
@@ -133,7 +144,7 @@ necessary documented recovery inputs without transferring old machine state.
 Preserve concise command/status/error evidence, application and MinIO logs,
 completed backup and selected metadata-point identifiers, stopped-store handoff
 results, and the small comparison result. Bound cleanup and report failures;
-archive only after clean stop. Historical failure evidence stays available,
+export only after clean stop. Historical failure evidence stays available,
 but publication ceremony must not delay a narrow substantive retry.
 
 ## Revisions and iteration

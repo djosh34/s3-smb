@@ -4,7 +4,6 @@
 import json
 import os
 from pathlib import Path
-import tarfile
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, call
@@ -12,6 +11,7 @@ from unittest.mock import Mock, patch, call
 for key in ('MAC_WORK', 'MAC_ARTIFACTS', 'MAC_RUNNER_HOME', 'MAC_BIN'):
     os.environ.setdefault(key, '/tmp/unused-mac-helper-default')
 import acceptance
+from artifacts import handoff, INVENTORY
 from manifest import manifest
 
 
@@ -79,39 +79,57 @@ class Lifecycle(unittest.TestCase):
         log.close.assert_called_once()
         self.assertIsNone(self.a.backup)
 
-    def test_success_only_after_cleanup_and_archive(self):
+    def test_success_only_after_cleanup_and_export(self):
         order = []
         self.a.run = Mock(return_value={'baseline': 'b'})
         self.a.finish = Mock(side_effect=lambda: order.append('cleanup'))
-        self.a.archive_store = Mock(side_effect=lambda result: order.append('archive'))
+        self.a.export_store = Mock(side_effect=lambda result: order.append('export'))
         self.a.event.side_effect = lambda name, **kw: order.append(name)
         with patch.dict(os.environ, MAC_PHASE='backup'):
             self.a.execute()
-            self.assertEqual(order, ['cleanup', 'archive', 'acceptance-passed'])
+            self.assertEqual(order, ['cleanup', 'export', 'acceptance-passed'])
             self.a.finish.side_effect = RuntimeError('fixture exit 1')
             order.clear()
-            self.a.archive_store.reset_mock()
+            self.a.export_store.reset_mock()
             with self.assertRaisesRegex(RuntimeError, 'acceptance failed'):
                 self.a.execute()
             self.assertEqual(order, ['acceptance-failed'])
-            self.a.archive_store.assert_not_called()
+            self.a.export_store.assert_not_called()
 
-    def test_archive_contains_only_stopped_objects(self):
-        (self.work / 'objects/bucket').mkdir(parents=True)
-        (self.work / 'objects/bucket/payload').write_bytes(b'object-store')
+    def test_export_moves_only_stopped_objects_without_a_second_copy(self):
+        (self.work / 'objects/.minio.sys/empty').mkdir(parents=True)
+        payload = self.work / 'objects/.minio.sys/payload'
+        payload.write_bytes(b'object-store')
+        inode = payload.stat().st_ino
         self.a.local.mkdir()
         (self.a.local / 'database').write_bytes(b'must not transfer')
         self.a.daemon = Mock(reaped=True)
-        self.a.archive_store(dict(baseline='b'))
-        with tarfile.open(self.transfer / 'store/minio.tar.gz') as archive:
-            self.assertEqual(archive.getnames(), ['objects', 'objects/bucket', 'objects/bucket/payload'])
+        self.a.export_store(dict(baseline='b'))
+        moved = self.transfer / 'store/objects/.minio.sys/payload'
+        self.assertEqual(moved.read_bytes(), b'object-store')
+        self.assertEqual(moved.stat().st_ino, inode)
+        self.assertTrue((moved.parent / 'empty').is_dir())
+        self.assertFalse((self.work / 'objects').exists())
+        self.assertEqual({p.name for p in (self.transfer / 'store').iterdir()}, {'objects', 'recovery.json', 'store-stopped.json'})
+        self.assertTrue((self.a.local / 'database').exists())
         self.assertTrue(json.loads((self.transfer / 'store/store-stopped.json').read_text())['clean_shutdown'])
 
-    def test_archive_rejects_running_application(self):
+    def test_export_rejects_running_application(self):
         self.a.daemon = Mock(reaped=False)
         with self.assertRaisesRegex(RuntimeError, 'active storage'):
-            self.a.archive_store({})
-        self.assertFalse((self.transfer / 'store/minio.tar.gz').exists())
+            self.a.export_store({})
+        self.assertFalse((self.transfer / 'store/objects').exists())
+
+    def test_export_never_falls_back_to_copying_across_filesystems(self):
+        source = self.work / 'objects'
+        source.mkdir()
+        self.a.daemon = Mock(reaped=True)
+        with patch.object(Path, 'rename', side_effect=OSError('cross-device rename')):
+            with self.assertRaises(OSError):
+                self.a.export_store({})
+        self.assertTrue(source.exists())
+        self.assertFalse((self.transfer / 'store/objects').exists())
+        self.assertFalse((self.transfer / 'store/store-stopped.json').exists())
 
     def test_backup_waits_native_point_before_cleanup(self):
         sequence = Mock()
@@ -138,38 +156,71 @@ class Lifecycle(unittest.TestCase):
             self.a.recover_phase()
         self.a.cmd.run.assert_not_called()
 
-    def test_recovery_rejects_local_state_in_archive(self):
-        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
-        (self.transfer / 'store/recovery.json').write_text('{"scenario": "named-empty"}')
-        with tarfile.open(self.transfer / 'store/minio.tar.gz', 'w:gz') as archive:
-            entry = tarfile.TarInfo('daemon/database')
-            entry.size = 0
-            archive.addfile(entry)
-        self.a.platform = Mock()
-        with self.assertRaisesRegex(RuntimeError, 'archive member'):
-            self.a.recover_phase()
-        self.assertFalse(self.a.local.exists())
+    def received_store(self, scenario='named-empty'):
+        root = self.transfer / 'store'
+        (root / 'objects/.minio.sys/empty/nested').mkdir(parents=True)
+        (root / 'objects/.minio.sys/payload').write_bytes(b'surviving S3 object')
+        (root / 'store-stopped.json').write_text('{"clean_shutdown": true}')
+        (root / 'recovery.json').write_text(json.dumps(dict(baseline='baseline', scenario=scenario)))
+        handoff(root, os.geteuid(), os.getegid())
+        return root
 
-    def test_fresh_recovery_extracts_only_objects_then_recovers(self):
-        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
-        recovery = dict(baseline='baseline', scenario='named-empty')
-        (self.transfer / 'store/recovery.json').write_text(json.dumps(recovery))
-        payload = self.base / 'payload'
-        payload.write_bytes(b'surviving S3 object')
-        with tarfile.open(self.transfer / 'store/minio.tar.gz', 'w:gz') as archive:
-            archive.add(payload, arcname='objects/bucket/payload')
+    def test_recovery_rejects_local_state_and_unsafe_inventory_paths(self):
+        root = self.received_store()
+        inventory = json.loads((root / INVENTORY).read_text())
+        for name in ('daemon/database', '../outside', '/tmp/outside', 'objects/../../outside', '.', 'objects//bad'):
+            with self.subTest(path=name):
+                bad = dict(inventory, entries=inventory['entries'] + [dict(path=name, directory=True)])
+                (root / INVENTORY).write_text(json.dumps(bad))
+                with self.assertRaisesRegex(RuntimeError, 'inventory path'):
+                    self.a.recover_phase()
+        self.assertFalse(self.a.local.exists())
+        self.assertFalse((self.work / 'objects').exists())
+
+    def test_recovery_rejects_links_missing_changed_and_extra_bytes(self):
+        root = self.received_store()
+        self.a.platform = Mock()
+        payload = root / 'objects/.minio.sys/payload'
+        for fault in ('link', 'missing', 'changed', 'extra'):
+            with self.subTest(fault=fault):
+                if fault == 'link':
+                    payload.unlink()
+                    payload.symlink_to(self.base / 'outside')
+                elif fault == 'missing':
+                    payload.unlink()
+                elif fault == 'changed':
+                    payload.write_bytes(b'changed')
+                else:
+                    payload.write_bytes(b'surviving S3 object')
+                    (root / 'unexpected').write_bytes(b'not inventoried')
+                with self.assertRaises(RuntimeError):
+                    self.a.recover_phase()
+                self.assertFalse((self.work / 'objects').exists())
+                self.a.platform.assert_not_called()
+
+    def test_fresh_recovery_restores_empty_dirs_and_moves_verified_hidden_objects(self):
+        root = self.received_store()
+        payload = root / 'objects/.minio.sys/payload'
+        inode = payload.stat().st_ino
+        # Model the official SDK dropping empty directories during transport.
+        (root / 'objects/.minio.sys/empty/nested').rmdir()
+        (root / 'objects/.minio.sys/empty').rmdir()
+        recovery = json.loads((root / 'recovery.json').read_text())
         sequence = Mock()
         for name in ('platform', 'start_services', 'start_daemon', 'mount_share', 'restore_tree', 'detach_clients'):
             setattr(self.a, name, getattr(sequence, name))
         self.assertEqual(self.a.recover_phase(), recovery)
         self.assertEqual(sequence.mock_calls, [call.platform(), call.start_services(fresh=False),
                          call.start_daemon('recover'), call.mount_share(), call.restore_tree(recovery), call.detach_clients()])
-        self.assertEqual((self.work / 'objects/bucket/payload').read_bytes(), payload.read_bytes())
+        moved = self.work / 'objects/.minio.sys/payload'
+        self.assertEqual(moved.read_bytes(), b'surviving S3 object')
+        self.assertEqual(moved.stat().st_ino, inode)
+        self.assertTrue((moved.parent / 'empty/nested').is_dir())
+        self.assertFalse((root / 'objects').exists())
         self.assertFalse(self.a.local.exists())
 
     def test_recovery_cannot_mix_authentication_scenarios(self):
-        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
-        (self.transfer / 'store/recovery.json').write_text('{"scenario": "password-control"}')
+        self.received_store(scenario='password-control')
         self.a.platform = Mock()
         with self.assertRaisesRegex(RuntimeError, 'scenario does not match'):
             self.a.recover_phase()

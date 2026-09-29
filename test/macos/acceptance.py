@@ -10,11 +10,11 @@ import re
 import signal
 import subprocess
 import sys
-import tarfile
 import time
 import traceback
 import urllib.request
 
+from artifacts import INVENTORY, entries, checksum
 from manifest import manifest, compare
 from native import Commands, Daemon, utc, verify_tmutil_verb, progress, tm_status_numbers
 
@@ -452,13 +452,45 @@ logging:
                         source_volume_name=plistlib.loads(text.encode())['VolumeName'])
         self.detach_clients()
         self.metadata_point(completed)
-        # Archive is deliberately deferred until execute() has cleanly stopped
+        # Export is deliberately deferred until execute() has cleanly stopped
         # application and both services. Failed cleanup can never ship a store.
         return recovery
 
+    def prepare_received_store(self):
+        root = TRANSFER / 'store'
+        entries(root)  # Reject links/special files before reading or making paths.
+        records = json.loads((root / INVENTORY).read_text())['entries']
+        expected = {}
+        for row in records:
+            name = row['path']
+            path = Path(name)
+            if (not path.parts or path.is_absolute() or '..' in path.parts or str(path) != name or
+                    (path.parts[0] != 'objects' and name not in ('recovery.json', 'store-stopped.json')) or
+                    type(row['directory']) is not bool or name in expected):
+                raise RuntimeError('unexpected stopped-store inventory path or type')
+            expected[name] = row
+        for name, directory in (('objects', True), ('recovery.json', False), ('store-stopped.json', False)):
+            if name not in expected or expected[name]['directory'] is not directory:
+                raise RuntimeError('incomplete stopped-store inventory')
+        # The official artifact SDK omits empty directories. Restore only the
+        # directories already recorded by the existing source handoff inventory.
+        for name, row in expected.items():
+            if row['directory']:
+                (root / name).mkdir(parents=True, exist_ok=True)
+        actual = {str(path.relative_to(root)): path for path in entries(root)}
+        if set(actual) != set(expected) | {INVENTORY}:
+            raise RuntimeError('stopped-store inventory differs from received payload')
+        for name, row in expected.items():
+            path = actual[name]
+            if path.is_dir() != row['directory']:
+                raise RuntimeError('stopped-store entry type changed')
+            if not row['directory'] and (path.stat().st_size != row['bytes'] or checksum(path) != row['sha256']):
+                raise RuntimeError('stopped-store file bytes changed')
+
     def recover_phase(self):
-        if self.local.exists() or (WORK / 'objects').exists():
+        if self.local.exists() or self.local.is_symlink() or (WORK / 'objects').exists() or (WORK / 'objects').is_symlink():
             raise RuntimeError('recovery requires fresh daemon state and no existing store')
+        self.prepare_received_store()
         marker = json.loads((TRANSFER / 'store/store-stopped.json').read_text())
         if marker.get('clean_shutdown') is not True:
             raise RuntimeError('store was not cleanly stopped')
@@ -466,15 +498,8 @@ logging:
         if recovery.get('scenario') != self.scenario:
             raise RuntimeError('recovery scenario does not match the backup; refusing mixed authentication evidence')
         self.platform()
-        with tarfile.open(TRANSFER / 'store/minio.tar.gz', 'r:gz') as archive:
-            # The only transported payload is stopped MinIO storage. Reject a
-            # malformed handoff rather than accepting daemon-local state.
-            for member in archive.getmembers():
-                path = Path(member.name)
-                if path.is_absolute() or '..' in path.parts or path.parts[0] != 'objects' or not (member.isfile() or member.isdir()):
-                    raise RuntimeError('unexpected stopped-store archive member')
-            archive.extractall(WORK, filter='data')
-        self.event('fresh-store-extracted')
+        (TRANSFER / 'store/objects').rename(WORK / 'objects')
+        self.event('fresh-store-received')
         self.start_services(fresh=False)
         self.start_daemon('recover')
         self.mount_share()
@@ -490,15 +515,17 @@ logging:
             return self.recover_phase()
         raise RuntimeError('MAC_PHASE must be backup or recover; crash is not a normal-stage prerequisite')
 
-    def archive_store(self, recovery):
+    def export_store(self, recovery):
         if self.backup or self.attachments or not self.daemon or not self.daemon.reaped or any(p.poll() is None for p, _ in self.services):
-            raise RuntimeError('cannot archive active storage')
-        self.event('stopped-store-archive-start')
-        with tarfile.open(TRANSFER / 'store/minio.tar.gz', 'x:gz', compresslevel=1) as archive:
-            archive.add(WORK / 'objects', arcname='objects')
+            raise RuntimeError('cannot export active storage')
+        source, target = WORK / 'objects', TRANSFER / 'store/objects'
+        if source.is_symlink() or not source.is_dir() or target.exists() or target.is_symlink():
+            raise RuntimeError('stopped-store export requires real source and absent target')
+        self.event('stopped-store-export-start')
+        source.rename(target)  # Same filesystem; deliberately no copy fallback.
         (TRANSFER / 'store/recovery.json').write_text(json.dumps(recovery, indent=2) + '\n')
         (TRANSFER / 'store/store-stopped.json').write_text(json.dumps(dict(clean_shutdown=True, time=utc())) + '\n')
-        self.event('stopped-store-archive-complete')
+        self.event('stopped-store-export-complete')
 
     def finish(self):
         errors = []
@@ -568,7 +595,7 @@ logging:
                 failures.append(traceback.format_exc())
         if not failures and os.environ.get('MAC_PHASE') == 'backup':
             try:
-                self.archive_store(result)
+                self.export_store(result)
             except BaseException:
                 failures.append(traceback.format_exc())
         if failures:

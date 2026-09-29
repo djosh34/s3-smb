@@ -84,6 +84,10 @@ sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   python3 "$repo/test/macos/acceptance.py" >&3
 if [[ "$MAC_PHASE" = backup ]]; then
   # Only the dedicated store/reference transfer tree, never daemon-local state.
-  sudo -n "$(command -v python3)" "$repo/test/macos/artifacts.py" handoff \
-    "$MAC_TRANSFER" "$(id -u)" "$(id -g)"
+  # Ship the existing inventories with each artifact, including empty-directory
+  # entries which the standard artifact ZIP otherwise omits. No local store copy.
+  for tree in store reference; do
+    sudo -n "$(command -v python3)" "$repo/test/macos/artifacts.py" handoff \
+      "$MAC_TRANSFER/$tree" "$(id -u)" "$(id -g)"
+  done
 fi
