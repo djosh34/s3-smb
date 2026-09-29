@@ -72,6 +72,10 @@ Reviewed immutable candidate `b99973b38f16ae23ec3d1618e15f8966d6b97c63`.
 - Native file truncation errors and xattr lookup errors must not become successful destructive operations. Resource-fork resizing must preserve the existing prefix; all are covered by concrete failing-before regressions and narrow corrections.
 - An initial proposal to subtract an additional hour from accepted backup intervals was withdrawn after full call-path inspection showed native scheduled trash cleanup already adds two hours, covering hourly bucket rounding. Keep native policy and the existing strict `interval + budget < trash_days * 24h` relationship. Only the native arithmetic safety maximum of 106751 days was added, preventing `(24*days+2)*time.Hour` overflow.
 
+### Final authority-path correction
+
+A concrete embedding-path reproducer showed that a literal `?` in a configured state directory was parsed as a SQLite DSN delimiter, opening a different database from the precreated/locked state path. `meta.NewSQLite` now builds an absolute escaped `file:` URI. It explicitly preserves the former effective private-cache behavior; accidentally activating the native CLI's shared-cache default failed the unchanged concurrent export regression and was corrected, not worked around. Native CLI DSN parsing remains unchanged. `TestNewSQLiteLiteralFilesystemPath` checks the actual SQLite database path, effective FULL and real initialization with `?`, `#`, `%` and spaces. Full native metadata/backup race tests and ten repeated path/FULL/concurrent-export runs passed before the final frozen suite.
+
 ## Verification still required
 
 Fixes above are tracked by their regression tests and owner evidence. Final fixed-revision reviewer confirmation, the complete frozen-revision local release suite, identical Linux CI, public installation, documentation/test review and actual hosted-Mac Time Machine acceptance remain separate gates. Do not interpret this disposition record as closing those gates.

@@ -91,6 +91,7 @@ Native stuck export joined	github.com/djosh34/s3-smb/internal/backup/TestBackupT
 Native trash aliases handles protect exported data	github.com/djosh34/s3-smb/internal/smbfs/TestTrashHandlePreservesExportedData
 Native retirement gate	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestNativeRetirementGate
 Native queued deletion suspension	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestQueuedNativeDeletionAfterSuspension
+SQLite literal authority filesystem path with URI-sensitive characters	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestNewSQLiteLiteralFilesystemPath
 SQLite effective FULL every connection	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteFullEveryConnection
 SQLite real commit I/O failure propagates	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteCommitIOFailurePropagates
 Expired protection blocks native bulk trash retirement	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSecurityReviewExpiredTrashBatchRetirement

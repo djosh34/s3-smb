@@ -41,7 +41,9 @@ func protectedDB(t *testing.T, check func() error) *dbMeta {
 func TestSQLiteFullEveryConnection(t *testing.T) {
 	for _, suffix := range []string{"", "?_sync=OFF&_synchronous=NORMAL"} {
 		t.Run(suffix, func(t *testing.T) {
-			mm, err := NewSQLite(filepath.Join(t.TempDir(), "meta.db")+suffix, DefaultConf())
+			// Query aliases belong to the native CLI DSN API. NewSQLite takes
+			// a literal filesystem path and must never interpret its question marks.
+			mm, err := newSQLMeta("sqlite3", filepath.Join(t.TempDir(), "meta.db")+suffix, DefaultConf())
 			if err != nil {
 				t.Fatal(err)
 			}

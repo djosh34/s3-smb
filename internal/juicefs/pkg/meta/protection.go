@@ -3,6 +3,9 @@ package meta
 
 import (
 	"errors"
+	"net/url"
+	"path/filepath"
+
 	"github.com/djosh34/s3-smb/internal/thirdparty/xorm"
 )
 
@@ -12,7 +15,17 @@ func NewSQLite(path string, conf *Config) (Meta, error) {
 	if conf == nil {
 		conf = DefaultConf()
 	}
-	return newSQLMeta("sqlite3", path, conf)
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	// This embedding API accepts a filesystem path, not a CLI DSN. Escape
+	// literal ?, # and % before native SQL splits the URI's query options.
+	// The driver stripped SQLite URI options from the previous bare path.
+	// Preserve its ordinary private-cache behavior: activating shared cache
+	// here would introduce SQLITE_LOCKED between native readers and writers.
+	uri := url.URL{Scheme: "file", Path: abs, RawQuery: "cache=private"}
+	return newSQLMeta("sqlite3", uri.String(), conf)
 }
 
 // ClearOrphanLocks removes only unregistered SID-zero advisory locks left by
