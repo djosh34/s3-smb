@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"os"
 	"sync"
@@ -248,6 +249,7 @@ func (conn *conn) runSender() {
 
 func (conn *conn) runReciever() {
 	var err error
+	initialRequest := true
 
 	for {
 		n, e := conn.t.ReadSize()
@@ -266,6 +268,27 @@ func (conn *conn) runReciever() {
 			goto exit
 		}
 
+		if len(pkt) < 4 {
+			err = &InvalidRequestError{"short client packet header"}
+			goto exit
+		}
+		if PacketCodec(pkt).IsSmb1() {
+			// Only the initial SMB1 multiprotocol NEGOTIATE may reach the
+			// existing SMB2 upgrade handler. SMB1 has no SMB2 compound fields;
+			// its synthetic all-ones MessageId is not a client SMB2 bypass.
+			if !initialRequest || len(pkt) < 35 || PacketCodec(pkt).Command() != SMB_COM_NEGOTIATE ||
+				pkt[9]&0x80 != 0 || pkt[32] != 0 || int(binary.LittleEndian.Uint16(pkt[33:35])) != len(pkt)-35 {
+				err = &InvalidRequestError{"invalid initial multiprotocol negotiate"}
+				goto exit
+			}
+			initialRequest = false
+			if e = conn.tryHandle(pkt, nil, nil, nil); e != nil {
+				err = e
+				goto exit
+			}
+			continue
+		}
+		initialRequest = false
 		hasSession := conn.useSession()
 		var encryptedSession *session
 		var isEncrypted bool
