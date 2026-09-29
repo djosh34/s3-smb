@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Review regressions; mocks are process-lifecycle evidence, not Mac proof."""
+"""Portable lifecycle regressions; not Mac backup/restore evidence."""
+import json
 import os
 from pathlib import Path
+import tarfile
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, call
@@ -10,6 +12,7 @@ from unittest.mock import Mock, patch, call
 for key in ('MAC_WORK', 'MAC_ARTIFACTS', 'MAC_RUNNER_HOME', 'MAC_BIN'):
     os.environ.setdefault(key, '/tmp/unused-mac-helper-default')
 import acceptance
+from manifest import manifest
 
 
 class Lifecycle(unittest.TestCase):
@@ -17,9 +20,18 @@ class Lifecycle(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.base = Path(self.tmp.name)
-        p = patch.object(acceptance, 'EVIDENCE', self.base)
-        p.start()
-        self.addCleanup(p.stop)
+        self.work = self.base / 'work'
+        self.transfer = self.base / 'transfer'
+        self.work.mkdir()
+        for part in ('store', 'reference'):
+            (self.transfer / part).mkdir(parents=True)
+        for name, value in (('EVIDENCE', self.base), ('WORK', self.work), ('TRANSFER', self.transfer)):
+            patcher = patch.object(acceptance, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch.dict(os.environ, MAC_PHASE='recover')
+        patcher.start()
+        self.addCleanup(patcher.stop)
         self.a = acceptance.Acceptance()
         self.a.cmd = Mock()
         self.a.cmd.run.return_value = ('', 0)
@@ -28,6 +40,7 @@ class Lifecycle(unittest.TestCase):
     def test_daemon_failure_is_terminal_but_services_still_reaped(self):
         self.a.daemon = Mock(reaped=False, pid=42, exit_status=None)
         self.a.daemon.stop.side_effect = RuntimeError('shutdown failed')
+        self.a.detach_clients = Mock()
         process, log = Mock(), Mock()
         process.poll.return_value = 1
         process.wait.return_value = 1
@@ -37,7 +50,6 @@ class Lifecycle(unittest.TestCase):
             self.a.finish()
         process.wait.assert_called()
         log.close.assert_called_once()
-        self.assertFalse(any(c.args[0] == 'acceptance-passed' for c in self.a.event.call_args_list))
 
     def test_service_exit_one_cannot_pass(self):
         process, log = Mock(), Mock()
@@ -67,68 +79,125 @@ class Lifecycle(unittest.TestCase):
         log.close.assert_called_once()
         self.assertIsNone(self.a.backup)
 
-    def test_success_is_emitted_only_after_cleanup(self):
+    def test_success_only_after_cleanup_and_archive(self):
         order = []
-        self.a.run = Mock(return_value={'baseline': 'b', 'resumed': 'r'})
+        self.a.run = Mock(return_value={'baseline': 'b'})
         self.a.finish = Mock(side_effect=lambda: order.append('cleanup'))
+        self.a.archive_store = Mock(side_effect=lambda result: order.append('archive'))
         self.a.event.side_effect = lambda name, **kw: order.append(name)
-        self.a.execute()
-        self.assertEqual(order, ['cleanup', 'acceptance-passed'])
-        self.a.finish.side_effect = RuntimeError('fixture exit 1')
-        order.clear()
-        with self.assertRaisesRegex(RuntimeError, 'acceptance failed'):
+        with patch.dict(os.environ, MAC_PHASE='backup'):
             self.a.execute()
-        self.assertEqual(order, ['acceptance-failed'])
+            self.assertEqual(order, ['cleanup', 'archive', 'acceptance-passed'])
+            self.a.finish.side_effect = RuntimeError('fixture exit 1')
+            order.clear()
+            self.a.archive_store.reset_mock()
+            with self.assertRaisesRegex(RuntimeError, 'acceptance failed'):
+                self.a.execute()
+            self.assertEqual(order, ['acceptance-failed'])
+            self.a.archive_store.assert_not_called()
 
-    def test_resumed_ordinary_loss_or_change_fails_before_restore(self):
-        from manifest import manifest
-        import shutil
-        selected = self.base / 'resumed-id'
-        (selected / 'Data').mkdir(parents=True)
-        ordinary = selected / 'Data/ordinary-build-file'
-        ordinary.write_text('independently completed data')
-        (selected / 'Data/proof').write_text('unchanged supplemental proof')
-        manifest(selected, self.base / 'resumed-before-wipe-manifest.jsonl')
-        self.a.remote_backup = Mock(return_value=(selected, {}))
-        work = self.base / 'work'
-        work.mkdir()
-        with patch.object(acceptance, 'WORK', work):
-            for mutation in ('changed', 'lost'):
-                with self.subTest(mutation=mutation):
-                    if mutation == 'changed':
-                        ordinary.write_text('wrong data after recovery')
-                    else:
-                        ordinary.unlink()
-                    with self.assertRaisesRegex(RuntimeError, 'differences'):
-                        self.a.restore_full('resumed', 'resumed-id', compare_to='resumed-before-wipe')
-                    self.a.remote_backup.assert_called_with('resumed', 'resumed-id')
-                    self.a.cmd.run.assert_not_called()
-                    shutil.rmtree(work / 'restore')
-                    for path in self.base.glob('resumed-*'):
-                        if path.is_file() and path.name != 'resumed-before-wipe-manifest.jsonl':
-                            path.unlink()
+    def test_archive_contains_only_stopped_objects(self):
+        (self.work / 'objects/bucket').mkdir(parents=True)
+        (self.work / 'objects/bucket/payload').write_bytes(b'object-store')
+        self.a.local.mkdir()
+        (self.a.local / 'database').write_bytes(b'must not transfer')
+        self.a.daemon = Mock(reaped=True)
+        self.a.archive_store(dict(baseline='b'))
+        with tarfile.open(self.transfer / 'store/minio.tar.gz') as archive:
+            self.assertEqual(archive.getnames(), ['objects', 'objects/bucket', 'objects/bucket/payload'])
+        self.assertTrue(json.loads((self.transfer / 'store/store-stopped.json').read_text())['clean_shutdown'])
 
-    def test_resumed_expectation_is_captured_before_wipe(self):
-        names = ('platform', 'start_services', 'start_daemon', 'mount_share',
-                 'configure_destination', 'source_changes', 'start_backup',
-                 'metadata_point', 'cold_recover', 'restore_full',
-                 'crash_during_later_backup', 'inventory')
+    def test_archive_rejects_running_application(self):
+        self.a.daemon = Mock(reaped=False)
+        with self.assertRaisesRegex(RuntimeError, 'active storage'):
+            self.a.archive_store({})
+        self.assertFalse((self.transfer / 'store/minio.tar.gz').exists())
+
+    def test_backup_waits_native_point_before_cleanup(self):
         sequence = Mock()
-        for name in names:
+        for name in ('platform', 'start_services', 'start_daemon', 'mount_share', 'configure_destination',
+                     'start_backup', 'complete_backup', 'detach_clients', 'remote_backup', 'metadata_point'):
             setattr(self.a, name, getattr(sequence, name))
-        self.a.share = self.base
-        self.a.complete_backup = Mock(return_value='completion-time')
-        self.a.baseline_before_wipe = Mock(return_value='baseline-id')
-        self.a.completed_before_wipe = sequence.completed_before_wipe
-        self.a.completed_before_wipe.side_effect = ['baseline-id', 'resumed-id']
-        self.a.restore_full.return_value = 'resumed-id'
-        self.a.run()
+        self.a.share.mkdir()
+        self.a.create_tree = Mock(return_value=Path('/Users/runner/s3-smb-acceptance-proof'))
+        self.a.complete_backup.return_value = 'completed'
+        self.a.remote_backup.return_value = Path('/remote/baseline')
+        import plistlib
+        self.a.cmd.run.return_value = (plistlib.dumps(dict(VolumeName='Data')).decode(), 0)
+        result = self.a.backup_phase()
+        self.assertEqual(result['baseline'], 'baseline')
         calls = sequence.mock_calls
-        capture = calls.index(call.completed_before_wipe('resumed'))
-        wipe = calls.index(call.cold_recover('resumed'))
-        self.assertLess(capture, wipe)
-        self.assertIn(call.restore_full('resumed', 'resumed-id', compare_to='resumed-before-wipe'), calls)
-        self.assertFalse(any(c.args[0] == 'acceptance-passed' for c in self.a.event.call_args_list))
+        self.assertLess(calls.index(call.complete_backup('baseline')), calls.index(call.metadata_point('completed')))
+        self.assertEqual(calls[-2:], [call.detach_clients(), call.metadata_point('completed')])
+        self.assertEqual(self.a.start_services.call_args, call(fresh=True))
+
+    def test_fresh_recovery_rejects_old_local_state(self):
+        self.a.local.mkdir()
+        with self.assertRaisesRegex(RuntimeError, 'fresh daemon state'):
+            self.a.recover_phase()
+        self.a.cmd.run.assert_not_called()
+
+    def test_recovery_rejects_local_state_in_archive(self):
+        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
+        (self.transfer / 'store/recovery.json').write_text('{}')
+        with tarfile.open(self.transfer / 'store/minio.tar.gz', 'w:gz') as archive:
+            entry = tarfile.TarInfo('daemon/database')
+            entry.size = 0
+            archive.addfile(entry)
+        self.a.platform = Mock()
+        with self.assertRaisesRegex(RuntimeError, 'archive member'):
+            self.a.recover_phase()
+        self.assertFalse(self.a.local.exists())
+
+    def test_fresh_recovery_extracts_only_objects_then_recovers(self):
+        (self.transfer / 'store/store-stopped.json').write_text('{"clean_shutdown": true}')
+        recovery = dict(baseline='baseline')
+        (self.transfer / 'store/recovery.json').write_text(json.dumps(recovery))
+        payload = self.base / 'payload'
+        payload.write_bytes(b'surviving S3 object')
+        with tarfile.open(self.transfer / 'store/minio.tar.gz', 'w:gz') as archive:
+            archive.add(payload, arcname='objects/bucket/payload')
+        sequence = Mock()
+        for name in ('platform', 'start_services', 'start_daemon', 'mount_share', 'restore_tree', 'detach_clients'):
+            setattr(self.a, name, getattr(sequence, name))
+        self.assertEqual(self.a.recover_phase(), recovery)
+        self.assertEqual(sequence.mock_calls, [call.platform(), call.start_services(fresh=False),
+                         call.start_daemon('recover'), call.mount_share(), call.restore_tree(recovery), call.detach_clients()])
+        self.assertEqual((self.work / 'objects/bucket/payload').read_bytes(), payload.read_bytes())
+        self.assertFalse(self.a.local.exists())
+
+    def test_restore_calls_native_only_for_created_tree(self):
+        selected = self.base / 'remote/baseline'
+        proof = selected / 'Data/Users/runner/s3-smb-acceptance-proof'
+        (proof / 'nested/empty').mkdir(parents=True)
+        (proof / 'file').write_bytes(b'independent')
+        (selected / 'Data/ordinary-system-file').write_text('not compared')
+        manifest(proof, self.transfer / 'reference/tree.jsonl')
+        self.a.remote_backup = Mock(return_value=selected)
+        recovery = dict(baseline='baseline', source_relative='Users/runner/s3-smb-acceptance-proof', source_volume_name='Data')
+        def native(argv, **kwargs):
+            self.assertEqual(argv[:3], ['/usr/bin/tmutil', 'restore', '-v'])
+            self.assertEqual(argv[3], proof)
+            # Mock only the native command's effect; production has no copy path.
+            import shutil
+            shutil.copytree(argv[3], argv[4])
+            return '', 0
+        self.a.cmd.run.side_effect = native
+        self.a.restore_tree(recovery)
+        self.a.cmd.run.assert_called_once()
+        self.a.remote_backup.assert_called_once_with('normal', 'baseline', inherit=True)
+        self.assertEqual((self.base / 'tree-differences.jsonl').read_text(), '')
+
+    def test_normal_run_does_not_include_crash(self):
+        self.a.backup_phase = Mock(return_value='backup')
+        self.a.recover_phase = Mock(return_value='recover')
+        with patch.dict(os.environ, MAC_PHASE='backup'):
+            self.assertEqual(self.a.run(), 'backup')
+        with patch.dict(os.environ, MAC_PHASE='recover'):
+            self.assertEqual(self.a.run(), 'recover')
+        with patch.dict(os.environ, MAC_PHASE='crash'):
+            with self.assertRaisesRegex(RuntimeError, 'crash'):
+                self.a.run()
 
 
 if __name__ == '__main__':

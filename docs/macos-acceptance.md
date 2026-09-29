@@ -1,211 +1,116 @@
-# Final hosted-Mac acceptance (#34)
+# Hosted-Mac acceptance (#34)
 
-**Full Mac acceptance is still pending.** Linux baseline139b80d and final harness
-`cb49ec8360a397658542ea042533c1d7b990a169` passed complete local/identical CI108/108
-and same-source public installation (rc1/rc2 respectively). The first actual Mac
-[run36584525709](https://github.com/djosh34/s3-smb/actions/runs/36584525709) passed
-native build/public rc2 install, then failed a harness help-wording assertion
-before any Time Machine work. The [narrow disposition](reviews/mac-tmutil-help-disposition.md)
-separates those results and preserves the failure. Issues34/18 remain OPEN;
-helper/build successes do not establish Time Machine compatibility.
-The [contract](implementation-plan.md) and [research](research/github-macos-time-machine.md)
-remain authoritative. The research is not executed CLI proof.
+**Acceptance remains pending.** The user-approved replacement in live issues
+[#34](https://github.com/djosh34/s3-smb/issues/34) and
+[#18](https://github.com/djosh34/s3-smb/issues/18) supersedes older Mac plans.
+A build, helper test or successful metadata import is not Time Machine evidence.
 
-## Ownership and execution gate
+## Normal backup and fresh-Mac recovery first
 
-`.github/workflows/macos.yml` is manual and final, using the hosted `macos-15`
-VM itself. Dispatch only after a clean immutable-snapshot review handoff. Inputs
-are the reviewed full SHA and an immutable published version at **that same SHA**.
-The integration owner handles publication, dispatch, downloaded artifacts and
-narrow fixes. No nested VM, Docker assumption, public listeners, paid resources,
-permission-control modification or early capability-probe workflow is used.
+Use two dependent GitHub-hosted `macos-15` jobs; each runner is already a Mac VM.
+No nested VM, external account, paid infrastructure or public service is needed.
+Use native MinIO pinned to the Linux fixture revision
+`0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`, with loopback services.
 
-```sh
-# Only AFTER clean review/handoff, publication and any required earlier gates:
-gh workflow run macos.yml --ref acceptance/hosted-mac \
-  -f reviewed_sha=FULL_REVIEWED_SHA -f public_version=vX.Y.Z-rc.N
-```
+1. On Mac A, freshly install the qualified public application. Create a small
+   known tree containing multiple files, nested folders and empty folders. Save
+   an independent reference separately from the object store for transfer.
+2. Run an actual normal full-Mac Time Machine backup to the application-backed
+   SMB share. Exercise the named `timemachine` account with an explicit empty
+   password. Keep native exclusions; exclude only recursion-producing test
+   infrastructure. Do not restrict backup input to the known tree or exclude
+   normal Apple, SDK, build or user content to shorten the run.
+3. Require actual Time Machine completion and a completed remote backup. Wait
+   separately for the application's successful native metadata backup containing
+   that completed state. Metadata backup and Time Machine backup are different
+   events. Keep normal application recovery policy.
+4. Cleanly stop clients, application and MinIO before archiving the complete
+   MinIO data directory. Upload this stopped-store archive and the independent
+   reference as separate GitHub Actions artifacts.
+5. On a **second fresh Mac B**, download the artifacts, start the same pinned
+   MinIO with that store, freshly install the application and recover through
+   its documented S3 recovery inputs and confirmation. Do not transfer Mac A's
+   daemon-local database, cache, configuration, receipt or local key files.
+6. Select the completed backup in the remote Time Machine image and use Apple's
+   actual `tmutil restore` into a fresh output location. Restore and verify only
+   the deliberately created tree. Compare paths, entry types and file contents,
+   including nested and empty directories, against the independent reference.
+   Report missing/extra entries or changed contents. Do not compare tar bytes,
+   Apple/system/SDK content, or whole-backup metadata.
 
-A newly introduced workflow must first be present on the repository's default
-branch for GitHub manual dispatch. Publish the reviewed snapshot without quietly
-changing its SHA. Any application fix discovered here requires the full local
-Linux suite, identical Linux CI and fresh public installation again before Mac
-rerun. The green Linux entrypoint/ledger is unchanged.
+The simple path is **create tree → actual full backup → stopped-store artifact
+handoff → fresh-Mac recovery/native restore → compare created tree only**.
+A generic copy, fixture-only backup, local APFS snapshot restore or manual-user
+fallback does not pass.
 
-## Sequence and native boundaries
+## Boundaries and operational failures
 
-`test/macos/run.sh` first builds with native Darwin SDK/CGo and Go **1.26.3**,
-then performs the real public `go install` in an empty external directory with
-fresh module/build caches, public proxy/checksum service and no workspace. The
-installed public binary is the executable under test. MinIO is compiled natively
-from Linux-matching commit `0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`.
+There is no exhaustive eligible-source traversal, per-entry `tmutil isexcluded`
+parser, source-coverage inventory, capacity estimator, size gate or whole-system
+manifest comparison. Delete these mechanisms rather than retaining disabled
+paths or replacing them with another planner/parser framework. Ordinary disk
+space observations and actual native errors remain useful diagnostics.
 
-`acceptance.py` records installed `man tmutil`, per-verb help, platform/image,
-service, mount and disk information. It checks required options against the
-correct verb section of the installed manual, not an assumed exhaustive list in
-brief help. SMB and its URL form must be documented for setdestination; actual
-named-empty SMB/TM operations must still succeed. The real read-only status
-operation/parsed result is required even if its verb is absent from the manual.
-Service enable/bootstrap is ordinary administration of the existing Apple
-service if it is absent; it is not a Full Disk Access grant. Actual native
-commands must succeed. Permission denial, unexpected CLI/schema/layout,
-unattended consent, missing source access or command timeout fails visibly.
-There is no privacy database edit, synthetic image, fallback copy, skipped gate
-or `continue-on-error` acceptance path. Diagnostic commands alone may fail,
-with their status/output explicitly retained.
+Storage, artifact size, runtime, permissions and hosted-runner limits are real
+operational constraints, not demonstrated feasibility. Report actual failures
+(including disk-full and timeout) without shrinking backup input or inventing a
+capacity guarantee. Use supported service administration, not privacy/security
+bypasses. Do not skip a failed native operation or claim an unexecuted stage.
 
-1. Measure source/storage; establish native MinIO on loopback19000, observation
-   proxy19001/control19002, and application SMB127.0.0.1:445. The initially empty
-   bucket/share must really be empty. `mount_smbfs` and Time Machine both use the
-   named `timemachine` account with an explicit empty password, not guest access.
-2. Back up the full normally eligible runner with Apple's Time Machine. Do not
-   limit its source to proof files. Require blocking-command completion, inactive
-   status and a new completed backup in the **remote** image. Record a complete
-   pre-wipe baseline manifest and source-namespace coverage.
-3. Separately wait for a successful native application receipt whose snapshot
-   starts after Time Machine completion. Leave the **default hourly interval and
-   14-day trash policy** unchanged. Ordinary intact restart must reuse that
-   receipt and demonstrate its remote GET/readback before the authority is wiped.
-4. Detach image/SMB mounts, stop the daemon, remove its entire task-owned local
-   directory (config/state/SQLite/WAL/cache/local keys), and recreate only the
-   documented S3/volume/passphrase/SMB inputs. Recovery uses the application's
-   normal selected point and PTY confirmation; exact prompts/point are retained.
-5. Reattach the network sparsebundle read-only. `tmutil listbackups/latestbackup`
-   select the remote completed backup. `diskutil` proves its parent device is the
-   attached image, not the source disk/local APFS snapshots. Restore **every
-   complete backed-up volume root** with `tmutil restore`, into a new empty
-   task-owned output. Compare complete manifests, not just proof files.
-6. Change/add/delete ordinary source proof files as a reproducible supplement.
-   Start a later real backup. The fixture holds a successful actual chunk PUT
-   **response**: upstream already committed, daemon request still pending.
-   Require upstream2xx/pending request identity and active Time Machine status,
-   recheck the hold, then SIGKILL only the application. This matches the Linux
-   boundary; it does not claim an uncommitted object was lost. Stop the client,
-   detach stale mounts, wipe local daemon data again, recover normal policy, and
-   restore/compare the complete original baseline again.
-7. Resume Time Machine, capture its different completed identifier and **complete
-   independent manifest before wiping**, then require the subsequent native point.
-   Cold-recover again and require that exact completed identifier, with its entire
-   post-recovery backup manifest equal to the pre-wipe one. Perform another full
-   native remote restore, including ordinary contents and changed/added/deleted
-   proof-file state. Expectations are never derived solely from recovered data.
+Do not put real credentials in logs, artifacts or the backed-up source. Disable
+checkout credential persistence and keep transient CI authentication material
+out of the backup. Use disposable loopback fixture credentials; reconstruct
+necessary documented recovery inputs without transferring old machine state.
 
-The application kill is not VM power loss, MinIO disk failure or S3 storage loss.
-No object/backup repair or handpicked older application recovery point is used.
+Preserve concise command/status/error evidence, application and MinIO logs,
+completed backup and selected metadata-point identifiers, stopped-store handoff
+results, and the small comparison result. Bound cleanup and report failures;
+archive only after clean stop. Historical failure evidence stays available,
+but publication ceremony must not delay a narrow substantive retry.
 
-## Source, exclusions and capacity
+## Revisions and iteration
 
-Only two task-owned paths are added to native exclusions, listed with reasons in
-`test-exclusions.json`: backend/daemon/mount/restore infrastructure, and growing
-backup-test evidence. **Native/public/MinIO builds, their source/module/build
-caches, checkout, SDKs and ordinary user files remain outside those exclusions.**
-No ordinary source content is deleted to fit. Apple's own native exclusions
-remain in effect and are recorded, not overridden with a fixture-only source.
+Record **harness commit and application version/revision separately**. Harness
+changes may reuse the already-qualified application release; do not publish a
+new application version or repeat Linux/release qualification solely for test
+scripts or documentation. Run relevant focused harness checks before rerunning.
+Product changes require appropriate regression/qualification tests.
 
-The source inventory asks installed `tmutil isexcluded` for every encountered
-entry, pruning only excluded trees. Denied/incomplete enumeration is a failure,
-not zero bytes. Additional eligible mounted filesystems require explicit complete
-coverage; an unexpected one fails rather than being silently omitted. Full raw
-native inclusion output and the included/excluded path inventory are retained.
-Preflight included paths must be present in the completed baseline Data volume;
-live-source removals are reported, not silently waived.
-
-Record logical lengths, allocated blocks and unique-hardlink versions of both,
-as well as actual filesystem free space. These are different observations:
-APFS cloned/shared extents can be double-counted by block sums, sparse/compressed
-files differ from logical length, and a live inventory is not snapshot size.
-Neither whole disk usage nor advertised runner capacity substitutes for this.
-
-Local native MinIO is **conditional**. The conservative planning budget is two
-unique-hardlink logical copies (remote baseline plus one sequential restore),
-twice the controlled later changes, plus `max(8 GB, 8192 bytes/source entry)` for
-metadata, evidence and working space. This is **not a lower bound, exact deficit,
-product workload cap or proof of impossibility**. If free space is below it,
-report **local placement not certified**, with measurements, planning shortfall
-and compression/shared-allocation uncertainty. Do not claim actual ENOSPC unless
-an operation produced it. Do not blindly force the copies onto spare disk.
-
-The current Linux VM's root/virtiofs capacity is not hosted-Mac storage. No
-approved private route exists by implication. A changed placement requires an
-explicitly approved private route and sufficient measured object storage, plus
-native Mac-writable full-restore capacity/metadata support. A new APFS volume in
-the same container adds isolation, not space. Do not expose ports, create public
-tunnels, buy infrastructure or shrink the source to avoid reporting uncertainty.
-
-Full restores are sequential. Remove only verified task-owned restored copies,
-after preserving their complete evidence; do not delete baseline/native remote
-objects or ordinary runner files. Default retention is not weakened for space.
-The shared 330-minute deadline covers all stages: `deadline.py` supervises the
-build/fetch/public-install process group in `build.sh`, and native acceptance
-uses the same absolute deadline. A stalled build's entire process group is
-terminated and its owned leader reaped, not merely its shell killed. Native finalization independently stops
-and bounds/reaps the client, application and services, retains all outcomes,
-and aggregates cleanup failures into a nonzero exit. Forced daemon termination
-is a cleanup failure, never graceful success. Final acceptance success is emitted
-only after cleanup succeeds. Diagnostic/artifact headroom remains within the
-six-hour hosted limit; unfinished phases are not successes.
-
-## Manifest and evidence contract
-
-`manifest.py` records every entry in the backup and restored volume trees:
-SHA256 of complete regular-file contents; every xattr's length/SHA256 (including
-resource forks); native extended ACL text; owner/group, mode, flags, birth/mtime;
-symlink targets; and hardlink equivalence classes. Empty directories and special
-file identities are not silently dropped. Errors or changes during scanning
-fail. Physical inode/device/link counts and access/change times are retained as
-observations, not compared as identities after reconstruction. Hardlink topology
-is compared. All other recorded metadata is compared strictly. The artificial
-outer restore container's metadata is not backed up and is excluded from the
-per-volume comparison, not from raw evidence.
-
-Remote backup manifests before and after wipe must agree. Restored manifests
-must match **all backed-up volume entries**, including ordinary runner contents.
-Known proof files add explicit metadata and resumed-change checks, not coverage
-substitution. Unknown backup-root layouts fail instead of guessing which files
-are dispensable. The exact current platform layout/metadata fidelity is still a
-runtime unknown; do not convert an unknown into a compatibility claim.
-
-Artifacts include native help/command stdout and exit codes, timing JSONL,
-source/exclusion/capacity inventories, whole-tree backup/restore manifests and
-all differences, native metadata receipts and readback events, recovery PTYs,
-MinIO/application/proxy logs, complete object inventories, backup/mount/device
-identifiers and Time Machine unified logs. Successful chunk-GET counters are
-captured separately around `tmutil restore` itself: earlier manifest reads alone
-do not pass the remote-read gate. Proxy JSONL preserves every actual request.
-The [fixture README](../test/macos/fixture/README.md) defines exact observations.
-
-On both success and failure, the entrypoint finalizer inventories/hashes every
-produced artifact after evidence writers stop, then hands only that task-owned
-real-file evidence tree back to the original runner (directories0700/files0600).
-It does not make root evidence world-readable or alter system permissions.
-Before upload, a separate `always()` workflow step runs as the actual ordinary
-uploader identity and reads/hashes every file, checking exact inventory,
-ownership and private modes. Missing/unreadable/changed evidence fails the gate;
-artifact upload still runs to retain whatever failure evidence is available.
-
-## Portable validation (not Mac proof)
+The manual entrypoint is `.github/workflows/macos.yml`; dispatch its reviewed
+harness ref with the qualified `public_version` input independently.
+Portable checks are not Mac acceptance:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/macos -p 'test_*.py' -v
 bash -n test/macos/run.sh test/macos/build.sh
 shellcheck test/macos/run.sh test/macos/build.sh
 actionlint .github/workflows/macos.yml
-# Under the shared heavy-work lock on the development VM:
-GOMAXPROCS=2 go test -p 2 -race ./test/macos/fixture
 ```
 
-Run Python helpers as an ordinary local user with `sudo -n` available: the
-ownership regression deliberately creates a task-owned root0600 artifact and
-checks its initially denied read, private handoff, then complete read/hash as the
-actual uploader. No privileged operations outside test-owned temporary data.
-Portable helpers also check full manifest changes/missing/extra data, xattrs/modes,
-hardlinks, observational fields, exclusion/error handling, capacity arithmetic,
-bounded command evidence and continuous PTY draining/consent. Review regressions
-exercise real stalled-build child cleanup and unresponsive daemon reaping,
-aggregated service/client failures, success-after-cleanup ordering and ordinary
-resumed-entry loss/change against the independent pre-wipe expectation.
-Fixture tests use
-ordinary local HTTP/SDK fixtures, not actual Apple/Time Machine. First helper run
-failed because the *test executable* incorrectly opened `/dev/tty` read/write as
-a seekable Python stream; that failure is retained separately from the corrected
-passing run. No production application behavior was changed for it.
+## Later milestone: crash and resume
+
+Only after normal fresh-Mac recovery/restore passes, exercise crash/resume using
+the same created-tree checks. Protect a completed baseline, modify the test tree,
+start a later actual Time Machine backup and observe/hold an actual S3 write
+while Time Machine remains active before abruptly killing the application.
+An idle kill after a fixed sleep is insufficient. Preserve MinIO and committed
+objects; recover through normal policy without handpicking or repairing an older
+point. Restore and compare the completed baseline, then resume Time Machine,
+complete another backup and natively restore/compare the updated tree. Record
+the interruption boundary and selected points. This proves an application kill,
+not VM power loss or S3 storage loss.
+
+Issues #18/#34 remain open until the required normal and crash/resume evidence
+actually passes.
+
+## History (not current instructions)
+
+Earlier native runs
+[36584525709](https://github.com/djosh34/s3-smb/actions/runs/36584525709),
+[36590782555](https://github.com/djosh34/s3-smb/actions/runs/36590782555), and
+[36599466224](https://github.com/djosh34/s3-smb/actions/runs/36599466224) failed in
+superseded harness checks before any Time Machine backup. Their build/install
+successes and original failures are preserved in issue #34 and release evidence.
+The [help-check disposition](reviews/mac-tmutil-help-disposition.md) and
+[original hosted-Mac research](research/github-macos-time-machine.md) are
+historical evidence, not requirements to restore the removed machinery.

@@ -78,8 +78,10 @@ post-kill proxy state/events. The helper does not make those assertions for it.
 The cumulative GET counters count completed successful (including 206 range)
 chunk GET response bodies forwarded to the application. They exclude HEAD,
 metadata, failed and interrupted responses. Compare before/after counters for
-each cold restore, retain the complete events, and also verify full restored
-contents/metadata. Counters alone are not Time Machine restore proof.
+each cold restore if needed for diagnosis; verify only the deliberately created
+tree's paths, types and file contents. Counters alone are not Time Machine
+restore proof. Normal acceptance does not arm the hold; crash/resume is deferred
+until the normal fresh-Mac restore passes.
 
 ## Evidence stream
 
@@ -94,8 +96,9 @@ when zero). Event names:
   `chunk_put_response_released`, `chunk_put_client_disconnected`;
 - `metadata_upstream_success`: a 2xx upstream response for a `/meta/` request,
   with method, exact key and observation time. A PUT observation alone **is not
-  a validated native recovery point**. Use application success/receipt and
-  supported restart/readback validation separately.
+  a validated native recovery point**. Wait for the application's native success
+  receipt after Time Machine completion, then prove actual fresh-Mac recovery
+  and restore from the stopped MinIO store.
 
 Each event is written and synced before publishing corresponding control
 state. Write/sync failure latches `evidence_ok: false`, makes controls return

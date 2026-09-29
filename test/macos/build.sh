@@ -5,9 +5,11 @@ set -euo pipefail
 umask 077
 [[ "$(uname -s)" = Darwin ]]
 [[ "$PUBLIC_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
-sha=$(git rev-parse HEAD)
-[[ "$(git ls-remote origin "refs/tags/$PUBLIC_VERSION" | cut -f1)" = "$sha" ]]
-printf '%s\n' "$sha" > "$MAC_ARTIFACTS/revision"
+git rev-parse HEAD > "$MAC_ARTIFACTS/harness-revision"
+printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
+# Record release provenance separately; a harness edit does not re-release the app.
+git ls-remote origin "refs/tags/$PUBLIC_VERSION" "refs/tags/$PUBLIC_VERSION^{}" > "$MAC_ARTIFACTS/application-tag-refs"
+[[ -s "$MAC_ARTIFACTS/application-tag-refs" ]]
 git status --porcelain > "$MAC_ARTIFACTS/source-status"
 [[ ! -s "$MAC_ARTIFACTS/source-status" ]]
 {
@@ -20,7 +22,6 @@ export GOTOOLCHAIN=local CGO_ENABLED=1 GOWORK=off GOFLAGS='' GOMAXPROCS=3
 export MAC_BIN
 MAC_BIN=$(mktemp -d "$HOME/s3-smb-native-build.XXXXXX")
 printf '%s\n' "$MAC_BIN" > "$MAC_ARTIFACTS/native-build-root"
-go build -p 3 -o "$MAC_BIN/s3-smb-checkout" .
 # Fresh public caches and all normal source/build outputs remain outside exclusions.
 install_root=$(mktemp -d "$HOME/s3-smb-public-install.XXXXXX")
 printf '%s\n' "$install_root" > "$MAC_ARTIFACTS/public-install-root"
@@ -37,7 +38,7 @@ mkdir "$install_root/empty" "$install_root/bin"
   go version -m "$GOBIN/s3-smb"
 ) > "$MAC_ARTIFACTS/public-install.log" 2>&1
 cp "$install_root/bin/s3-smb" "$MAC_BIN/s3-smb"
-go version -m "$MAC_BIN/s3-smb-checkout" > "$MAC_ARTIFACTS/native-build.txt"
+go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
 # Same immutable MinIO source as test/Dockerfile. Native SDK, no Docker/latest.
 minio_revision=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
 minio_src=$(mktemp -d "$HOME/s3-smb-minio-source.XXXXXX")

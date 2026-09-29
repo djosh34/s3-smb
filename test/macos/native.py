@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Bounded native command evidence, eligibility measurement and PTY consent."""
+"""Bounded native command evidence and PTY consent."""
 import datetime
 import json
 import os
@@ -66,79 +66,6 @@ class Commands:
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
-
-
-def eligible_source(root, output, raw_output):
-    """Ask installed tmutil for every encountered entry; prune excluded trees only."""
-    counts = dict(entries=0, files=0, logical_bytes=0, allocated_bytes=0,
-                  unique_hardlink_logical_bytes=0, unique_hardlink_allocated_bytes=0, excluded=0)
-    seen = set()
-    root = Path(root)
-    dev = root.stat().st_dev
-    with open(output, 'x') as out, open(raw_output, 'xb') as raw:
-        pending = [root]
-        while pending:
-            batch, pending = pending[:100], pending[100:]
-            # Query CR/LF names alone so embedded newlines are not record separators.
-            for i, path in enumerate(batch):
-                if '\n' in str(path) or '\r' in str(path):
-                    end = max(1, i)
-                    pending = batch[end:] + pending
-                    batch = batch[:end]
-                    break
-            argv = ['/usr/bin/tmutil', 'isexcluded', *map(str, batch)]
-            raw.write(('# argv: ' + json.dumps(argv) + '\n').encode())
-            r = subprocess.run(argv, capture_output=True, timeout=120)
-            raw.write(r.stdout + r.stderr)
-            if r.returncode:
-                raise RuntimeError('tmutil isexcluded failed; see full eligibility log')
-            text = r.stdout.decode()
-            lines = [text.removesuffix('\n')] if len(batch) == 1 else text.splitlines()
-            if len(lines) != len(batch):
-                raise RuntimeError('unexpected tmutil isexcluded output count')
-            for path, line in zip(batch, lines):
-                m = re.fullmatch(r'\[(Included|Excluded)\]\s+(.*)', line, re.DOTALL)
-                matches = m is not None and m[2] == str(path)
-                if m and not matches:
-                    # Accept alternate spellings only when the OS confirms identity.
-                    try:
-                        matches = path.samefile(m[2])
-                    except OSError:
-                        pass
-                if not matches:
-                    raise RuntimeError(f'unrecognized native eligibility result: {line!r}')
-                included = m[1] == 'Included'
-                row = {'path': str(path), 'included': included}
-                if included:
-                    s = path.lstat()
-                    row.update(mode=s.st_mode, size=s.st_size, blocks=s.st_blocks, device=s.st_dev)
-                    if s.st_dev != dev:
-                        raise RuntimeError(f'additional eligible mounted filesystem needs explicit coverage: {path}')
-                    counts['entries'] += 1
-                    import stat
-                    if stat.S_ISREG(s.st_mode):
-                        counts['files'] += 1
-                        counts['logical_bytes'] += s.st_size
-                        counts['allocated_bytes'] += s.st_blocks * 512
-                        identity = (s.st_dev, s.st_ino)
-                        if identity not in seen:
-                            seen.add(identity)
-                            counts['unique_hardlink_logical_bytes'] += s.st_size
-                            counts['unique_hardlink_allocated_bytes'] += s.st_blocks * 512
-                    if stat.S_ISDIR(s.st_mode):
-                        pending.extend(sorted(path.iterdir(), key=lambda p: os.fsencode(p.name)))
-                else:
-                    counts['excluded'] += 1
-                out.write(json.dumps(row, sort_keys=True) + '\n')
-    if not counts['files'] or not counts['logical_bytes']:
-        raise RuntimeError('empty normally eligible source is not full-Mac acceptance')
-    return counts
-
-
-def capacity_requirement(source_bytes, entries, change_bytes):
-    # No assumed compression/deduplication/clones. Remote baseline + changed
-    # chunks + one sequential full restore, and metadata/working-space reserve.
-    return 2 * source_bytes + 2 * change_bytes + max(8_000_000_000, entries * 8192)
 
 
 class Daemon:

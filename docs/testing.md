@@ -91,8 +91,10 @@ available, with actual environment recorded rather than assumed equivalent timin
 `scripts/check-packaging.sh` exercises the local Linux graph/install restrictions;
 this is not the public remote install acceptance. Public versioned install, full
 contract completion and subsequent real macOS Time Machine backup/recovery remain
-separate release gates. Never run Mac before all preceding gates pass.
+separate release gates. The qualified application may be reused for Mac harness-only
+iterations without repeating Linux CI or publishing a new release; record application
+and harness revisions separately. Product changes need appropriate regressions.
 
-The final manual native job and its evidence/placement gates are documented in
+The final manual native jobs and stopped-store handoff are documented in
 [Hosted-Mac acceptance](macos-acceptance.md). Its portable helper tests do not
 establish actual Time Machine compatibility.

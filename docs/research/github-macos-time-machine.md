@@ -1,5 +1,13 @@
 # GitHub-hosted macOS Time Machine acceptance
 
+> **Historical research, not current acceptance instructions.** The 2026-09-29
+> user-approved replacement in issues #34/#18 and [Mac acceptance](../macos-acceptance.md)
+> supersedes the source-inventory, capacity-planning, full-content/metadata
+> comparison and single-machine sequence below. Current acceptance uses a normal
+> full-Mac backup, stopped-MinIO artifact handoff to a second fresh Mac, and native
+> restore/comparison of only deliberately created files and folders. Preserve
+> this report as evidence of the earlier investigation, not an operative gate.
+
 Research for [issue 32](https://github.com/djosh34/s3-smb/issues/32), 2026-09-27. Input was the `mac-ci` entry in `/tmp/s3-smb-next-research/issues.json` and the user's latest instructions.
 
 Verified session identity, unchanged from the prior audit:

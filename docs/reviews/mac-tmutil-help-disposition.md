@@ -1,5 +1,9 @@
 # First native run: narrow `tmutil` documentation-gate correction
 
+> **Historical failure/disposition.** Preserve this evidence; its review/release
+> sequence and old full-source gates are not current instructions. The
+> [user-approved Mac replacement](../macos-acceptance.md) governs subsequent work.
+
 Failed immutable run: [36584525709](https://github.com/djosh34/s3-smb/actions/runs/36584525709)
 at `cb49ec8360a397658542ea042533c1d7b990a169` / public `v0.1.0-rc.2`.
 

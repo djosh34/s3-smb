@@ -1,15 +1,12 @@
 name: Final hosted Mac acceptance
-# Manual, last gate only. No earlier Mac capability-probe workflow.
+# Normal full backup first; recovery runs on a genuinely fresh hosted Mac.
 on:
   workflow_dispatch:
     inputs:
-      reviewed_sha:
-        description: Exact immutable SHA with clean review handoff
-        required: true
-        type: string
       public_version:
-        description: Published immutable application version matching this source
+        description: Previously qualified released application (independent of harness SHA)
         required: true
+        default: v0.1.0-rc.4
         type: string
 permissions:
   contents: read
@@ -17,37 +14,99 @@ concurrency:
   group: final-hosted-mac
   cancel-in-progress: false
 jobs:
-  time-machine:
+  backup:
     runs-on: macos-15
     timeout-minutes: 360
+    env:
+      PUBLIC_VERSION: ${{ inputs.public_version }}
+      MAC_PHASE: backup
     steps:
-      - name: Require reviewed immutable revision
-        env:
-          REVIEWED: ${{ inputs.reviewed_sha }}
-          REVISION: ${{ github.sha }}
-        run: test "$REVIEWED" = "$REVISION"
+      - name: Set task paths
+        run: |
+          {
+            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
+            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
+            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
+          } >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.26.3'
           cache: false
-      - name: Native installation, measured platform gates, complete acceptance
-        env:
-          PUBLIC_VERSION: ${{ inputs.public_version }}
-          MAC_ARTIFACTS: ${{ runner.temp }}/s3-smb-mac-evidence
-          MAC_WORK: ${{ runner.temp }}/s3-smb-mac-work
+      - name: Full normal Time Machine backup and stopped-store export
         run: test/macos/run.sh
-      - name: Verify complete private evidence as the artifact uploader
+      - name: Preserve independent created-tree reference
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-reference-${{ github.run_attempt }}
+          path: ${{ env.MAC_TRANSFER }}/reference
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
+      - name: Transfer complete stopped MinIO store (no daemon-local state)
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-store-${{ github.run_attempt }}
+          path: ${{ env.MAC_TRANSFER }}/store
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+          include-hidden-files: true
+      - name: Verify evidence as uploader
         if: always()
-        env:
-          MAC_ARTIFACTS: ${{ runner.temp }}/s3-smb-mac-evidence
         run: python3 test/macos/artifacts.py verify "$MAC_ARTIFACTS"
-      - name: Retain complete evidence on success or failure
+      - name: Retain backup evidence on success or failure
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/s3-smb-mac-evidence
+          name: mac-backup-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.MAC_ARTIFACTS }}
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true
+  recover:
+    needs: backup
+    runs-on: macos-15
+    timeout-minutes: 360
+    env:
+      PUBLIC_VERSION: ${{ inputs.public_version }}
+      MAC_PHASE: recover
+    steps:
+      - name: Set task paths
+        run: |
+          {
+            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
+            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
+            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mac-reference-${{ github.run_attempt }}
+          path: ${{ env.MAC_TRANSFER }}/reference
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: mac-store-${{ github.run_attempt }}
+          path: ${{ env.MAC_TRANSFER }}/store
+      - name: Fresh-install S3 recovery, native restore, created-tree comparison
+        run: test/macos/run.sh
+      - name: Verify evidence as uploader
+        if: always()
+        run: python3 test/macos/artifacts.py verify "$MAC_ARTIFACTS"
+      - name: Retain recovery evidence on success or failure
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-recover-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ env.MAC_ARTIFACTS }}
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
