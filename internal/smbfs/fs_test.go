@@ -48,7 +48,7 @@ func newFixture(t *testing.T) *fixture {
 	}
 	return fixtureWithStore(t, &failingStore{ObjectStorage: disk}, nil)
 }
-func fixtureWithStore(t *testing.T, store *failingStore, dump []byte) *fixture {
+func fixtureWithStore(t *testing.T, store *failingStore, dump []byte, readonly ...bool) *fixture {
 	t.Helper()
 	mc := meta.DefaultConf()
 	mc.NoBGJob = true
@@ -68,8 +68,12 @@ func fixtureWithStore(t *testing.T, store *failingStore, dump []byte) *fixture {
 			t.Fatal(e)
 		}
 	}
-	if e := m.NewSession(true); e != nil {
-		t.Fatal(e)
+	readOnly := len(readonly) > 0 && readonly[0]
+	mc.ReadOnly = readOnly // Set before session/filesystem startup, never toggle a live client.
+	if !readOnly {
+		if e := m.NewSession(true); e != nil {
+			t.Fatal(e)
+		}
 	}
 	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 1, MaxDownload: 1, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
 	chunks := chunk.NewCachedStore(store, cc, nil)
@@ -77,7 +81,7 @@ func fixtureWithStore(t *testing.T, store *failingStore, dump []byte) *fixture {
 	if e != nil {
 		t.Fatal(e)
 	}
-	s, e := New(native, false)
+	s, e := New(native, readOnly)
 	if e != nil {
 		t.Fatal(e)
 	}
@@ -275,7 +279,14 @@ func TestLinksRenameAndStaleHandles(t *testing.T) {
 	}
 	replacement := openFile(t, s, "renamed")
 	_ = replacement
-	requireErr(t, s.Unlink(h), syscall.ENOENT)
+	requireErr(t, s.Unlink(h), syscall.EACCES)
+	if _, e = s.Write(hard, []byte("live"), 0, 0); e != nil {
+		t.Fatalf("live non-trash hardlink: %v", e)
+	}
+	dangling := openFile(t, s, "dangling")
+	if _, e = s.Symlink(dangling, "missing/target", 1); e != nil {
+		t.Fatalf("dangling internal link: %v", e)
+	}
 	// A renamed directory updates path-bearing child handles.
 	if _, e = s.Mkdir("dir", 0700); e != nil {
 		t.Fatal(e)
@@ -317,6 +328,18 @@ func TestConfinementTrashAndStaleHandles(t *testing.T) {
 	if _, e := s.Mkdir("alias/purge", 0700); e == nil {
 		t.Fatal("resolved trash alias mutation accepted")
 	}
+	if er := f.native.Symlink(meta.Background(), ".config", "/config-alias"); er != 0 {
+		t.Fatal(er)
+	}
+	if _, e := s.Open("config-alias", syscall.O_RDONLY, 0); e == nil {
+		t.Fatal("resolved native internal node accepted")
+	}
+	if er := f.native.Mkdir(meta.Background(), "/private", 0700, 0); er != 0 {
+		t.Fatal(er)
+	}
+	if _, e := s.OpenDir("private"); e == nil {
+		t.Fatal("unprivileged client bypassed directory permission")
+	}
 	// Out-of-band namespace replacement must not retarget an existing handle.
 	old := openFile(t, s, "old")
 	if er := f.native.Rename(meta.Background(), "/old", "/saved", 0); er != 0 {
@@ -333,6 +356,9 @@ func TestTrashHandlePreservesExportedData(t *testing.T) {
 	h := openFile(t, s, "protected")
 	original := []byte("protected backup content")
 	if _, e := s.Write(h, original, 0, 1); e != nil {
+		t.Fatal(e)
+	}
+	if e := s.Flush(h); e != nil {
 		t.Fatal(e)
 	}
 	var dump bytes.Buffer
@@ -366,6 +392,9 @@ func TestReadOnlyMutations(t *testing.T) {
 	if _, e := f.s.Write(h, []byte("ok"), 0, 1); e != nil {
 		t.Fatal(e)
 	}
+	if e := f.s.Flush(h); e != nil {
+		t.Fatal(e)
+	}
 	ro, e := New(f.native, true)
 	if e != nil {
 		t.Fatal(e)
@@ -397,15 +426,21 @@ func TestReadOnlyMutations(t *testing.T) {
 	_, e = ro.Link(vfs.VfsNode(2), vfs.VFS_ROOT_NODE, "hard")
 	requireErr(t, e, syscall.EROFS)
 }
-func TestWriteThroughFailure(t *testing.T) {
-	for _, operation := range []string{"write-through", "flush", "close"} {
+func TestNativeSyncFlushCloseFailure(t *testing.T) {
+	for _, operation := range []string{"sync-write", "flush", "close"} {
 		t.Run(operation, func(t *testing.T) {
 			f := newFixture(t)
-			h := openFile(t, f.s, "data")
+			flags := syscall.O_CREAT | syscall.O_RDWR
+			if operation == "sync-write" {
+				flags |= syscall.O_SYNC
+			}
+			h, e := f.s.Open("data", flags, 0600)
+			if e != nil {
+				t.Fatal(e)
+			}
 			f.store.fail.Store(true)
-			var e error
-			if operation == "write-through" {
-				_, e = f.s.Write(h, []byte("fail"), 0, 1)
+			if operation == "sync-write" {
+				_, e = f.s.Write(h, []byte("fail"), 0, 0)
 			} else {
 				_, e = f.s.Write(h, []byte("fail"), 0, 0)
 				if e != nil {

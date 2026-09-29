@@ -102,8 +102,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if closeErr := r.close(); closeErr != nil {
 			// A failed close is not permission to release live writers' lock.
 			// Exit here, keeping r reachable until process termination.
-			slog.Error("shutdown failed; terminating with state lock retained", "error", errors.Join(result, closeErr))
-			os.Exit(1)
+			exitFailure("shutdown failed; terminating with state lock retained", errors.Join(result, closeErr))
 		}
 	}()
 	var err error
@@ -111,9 +110,13 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	r.protection, err = backup.NewProtection(c.Backup.Interval, backupTimeout, c.Backup.TrashDays)
-	if err != nil {
-		return err
+	checkMaintenance := func() error { return backup.ErrUnprotected }
+	if !c.SMB.ReadOnly {
+		r.protection, err = backup.NewProtection(c.Backup.Interval, backupTimeout, c.Backup.TrashDays)
+		if err != nil {
+			return err
+		}
+		checkMaintenance = r.protection.Check
 	}
 	r.raw, err = storage.OpenS3(c)
 	if err != nil {
@@ -189,12 +192,21 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	} else if remoteEmpty {
 		return errors.New("remote volume identity contradicts the empty listing")
 	}
+	// Remote format/export fields are identity/layout information, never a
+	// source of connection credentials. OpenS3 already used current YAML/TLS.
+	format.Storage = "s3"
+	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
 		return errors.New("configured encryption mode differs from the existing dataset")
 	}
 	blob, err := storage.OpenVolume(ctx, r.raw, format, c.Passphrase, fresh)
 	if err != nil {
 		return err
+	}
+	if !fresh {
+		if err = verifyRemoteMarker(ctx, blob, format, point != nil); err != nil {
+			return err
+		}
 	}
 	recovered := false
 	if !fresh && !localExists {
@@ -230,34 +242,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		recovered = true
 	}
-	if !fresh {
-		if err = storage.VerifyMarker(ctx, blob, format); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("verify native volume marker: %w", err)
-			}
-			// A validated backup supplies identity when the optional native marker is
-			// missing. Never synthesize a replacement identity from local SQLite alone.
-			if point == nil {
-				points, e := backup.List(ctx, blob)
-				if e != nil {
-					return e
-				}
-				if len(points) == 0 {
-					return errors.New("native marker missing and no validated backup supplies identity")
-				}
-				saved, e := backup.Inspect(ctx, blob, points[0].Key)
-				if e != nil {
-					return e
-				}
-				if !sameVolume(saved, format) {
-					return errors.New("backup identity does not match remote volume")
-				}
-			}
-		}
-	}
 	conf := meta.DefaultConf()
 	conf.ReadOnly = c.SMB.ReadOnly
-	conf.CheckMaintenance = r.protection.Check
+	conf.CheckMaintenance = checkMaintenance
 	r.metadata, err = storage.OpenMetadata(dbPath, conf)
 	if err != nil {
 		return err
@@ -316,19 +303,20 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err = ctx.Err(); err != nil {
 		return err
 	}
-	// Neither native mutable session jobs nor SMB access exist before protection.
-	// NewSession may partially start workers even if it returns an error.
-	r.session = true
-	if err = r.metadata.NewSession(true); err != nil {
-		return err
-	}
 	var cacheBytes *int64
 	if c.Storage.CacheSize != nil {
 		v := int64(*c.Storage.CacheSize)
 		cacheBytes = &v
 	}
-	r.runtime, err = storage.OpenFilesystem(r.metadata, blob, format, c.Storage.CacheDir, cacheBytes, r.protection.Check)
+	r.runtime, err = storage.OpenFilesystem(r.metadata, blob, format, c.Storage.CacheDir, cacheBytes, checkMaintenance)
 	if err != nil {
+		return err
+	}
+	// Register native storage callbacks before starting session workers. Neither
+	// native mutable session jobs nor SMB access exist before protection.
+	// NewSession may partially start workers even if it returns an error.
+	r.session = true
+	if err = r.metadata.NewSession(true); err != nil {
 		return err
 	}
 	r.adapter, err = smbfs.New(r.runtime.FS, c.SMB.ReadOnly)
@@ -382,6 +370,34 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		return fmt.Errorf("SMB serving failed: %w", err)
 	}
+}
+
+// A validated native backup supplies identity when the marker is missing. Check
+// before publishing recovered local metadata, not after it has become active.
+func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *meta.Format, backupValidated bool) error {
+	if err := storage.VerifyMarker(ctx, blob, format); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("verify native volume marker: %w", err)
+	}
+	if backupValidated {
+		return nil
+	}
+	points, err := backup.List(ctx, blob)
+	if err != nil {
+		return err
+	}
+	if len(points) == 0 {
+		return errors.New("native marker missing and no validated backup supplies identity")
+	}
+	saved, err := backup.Inspect(ctx, blob, points[0].Key)
+	if err != nil {
+		return err
+	}
+	if !sameVolume(saved, format) {
+		return errors.New("backup identity does not match remote volume")
+	}
+	return nil
 }
 
 func localMetadataExists(path string) (bool, error) {

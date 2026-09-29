@@ -12,7 +12,9 @@ var version = "dev"
 func main() { os.Exit(app.Main(os.Args[1:], buildVersion())) }
 
 func buildVersion() string {
-	if version != "dev" { return version }
+	if version != "dev" {
+		return version
+	}
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}

@@ -42,7 +42,7 @@ import (
 )
 
 const transportBucket = "transport-test"
-const transportHost = "transport.minio"
+const transportHost = "transport.test"
 const transportAccess = "s3smb-test-access"
 const transportSecret = "s3smb-test-secret-only"
 
@@ -61,13 +61,13 @@ func TestTransportAcceptance(t *testing.T) {
 	transportWaitMinIO(t, upstream)
 	ca := transportCA(t)
 	wrongCA := transportCA(t)
-	serverCert, _ := ca.issue(t, false)
+	serverCert, serverKey := ca.issue(t, false)
 	clientCert, clientKey := ca.issue(t, true)
 	caFile := transportFile(t, "ca.pem", ca.pem)
 	wrongCAFile := transportFile(t, "wrong-ca.pem", wrongCA.pem)
 	certFile := transportFile(t, "client.pem", clientCert)
 	keyFile := transportFile(t, "client-key.pem", clientKey)
-	serverPair, err := tls.X509KeyPair(serverCert, ca.serverKey)
+	serverPair, err := tls.X509KeyPair(serverCert, serverKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,6 +157,35 @@ func TestTransportAcceptance(t *testing.T) {
 		transportRoundTrip(t, transportOpen(t, cfg), "accepted/explicit-http")
 	})
 
+	t.Run("credential_sources", func(t *testing.T) {
+		// Exercise independent startup sources against real S3, not only resolver
+		// unit tests. The executable is invoked directly, without a shell.
+		source := func(t *testing.T, kind, value string) config.SecretSource {
+			switch kind {
+			case "file":
+				path := transportFile(t, "credential", []byte(value+"\n"))
+				return config.SecretSource{File: &path}
+			case "command":
+				return config.SecretSource{Command: []string{"/usr/bin/printf", "%s", value}}
+			default:
+				return config.SecretSource{Value: &value}
+			}
+		}
+		for _, accessSource := range []string{"value", "file", "command"} {
+			for _, secretSource := range []string{"value", "file", "command"} {
+				t.Run(accessSource+"_"+secretSource, func(t *testing.T) {
+					proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
+					cfg := transportConfig(t, proxy.endpoint, true)
+					cfg.S3.TLS.CAFile = caFile
+					cfg.S3.AccessKey = source(t, accessSource, transportAccess)
+					cfg.S3.SecretKey = source(t, secretSource, transportSecret)
+					transportRoundTrip(t, transportOpen(t, cfg), "accepted/sources/"+accessSource+"_"+secretSource)
+					proxy.assertRequests(t, true, true, false, "")
+				})
+			}
+		}
+	})
+
 	t.Run("static_session_token", func(t *testing.T) {
 		// MinIO validates a real signed STS token, not an invented header. Acquire it
 		// once as fixture setup; the application receives only explicit static values.
@@ -193,6 +222,9 @@ func TestTransportAcceptance(t *testing.T) {
 		if err == nil {
 			t.Fatal("MinIO accepted an invalid signing secret")
 		}
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatal("S3 authentication failure was mistaken for a missing object")
+		}
 		transportNoSecrets(t, err.Error(), transportAccess, wrong)
 		requests := proxy.snapshot()
 		if len(requests) != 1 || requests[0].status != http.StatusForbidden {
@@ -215,6 +247,9 @@ func TestTransportAcceptance(t *testing.T) {
 		}
 		if time.Since(start) > 3*time.Second {
 			t.Fatal("native S3 ignored bounded caller deadline")
+		}
+		if proxy.stalled.Load() != 1 {
+			t.Fatal("deadline probe did not reach the TLS HTTP handler exactly once")
 		}
 		transportNoSecrets(t, err.Error(), transportAccess, transportSecret)
 		t.Log("stalled TLS HTTP response canceled by 300ms caller deadline")
@@ -319,6 +354,13 @@ func transportRoundTrip(t *testing.T, store object.ObjectStorage, key string) {
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("deleted object still exists or HEAD did not report not-exist")
 	}
+	missing, err := store.Get(ctx, key, 0, -1)
+	if missing != nil {
+		_ = missing.Close()
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("deleted object GET did not report not-exist")
+	}
 	t.Log("native Create/Put/Get/Head/List/Delete verified against MinIO with exact binary payload")
 }
 
@@ -334,6 +376,7 @@ type transportObserver struct {
 	requests      []transportRequest
 	plain         atomic.Int64
 	stall         atomic.Bool
+	stalled       atomic.Int64
 	expectedToken string
 }
 
@@ -399,6 +442,7 @@ func transportProxy(t *testing.T, upstream *url.URL, pair tls.Certificate, ca *x
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if p.stall.Load() {
+			p.stalled.Add(1)
 			<-r.Context().Done()
 			return
 		}
@@ -480,9 +524,9 @@ func (c *transportSniffConn) Read(b []byte) (int, error) {
 }
 
 type transportAuthority struct {
-	cert           *x509.Certificate
-	key            *ecdsa.PrivateKey
-	pem, serverKey []byte
+	cert *x509.Certificate
+	key  *ecdsa.PrivateKey
+	pem  []byte
 }
 
 func transportCA(t *testing.T) *transportAuthority {
@@ -525,9 +569,6 @@ func (ca *transportAuthority) issue(t *testing.T, client bool) ([]byte, []byte) 
 		t.Fatal(err)
 	}
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
-	if !client {
-		ca.serverKey = keyPEM
-	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), keyPEM
 }
 func transportSerial(t *testing.T) *big.Int {

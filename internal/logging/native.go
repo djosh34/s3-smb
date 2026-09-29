@@ -35,7 +35,7 @@ func (f nativeFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	// logrus panics with this Entry after formatting: never leave the raw message
 	// or arbitrary native fields in the panic payload.
 	e.Message = Redact(e.Message)
-	attrs := []slog.Attr{slog.String("component", f.component)}
+	attrs := []slog.Attr{slog.String("component", f.component), slog.String("native_level", e.Level.String())}
 	for key, value := range e.Data {
 		attrs = append(attrs, cleanAttr(slog.Any(key, value)))
 	}

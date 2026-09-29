@@ -30,7 +30,6 @@ import (
 var mu sync.Mutex
 var loggers = make(map[string]*LogHandle)
 
-var syslogHook logrus.Hook
 var framePlaceHolder = runtime.Frame{Function: "???", File: "???", Line: 0}
 
 type LogHandle struct {

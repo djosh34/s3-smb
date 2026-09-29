@@ -29,7 +29,6 @@ import (
 	"io"
 	"net/url"
 	"runtime"
-	"runtime/debug"
 	"slices"
 	"sort"
 	"strconv"
@@ -1233,7 +1232,17 @@ func (m *dbMeta) shouldRetry(err error) bool {
 }
 
 func (m *dbMeta) txn(f func(s *xorm.Session) error, inodes ...Ino) error {
-	if m.conf.ReadOnly {
+	return m.transaction(false, f, inodes...)
+}
+
+// lockTxn changes only this authority's local advisory-lock rows, not file
+// metadata or remote objects. Read-only clients still need meaningful locks.
+func (m *dbMeta) lockTxn(f func(s *xorm.Session) error, inodes ...Ino) error {
+	return m.transaction(true, f, inodes...)
+}
+
+func (m *dbMeta) transaction(localLock bool, f func(s *xorm.Session) error, inodes ...Ino) error {
+	if m.conf.ReadOnly && !localLock {
 		return syscall.EROFS
 	}
 	start := time.Now()
@@ -4893,12 +4902,10 @@ func (m *dbMeta) DumpMeta(w io.Writer, root Ino, threads int, keepSecret, fast, 
 	}
 	defer func() {
 		if p := recover(); p != nil {
-			debug.PrintStack()
-			if e, ok := p.(error); ok {
-				err = e
-			} else {
-				err = fmt.Errorf("DumpMeta error: %v", p)
-			}
+			// Panic payloads may contain metadata/SQL values. Preserve the
+			// failed export without writing a raw stack or payload to stderr.
+			logger.Errorf("native metadata export panicked")
+			err = errors.New("native metadata export panicked")
 		}
 	}()
 

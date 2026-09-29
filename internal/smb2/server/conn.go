@@ -62,10 +62,9 @@ again:
 	}
 
 	r.m.Lock()
-	defer r.m.Unlock()
-
 	rr := r.requests[msgId]
 	delete(r.requests, msgId)
+	r.m.Unlock()
 	if rr == nil {
 		// Cancel message
 		goto again
@@ -109,10 +108,11 @@ type conn struct {
 	write chan []byte
 	werr  chan error
 
-	m      sync.Mutex
-	ioWG   sync.WaitGroup
-	lockWG sync.WaitGroup
-	spnego *spnegoServer
+	m           sync.Mutex
+	ioWG        sync.WaitGroup
+	lockWG      sync.WaitGroup
+	transportWG sync.WaitGroup
+	spnego      *spnegoServer
 
 	err error
 
@@ -235,7 +235,8 @@ func (conn *conn) runSender() {
 
 			select {
 			case conn.werr <- err:
-			case <-conn.ctx.Done(): return
+			case <-conn.ctx.Done():
+				return
 			}
 		}
 	}
@@ -262,101 +263,30 @@ func (conn *conn) runReciever() {
 		}
 
 		hasSession := conn.useSession()
-		var reqSession *session
-
+		var encryptedSession *session
 		var isEncrypted bool
-
 		if hasSession {
-			pkt, reqSession, e, isEncrypted = conn.tryDecrypt(pkt)
-			if e != nil {
-				log.Warning("skip:", e)
-
-				continue
-			}
-
-			p := PacketCodec(pkt)
-			if reqSession == nil {
-				reqSession = conn.lookupSession(p.SessionId())
-			}
-			isSessionlessEcho := p.Command() == SMB2_ECHO && p.SessionId() == 0 && p.Flags()&SMB2_FLAGS_SIGNED == 0
-			switch {
-			case reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && !isSessionlessEcho:
-				log.Warning("skip:", &InvalidResponseError{"unknown session id"})
-				log.Errorf("Session!!!: msg %d, %d %d", p.Command(), uint64(0), p.SessionId())
-				continue
-			case reqSession != nil:
-				s := reqSession
-				if p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP &&
-					s.sessionId != p.SessionId() {
-					log.Warning("skip:", &InvalidResponseError{"unknown session id"})
-
-					log.Errorf("Session!!!: msg %d, %d %d", p.Command(), s.sessionId, p.SessionId())
-					continue
-				}
-
-				if tc, ok := s.treeConnTables[p.TreeId()]; ok {
-					if tc.treeId != p.TreeId() {
-						log.Warningln("skip:", &InvalidResponseError{"unknown tree id"})
-
-						continue
-					}
-				}
-			}
+			pkt, encryptedSession, e, isEncrypted = conn.tryDecrypt(pkt)
+			if e != nil { err = e; goto exit }
 		}
-
-		var next []byte
-		var compCtx *compoundContext = nil
-
-		for {
-			p := PacketCodec(pkt)
-			if p.IsInvalid() {
-				err = &InvalidRequestError{}
-				goto exit
-			}
-
-			if p.IsCompoundFirst() {
-				compCtx = &compoundContext{
-					treeId:    uint64(p.TreeId()),
-					sessionId: p.SessionId(),
-				}
-			}
-
-			if p.IsCompoundLast() {
-				if compCtx == nil {
-					err = &InvalidRequestError{"missing compound context"}
-					goto exit
-				}
-				compCtx.lastMsgId = p.MessageId()
-			}
-
-			if off := p.NextCommand(); off != 0 {
-				if off < 64 || off%8 != 0 || uint64(off)+64 > uint64(len(pkt)) {
-					err = &InvalidRequestError{"invalid compound offset"}
-					goto exit
-				}
-				pkt, next = pkt[:off], pkt[off:]
-			} else {
-				next = nil
-			}
-
+		packets, e := splitRequests(pkt)
+		if e != nil { err = e; goto exit }
+		var compCtx *compoundContext
+		if len(packets) > 1 {
+			first := PacketCodec(packets[0])
+			compCtx = &compoundContext{treeId:uint64(first.TreeId()), sessionId:first.SessionId(), lastMsgId:PacketCodec(packets[len(packets)-1]).MessageId()}
+		}
+		var reqSession *session
+		for _, part := range packets {
+			p := PacketCodec(part)
 			if hasSession {
-				e = conn.tryVerify(pkt, reqSession, isEncrypted)
-				if e != nil {
-					err = e
-					goto exit
-				}
+				if p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS == 0 { reqSession = conn.lookupSession(p.SessionId()) }
+				if encryptedSession != nil && reqSession != encryptedSession { err = &InvalidRequestError{"encrypted session mismatch"}; goto exit }
+				isSessionlessEcho := p.Command() == SMB2_ECHO && p.SessionId() == 0 && p.Flags()&SMB2_FLAGS_SIGNED == 0
+				if reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && !isSessionlessEcho { err = &InvalidRequestError{"unknown session id"}; goto exit }
+				if e = conn.tryVerify(part, reqSession, isEncrypted); e != nil { err = e; goto exit }
 			}
-
-			e = conn.tryHandle(pkt, reqSession, compCtx, e)
-			if e != nil {
-				log.Warningln("skip:", e)
-			}
-
-			if next == nil {
-				break
-			}
-
-			pkt = next
+			if e = conn.tryHandle(part, reqSession, compCtx, nil); e != nil { err = e; goto exit }
 		}
 	}
 
@@ -494,28 +424,23 @@ func (conn *conn) tryDecrypt(pkt []byte) ([]byte, *session, error, bool) {
 func (conn *conn) tryVerify(pkt []byte, s *session, isEncrypted bool) error {
 	p := PacketCodec(pkt)
 
-	msgId := p.MessageId()
-
-	if msgId != 0xFFFFFFFFFFFFFFFF {
-		if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
-			if s == nil || s.sessionId != p.SessionId() {
-				return &InvalidResponseError{"unknown session id returned"}
-			} else {
-				if !s.verify(pkt) {
-					return &InvalidResponseError{"unverified packet returned"}
-				}
-			}
-		} else {
-			if conn.requireSigning && !isEncrypted {
-				if s != nil {
-					if s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) == 0 {
-						if s.sessionId == p.SessionId() {
-							return &InvalidResponseError{"signing required"}
-						}
-					}
-				}
-			}
+	// These are client requests, not unsolicited server notifications. Even
+	// a reserved MessageId cannot exempt a request from signature validation.
+	// Related compound members may carry the all-ones inherited SessionId.
+	// splitRequests rejects a related leading request; signatures still cover
+	// the original bytes, not a rewritten effective-session header.
+	matchesSession := s != nil && (s.sessionId == p.SessionId() || (p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0 && p.SessionId() == ^uint64(0)))
+	if s != nil && !matchesSession { return &InvalidResponseError{"unknown session id returned"} }
+	if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
+		if !matchesSession {
+			return &InvalidResponseError{"unknown session id returned"}
 		}
+		if !s.verify(pkt) {
+			return &InvalidResponseError{"unverified packet returned"}
+		}
+	} else if conn.requireSigning && !isEncrypted && s != nil &&
+		s.sessionFlags&(SMB2_SESSION_FLAG_IS_GUEST|SMB2_SESSION_FLAG_IS_NULL) == 0 && matchesSession {
+		return &InvalidResponseError{"signing required"}
 	}
 
 	return nil

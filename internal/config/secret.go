@@ -137,6 +137,11 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 	cmd.Stdout = out
 	cmd.Stderr = stderr
 	err := cmd.Run()
+	// Also terminate the process group after a helper exits while a child still owns
+	// its pipes. WaitDelay bounds our wait; this prevents lingering children.
+	if cmd.Process != nil {
+		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	}
 	if out.exceeded || stderr.exceeded {
 		return nil, errors.New("credential helper output exceeds 65536 bytes")
 	}

@@ -103,6 +103,7 @@ func (s *FS) tryLocks(h vfs.VfsHandle, f *handle, locks []vfs.ByteRangeLock) (er
 	return nil, false
 }
 func (s *FS) replaceLocks(h vfs.VfsHandle, f *handle, locks []vfs.ByteRangeLock) error {
+	f.lockOwnerUsed = true // cleanup must also cover an ambiguously failed batch
 	if er := s.meta.Setlk(s.ctx, f.file.Inode(), uint64(h), false, syscall.F_UNLCK, 0, math.MaxUint64, 1); er != 0 {
 		return er
 	}

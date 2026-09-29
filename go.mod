@@ -20,6 +20,7 @@ require (
 	github.com/geoffgarside/ber v1.1.0
 	github.com/goccy/go-json v0.10.5
 	github.com/google/uuid v1.6.0
+	github.com/hirochachacha/go-smb2 v1.1.0
 	github.com/hungys/go-lz4 v0.0.0-20170805124057-19ff7f07f099
 	github.com/juju/ratelimit v1.0.2
 	github.com/mattn/go-isatty v0.0.20
@@ -70,7 +71,6 @@ require (
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
 	github.com/fsnotify/fsnotify v1.7.0 // indirect
 	github.com/golang/snappy v0.0.4 // indirect
-	github.com/hirochachacha/go-smb2 v1.1.0 // indirect
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/kr/fs v0.1.0 // indirect

@@ -249,15 +249,15 @@ func (s *FS) Symlink(h vfs.VfsHandle, target string, flags int) (*vfs.Attributes
 	if _, e = s.checkedPath(resolved, true, true); e != nil {
 		return nil, e
 	}
+	if er := f.file.Fsync(s.ctx); er != 0 {
+		return nil, er
+	}
 	var a meta.Attr
 	if er := s.meta.GetAttr(s.ctx, f.file.Inode(), &a); er != 0 {
 		return nil, er
 	}
 	if a.Typ != meta.TypeFile || a.Length != 0 {
 		return nil, syscall.EINVAL
-	}
-	if er := f.file.Fsync(s.ctx); er != 0 {
-		return nil, er
 	}
 	p := f.path
 	if er := s.native.Delete(s.ctx, p); er != 0 {

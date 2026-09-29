@@ -203,6 +203,9 @@ func (c *Config) validate() error {
 	if c.Storage.StateDir == "" || c.Storage.CacheDir == "" || strings.ContainsRune(c.Storage.StateDir+c.Storage.CacheDir, 0) {
 		return errors.New("storage directories must be nonempty paths without NUL")
 	}
+	if c.Storage.CacheSize != nil && *c.Storage.CacheSize < 0 {
+		return errors.New("storage.cache_size must be nonnegative")
+	}
 	if c.S3.Bucket == "" || strings.ContainsAny(c.S3.Bucket, "/\\\x00") {
 		return errors.New("s3.bucket is required and must be a bucket name")
 	}

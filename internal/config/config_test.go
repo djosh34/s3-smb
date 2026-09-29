@@ -57,9 +57,7 @@ func TestStrictYAML(t *testing.T) {
 		"empty":             "",
 		"array":             "[private-marker]",
 		"bad duration":      validYAML + "backup: {interval: private-marker}\n",
-		"bad tls pair":      validYAML + "", // tested separately below
 	}
-	delete(tests, "bad tls pair")
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
 			_, err := loadText(t, input)
@@ -152,6 +150,7 @@ func TestValidation(t *testing.T) {
 		"http tls":                 func(c *Config) { c.S3.Endpoint = "http://localhost:9000"; c.S3.TLS.CAFile = "ca" },
 		"interval":                 func(c *Config) { c.Backup.Interval = 0 },
 		"trash":                    func(c *Config) { c.Backup.TrashDays = -1 },
+		"negative cache bytes":     func(c *Config) { n := ByteSize(-1); c.Storage.CacheSize = &n },
 		"port":                     func(c *Config) { c.SMB.Listen = "127.0.0.1:65536" },
 		"username":                 func(c *Config) { c.SMB.Username = "" },
 		"bucket":                   func(c *Config) { c.S3.Bucket = "" },

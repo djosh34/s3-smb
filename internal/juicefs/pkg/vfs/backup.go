@@ -152,7 +152,15 @@ func BackupTo(ctx context.Context, m meta.Meta, blob object.ObjectStorage, stagi
 	if err = ctx.Err(); err != nil {
 		return "", err
 	}
-	if err = blob.Put(ctx, key, fp); err != nil {
+	publisher, ok := blob.(interface {
+		PutIfAbsent(context.Context, string, io.Reader) error
+	})
+	if !ok {
+		return "", errors.New("metadata store does not support conditional publication")
+	}
+	if err = publisher.PutIfAbsent(ctx, key, fp); err != nil {
+		// A response may have been lost. Do not retry this name, even if HEAD
+		// would now say absent; caller retains its durable reservation.
 		return "", err
 	}
 	r, err := blob.Get(ctx, key, 0, -1)

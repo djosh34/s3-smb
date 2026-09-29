@@ -525,7 +525,7 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(noff+r.NameLength())-64 {
+	if r.NameLength() != 0 && (noff < 120 || uint64(noff)+uint64(r.NameLength()) > uint64(len(r))+64) {
 		return true
 	}
 
@@ -535,7 +535,7 @@ func (r CreateRequestDecoder) IsInvalid() bool {
 		return true
 	}
 
-	if len(r) < int(coff+r.CreateContextsLength())-64 {
+	if r.CreateContextsLength() != 0 && (coff < 120 || uint64(coff)+uint64(r.CreateContextsLength()) > uint64(len(r))+64) {
 		return true
 	}
 
@@ -599,10 +599,12 @@ func (r CreateRequestDecoder) CreateContextsLength() uint32 {
 }
 
 func (r CreateRequestDecoder) Name() string {
-	off := r.NameOffset()
-	len := r.NameLength()
-	off -= 64
-	return utf16le.DecodeToString(r[off : off+len])
+	if r.NameLength() == 0 {
+		return ""
+	}
+	off := int(r.NameOffset()) - 64
+	length := int(r.NameLength())
+	return utf16le.DecodeToString(r[off : off+length])
 }
 
 func (r CreateRequestDecoder) CreateContexts() []byte {
@@ -641,13 +643,13 @@ func (r CreateContextDecoder) DataLength() uint32 {
 }
 
 func (r CreateContextDecoder) Buffer() []byte {
-	off := r.DataOffset()
-	return r[off : off+uint16(r.DataLength())]
+	off := int(r.DataOffset())
+	return r[off : off+int(r.DataLength())]
 }
 
 func (r CreateContextDecoder) Name() string {
-	off := r.NameOffset()
-	return string(r[off : off+r.NameLength()])
+	off := int(r.NameOffset())
+	return string(r[off : off+int(r.NameLength())])
 }
 
 // ----------------------------------------------------------------------------

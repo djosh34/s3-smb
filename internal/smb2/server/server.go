@@ -331,8 +331,9 @@ func (d *Server) ServeListener(listener net.Listener) error {
 		d.activeConns[conn] = struct{}{}
 		d.connWG.Add(1)
 		d.lock.Unlock()
-		go conn.runReciever()
-		go conn.runSender()
+		conn.transportWG.Add(2)
+		go func() { defer conn.transportWG.Done(); conn.runReciever() }()
+		go func() { defer conn.transportWG.Done(); conn.runSender() }()
 
 		run := func() {
 			if err := conn.Run(); err != nil {
@@ -351,6 +352,7 @@ func (d *Server) ServeListener(listener net.Listener) error {
 			conn.shutdown()
 			err := conn.closeTreeHandles(nil)
 			conn.lockWG.Wait()
+			conn.transportWG.Wait()
 			d.lock.Lock()
 			d.cleanupErr = errors.Join(d.cleanupErr, err)
 			delete(d.activeConns, conn)
@@ -384,11 +386,23 @@ func (c *conn) Run() error {
 		if err != nil {
 			return err
 		}
-		if reqSession != nil {
+		if reqSession != nil && c.session != reqSession {
 			c.session = reqSession
 		}
 
 		p := PacketCodec(pkt)
+		if compCtx != nil && p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS == 0 {
+			compCtx.treeId, compCtx.sessionId = uint64(p.TreeId()), p.SessionId()
+			compCtx.fileId, compCtx.lastStatus = nil, 0
+		}
+		if p.Command() != SMB2_NEGOTIATE && p.Command() != SMB_COM_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && p.Command() != SMB2_ECHO && (!c.useSession() || reqSession == nil) {
+			rsp := new(ErrorResponse)
+			PrepareResponse(rsp.Header(), pkt, uint32(STATUS_USER_SESSION_DELETED))
+			if err := c.sendPacket(rsp, nil, compCtx); err != nil {
+				return err
+			}
+			continue
+		}
 		if p.Flags()&SMB2_FLAGS_ASYNC_COMMAND != 0 {
 			log.Debugf("Async command %d", p.Command())
 		}
@@ -410,7 +424,9 @@ func (c *conn) Run() error {
 			err = nil
 		default:
 			p := PacketCodec(pkt)
-			tc, ok := c.treeMapById[p.TreeId()]
+			treeID := p.TreeId()
+			if compCtx != nil && p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0 { treeID = uint32(compCtx.treeId) }
+			tc, ok := c.treeMapById[treeID]
 			if !ok {
 				err = &InvalidRequestError{fmt.Sprintf("tree %d doesn't exist: command %d", p.TreeId(), p.Command())}
 				break
@@ -1111,12 +1127,11 @@ func (c *conn) sessionServerSetupChallenge(pkt []byte) error {
 	c.registerSession(s)
 
 	c.serverState = STATE_SESSION_ACTIVE
-	if err = c.sendPacket(rsp, nil, nil); err == nil {
-		// now, allow access from receiver
-		c.enableSession()
-	}
-
-	return err
+	// Keys and session fields are complete before publishing to the receiver.
+	// Publish before the response reaches the client, otherwise its first request
+	// can race the receiver's signing gate.
+	c.enableSession()
+	return c.sendPacket(rsp, nil, nil)
 }
 
 func (d *Server) addOpen(open *Open) {

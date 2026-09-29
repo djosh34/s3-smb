@@ -28,5 +28,5 @@ func (SlogLogger) IsShowSQL() bool      { return false }
 func (SlogLogger) BeforeSQL(LogContext) {}
 func (SlogLogger) AfterSQL(ctx LogContext) {
 	// Also safe if a session explicitly enables ShowSQL, bypassing IsShowSQL.
-	slog.Debug("database operation completed", "component", "xorm", "duration", ctx.ExecuteTime)
+	slog.Debug("database operation completed", "component", "xorm", "duration", ctx.ExecuteTime, "failed", ctx.Err != nil)
 }

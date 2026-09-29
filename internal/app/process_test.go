@@ -4,7 +4,9 @@ package app
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,6 +14,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/djosh34/s3-smb/internal/logging"
 )
 
 // These run the real entry point in an isolated process: no config/network or
@@ -87,11 +91,16 @@ func TestHardExitRetainsOSLockUntilProcessTermination(t *testing.T) {
 		// Keep a live reference; no deferred close runs on the hard exit path.
 		defer lock.Close()
 		os.Stdout.WriteString("locked\n")
+		// The real log sink blocks forever; hard exit must still be bounded.
+		_, blocked := io.Pipe()
+		logging.Install(blocked)
 		time.AfterFunc(500*time.Millisecond, hardExit)
 		select {}
 	}
 	dir := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestHardExitRetainsOSLockUntilProcessTermination$")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHardExitRetainsOSLockUntilProcessTermination$")
 	cmd.Env = append(os.Environ(), "S3_SMB_APP_LOCK_TEST="+dir)
 	output, err := cmd.StdoutPipe()
 	if err != nil {
@@ -111,6 +120,9 @@ func TestHardExitRetainsOSLockUntilProcessTermination(t *testing.T) {
 	}
 	if err = cmd.Wait(); err == nil {
 		t.Fatal("hard exit reported success")
+	}
+	if ctx.Err() != nil || cmd.ProcessState.ExitCode() != 1 {
+		t.Fatalf("hard exit was not bounded: %v", err)
 	}
 	l, err := lockState(dir)
 	if err != nil {

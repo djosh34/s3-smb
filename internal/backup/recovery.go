@@ -183,6 +183,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	// or destination. Transport/TLS remains owned by the already-open current store.
 	saved.Storage = current.Storage
 	saved.StorageClass = current.StorageClass
+	saved.Tiers = current.Tiers
 	saved.Bucket = current.Bucket
 	saved.AccessKey = current.AccessKey
 	saved.SecretKey = current.SecretKey
@@ -190,6 +191,9 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	saved.EncryptKey = current.EncryptKey
 	saved.KeyEncrypted = current.KeyEncrypted
 	saved.TrashDays = current.TrashDays
+	saved.RangerRestUrl = current.RangerRestUrl
+	saved.RangerService = current.RangerService
+	saved.KerbConf = current.KerbConf
 	if err = m.Init(saved, false); err != nil {
 		return nil, err
 	}

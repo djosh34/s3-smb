@@ -888,10 +888,14 @@ func (m *baseMeta) refresh(ctx Context) {
 			return
 		}
 		delay := m.conf.Heartbeat
-		if delay <= 0 { delay = 12 * time.Second }
+		if delay <= 0 {
+			delay = 12 * time.Second
+		}
 		timer := time.NewTimer(utils.JitterIt(delay))
 		select {
-		case <-ctx.Done(): timer.Stop(); return
+		case <-ctx.Done():
+			timer.Stop()
+			return
 		case <-timer.C:
 		}
 		m.sesMu.Lock()
@@ -1537,7 +1541,7 @@ func (m *baseMeta) nextInode() (Ino, error) {
 		m.freeInodes.next++
 	}
 	if m.freeInodes.maxid-m.freeInodes.next == inodeNeedPrefetch {
-		go m.prefetchInodes()
+		m.startMutableTask(m.prefetchInodes)
 	}
 	return Ino(n), nil
 }
@@ -2129,7 +2133,7 @@ func (m *baseMeta) Read(ctx Context, inode Ino, indx uint32, slices *[]Slice) (s
 		if f != nil {
 			tierID = int(f.attr.Tier)
 		}
-		go m.compactChunk(inode, indx, false, false, tierID)
+		m.startMutableTask(func() { m.compactChunk(inode, indx, false, false, tierID) })
 	}
 	return 0
 }
@@ -2182,7 +2186,7 @@ func (m *baseMeta) Write(ctx Context, inode Ino, indx uint32, off uint32, slice 
 		m.updateUserGroupStat(ctx, attr.Uid, attr.Gid, delta.space, 0)
 		if numSlices%100 == 99 || numSlices > 350 {
 			if numSlices < maxSlices {
-				go m.compactChunk(inode, indx, false, false, int(attr.Tier))
+				m.startMutableTask(func() { m.compactChunk(inode, indx, false, false, int(attr.Tier)) })
 			} else {
 				m.compactChunk(inode, indx, true, false, int(attr.Tier))
 			}
@@ -2986,10 +2990,25 @@ func (m *baseMeta) tryDeleteFileData(inode Ino, length uint64, force bool) {
 			return // will be cleanup later
 		}
 	}
-	go func() {
+	if !m.startMutableTask(func() {
+		defer func() { <-m.maxDeleting }()
 		m.en.doDeleteFileData(inode, length)
+	}) {
 		<-m.maxDeleting
-	}()
+	}
+}
+
+// Join asynchronously triggered deletion/compaction before closing SQLite.
+// The session mutex prevents Add racing with CloseSession's final Wait.
+func (m *baseMeta) startMutableTask(fn func()) bool {
+	m.sesMu.Lock()
+	defer m.sesMu.Unlock()
+	if m.umounting {
+		return false
+	}
+	m.sessWG.Add(1)
+	go func() { defer m.sessWG.Done(); fn() }()
+	return true
 }
 
 func (m *baseMeta) deleteSlice_(id uint64, size uint32) {

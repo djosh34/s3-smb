@@ -31,7 +31,7 @@ func Main(args []string, version string) int {
 		printHelp(os.Stdout)
 		return 0
 	case "version":
-		fmt.Fprintln(os.Stdout, "s3-smb "+version)
+		fmt.Fprintln(os.Stdout, "s3-smb "+version+"\nSource: https://github.com/djosh34/s3-smb")
 		return 0
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -94,6 +94,24 @@ func Main(args []string, version string) int {
 const shutdownTimeout = 30 * time.Second
 
 func hardExit() {
-	slog.Error("hard shutdown deadline exceeded; exiting with local state lock retained until process termination")
+	exitFailure("hard shutdown deadline exceeded; exiting with local state lock retained until process termination", nil)
+}
+
+func exitFailure(message string, err error) {
+	// A blocked log pipe must not disable the process exit deadline. Give the
+	// diagnostic a short best-effort window, then let the OS release the lock.
+	done := make(chan struct{})
+	go func() {
+		if err != nil {
+			slog.Error(message, "error", err)
+		} else {
+			slog.Error(message)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+	}
 	os.Exit(1)
 }

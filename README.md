@@ -1,72 +1,71 @@
 # s3-smb
 
-A terminal-only Go SMB server that stores files in S3-compatible storage through embedded JuiceFS and its supported SQLite metadata backend.
+A foreground SMB server backed by S3 through embedded JuiceFS and local SQLite metadata. No FUSE mount, separate metadata server, or complete local data replica is required.
 
-**Status: implementation authorized and in progress. The user released the execution hold on 2026-09-29. Release acceptance, including actual Mac Time Machine recovery, is not complete. Do not use this project for real backups yet.**
+**Development status:** implementation is underway; release acceptance is not complete. Do not use this development version for irreplaceable backups. In particular, real hosted-Mac Time Machine full backup and crash recovery remain required before a compatibility claim.
 
-## First-release direction
+## Install and run
 
-- Planned installation: `go install github.com/djosh34/s3-smb@<version>`, without a checkout; no GUI.
-- Run `serve` in the foreground. The user manages the process; no launchd/systemd integration, service installer, or daemonization.
-- No separate `init` command. When the configured dataset is genuinely new, `serve` asks for `y/n` confirmation before creating it. Missing local SQLite alone must not trigger a new dataset over existing remote data.
-- Use one YAML config at `$XDG_CONFIG_HOME/s3-smb/config.yaml`, or `~/.config/s3-smb/config.yaml` when unset. Accept `-c <path>`.
-- Each S3 access key and secret key independently accepts a literal value, file, or directly executed argument array whose stdout supplies the credential. No implicit shell. Support custom S3 endpoints, explicit path-style addressing and TLS certificates.
-- Use standard `log/slog`, with text and JSON-only log-output modes. Keep interactive prompts and secrets out of the JSON log stream.
-- Portable bundled C/CGo code is allowed. Installation may need a normal C compiler and platform SDK, but no separately installed third-party native libraries.
-- Focused `macos-fuse-t/go-smb2` fork and direct in-process JuiceFS adapter; no FUSE dependency or mount.
-- Reuse JuiceFS's native caching, including tested cache size `0`. Use decimal MB/GB for settings and display. Support remote datasets larger than the daemon's available local storage.
-- Default to `127.0.0.1`. Support passwordless SMB as well as account/password access, and allow explicit `0.0.0.0` binding. Passwordless means a named account with an explicitly empty password; no anonymous mode is required.
-- Create private local files by default, but warn rather than reject existing secret files solely because of ownership or permission modes such as 0400/0600.
-- Linux/ARM64 development first. Run almost all tests locally on the VM in Docker with MinIO and the application. GitHub Linux CI repeats the exact same suite as extra verification, not the primary debugging loop.
-- Actual Time Machine full backup, normal recovery and crash-during-write recovery on GitHub-hosted macOS is the final required task, after everything else passes. Back up the Mac runner's normally eligible contents, not just a controlled test dataset. Hosted-runner runtime capability is still unverified, not established as impossible.
-- Access files through SMB. No custom browser or migration tool.
-- Offer optional JuiceFS encryption, on by default. When enabled, keep the passphrase-protected key in S3; no separately retained key file is required. Explicit `encryption.enabled: false` means anyone with sufficient S3 read access can read the data and metadata. TLS, S3 authentication and the selected SMB access policy still apply.
-- Encrypt remote metadata backups in encryption-enabled mode with the same native key used for data. The user confirmed that only the remote backups were the concern; live local SQLite/WAL and staging remain native and unencrypted.
-- Back up metadata to S3 hourly and retain deleted/replaced data through JuiceFS trash for 14 days by default. Both settings are configurable and apply in either encryption mode.
-- Stop with a clear error if a scheduled metadata backup fails after normal retries. Preserve the previous usable backup; do not silently keep running without protection.
-- If local metadata is missing but the remote dataset exists, `serve` offers confirmed recovery through JuiceFS's native restore path, then resumes normal writes to the same dataset. Also support an optional read-only mode. Verify the recovery path before claiming compatibility.
-- Recover on a fresh installation using S3 and externally saved secrets, without any files from the old machine. Losing changes since the last successful metadata backup is acceptable. Prefer JuiceFS's native periodic backups over per-write remote metadata synchronization.
-- No separate backup-management product, Time Machine scheduler, or custom backup-history browser.
+The release installation interface is:
 
-## Planning
-
-- [Wayfinding map](https://github.com/djosh34/s3-smb/issues/1): decision index.
-- [Implementation backlog](https://github.com/djosh34/s3-smb/issues/18): eleven implementation sub-issues with native dependencies, acceptance tests and review requirements.
-- [Implementation contract](docs/implementation-plan.md): required behavior, native integration work, necessary fixes and the local-first acceptance sequence. Follow JuiceFS for ordinary implementation details.
-- [Passwordless and zero-cache research](docs/research/guest-and-zero-cache.md): named-empty NTLM passed a small probe; cache-zero behavior is source-verified, not yet application-tested.
-- [Hosted-Mac Time Machine prerequisites](docs/research/github-macos-time-machine.md): service/permission and storage constraints; no Mac CI run has happened. The earlier fixture-only recommendation was rejected.
-- [Confirmed scope clarification](https://github.com/djosh34/s3-smb/issues/33): named-empty SMB password, remote-only encryption concern and full Mac backup/restore scope.
-- [Confirmed credential, encryption and license choices](https://github.com/djosh34/s3-smb/issues/17): permanent credentials loaded at startup, optional encryption with an S3-held protected key when enabled, and AGPL-3.0-only.
-- [Unified four-reviewer audit](docs/reviews/plan-audit.md): findings from two Astra extra-high and two DeepSeek V4.1 Flash max reviews.
-- [Every reviewer comment](docs/reviews/reviewer-comments.md): complete summaries, disagreements, dispositions and the four final reports.
-- [Final plan approval](https://github.com/djosh34/s3-smb/issues/29): the user approved the plan and explicitly deferred execution.
-
-The backlog is approved and the user has explicitly authorized implementation. Follow the contract and issue dependencies; close tasks only after their tests and independent reviews pass.
-
-### Implementation invocation
-
-In this repository, give a coding agent this request; no special slash command is required:
-
-```text
-Start implementing the approved backlog:
-https://github.com/djosh34/s3-smb/issues/18
-
-This authorizes execution and releases the previous hold. Follow
-README.md, CONTEXT.md, docs/implementation-plan.md and the native issue
-dependencies. Meet each task's tests and review requirements before
-closing it. Run the shared Docker/MinIO tests locally before the same
-suite in GitHub CI. Keep full Mac Time Machine backup/crash/restore
-acceptance last. Do not reduce the agreed scope or silently skip failures.
+```sh
+go install github.com/djosh34/s3-smb@<version>
+s3-smb version
+s3-smb serve -c /path/to/config.yaml
 ```
 
-The user supplied this authorization on 2026-09-29. The historical plan approval remains distinct from implementation and test evidence.
+A published, validated release version will replace `<version>` in release notes. Go 1.26.3 and a normal C compiler/platform SDK are required. SQLite and compression CGo dependencies use bundled portable source; no separately installed third-party native libraries are required. Public versioned installation is a release gate, not established by a local checkout build.
 
-The destination is an agreed implementation backlog with parent issues, sub-issues, dependencies, acceptance tests, and correctness/security review requirements. Specify **what to build**, not how autonomous agents coordinate. Avoid speculative infrastructure.
+Start with the [complete YAML example and settings reference](docs/configuration.md). The default config path is `$XDG_CONFIG_HOME/s3-smb/config.yaml`, otherwise `$HOME/.config/s3-smb/config.yaml`, on Linux and macOS. `-c` and `--log-format text|json` work before or after `serve`.
 
-Keep pinned JuiceFS and customized dependency source in ordinary packages in this repository. Preserve their behavior and adapt imports for packaging. Record source revisions and retain licenses/notices. Do not rewrite SQL behavior merely to avoid module replacements.
+`serve` stays in the foreground. There is no separate `init`, daemonization, service installer, backup scheduler, or custom file browser. Help and version do not initialize storage or resolve credentials.
 
-Do not submit or request upstream JuiceFS fixes, maintain a collection of separate dependency forks, or make our release wait for upstream changes. The chosen source layout passed a clean Linux/ARM64 module-proxy installation probe. Installation of the actual public application remains a release test.
+### First use
 
-The [handoff](docs/smb-s3-time-machine-handoff.md) preserves research and earlier proposals with the current scope noted at the top. Unconfirmed recommendations are not requirements, and source inspection is not compatibility evidence.
+Use a dedicated, existing S3 bucket and independently save the configuration details and recovery secrets. Run from a controlling terminal: the application asks before initializing a genuinely empty dataset or recovering existing remote metadata. Unknown objects, missing markers or a missing local database are not proof of an empty dataset. Normal restarts do not require a terminal.
 
-AGPL-3.0-only is the confirmed license for original project code. Full license text, dependency notices and source-distribution information remain implementation requirements.
+The default share is `TimeMachine`, listening on `127.0.0.1:445`. Access it using your SMB client and configured named account. Do not infer Time Machine compatibility from the share name or from a successful file copy. Binding the configured address may require platform-specific privileges; the application does not silently widen the address or change ports.
+
+## Storage and access
+
+- One SMB share/account, with a password or explicit named-empty access (`password: ""`). Omitting the password is an error. Empty-password access uses ordinary named-account authentication/signing, not anonymous guest mode.
+- Wider binding such as `0.0.0.0:445` is explicit. Combining it with empty-password access exposes the share to anyone who can reach it and produces a warning. Optional read-only serving is available.
+- Native JuiceFS data caching. Public sizes are decimal: **1 MB = 1,000,000 bytes; 1 GB = 1,000,000,000 bytes**. Omitted capacity retains the native default; explicit `cache_size: 0` disables retained disk/RAM block caches, not SQLite, temporary staging or working I/O buffers.
+- Independent S3 access-key and secret-key sources: literal value, file, or direct command argv. Resolve once at startup, with no implicit shell, fallback or automatic renewal. Helpers run with the daemon's privileges; trust the config.
+- Custom S3 endpoints, explicit path-style or virtual-host-style addressing, verified HTTPS, private CA roots and mutual TLS. Local certificate replacement takes effect after restart. Intentional HTTP must be configured explicitly.
+- Application encryption defaults on. Data and entire remote metadata exports use the native encryption key; its passphrase-protected copy is retained in S3. Fresh-install recovery needs S3 access, connection details and the passphrase, not an independently retained PEM file.
+- Explicit `encryption.enabled: false` opts out for both data and remote metadata. Anyone with sufficient S3 read access can then read them. TLS, SMB access policy and metadata protection still apply. Dataset encryption mode cannot silently change.
+- Local SQLite/WAL, caches and temporary export staging remain plaintext. New state/secret files are created privately; unusual existing permissions/ownership produce warnings rather than rejection when files remain readable.
+
+## Recovery and protection
+
+Read [the recovery procedure and operating boundaries](docs/recovery.md) before storing important data.
+
+The default is an hourly native metadata export and 14-day native trash retention, both configurable. These metadata backups describe the outer filesystem; they are not Time Machine backups. Losing local state can lose changes after the selected successful metadata point.
+
+A scheduled backup that fails after bounded retries stops writable service. A metadata import alone does not prove all referenced file objects exist. Verify recovered contents, and use Apple's actual restore tools for a Time Machine dataset.
+
+**Only one writable metadata authority may use a dataset.** The local lock cannot fence a different host with a different SQLite database. Stop the old writer before recovery. External S3 lifecycle deletion can destroy keys, data or recovery points despite application retention.
+
+## Development and evidence
+
+```sh
+scripts/test-linux.sh suite
+```
+
+The shared Docker entry point builds the application and a pinned MinIO fixture, runs unit/race tests and actual SMB-to-S3 integration tests, and retains logs/artifacts. GitHub Linux CI must run this same entry point after local success. The separate `release` mode also checks the required coverage ledger; a green targeted test is not release approval. See [testing](docs/testing.md), [logging](docs/logging.md) and [source packaging](docs/packaging.md).
+
+The final hosted-Mac gate begins only after local/Linux CI, public Linux installation, documentation and reviews pass. It requires a full Time Machine backup of the runner's normally eligible contents, fresh-state recovery and restore, then an observed crash during later Time Machine/S3 writes, recovery, another completed backup and another restore. No fixture-only backup, generic SMB copy, manual checklist, or successful metadata import substitutes for it.
+
+### Project references
+
+- [Approved implementation contract](docs/implementation-plan.md) and [delivery backlog #18](https://github.com/djosh34/s3-smb/issues/18).
+- [Domain terminology](CONTEXT.md), [decision map](https://github.com/djosh34/s3-smb/issues/1), and [scope clarification](https://github.com/djosh34/s3-smb/issues/33).
+- [Plan approval](https://github.com/djosh34/s3-smb/issues/29), [four-reviewer audit](docs/reviews/plan-audit.md), and [all original review comments](docs/reviews/reviewer-comments.md).
+- [Passwordless/zero-cache research](docs/research/guest-and-zero-cache.md) and [hosted-Mac prerequisites](docs/research/github-macos-time-machine.md), with their original evidence limits.
+
+The user released the prior execution hold on 2026-09-29. Authorization and source inspection are not completed acceptance evidence.
+
+## License and source
+
+Original code is **AGPL-3.0-only**. Bundled upstream code retains its original licenses and attribution; see [LICENSE](LICENSE), [NOTICE](NOTICE) and [packaging provenance](docs/packaging.md). Corresponding source and build material are public at [github.com/djosh34/s3-smb](https://github.com/djosh34/s3-smb); use the tag/commit matching the distributed version. Redistributors of modifications must provide their own corresponding source, not merely link to this unmodified repository.

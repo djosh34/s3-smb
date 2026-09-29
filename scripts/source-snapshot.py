@@ -15,6 +15,24 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
+def relocate(data, imports):
+    """Rewrite Go import declarations, preserving upstream comments and docs."""
+    lines = []
+    in_import = False
+    for line in data.splitlines(keepends=True):
+        stripped = line.strip()
+        if stripped.startswith(b"import "):
+            in_import = stripped == b"import ("
+        if (in_import or stripped.startswith(b"import ")) and not stripped.startswith(b"//"):
+            for old, new in imports.items():
+                for end in [b'"', b'/']:
+                    line = line.replace(b'"' + old.encode() + end, b'"' + new.encode() + end)
+        if in_import and stripped == b")":
+            in_import = False
+        lines.append(line)
+    return b"".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, help="reconstruct baseline in a new empty directory")
@@ -49,8 +67,7 @@ def main():
         if digest(data) != item["sha256"]:
             raise ValueError(f"{source}: original source hash mismatch")
         if source.suffix == ".go":
-            for old, new in manifest["imports"].items():
-                data = data.replace(old.encode(), new.encode())
+            data = relocate(data, manifest["imports"])
         if digest(data) != item["relocated_sha256"]:
             raise ValueError(f"{source}: import relocation mismatch")
         local = ROOT / item["destination"]

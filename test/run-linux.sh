@@ -33,8 +33,11 @@ fi
 if [[ $mode == race || $mode == suite || $mode == release ]]; then
   run race go test -race -p 2 -count=1 -timeout=20m -json "${packages[@]}"
 fi
-if [[ $mode == e2e || $mode == suite || $mode == release ]]; then
+if [[ $mode == transport || $mode == e2e || $mode == suite || $mode == release ]]; then
   run transport bash /src/test/transport/setup.sh go test -p 2 -count=1 -timeout=3m -json ./internal/storage -run '^TestTransportAcceptance$'
+fi
+if [[ $mode == e2e || $mode == suite || $mode == release ]]; then
+  run packaging bash /src/scripts/check-packaging.sh
   run build go build -p 2 -trimpath -o /artifacts/s3-smb .
   export S3_SMB_E2E_BINARY=/artifacts/s3-smb
   run e2e go test -p 2 -count=1 -timeout=30m -json ./test/e2e

@@ -4,7 +4,7 @@ set -Eeuo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 mode=${1:-suite}
 if (( $# > 0 )); then shift; fi
-case "$mode" in suite|release|unit|race|e2e) ;; *) echo 'usage: scripts/test-linux.sh [suite|release|unit|race|e2e] [go packages...]' >&2; exit 2;; esac
+case "$mode" in suite|release|unit|race|e2e|transport) ;; *) echo 'usage: scripts/test-linux.sh [suite|release|unit|race|e2e|transport] [go packages...]' >&2; exit 2;; esac
 exec 9>/tmp/s3-smb-heavy.lock
 flock 9
 id="s3-smb-test-$(date -u +%Y%m%dT%H%M%SZ)-$$"
@@ -49,7 +49,7 @@ docker network create "$network" >/dev/null
 docker volume create --label s3-smb.disposable=true "$volume" >/dev/null
 docker run -d --name "$minio" --network "$network" --network-alias minio \
   --memory=1g --cpus=2 -e MINIO_ROOT_USER=s3smb-test-access \
-  -e MINIO_ROOT_PASSWORD=s3smb-test-secret-only -e MINIO_DOMAIN=minio,transport.minio \
+  -e MINIO_ROOT_PASSWORD=s3smb-test-secret-only -e MINIO_DOMAIN=minio,transport.test \
   -v "$volume:/data" "$image" minio server /data --address :9000 >/dev/null
 # No host HOME/AWS settings or data volumes are inherited. Source is read-only.
 docker run --name "$runner" --network "$network" --memory=5g --cpus=2 \

@@ -16,6 +16,7 @@ Foreground SMB service backed by S3. Configuration defaults to
 $XDG_CONFIG_HOME/s3-smb/config.yaml or $HOME/.config/s3-smb/config.yaml.
 -c and --log-format may appear before or after serve.
 Public sizes use decimal MB (1,000,000 bytes) and GB (1,000,000,000 bytes).
+Source: https://github.com/djosh34/s3-smb (AGPL-3.0-only; see NOTICE for upstream licenses)
 `
 
 type arguments struct{ command, configPath, logFormat string }

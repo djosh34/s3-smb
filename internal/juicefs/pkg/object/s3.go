@@ -134,6 +134,12 @@ func (s *s3client) Get(ctx context.Context, key string, off, limit int64, getter
 	attrs := ApplyGetters(getters...)
 	resp, err := s.s3.GetObject(ctx, params)
 	if err != nil {
+		// s3-smb: distinguish a missing bootstrap key/identity from auth or
+		// listing failures; only the modeled NoSuchKey establishes absence.
+		var missing *types.NoSuchKey
+		if errors.As(err, &missing) {
+			return nil, os.ErrNotExist
+		}
 		var re s3.ResponseError
 		if errors.As(err, &re) {
 			attrs.SetRequestID(re.ServiceRequestID())

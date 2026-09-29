@@ -10,7 +10,7 @@ Installation
 
 Make sure you have installed Go 1.11+ and then:
 
-    go get github.com/djosh34/s3-smb/internal/thirdparty/xorm
+    go get xorm.io/xorm
 
 Create Engine
 

@@ -102,8 +102,12 @@ inspects the actual application dependency graph and CGo flags, and performs
 a local root build/install plus installed help/version execution. It does
 not pretend a local install is `go install ...@version` from a public module.
 The final public Linux test must start outside the checkout with fresh caches
-and install an actually published candidate. A local proxy fixture is not
-that check. Native Darwin compilation is not run early as a shortcut.
+and install an actually published candidate. Once the reviewed candidate is
+published, `scripts/check-public-install.sh vX.Y.Z-rc.N` creates an empty
+working directory and fresh GOPATH/module/build caches, uses the public Go
+proxy/checksum service, installs the application and executes help/version.
+A local proxy fixture is not that check. Native Darwin compilation is not
+run early as a shortcut.
 
 ## License and corresponding source
 

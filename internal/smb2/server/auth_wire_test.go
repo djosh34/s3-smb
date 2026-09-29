@@ -40,10 +40,16 @@ func (c *observedConn) Write(b []byte) (int, error) {
 		}
 		if mode := c.tamper.Load(); mode != 0 {
 			b = append([]byte(nil), b...)
-			if mode == 1 {
+			if mode == 1 || mode == 4 {
 				b[48] ^= 0x80
+				if mode == 4 {
+					binary.LittleEndian.PutUint64(b[24:32], ^uint64(0))
+				}
 			} else {
 				binary.LittleEndian.PutUint32(b[16:20], binary.LittleEndian.Uint32(b[16:20]) & ^uint32(SMB2_FLAGS_SIGNED))
+				if mode == 3 {
+					binary.LittleEndian.PutUint64(b[24:32], ^uint64(0))
+				}
 			}
 		}
 	}
@@ -161,8 +167,8 @@ func TestConcurrentAuthenticationWire(t *testing.T) {
 	done.Wait()
 }
 func TestSigningRejectsTamperedAndUnsignedWire(t *testing.T) {
-	for _, mode := range []int32{1, 2} {
-		t.Run(map[int32]string{1: "invalid-signature", 2: "missing-signature"}[mode], func(t *testing.T) {
+	for _, mode := range []int32{1, 2, 3, 4} {
+		t.Run(map[int32]string{1: "invalid-signature", 2: "missing-signature", 3: "reserved-message-id", 4: "reserved-message-id-tampered"}[mode], func(t *testing.T) {
 			_, l := startWireServer(t, "")
 			session, c, e := dialWire(l, "backup", "", nil)
 			if e != nil {
@@ -172,6 +178,17 @@ func TestSigningRejectsTamperedAndUnsignedWire(t *testing.T) {
 			c.tamper.Store(mode)
 			if _, e = session.Mount("backup"); e == nil {
 				t.Fatal("required signing bypassed")
+			}
+			// A reserved response MID can confuse the client's request matching;
+			// an API error alone is not proof that the server rejected the request.
+			c.mu.Lock()
+			wire := append([]byte(nil), c.received...)
+			c.mu.Unlock()
+			for len(wire) >= 4 {
+				n := int(binary.BigEndian.Uint32(wire[:4])); if len(wire) < 4+n { break }
+				p := PacketCodec(wire[4:4+n])
+				if p.Command() == SMB2_TREE_CONNECT && p.Status() == 0 { t.Fatal("invalid request reached TREE_CONNECT: successful wire response") }
+				wire = wire[4+n:]
 			}
 		})
 	}

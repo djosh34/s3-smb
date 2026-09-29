@@ -15,6 +15,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
+	"github.com/djosh34/s3-smb/internal/logging"
 	"github.com/google/uuid"
 )
 
@@ -140,7 +141,7 @@ func OpenVolume(ctx context.Context, raw object.ObjectStorage, f *meta.Format, p
 	keyPath := keyPrefix + f.UUID + ".pem"
 	data, err := readBounded(ctx, raw, keyPath, maxKeyBytes)
 	if err != nil {
-		if !create || !errors.Is(err, os.ErrNotExist) {
+		if !create || f.EncryptKey != "" || !errors.Is(err, os.ErrNotExist) {
 			return nil, fmt.Errorf("read protected volume key: %w", err)
 		}
 		data, err = generateKey(passphrase)
@@ -151,6 +152,7 @@ func OpenVolume(ctx context.Context, raw object.ObjectStorage, f *meta.Format, p
 			return nil, err
 		}
 	}
+	logging.RegisterSecret(string(data))
 	key, err := unlockKey(data, passphrase)
 	if err != nil {
 		return nil, err
@@ -176,17 +178,7 @@ func VerifyMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Format
 	return nil
 }
 func PublishMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Format) error {
-	// Lifecycle calls this only for a confirmed fresh dataset; identity/key are
-	// already conditionally published. Never replace an existing marker.
-	if err := VerifyMarker(ctx, blob, f); err == nil {
-		return nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	if err := blob.Put(ctx, "juicefs_uuid", strings.NewReader(f.UUID)); err != nil {
-		return err
-	}
-	return VerifyMarker(ctx, blob, f)
+	return publishExact(ctx, blob, "juicefs_uuid", []byte(f.UUID))
 }
 
 // DiscoverRecoveryVolume only unlocks an existing, unique bootstrap key. Native

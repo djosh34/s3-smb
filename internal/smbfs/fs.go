@@ -29,7 +29,7 @@ const GID uint32 = 65534
 // cannot be replaced by another SMB operation before it is used. Native storage
 // maintenance must never introduce client-controlled paths.
 type FS struct {
-	mu                sync.Mutex
+	mu                sync.RWMutex
 	native            *jfs.FileSystem
 	meta              meta.Meta
 	ctx               meta.Context
@@ -37,13 +37,14 @@ type FS struct {
 	handles           map[vfs.VfsHandle]*handle
 }
 type handle struct {
-	file    *jfs.File
-	path    string
-	flags   int
-	done    chan struct{}
-	entries []vfs.DirInfo
-	cursor  int
-	locks   []vfs.ByteRangeLock
+	file          *jfs.File
+	path          string
+	flags         int
+	done          chan struct{}
+	entries       []vfs.DirInfo
+	cursor        int
+	locks         []vfs.ByteRangeLock
+	lockOwnerUsed bool
 }
 
 var nextHandle atomic.Uint64
@@ -84,7 +85,7 @@ func clientPath(p string) (string, error) {
 	return path.Join("/", p), nil
 }
 func forbidden(ino meta.Ino, a *meta.Attr) bool {
-	return ino.IsTrash() || a.Parent.IsTrash() || (ino != meta.RootInode && !ino.IsNormal())
+	return jvfs.IsSpecialNode(ino) || a.Parent.IsTrash() || (ino != meta.RootInode && !ino.IsNormal())
 }
 
 // checkedPath uses native resolution, including its native symlink handling.
@@ -111,7 +112,7 @@ func (s *FS) checkedPath(p string, follow, missing bool) (string, error) {
 		} else {
 			st, er = s.native.Stat(s.ctx, cur)
 		}
-		if er == syscall.ENOENT && missing && i == len(parts)-1 {
+		if er == syscall.ENOENT && missing {
 			return p, nil
 		}
 		if er != 0 {
@@ -147,12 +148,25 @@ func (s *FS) writable(f *handle) error {
 	if forbidden(f.file.Inode(), &a) {
 		return syscall.EACCES
 	}
-	// Hardlinked files have no unique Attr.Parent; inspect actual native parents.
+	// Hardlinked files have no unique Attr.Parent. A live non-trash link
+	// remains writable; an unlinked/stale handle must not become a trash alias.
 	if a.Parent == 0 {
 		for parent := range s.meta.GetParents(s.ctx, f.file.Inode()) {
-			if parent.IsTrash() {
+			if !parent.IsTrash() {
+				continue
+			}
+			if f.path == "" {
 				return syscall.EACCES
 			}
+			p, e := s.checkedPath(strings.TrimPrefix(f.path, "/"), true, false)
+			if e != nil {
+				return syscall.EACCES
+			}
+			st, er := s.native.Stat(s.ctx, p)
+			if er != 0 || st.Inode() != f.file.Inode() {
+				return syscall.EACCES
+			}
+			break
 		}
 	}
 	return nil
@@ -177,6 +191,9 @@ func (s *FS) Open(p string, flags, mode int) (vfs.VfsHandle, error) {
 	defer s.mu.Unlock()
 	if s.stopped {
 		return 0, syscall.EBADF
+	}
+	if flags&syscall.O_ACCMODE == syscall.O_ACCMODE || flags&syscall.O_TRUNC != 0 && flags&syscall.O_ACCMODE == syscall.O_RDONLY {
+		return 0, syscall.EINVAL
 	}
 	writing := flags&(syscall.O_WRONLY|syscall.O_RDWR|syscall.O_CREAT|syscall.O_TRUNC) != 0
 	if writing {
@@ -219,6 +236,17 @@ func (s *FS) Open(p string, flags, mode int) (vfs.VfsHandle, error) {
 	if er != 0 {
 		return 0, er
 	}
+	info, statErr := f.Stat()
+	if statErr != nil {
+		_ = f.Close(s.ctx)
+		return 0, statErr
+	}
+	if info.IsDir() {
+		if er = s.meta.Access(s.ctx, f.Inode(), meta.MODE_MASK_R|meta.MODE_MASK_X, nil); er != 0 {
+			_ = f.Close(s.ctx)
+			return 0, er
+		}
+	}
 	if flags&syscall.O_TRUNC != 0 {
 		if er = f.Truncate(s.ctx, 0); er != 0 {
 			_ = f.Close(s.ctx)
@@ -250,7 +278,10 @@ func (s *FS) close(h vfs.VfsHandle) error {
 	}
 	delete(s.handles, h)
 	close(f.done)
-	unlock := errno(s.meta.Setlk(s.ctx, f.file.Inode(), uint64(h), false, syscall.F_UNLCK, 0, math.MaxUint64, 1))
+	var unlock error
+	if f.lockOwnerUsed {
+		unlock = errno(s.meta.Setlk(s.ctx, f.file.Inode(), uint64(h), false, syscall.F_UNLCK, 0, math.MaxUint64, 1))
+	}
 	flush := errno(f.file.Fsync(s.ctx))
 	return errors.Join(unlock, flush, errno(f.file.Close(s.ctx)))
 }
@@ -269,8 +300,8 @@ func (s *FS) Shutdown() error {
 	return result
 }
 func (s *FS) Flush(h vfs.VfsHandle) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	f, e := s.get(h)
 	if e != nil {
 		return e
@@ -279,8 +310,8 @@ func (s *FS) Flush(h vfs.VfsHandle) error {
 }
 func (s *FS) FSync(h vfs.VfsHandle) error { return s.Flush(h) }
 func (s *FS) Read(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	f, e := s.get(h)
 	if e != nil {
 		return 0, e
@@ -301,8 +332,8 @@ func (s *FS) Read(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error)
 	return n, e
 }
 func (s *FS) Write(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	f, e := s.get(h)
 	if e != nil {
 		return 0, e
@@ -323,15 +354,16 @@ func (s *FS) Write(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error
 	if er != 0 {
 		return n, er
 	}
-	// Native open O_SYNC and SMB WRITE_THROUGH (bit 0) both require durability.
-	if flags&1 != 0 || f.flags&syscall.O_SYNC != 0 {
+	// The protocol handler owns SMB WRITE_THROUGH, including xattrs. Honor
+	// native O_SYNC here without adding a second SMB durability boundary.
+	if f.flags&syscall.O_SYNC != 0 {
 		return n, errno(f.file.Fsync(s.ctx))
 	}
 	return n, nil
 }
 func (s *FS) Truncate(h vfs.VfsHandle, size uint64) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	f, e := s.get(h)
 	if e != nil {
 		return e

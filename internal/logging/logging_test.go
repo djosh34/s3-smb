@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"log/slog"
@@ -124,6 +125,27 @@ func TestSecretOverlapAndEscaping(t *testing.T) {
 		t.Fatalf("bad redaction %q", got)
 	}
 }
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("OUTPUT_FAILURE_SECRET") }
+
+func TestBrokenOutputPreservesPanic(t *testing.T) {
+	// slog drops a sink error rather than exposing it on an unfiltered stream.
+	Install(brokenWriter{})
+	_ = Configure("json", "debug")
+	l := logrus.New()
+	Logrus(l, "test")
+	loggingPanic := func() (panicked bool) {
+		defer func() { panicked = recover() != nil }()
+		l.Panic("native panic")
+		return false
+	}
+	if !loggingPanic() {
+		t.Fatal("broken output swallowed native panic")
+	}
+}
+
 func TestNativeTermination(t *testing.T) {
 	mode := os.Getenv("S3_SMB_LOG_TEST_CHILD")
 	if mode != "" {
@@ -131,6 +153,9 @@ func TestNativeTermination(t *testing.T) {
 		_ = Configure("json", "debug")
 		RegisterSecret("TERMINATION_SECRET_MARKER")
 		switch mode {
+		case "fatal-broken":
+			Install(brokenWriter{})
+			logrus.Fatal("fatal TERMINATION_SECRET_MARKER")
 		case "fatal":
 			logrus.Fatal("fatal TERMINATION_SECRET_MARKER")
 		case "panic":
@@ -142,7 +167,7 @@ func TestNativeTermination(t *testing.T) {
 		}
 		t.Fatal("termination returned")
 	}
-	for _, mode := range []string{"normal", "fatal", "panic"} {
+	for _, mode := range []string{"normal", "fatal", "fatal-broken", "panic"} {
 		t.Run(mode, func(t *testing.T) {
 			cmd := exec.Command(os.Args[0], "-test.run=^TestNativeTermination$")
 			cmd.Env = append(os.Environ(), "S3_SMB_LOG_TEST_CHILD="+mode)
@@ -156,19 +181,23 @@ func TestNativeTermination(t *testing.T) {
 			if mode != "normal" && err == nil {
 				t.Fatal("expected nonzero exit")
 			}
-			if mode == "fatal" {
+			if strings.HasPrefix(mode, "fatal") {
 				if e, ok := err.(*exec.ExitError); !ok || e.ExitCode() != 1 {
 					t.Fatalf("fatal status %v", err)
 				}
 			}
 			for _, stream := range []string{stdout.String(), stderr.String()} {
-				for _, marker := range []string{"TERMINATION_SECRET_MARKER", "UNREGISTERED_PANIC_SECRET"} {
+				for _, marker := range []string{"TERMINATION_SECRET_MARKER", "UNREGISTERED_PANIC_SECRET", "OUTPUT_FAILURE_SECRET"} {
 					if strings.Contains(stream, marker) {
 						t.Fatalf("%s leaked in %s", marker, mode)
 					}
 				}
 			}
-			if mode != "panic" {
+			if mode == "fatal-broken" {
+				if stdout.Len()+stderr.Len() != 0 {
+					t.Fatal("broken output fell back to another stream")
+				}
+			} else if mode != "panic" {
 				if n := len(records(t, stderr.Bytes())); n == 0 {
 					t.Fatal("missing diagnostic")
 				}

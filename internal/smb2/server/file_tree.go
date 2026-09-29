@@ -46,8 +46,8 @@ func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
 	}
 
 	r := CreateRequestDecoder(res)
-	if r.IsInvalid() {
-		return &InvalidRequestError{"broken create format"}
+	if r.IsInvalid() || !validCreateContexts(r.CreateContexts()) {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
 	}
 
 	log.Debugf("create name: %s, options %d, disp %d", r.Name(), r.CreateOptions(), r.CreateDisposition())
@@ -365,7 +365,10 @@ func (t *fileTree) handlePosixCC(attrs *vfs.Attributes) (Encoder, error) {
 }
 
 func (t *fileTree) handleQFid(pkt []byte, open *Open) (Encoder, error) {
-	attrRoot, _ := t.fs.GetAttr(0)
+	attrRoot, err := t.fs.GetAttr(0)
+	if err != nil {
+		return nil, err
+	}
 
 	return &CreateContext{
 		Name: "QFid",
@@ -630,6 +633,7 @@ func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
 	if t.lookupOpen(fileId) == nil {
 		return t.sendError(ctx, pkt, syscall.EBADF)
 	}
+	c.ioWG.Wait()
 	if err := t.fs.Flush(vfs.VfsHandle(fileId.HandleId())); err != nil {
 		return t.sendError(ctx, pkt, err)
 	}

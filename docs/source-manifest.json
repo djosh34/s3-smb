@@ -999,7 +999,7 @@
       "source": "internal/spnego/spnego_test.go",
       "destination": "internal/smb2/internal/spnego/spnego_test.go",
       "sha256": "53d92eccbfad43a6e78aa3b717ff41110592b0b90458cb13853715d84331a271",
-      "relocated_sha256": "0913074eed3144efd030fde43c9b29446ba5fda77509249cbedc2fa4b278c3a1",
+      "relocated_sha256": "53d92eccbfad43a6e78aa3b717ff41110592b0b90458cb13853715d84331a271",
       "module": "github.com/macos-fuse-t/go-smb2"
     },
     {
@@ -1784,7 +1784,7 @@
       "source": "decor/doc.go",
       "destination": "internal/thirdparty/mpb/decor/doc.go",
       "sha256": "a90781d1a91afc7ce846f76836f447fe181ca0f18ce37de1e4986415e989e0a3",
-      "relocated_sha256": "dcab02d1820955f84d0be78a6f8f1fb5411bec40c88f718b007b08b74c83fba7"
+      "relocated_sha256": "a90781d1a91afc7ce846f76836f447fe181ca0f18ce37de1e4986415e989e0a3"
     },
     {
       "module": "github.com/vbauerster/mpb/v7",
@@ -2190,7 +2190,7 @@
       "source": "doc.go",
       "destination": "internal/thirdparty/xorm/doc.go",
       "sha256": "4c63e0d41741f988af4827c3bc0549512becf093827c061010b09d4080ecc186",
-      "relocated_sha256": "f4155ce676ba5910d7b9785d3a77bf80dbf540746ee798b41b54cd59ea05c17d"
+      "relocated_sha256": "4c63e0d41741f988af4827c3bc0549512becf093827c061010b09d4080ecc186"
     },
     {
       "module": "xorm.io/xorm",

@@ -100,11 +100,24 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 	go func() { defer func() { <-m.busy }(); r, e := m.attempts(ctx); done <- result{r, e} }()
 	var r Receipt
 	var err error
-	select {
-	case result := <-done:
-		r, err = result.r, result.err
-	case <-ctx.Done():
-		err = ctx.Err()
+	deadline := m.now().Round(0).Add(m.opts.Timeout)
+	tick := time.NewTicker(time.Second)
+	defer tick.Stop()
+wait:
+	for {
+		select {
+		case result := <-done:
+			r, err = result.r, result.err
+			break wait
+		case <-ctx.Done():
+			err = ctx.Err()
+			break wait
+		case <-tick.C:
+			if !m.now().Round(0).Before(deadline) {
+				err = context.DeadlineExceeded
+				break wait
+			}
+		}
 	}
 	if err == nil {
 		err = ctx.Err()
@@ -276,9 +289,17 @@ func (m *Manager) Run(ctx context.Context) error {
 		if r.Snapshot.IsZero() {
 			return ErrUnprotected
 		}
+		if err := m.opts.Protection.Check(); err != nil {
+			return err
+		}
 		wait := r.Snapshot.Add(m.opts.Interval).Sub(m.now().Round(0))
 		if wait < 0 {
 			wait = 0
+		}
+		// Go timers can retain a pre-suspension monotonic delay. Re-evaluate
+		// wall time at least once per second after resume, not one interval later.
+		if wait > time.Second {
+			wait = time.Second
 		}
 		timer := time.NewTimer(wait)
 		select {
@@ -289,6 +310,9 @@ func (m *Manager) Run(ctx context.Context) error {
 		}
 		if err := m.opts.Protection.Check(); err != nil {
 			return err
+		}
+		if m.now().Round(0).Before(r.Snapshot.Add(m.opts.Interval)) {
+			continue
 		}
 		if _, err := m.Backup(ctx); err != nil {
 			return err
