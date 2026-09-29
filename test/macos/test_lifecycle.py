@@ -216,6 +216,21 @@ class Lifecycle(unittest.TestCase):
         self.a.detach_clients()
         self.a.cmd.run.assert_any_call(['/sbin/umount', mountpoint], timeout=120)
 
+    def test_backup_progress_is_bounded_diagnostic_not_success_gate(self):
+        process, log = Mock(), Mock()
+        process.poll.side_effect = [None, None, 0]
+        process.returncode = 0
+        self.a.backup = process, log
+        self.a.daemon = Mock()
+        self.a.status = Mock(return_value=False)
+        self.a.cmd.run.return_value = ('temporary status failure', 1)
+        with patch.object(acceptance.time, 'monotonic', side_effect=[0, 0, 0, 1]), patch.object(acceptance.time, 'sleep'):
+            self.a.complete_backup('baseline')
+        self.a.cmd.run.assert_called_once_with(['/usr/bin/tmutil', 'status'], diagnostic=True)
+        self.a.event.assert_any_call('time-machine-progress', label='baseline', native_status='temporary status failure', exit=1)
+        log.close.assert_called_once()
+        self.assertIsNone(self.a.backup)
+
     def test_normal_run_does_not_include_crash(self):
         self.a.backup_phase = Mock(return_value='backup')
         self.a.recover_phase = Mock(return_value='recover')

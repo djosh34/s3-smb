@@ -23,12 +23,7 @@ else
 fi
 mkdir -m 700 "$MAC_WORK" "$MAC_ARTIFACTS"
 exec 3>&1 4>&2
-# Stream the existing stage events to Actions as well as the retained log.
-# A tracked tee child is drained before artifact hashing (also on Bash 3.2).
-mkfifo "$MAC_WORK/entrypoint.pipe"
-tee "$MAC_ARTIFACTS/entrypoint.log" < "$MAC_WORK/entrypoint.pipe" &
-log_pid=$!
-exec > "$MAC_WORK/entrypoint.pipe" 2>&1
+exec > "$MAC_ARTIFACTS/entrypoint.log" 2>&1
 record_exit() {
   local rc=$?
   printf '%s\n' "$rc" > "$MAC_ARTIFACTS/exit-status"
@@ -40,11 +35,6 @@ record_exit() {
   # No evidence writers remain after build supervision/native cleanup. Close
   # this log too before hashing it. Handoff errors remain in the Actions log.
   exec 1>&3 2>&4
-  if ! wait "$log_pid"; then
-    rc=1
-    printf '1\n' > "$MAC_ARTIFACTS/exit-status"
-  fi
-  rm "$MAC_WORK/entrypoint.pipe"
   if ! sudo -n "$(command -v python3)" "$repo/test/macos/artifacts.py" handoff \
        "$MAC_ARTIFACTS" "$(id -u)" "$(id -g)"; then
     rc=1
@@ -79,8 +69,10 @@ if [[ "$MAC_PHASE" = backup ]]; then
     fi
   done
 fi
+printf 'native-build-start scenario=%s\n' "$MAC_SCENARIO" >&3
 python3 "$repo/test/macos/deadline.py" "$MAC_DEADLINE_EPOCH" \
   "$MAC_ARTIFACTS/build-deadline.json" /bin/bash "$repo/test/macos/build.sh"
+printf 'native-build-complete scenario=%s\n' "$MAC_SCENARIO" >&3
 IFS= read -r MAC_BIN < "$MAC_ARTIFACTS/native-build-root"
 # sudo is ordinary administration, NOT proof of Full Disk Access. Every native
 # operation must succeed; no TCC/SIP modification is attempted.
@@ -89,7 +81,7 @@ sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_SCENARIO=$MAC_SCENARIO" \
   PYTHONDONTWRITEBYTECODE=1 \
-  python3 "$repo/test/macos/acceptance.py"
+  python3 "$repo/test/macos/acceptance.py" >&3
 if [[ "$MAC_PHASE" = backup ]]; then
   # Only the dedicated store/reference transfer tree, never daemon-local state.
   sudo -n "$(command -v python3)" "$repo/test/macos/artifacts.py" handoff \

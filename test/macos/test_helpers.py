@@ -104,6 +104,17 @@ class Helpers(unittest.TestCase):
         self.assertEqual([row['exit'] for row in rows], [7, 124])
         self.assertIn('before timeout', (self.base / rows[1]['output']).read_text())
 
+    def test_live_command_summary_does_not_print_arguments_or_output(self):
+        import contextlib
+        import io
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            Commands(self.base).run([sys.executable, '-c', 'print("synthetic-sensitive-output")'])
+        self.assertIn('native-command-start', output.getvalue())
+        self.assertIn('native-command-exit', output.getvalue())
+        self.assertIn('code=0', output.getvalue())
+        self.assertNotIn('synthetic-sensitive-output', output.getvalue())
+
     def invoke_tmutil_prompt(self, body, timeout=2):
         executable = self.base / 'fake-tmutil.py'
         executable.write_text('import getpass, sys, time\n' + body)

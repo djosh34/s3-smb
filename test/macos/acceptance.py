@@ -250,10 +250,16 @@ logging:
     def complete_backup(self, label):
         process, log = self.backup
         deadline = time.monotonic() + 5400
+        next_observation = time.monotonic()
         while process.poll() is None:
             self.daemon.pump()
-            if time.monotonic() >= deadline:
+            now = time.monotonic()
+            if now >= deadline:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')
+            if now >= next_observation:
+                status, code = self.cmd.run(['/usr/bin/tmutil', 'status'], diagnostic=True)
+                self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code)
+                next_observation = now + 60
             time.sleep(1)
         log.close()
         self.backup = None
@@ -267,6 +273,7 @@ logging:
         threshold = datetime.datetime.fromisoformat(after)
         deadline = time.monotonic() + 3900  # Native default hourly schedule.
         receipt_path = self.local / 'state/backup-receipt.json'
+        next_observation = time.monotonic()
         while time.monotonic() < deadline:
             self.daemon.pump()
             if receipt_path.exists():
@@ -276,6 +283,9 @@ logging:
                     self.save('baseline-receipt.json', receipt)
                     self.event('native-point-after-completion', receipt=receipt)
                     return
+            if time.monotonic() >= next_observation:
+                self.event('waiting-for-native-point', after=after)
+                next_observation = time.monotonic() + 60
             time.sleep(1)
         raise RuntimeError('no successful native metadata point after Time Machine completion')
 

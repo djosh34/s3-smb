@@ -53,6 +53,7 @@ class Commands:
         name = f'{self.seq:04d}-{Path(argv[0]).name}'
         start = utc()
         path = self.evidence / (name + '.log')
+        print(f'native-command-start {name} {start}', flush=True)
         with path.open('xb') as log:
             try:
                 result = subprocess.run([str(x) for x in argv], stdout=log,
@@ -64,6 +65,7 @@ class Commands:
         with (self.evidence / 'commands.jsonl').open('a') as f:
             f.write(json.dumps(dict(argv=[str(x) for x in argv], start=start, end=utc(),
                                    exit=code, diagnostic=diagnostic, output=name + '.log')) + '\n')
+        print(f'native-command-exit {name} code={code} {utc()}', flush=True)
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
