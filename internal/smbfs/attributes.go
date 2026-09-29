@@ -103,6 +103,9 @@ func (s *FS) SetAttr(h vfs.VfsHandle, a *vfs.Attributes) (*vfs.Attributes, error
 	}
 	// JuiceFS has no independent birth time. Do not reinterpret it as ctime.
 	if size, ok := a.GetSizeBytes(); ok {
+		if e := dataFile(f); e != nil {
+			return nil, e
+		}
 		if size > math.MaxInt64 {
 			return nil, syscall.EINVAL
 		}
@@ -173,6 +176,11 @@ func (s *FS) Getxattr(h vfs.VfsHandle, key string, b []byte) (int, error) {
 	return copy(b, value), nil
 }
 func (s *FS) Setxattr(h vfs.VfsHandle, key string, b []byte) error {
+	// The direct metadata API does not apply the native VFS xattr bound.
+	// Use the same bound as the SMB resource-fork range allocator.
+	if len(b) > vfs.MaxXattrSize {
+		return syscall.E2BIG
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	f, e := s.get(h)
@@ -184,6 +192,11 @@ func (s *FS) Setxattr(h vfs.VfsHandle, key string, b []byte) error {
 	}
 	if er := s.meta.Access(s.ctx, f.file.Inode(), meta.MODE_MASK_W, nil); er != 0 {
 		return er
+	}
+	// Empty attributes exist and differ from missing ones. SQLite's native
+	// schema requires a non-NULL blob; a nil Go slice would bind SQL NULL.
+	if b == nil {
+		b = []byte{}
 	}
 	return errno(s.meta.SetXattr(s.ctx, f.file.Inode(), key, b, 0))
 }

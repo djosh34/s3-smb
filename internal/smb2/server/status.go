@@ -29,6 +29,10 @@ func statusFromError(err error) NtStatus {
 		return STATUS_MEDIA_WRITE_PROTECTED
 	case errors.Is(err, syscall.ENOSPC), errors.Is(err, syscall.EDQUOT):
 		return STATUS_DISK_FULL
+	case errors.Is(err, syscall.E2BIG):
+		return STATUS_EA_TOO_LARGE
+	case errors.Is(err, syscall.ERANGE):
+		return STATUS_BUFFER_TOO_SMALL
 	case errors.Is(err, syscall.EINVAL):
 		return STATUS_INVALID_PARAMETER
 	case errors.Is(err, syscall.ENOTEMPTY):

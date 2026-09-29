@@ -135,6 +135,13 @@ func OpenVolume(ctx context.Context, raw object.ObjectStorage, f *meta.Format, p
 		return nil, err
 	}
 	blob := object.WithPrefix(raw, f.Name+"/")
+	// The native CLI initializes tier zero even for the ordinary default store.
+	// Preserve saved native tier settings rather than warning on every upload.
+	if tiers, ok := raw.(object.SupportTier); ok {
+		if err := tiers.InitTiers(f.Tiers); err != nil {
+			return nil, err
+		}
+	}
 	if f.EncryptAlgo == "" {
 		return blob, nil
 	}

@@ -97,7 +97,26 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 		err error
 	}
 	done := make(chan result, 1)
-	go func() { defer func() { <-m.busy }(); r, e := m.attempts(ctx); done <- result{r, e} }()
+	go func() {
+		defer func() { <-m.busy }()
+		r, e := m.attempts(ctx)
+		if e == nil {
+			e = ctx.Err()
+		}
+		if e == nil {
+			e = m.save(r)
+		}
+		// Keep receipt sync and retention inside the joined, bounded worker too.
+		// Initial protection is closed, so initial export never cleans old points.
+		if e == nil && m.opts.Protection.Check() == nil {
+			cleanupCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+			if err := vfs.CleanupBackups(cleanupCtx, guardedStore{m.blob, m.opts.Protection}, m.now()); err != nil {
+				slog.Warn("metadata backup retention deferred")
+			}
+			stop()
+		}
+		done <- result{r, e}
+	}()
 	var r Receipt
 	var err error
 	deadline := m.now().Round(0).Add(m.opts.Timeout)
@@ -123,9 +142,6 @@ wait:
 		err = ctx.Err()
 	}
 	if err == nil {
-		err = m.save(r)
-	}
-	if err == nil {
 		err = m.opts.Protection.protect(r.Snapshot)
 	}
 	if err != nil {
@@ -135,13 +151,6 @@ wait:
 	m.mu.Lock()
 	m.receipt = r
 	m.mu.Unlock()
-	// Native retention is best-effort only after a verified successful point.
-	// Never turn cleanup failure into erasure or loss of the successful receipt.
-	cleanupCtx, stop := context.WithTimeout(ctx, time.Second*10)
-	defer stop()
-	if err = vfs.CleanupBackups(cleanupCtx, guardedStore{m.blob, m.opts.Protection}, m.now()); err != nil {
-		slog.Warn("metadata backup retention deferred")
-	}
 	return r, nil
 }
 

@@ -68,7 +68,15 @@ the contract, with their regression tests:
 - metadata SQL/export/protection and `vfs/backup.go`: consistent export,
   success reporting, safe staging, no-overwrite backups and retirement guards;
 - object/chunk/fs: S3 options, effective cache capacity, flush/lifecycle and
-  storage integration corrections;
+  storage integration corrections. In `pkg/fs/fs.go`, native `pread` flushes
+  the inode writer and refreshes attributes/reader length under its existing
+  file lock before checking the size bound; this fixes stale EOF through a
+  previously opened second handle after a flushed write, while preserving
+  synthetic special files. Regression: `internal/smbfs/coherence_test.go`.
+  In `pkg/chunk/disk_cache.go`, disk-full/staging-full flags use atomic loads
+  and stores between the native free-space monitor and cache I/O, without
+  changing cache policy. The actual MinIO regression/race seam is
+  `test/cache/cache_test.go` (positive disk-cache pressure/refetch/restart);
 - SMB protocol: error propagation, write-through and connection/handle cleanup;
 - utils/progress and Xorm/SMB diagnostics: slog routing and redaction.
 

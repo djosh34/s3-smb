@@ -35,6 +35,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+	"github.com/aws/smithy-go"
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/logging"
@@ -208,6 +209,57 @@ func TestTransportAcceptance(t *testing.T) {
 			}
 		}
 		t.Log("MinIO accepted explicit startup token on signed native PUT/GET/HEAD/LIST/DELETE; no refresh")
+	})
+
+	t.Run("session_token_fail_closed", func(t *testing.T) {
+		access, secret, _ := transportSTS(t, upstream)
+		// Valid ambient root credentials would make LIST succeed if an explicit
+		// startup authentication failure silently fell back to an AWS provider.
+		t.Setenv("AWS_ACCESS_KEY_ID", transportAccess)
+		t.Setenv("AWS_SECRET_ACCESS_KEY", transportSecret)
+		t.Setenv("AWS_SESSION_TOKEN", "")
+		for _, tc := range []struct{ name, token string }{
+			{"missing", ""},
+			{"invalid", "transport-invalid-session-token-marker"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
+				proxy.expectedToken = tc.token
+				cfg := transportConfig(t, proxy.endpoint, false)
+				cfg.S3.AccessKey = config.SecretSource{Value: &access}
+				cfg.S3.SecretKey = config.SecretSource{Value: &secret}
+				cfg.S3.SessionToken, cfg.S3.TLS.CAFile = tc.token, caFile
+				store := transportOpen(t, cfg)
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				_, _, _, err := store.List(ctx, "accepted/", "", "", "", 1, true)
+				if err == nil || errors.Is(err, os.ErrNotExist) {
+					t.Fatal("missing/invalid configured token was accepted, replaced, or mistaken for missing data")
+				}
+				transportNoSecrets(t, err.Error(), access, secret, tc.token)
+				var apiError smithy.APIError
+				if !errors.As(err, &apiError) {
+					t.Fatal("token failure did not come from a real S3 API response")
+				}
+				// This pinned MinIO reports InvalidTokenId for both missing and
+				// invalid STS tokens; do not mistake this for a data-not-found error.
+				if apiError.ErrorCode() != "InvalidTokenId" {
+					t.Fatalf("want MinIO InvalidTokenId, got code=%q", logging.Redact(apiError.ErrorCode()))
+				}
+				requests := proxy.snapshot()
+				if len(requests) != 1 {
+					t.Fatalf("want one rejected native request without refresh/fallback, got %d", len(requests))
+				}
+				r := requests[0]
+				if r.status != http.StatusForbidden || !r.tokenOK {
+					t.Fatalf("want MinIO authentication rejection with unchanged configured token, got HTTP %d", r.status)
+				}
+				if proxy.plain.Load() != 0 {
+					t.Fatal("authentication failure triggered plaintext downgrade")
+				}
+				t.Logf("MinIO rejected configured token with HTTP %d; no retry, refresh, or ambient credential fallback", r.status)
+			})
+		}
 	})
 
 	t.Run("invalid_static_credentials", func(t *testing.T) {

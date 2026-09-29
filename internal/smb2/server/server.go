@@ -64,6 +64,7 @@ type Server struct {
 
 	lock     sync.Mutex
 	lockCond *sync.Cond
+	xattrMu  sync.Mutex // serializes native xattr mutations across handles/sessions
 }
 
 type OpLockState uint8
@@ -425,7 +426,9 @@ func (c *conn) Run() error {
 		default:
 			p := PacketCodec(pkt)
 			treeID := p.TreeId()
-			if compCtx != nil && p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0 { treeID = uint32(compCtx.treeId) }
+			if compCtx != nil && p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0 {
+				treeID = uint32(compCtx.treeId)
+			}
 			tc, ok := c.treeMapById[treeID]
 			if !ok {
 				err = &InvalidRequestError{fmt.Sprintf("tree %d doesn't exist: command %d", p.TreeId(), p.Command())}

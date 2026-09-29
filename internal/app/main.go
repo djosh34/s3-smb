@@ -85,7 +85,7 @@ func Main(args []string, version string) int {
 	}
 	logging.RegisterSecret(resolved.AccessKey, resolved.SecretKey, resolved.SessionToken, resolved.Passphrase)
 	if err = serve(ctx, resolved); err != nil {
-		slog.Error("service stopped with failure", "error", err)
+		logFailure("service stopped with failure", err)
 		return 1
 	}
 	return 0
@@ -98,6 +98,11 @@ func hardExit() {
 }
 
 func exitFailure(message string, err error) {
+	logFailure(message, err)
+	os.Exit(1)
+}
+
+func logFailure(message string, err error) {
 	// A blocked log pipe must not disable the process exit deadline. Give the
 	// diagnostic a short best-effort window, then let the OS release the lock.
 	done := make(chan struct{})
@@ -113,5 +118,4 @@ func exitFailure(message string, err error) {
 	case <-done:
 	case <-time.After(100 * time.Millisecond):
 	}
-	os.Exit(1)
 }

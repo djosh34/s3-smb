@@ -21,7 +21,18 @@ type Protection struct {
 }
 
 func NewProtection(interval, budget time.Duration, trashDays int) (*Protection, error) {
-	if interval <= 0 || budget <= 0 || trashDays <= 0 || interval >= time.Duration(trashDays)*24*time.Hour-budget {
+	if interval <= 0 || budget <= 0 || trashDays <= 0 || interval > time.Duration(1<<63-1)-budget {
+		return nil, errors.New("invalid backup interval, budget or trash retention")
+	}
+	// Native doCleanupTrash computes time.Duration(24*days+2)*time.Hour.
+	// Bound that arithmetic, not the namespace/workload. Native's existing
+	// two-hour slack already covers its hourly bucket rounding; do not add
+	// another margin or change native retention policy.
+	const maxNativeTrashDays = int((time.Duration(1<<63-1)/time.Hour - 2) / 24)
+	if trashDays > maxNativeTrashDays {
+		return nil, errors.New("trash retention exceeds native SQLite cleanup duration limit (106751 days)")
+	}
+	if interval+budget >= time.Duration(trashDays)*24*time.Hour {
 		return nil, errors.New("backup interval plus operation budget must be shorter than native trash retention")
 	}
 	return &Protection{interval: interval, budget: budget, now: time.Now}, nil

@@ -2831,7 +2831,7 @@ func (m *dbMeta) doBatchUnlink(ctx Context, parent Ino, entries []*Entry, delta 
 		var batchDirLength, batchDirSpace, batchDirInodes int64
 		var batchTrashLength, batchTrashSpace, batchTrashInodes int64
 		var deltas ugQuotaDeltas
-		err := m.txn(func(s *xorm.Session) error {
+		err := m.maintenanceTxn(func(s *xorm.Session) error {
 			batchDirLength, batchDirSpace, batchDirInodes = 0, 0, 0
 			batchFsSpace, batchFsInodes = 0, 0
 			batchTrashLength, batchTrashSpace, batchTrashInodes = 0, 0, 0
@@ -3826,6 +3826,9 @@ func (m *dbMeta) doCleanupDelayedSlices(ctx Context, edge int64) (int, error) {
 		})
 
 		for _, ds := range result {
+			if err := m.checkMaintenance(); err != nil {
+				return count, err
+			}
 			if err := m.maintenanceTxn(func(ses *xorm.Session) error {
 				ss = ss[:0]
 				ds := delslices{Id: ds.Id}

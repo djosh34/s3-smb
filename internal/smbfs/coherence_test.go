@@ -3,10 +3,28 @@ package smbfs
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"syscall"
 	"testing"
 )
+
+func TestNativeCrossHandleReadFailure(t *testing.T) {
+	f := newFixture(t)
+	writer := openFile(t, f.s, "file")
+	reader, e := f.s.Open("file", syscall.O_RDONLY, 0)
+	if e != nil {
+		t.Fatal(e)
+	}
+	f.store.fail.Store(true)
+	if _, e = f.s.Write(writer, []byte("uncommitted"), 0, 0); e != nil {
+		t.Fatal(e)
+	}
+	_, e = f.s.Read(reader, make([]byte, 16), 0, 0)
+	if !errors.Is(e, syscall.EIO) {
+		t.Fatalf("read acknowledged/obscured failed other-handle flush: %v", e)
+	}
+}
 
 func TestNativeCrossHandleReadCoherence(t *testing.T) {
 	s := newFixture(t).s

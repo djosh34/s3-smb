@@ -12,4 +12,7 @@
 /test/**/artifacts/
 /test/**/state/
 /test/**/cache/
+# This is checked-in acceptance-test source, not a runtime cache.
+!/test/cache/
+!/test/cache/*.go
 /test/**/config.yaml

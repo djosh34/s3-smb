@@ -10,13 +10,23 @@ func splitRequests(pkt []byte) ([][]byte, error) {
 	var packets [][]byte
 	for {
 		p := PacketCodec(pkt)
-		if p.IsInvalid() || p.MessageId() == ^uint64(0) { return nil, &InvalidRequestError{"invalid client packet header or reserved message id"} }
+		if p.IsInvalid() || p.MessageId() == ^uint64(0) {
+			return nil, &InvalidRequestError{"invalid client packet header or reserved message id"}
+		}
 		related := p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0
-		if related && len(packets) == 0 { return nil, &InvalidRequestError{"related request without leading operation"} }
-		if !related && p.SessionId() == ^uint64(0) { return nil, &InvalidRequestError{"inherited session without related operation"} }
+		if related && len(packets) == 0 {
+			return nil, &InvalidRequestError{"related request without leading operation"}
+		}
+		if !related && p.SessionId() == ^uint64(0) {
+			return nil, &InvalidRequestError{"inherited session without related operation"}
+		}
 		off := p.NextCommand()
-		if off == 0 { return append(packets, pkt), nil }
-		if off < 64 || off%8 != 0 || uint64(off)+64 > uint64(len(pkt)) { return nil, &InvalidRequestError{"invalid compound offset"} }
+		if off == 0 {
+			return append(packets, pkt), nil
+		}
+		if off < 64 || off%8 != 0 || uint64(off)+64 > uint64(len(pkt)) {
+			return nil, &InvalidRequestError{"invalid compound offset"}
+		}
 		packets = append(packets, pkt[:off])
 		pkt = pkt[off:]
 	}

@@ -47,6 +47,9 @@ Coverage:
   must carry that token and succeed, despite poisoned ambient AWS credentials.
   The application does not acquire or refresh it. This tests static-token
   transport, not automatic renewal or unlimited validity of an STS token.
+- Missing/invalid static session tokens receive real MinIO authentication errors,
+  with one request and no fallback even when ambient AWS root credentials are
+  valid. Configured token values remain unchanged and are checked for leakage.
 - An invalid signing secret receives an actual MinIO 403. A deliberately stalled
   TLS HTTP response respects a 300ms caller deadline.
 - Synthetic credentials/tokens/passwords must not appear in captured native JSON

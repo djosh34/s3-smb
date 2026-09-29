@@ -3209,6 +3209,10 @@ func (m *baseMeta) CleanupTrashBefore(ctx Context, edge time.Time, increProgress
 
 	concurrent := make(chan int, 1) // no effect for flatterned trash dirs
 	for len(entries) > 0 {
+		// An expired batch must not retry the same trash directory forever.
+		if err := m.checkMaintenance(); err != nil {
+			return errno(err)
+		}
 		if ctx.Canceled() {
 			return errno(ctx.Err())
 		}

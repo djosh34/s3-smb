@@ -201,6 +201,8 @@ func TestDirectoryCursorRestart(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	_, e = s.Read(h, make([]byte, 1), 0, 0)
+	requireErr(t, e, syscall.EISDIR)
 	first, e := s.ReadDir(h, vfs.ReadDirContinue, 1)
 	if e != nil || len(first) != 1 {
 		t.Fatalf("first=%v %v", first, e)
@@ -259,6 +261,9 @@ func TestLinksRenameAndStaleHandles(t *testing.T) {
 	if _, e = s.Symlink(sy, "file", 1); e != nil {
 		t.Fatal(e)
 	}
+	_, e = s.Write(sy, []byte("not file data"), 0, 0)
+	requireErr(t, e, syscall.ENOTSUP)
+	requireErr(t, s.Truncate(sy, 0), syscall.ENOTSUP)
 	target, e := s.Readlink(sy)
 	if e != nil || target != "file" {
 		t.Fatalf("readlink=%q %v", target, e)

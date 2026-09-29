@@ -39,9 +39,9 @@ import (
 
 	"github.com/charlievieth/fastwalk"
 	"github.com/davies/groupcache/consistenthash"
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/utils"
 	"github.com/dustin/go-humanize"
 	"github.com/google/uuid"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/utils"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/twmb/murmur3"
 	"github.com/vmihailenco/msgpack/v5"
@@ -88,11 +88,12 @@ type cacheStore struct {
 	pages         map[string]*Page
 	m             *cacheManagerMetrics
 
-	used      int64
-	keys      KeyIndex
-	scanned   bool
-	stageFull bool
-	rawFull   bool
+	used    int64
+	keys    KeyIndex
+	scanned bool
+	// s3-smb: free-space monitor publishes these flags to concurrent cache I/O.
+	stageFull atomic.Bool
+	rawFull   atomic.Bool
 	checksum  string // checksum level
 	uploader  func(key, path string, force bool) bool
 
@@ -353,17 +354,17 @@ func (cache *cacheStore) isFull(usage DiskFreeRatio, stage bool) bool {
 func (cache *cacheStore) checkFreeSpace() {
 	for cache.available() {
 		usage := cache.curFreeRatio()
-		cache.stageFull = cache.isFull(usage, true)
-		cache.rawFull = cache.isFull(usage, false)
-		if cache.rawFull && cache.keys.name() != EvictionNone {
+		cache.stageFull.Store(cache.isFull(usage, true))
+		cache.rawFull.Store(cache.isFull(usage, false))
+		if cache.rawFull.Load() && cache.keys.name() != EvictionNone {
 			logger.Tracef("Cleanup cache when check free space (%s): free ratio (%d%%), space usage (%d%%), inodes usage (%d%%)", cache.dir, int(cache.freeRatio*100), int(usage.br*100), int(usage.fr*100))
 			cache.Lock()
 			cache.cleanupFull()
 			cache.Unlock()
 			usage = cache.curFreeRatio()
-			cache.rawFull = cache.isFull(usage, false)
+			cache.rawFull.Store(cache.isFull(usage, false))
 		}
-		if cache.rawFull {
+		if cache.rawFull.Load() {
 			cache.uploadStaging()
 		}
 		time.Sleep(time.Second)
@@ -445,7 +446,7 @@ func (cache *cacheStore) cache(key string, p *Page, force, dropCache bool) {
 	if !cache.enabled() {
 		return
 	}
-	if cache.rawFull && cache.keys.name() == EvictionNone {
+	if cache.rawFull.Load() && cache.keys.name() == EvictionNone {
 		logger.Debugf("Caching directory is full (%s), drop %s (%d bytes)", cache.dir, key, len(p.Data))
 		cache.m.cacheDrops.Add(1)
 		return
@@ -782,7 +783,7 @@ func (cache *cacheStore) add(key string, size int32, atime uint32) {
 
 func (cache *cacheStore) stage(key string, data []byte, tierID uint8) (string, error) {
 	stagingPath := cache.stagePath(key)
-	if cache.stageFull {
+	if cache.stageFull.Load() {
 		return stagingPath, errStageFull
 	}
 	if cache.maxStageWrite != 0 && stagingBlocks.Load() > int64(cache.maxStageWrite) {

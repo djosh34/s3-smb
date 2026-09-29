@@ -2,6 +2,7 @@ package smb2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -447,6 +448,8 @@ func (t *fileTree) handleRqLs(pkt []byte, open *Open) (Encoder, error) {
 }
 
 func (t *fileTree) handleCreateEA(disp uint32, h vfs.VfsHandle, eaKey string) (uint32, error) {
+	t.conn.serverCtx.xattrMu.Lock()
+	defer t.conn.serverCtx.xattrMu.Unlock()
 	var err error = nil
 	status := uint32(0)
 
@@ -459,6 +462,9 @@ func (t *fileTree) handleCreateEA(disp uint32, h vfs.VfsHandle, eaKey string) (u
 	case FILE_OPEN_IF:
 		// open or create
 		if _, err = t.fs.Getxattr(h, eaKey, nil); err != nil {
+			if !errors.Is(err, missingXattrError) {
+				return uint32(statusFromError(err)), err
+			}
 			if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
 				status = uint32(STATUS_OPEN_FAILED)
 			}
@@ -475,13 +481,19 @@ func (t *fileTree) handleCreateEA(disp uint32, h vfs.VfsHandle, eaKey string) (u
 			err = fmt.Errorf("already exists")
 			break
 		}
+		if !errors.Is(err, missingXattrError) {
+			return uint32(statusFromError(err)), err
+		}
 		if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
 			status = uint32(STATUS_OPEN_FAILED)
 		}
 	case FILE_OVERWRITE:
-		// error if doesn't exists
+		// Do not truncate when the existing stream cannot be read.
 		if _, err = t.fs.Getxattr(h, eaKey, nil); err != nil {
-			status = uint32(STATUS_OBJECT_NAME_NOT_FOUND)
+			if errors.Is(err, missingXattrError) {
+				return uint32(STATUS_OBJECT_NAME_NOT_FOUND), err
+			}
+			return uint32(statusFromError(err)), err
 		}
 		if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
 			status = uint32(STATUS_OPEN_FAILED)
@@ -845,7 +857,7 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 	r := WriteRequestDecoder(res)
 
 	if open.isEa {
-		err = t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data())
+		err = t.writeXattrRange(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data(), r.Offset())
 		if err == nil {
 			n = len(r.Data())
 		}
@@ -2252,7 +2264,12 @@ func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []
 	res, _ := accept(SMB2_SET_INFO, pkt)
 	r := SetInfoRequestDecoder(res)
 	info := FileEndOfFileInformationDecoder(r.Buffer())
-	t.fs.Truncate(vfs.VfsHandle(fileId.HandleId()), uint64(info.EndOfFile()))
+	if info.EndOfFile() < 0 {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+	if err := t.fs.Truncate(vfs.VfsHandle(fileId.HandleId()), uint64(info.EndOfFile())); err != nil {
+		return t.sendError(ctx, pkt, err)
+	}
 
 	rsp := new(SetInfoResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
@@ -2266,8 +2283,7 @@ func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKe
 	r := SetInfoRequestDecoder(res)
 	info := FileEndOfFileInformationDecoder(r.Buffer())
 
-	v := make([]byte, info.EndOfFile())
-	if err := t.fs.Setxattr(vfs.VfsHandle(fileId.HandleId()), eaKey, v); err != nil {
+	if err := t.resizeXattr(vfs.VfsHandle(fileId.HandleId()), eaKey, info.EndOfFile()); err != nil {
 		return t.sendError(ctx, pkt, err)
 	}
 
@@ -2371,7 +2387,7 @@ func (t *fileTree) setDispositionInfoEa(ctx *compoundContext, fileId *FileId, ea
 	c := t.session.conn
 
 	if dispositionDeletePending(pkt) {
-		if err := t.fs.Removexattr(vfs.VfsHandle(fileId.HandleId()), eaKey); err != nil {
+		if err := t.removeXattr(vfs.VfsHandle(fileId.HandleId()), eaKey); err != nil {
 			log.Errorf("removexattr failed: %v", err)
 			rsp := new(ErrorResponse)
 			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_FOUND))

@@ -40,6 +40,7 @@ type handle struct {
 	file          *jfs.File
 	path          string
 	flags         int
+	typ           uint8
 	done          chan struct{}
 	entries       []vfs.DirInfo
 	cursor        int
@@ -173,7 +174,8 @@ func (s *FS) writable(f *handle) error {
 }
 func (s *FS) add(f *jfs.File, p string, flags int) vfs.VfsHandle {
 	h := vfs.VfsHandle(nextHandle.Add(1))
-	s.handles[h] = &handle{file: f, path: p, flags: flags, done: make(chan struct{})}
+	info, _ := f.Stat() // native snapshot; file type is immutable for this inode
+	s.handles[h] = &handle{file: f, path: p, flags: flags, typ: info.Sys().(*meta.Attr).Typ, done: make(chan struct{})}
 	return h
 }
 func accessFlags(flags int) uint32 {
@@ -322,6 +324,9 @@ func (s *FS) Read(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error)
 	if f.flags&syscall.O_ACCMODE == syscall.O_WRONLY {
 		return 0, syscall.EBADF
 	}
+	if e = dataFile(f); e != nil {
+		return 0, e
+	}
 	if e = s.checkIO(h, f, off, len(b), false); e != nil {
 		return 0, e
 	}
@@ -346,6 +351,9 @@ func (s *FS) Write(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error
 	}
 	if f.flags&syscall.O_ACCMODE == syscall.O_RDONLY {
 		return 0, syscall.EBADF
+	}
+	if e = dataFile(f); e != nil {
+		return 0, e
 	}
 	if e = s.checkIO(h, f, off, len(b), true); e != nil {
 		return 0, e
@@ -377,5 +385,17 @@ func (s *FS) Truncate(h vfs.VfsHandle, size uint64) error {
 	if f.flags&syscall.O_ACCMODE == syscall.O_RDONLY {
 		return syscall.EBADF
 	}
+	if e = dataFile(f); e != nil {
+		return e
+	}
 	return errno(f.file.Truncate(s.ctx, size))
+}
+func dataFile(f *handle) error {
+	if f.typ == meta.TypeDirectory {
+		return syscall.EISDIR
+	}
+	if f.typ != meta.TypeFile {
+		return syscall.ENOTSUP
+	}
+	return nil
 }

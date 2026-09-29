@@ -76,7 +76,8 @@ logging:
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
 | `storage.cache_size` | Omitted: native 107,374,182,400 bytes = 107.3741824 GB |
 | `s3.bucket` | Required existing bucket name |
-| `s3.region`, `s3.endpoint` | Omitted/empty: native S3 selection; explicit endpoint is an HTTP(S) origin |
+| `s3.region` | `us-east-1` when omitted/empty; set the bucket's actual region explicitly |
+| `s3.endpoint` | Omitted/empty: AWS S3 endpoint for the selected region; explicit endpoint is an HTTP(S) origin |
 | `s3.path_style` | Omitted: native selection; `true` forces path-style, `false` virtual-host-style |
 | `s3.access_key`, `s3.secret_key` | Each independently requires exactly one source |
 | `s3.session_token` | Empty/omitted; optional static string |
@@ -99,9 +100,28 @@ value. Ordinary I/O buffers/readahead, local SQLite/WAL and backup staging still
 need memory/disk. A positive cache does not imply the entire remote dataset must
 fit locally. Native I/O buffering defaults remain 314,572,800 bytes (314.5728 MB).
 
-Writable protection additionally requires a positive trash retention long enough
-for the configured backup interval plus the operation budget. Runtime protection
-validates that relationship; `trash_days: 0` is not a safe writable configuration.
+Writable protection requires positive trash retention and this strict bound:
+
+```text
+backup.interval + total backup operation budget < backup.trash_days * 24h
+```
+
+Native cleanup's existing two-hour slack covers its UTC-hour trash-bucket
+rounding, so this bound is already conservative. The application does not
+subtract another hour or add a grace period or retention policy.
+
+For `trash_days: 1`, the combined interval and total budget must be **strictly
+less than 24 hours**. An interval of 23h30m plus a 2-minute total budget is within
+that bound. The ordinary defaults (1-hour interval, 2-minute total budget,
+14-day trash) remain valid. Runtime protection validates this relationship;
+`trash_days: 0` is unsafe for writable serving.
+
+Writable protection also limits `trash_days` to **106751** to avoid overflow in
+native cleanup's `time.Duration(24*days+2) * time.Hour` calculation. This maximum
+is derived as `floor((MaxInt64/time.Hour - 2) / 24)`, not an arbitrary policy cap.
+Native cleanup slack is unchanged. Read-only serving does not construct writable
+protection and is exempt from these bounds, including permitting zero trash days.
+
 An old metadata backup does not guarantee its data remains available. Do not use
 external S3 lifecycle deletion rules that destroy current data, recovery points,
 or encryption bootstrap keys.
@@ -164,6 +184,11 @@ are bounded to 1,048,576 bytes each. Replacing local certificate/key files takes
 effect on restart. A server certificate renewed under a trusted CA normally
 needs no S3 credential change.
 
+Use an existing bucket. The S3 endpoint must support ordinary listing, reads,
+writes and deletes, plus conditional `PutObject` with `If-None-Match: *` for
+non-overwriting key/identity/metadata publication. A provider that rejects this
+operation fails safely; the application does not fall back to an overwriting PUT.
+
 Current validated YAML and its startup credential/TLS snapshot control the S3
 destination and transport. Imported metadata must never redirect it or install
 old credentials/TLS settings. For forced virtual-host-style addressing, arrange
@@ -217,6 +242,21 @@ Run the isolated configuration tests with:
 GOMAXPROCS=2 go test -p 2 ./internal/config
 ```
 
-These tests include real subprocess helpers and local verified/mutual TLS HTTP
-handshakes. They do not substitute for the Docker MinIO/native S3 transport,
-SMB authentication, CLI placement/side-effects or final Time Machine gates.
+These tests include real subprocess helpers, lingering-descendant termination,
+and local verified/mutual TLS HTTP handshakes. Native S3 credential acceptance
+uses the same disposable Docker/MinIO runner as the rest of the Linux suite:
+
+```sh
+scripts/test-linux.sh unit ./test/credentials
+```
+
+That package tests all nine source combinations with real S3 reads/writes,
+startup snapshots, passphrase helper execution/nonexecution, and actual
+permissive/differently-owned readable files with text/JSON warnings. It never
+uses host credentials; the root test container creates its disposable
+foreign-owner fixture. A host-only run without the fixture endpoint explicitly
+skips that acceptance test, not marks it as passed.
+
+Neither suite substitutes for SMB authentication, CLI placement/side-effects,
+remote encryption/recovery, or final Time Machine gates. Native addressing and
+TLS/mTLS acceptance have their separate shared transport suite.

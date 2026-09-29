@@ -17,6 +17,9 @@ points do not trigger an older-point fallback. Existing local metadata must matc
 the remote native format. New initialization or recovery prompts exclusively on
 `/dev/tty`; redirected stdin is not consent. Only a complete `yes` line confirms.
 Recovery warns about later-change loss and stopping the old writer on every host.
+After required confirmation/identity validation, startup removes only abandoned
+`.s3-smb-recovery-*` directories recognized by the backup helper as containing
+exclusively known regular staging files; unknown contents and symlinks remain.
 
 Writable startup establishes a verified metadata backup before creating a native
 session, filesystem or SMB listener. Ordinary restarts may verify/reuse a recent
@@ -24,7 +27,10 @@ receipt without moving its original schedule. Recovery always obtains a new
 point before writable serving. Read-only startup uses native metadata read-only
 mode and a permanently closed maintenance gate; it performs no remote backup or
 retention. Read-only recovery imports local SQLite, and read-only initialization
-of an empty dataset is rejected. Native lock-only transactions permit byte-range
+of an empty dataset is rejected. With the state lock held, startup clears only
+orphan native advisory-lock rows for session ID zero before any new native
+session or SMB operation. This also applies when restarting writable after a
+read-only process crashed. Native lock-only transactions permit byte-range
 lock conflicts, unlock and reacquisition on read-only sessions; file and namespace
 mutations remain rejected by native read-only enforcement.
 
@@ -43,8 +49,9 @@ budget plus the shutdown deadline; backup operations use two minutes total with
 three attempts and explicitly join any timed-out export before releasing state.
 
 Tests in this directory cover argument placement, detached terminal refusal,
-confirmation parsing, real OS lock exclusion and hard-exit lifetime, help/version
-side-effect avoidance, and JSON parse/config errors in subprocesses. These are
+confirmation parsing, real Linux controlling-PTY yes/no/EOF interactions with
+separate JSON diagnostics, real OS lock exclusion and hard-exit lifetime,
+help/version side-effect avoidance, and JSON parse/config errors in subprocesses. These are
 not evidence of a native blocked-I/O shutdown, SMB-to-S3 recovery, power-loss
 durability or Time Machine compatibility; the shared Docker suite owns those
 integration gates.

@@ -280,6 +280,7 @@ func (s *FS) Symlink(h vfs.VfsHandle, target string, flags int) (*vfs.Attributes
 		return nil, er
 	}
 	f.file = native
+	f.typ = meta.TypeSymlink
 	f.path = p
 	return s.attr(f)
 }

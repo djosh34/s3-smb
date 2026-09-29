@@ -413,6 +413,44 @@ func TestInspectCorruptionDoesNotFallback(t *testing.T) {
 		t.Fatal("prior point lost")
 	}
 }
+func TestCleanupRecoveryStagingLeavesUnknownFiles(t *testing.T) {
+	dir := t.TempDir()
+	owned := filepath.Join(dir, ".s3-smb-recovery-owned")
+	unknown := filepath.Join(dir, ".s3-smb-recovery-unknown")
+	linked := filepath.Join(dir, ".s3-smb-recovery-linked")
+	other := filepath.Join(dir, "someone-elses-directory")
+	for _, p := range []string{owned, unknown, other} {
+		if err := os.Mkdir(p, 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"selected.json.gz", "metadata.db", "metadata.db-wal", "metadata.db-shm"} {
+		if err := os.WriteFile(filepath.Join(owned, name), []byte("abandoned"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(unknown, "do-not-delete"), []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(other, "metadata.db"), []byte("preserve"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, linked); err != nil {
+		t.Fatal(err)
+	}
+	if err := CleanupRecoveryStaging(dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(owned); !os.IsNotExist(err) {
+		t.Fatalf("owned abandoned files not removed: %v", err)
+	}
+	for _, p := range []string{filepath.Join(unknown, "do-not-delete"), filepath.Join(other, "metadata.db"), linked} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("unknown file removed: %s %v", p, err)
+		}
+	}
+}
+
 func TestProtectionUsesWallTimeAndEffectiveRetention(t *testing.T) {
 	for _, days := range []int{0, -1} {
 		if _, err := NewProtection(time.Hour, time.Minute, days); err == nil {
@@ -421,6 +459,26 @@ func TestProtectionUsesWallTimeAndEffectiveRetention(t *testing.T) {
 	}
 	if _, err := NewProtection(24*time.Hour, time.Minute, 1); err == nil {
 		t.Fatal("cleanup overtakes protection")
+	}
+	// Native doCleanupTrash already adds two hours before expiring hourly
+	// buckets. Do not reject a valid sub-day horizon by adding another margin.
+	if _, err := NewProtection(23*time.Hour+30*time.Minute, 2*time.Minute, 1); err != nil {
+		t.Fatalf("native existing slack covers hourly bucket rounding: %v", err)
+	}
+	if _, err := NewProtection(24*time.Hour-time.Minute, time.Minute, 1); err == nil {
+		t.Fatal("exact retention horizon must be rejected")
+	}
+	if _, err := NewProtection(24*time.Hour-time.Minute-time.Nanosecond, time.Minute, 1); err != nil {
+		t.Fatalf("strictly shorter horizon should be accepted: %v", err)
+	}
+	if _, err := NewProtection(time.Hour, time.Minute, 106751); err != nil {
+		t.Fatalf("largest representable native cleanup duration rejected: %v", err)
+	}
+	if _, err := NewProtection(time.Hour, time.Minute, 106752); err == nil {
+		t.Fatal("native cleanup duration overflow accepted")
+	}
+	if _, err := NewProtection(time.Hour, 2*time.Minute, 14); err != nil {
+		t.Fatalf("ordinary defaults rejected: %v", err)
 	}
 	p, err := NewProtection(time.Hour, time.Minute, 14)
 	if err != nil {

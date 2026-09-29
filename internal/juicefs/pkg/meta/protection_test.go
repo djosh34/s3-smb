@@ -88,8 +88,8 @@ func TestNativeRetirementGate(t *testing.T) {
 	if st := m.doCompactChunk(2, 0, origin, nil, 0, 0, 101, 10, nil); st == 0 {
 		t.Fatal("expired compaction succeeded")
 	}
-	if _, err := m.doCleanupDelayedSlices(Background(), time.Now().Unix()); err != nil {
-		t.Fatal(err)
+	if _, err := m.doCleanupDelayedSlices(Background(), time.Now().Unix()); !errors.Is(err, blocked) {
+		t.Fatalf("delayed cleanup should stop at protection gate: %v", err)
 	}
 	var c chunk
 	ok, err := m.db.Where("inode = ? AND indx = ?", 2, 0).Get(&c)
@@ -130,7 +130,9 @@ func marshalDelayedSlices(ss []Slice) []byte {
 }
 func TestQueuedNativeDeletionAfterSuspension(t *testing.T) {
 	var expired atomic.Bool
-	entered := make(chan struct{})
+	// Buffered readiness is retained if the worker reaches the guard before
+	// the test starts receiving (the old nonblocking unbuffered send was lost).
+	entered := make(chan struct{}, 1)
 	release := make(chan struct{})
 	m := protectedDB(t, func() error {
 		select {
@@ -204,7 +206,7 @@ func TestSQLiteExportConsistentDuringMutation(t *testing.T) {
 		var out bytes.Buffer
 		// false previously selected the mixed-transaction path; SQLite now forces
 		// its native snapshot instead, and reports writer errors without fallback.
-		if err := m.DumpMeta(&out, 0, 2, false, false, false); err != nil {
+		if err := m.DumpMeta(snapshotWriter{Writer: &out, m: m, t: t}, 0, 2, false, false, false); err != nil {
 			t.Fatal(err)
 		}
 		var dump DumpedMeta
@@ -223,6 +225,21 @@ func TestSQLiteExportConsistentDuringMutation(t *testing.T) {
 	if err := m.DumpMeta(failingWriter{}, 0, 2, false, true, false); !errors.Is(err, syscall.ENOSPC) {
 		t.Fatalf("writer error lost: %v", err)
 	}
+}
+
+// This also deterministically fails before the SQLite fast-mode correction,
+// rather than relying solely on a probabilistic concurrent mutation schedule.
+type snapshotWriter struct {
+	Writer *bytes.Buffer
+	m      *dbMeta
+	t      *testing.T
+}
+
+func (w snapshotWriter) Write(b []byte) (int, error) {
+	if w.m.snap == nil {
+		w.t.Error("SQLite export selected mixed-transaction streaming path")
+	}
+	return w.Writer.Write(b)
 }
 
 type failingWriter struct{}

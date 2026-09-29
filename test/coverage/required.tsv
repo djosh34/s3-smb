@@ -1,30 +1,105 @@
-# Contract case<TAB>exact go-test package/TestName; UNIMPLEMENTED never passes.
+# Requirement<TAB>exact Go test package/TestName. Native and wire evidence are distinct.
+SMB plaintext initialization flush read restart	github.com/djosh34/s3-smb/test/e2e/TestSMBToS3Smoke
 SMB encrypted zero-cache cold recovery full hashes resumed writes second recovery	github.com/djosh34/s3-smb/test/e2e/TestRecovery/encrypted
 SMB plaintext zero-cache cold recovery full hashes resumed writes second recovery	github.com/djosh34/s3-smb/test/e2e/TestRecovery/plaintext
 SMB normal password and wrong-password rejection	github.com/djosh34/s3-smb/test/e2e/TestAuthentication/password
 SMB named-empty required signing and wrong-name rejection	github.com/djosh34/s3-smb/test/e2e/TestAuthentication/named-empty
-SMB read-only rejects writes	github.com/djosh34/s3-smb/test/e2e/TestReadOnly
-SMB directory rename truncate attributes	UNIMPLEMENTED
-SMB conflicting locks and connection cleanup	UNIMPLEMENTED
-SMB write-through flush close xattr fault status and malformed requests	UNIMPLEMENTED
-S3 independent nine permanent credential source combinations	UNIMPLEMENTED
-S3 explicit path-style true and false	UNIMPLEMENTED
-S3 TLS default verification custom CA mTLS and replacement on restart	UNIMPLEMENTED
-Decimal capacity omitted versus zero small positive conversion	UNIMPLEMENTED
-Zero-cache stale disk nonuse unwritable directory restart remote refetch	UNIMPLEMENTED
-Positive-cache eviction and refetch data exceeds capacity	UNIMPLEMENTED
-Plaintext bypasses failing passphrase helper	github.com/djosh34/s3-smb/test/e2e/TestRecovery/plaintext
-Recovery after crash during observed S3 writes	UNIMPLEMENTED
-Partial remote initialization and failed listing never format	UNIMPLEMENTED
-Wrong secrets missing corrupt key metadata and data fail without regeneration	UNIMPLEMENTED
-Missing data returns explicit SMB read error	UNIMPLEMENTED
-Full staging gzip-finalization failure preserves prior recoverable point	UNIMPLEMENTED
-Backup timestamp collision backward clock lost response never overwrites	UNIMPLEMENTED
-Scheduled backup fail-stop and stuck overdue protection	UNIMPLEMENTED
-Suspension cleanup race trash aliases retirement and queued deletion guards	UNIMPLEMENTED
-SQLite effective FULL and synchronization-error propagation	UNIMPLEMENTED
-Permission ownership warnings readable secrets still work	UNIMPLEMENTED
-JSON both streams synthetic secrets helper config SQL xattr failures	UNIMPLEMENTED
-Stalled native I/O bounded process shutdown	UNIMPLEMENTED
-Cold warm list write export memory staging duration measurements	UNIMPLEMENTED
-Representative deliberate-failure artifact collection	UNIMPLEMENTED
+SMB read-only rejects mutations	github.com/djosh34/s3-smb/test/e2e/TestReadOnly
+Native directories attributes files	github.com/djosh34/s3-smb/internal/smbfs/TestNativeIOAndAttributes
+Native rename links stale handles	github.com/djosh34/s3-smb/internal/smbfs/TestLinksRenameAndStaleHandles
+Native directory cursor restart	github.com/djosh34/s3-smb/internal/smbfs/TestDirectoryCursorRestart
+Native lock conflicts cancellation close	github.com/djosh34/s3-smb/internal/smbfs/TestNativeLocksCancellationAndClose
+Native readonly locks	github.com/djosh34/s3-smb/internal/smbfs/TestNativeReadOnlyLocksAndClose
+SMB wire signing rejects tampering and unsigned packets	github.com/djosh34/s3-smb/internal/smb2/server/TestSigningRejectsTamperedAndUnsignedWire
+SMB wire native errors over TCP	github.com/djosh34/s3-smb/internal/smb2/server/TestNativeErrorsOverTCP
+SMB wire write-through flush close xattr error statuses	github.com/djosh34/s3-smb/internal/smb2/server/TestDurabilityWireErrors
+SMB write-through CREATE and zero writes	github.com/djosh34/s3-smb/internal/smb2/server/TestWriteThroughCreateOptionAndZeroWrite
+SMB wire malformed writes	github.com/djosh34/s3-smb/internal/smb2/server/TestMalformedWriteWireStatus
+SMB wire malformed compound disconnect	github.com/djosh34/s3-smb/internal/smb2/server/TestMalformedCompoundDisconnectsWire
+SMB disconnect flushes closes handles	github.com/djosh34/s3-smb/internal/smb2/server/TestDisconnectFlushesAndClosesHandles
+Native flush-close upload failures	github.com/djosh34/s3-smb/internal/smbfs/TestNativeSyncFlushCloseFailure
+SMB-to-MinIO directory attributes rename truncate listing delete	github.com/djosh34/s3-smb/test/e2e/TestFilesystemOperations
+SMB-to-MinIO signed native byte range locks	github.com/djosh34/s3-smb/internal/smb2/server/TestMinIOSMBNativeByteRangeLocks
+SMB-to-MinIO resource fork offset resize prefix preservation 64KiB errors cold recovery	github.com/djosh34/s3-smb/test/e2e/TestResourceForkOffsetsAndResize
+Native resource fork ranged wire writes	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkRangedWriteWire
+Native resource fork offsets over TCP	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkOffsetOverTCP
+Native resource fork range errors	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkRangeErrors
+Native resource fork resize preserves data	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkResizePreservesData
+Native resource fork resize bounds before mutation	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkResizeBoundsBeforeMutation
+Native resource fork open failure preserves old value	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkOpenErrorDoesNotOverwrite
+Native resource fork maximum and missing value	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkNativeMaximumAndMissing
+Native resource fork mutations serialize across sessions	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkMutationsSerializeAcrossSessions
+Native resource fork concurrent sessions over TCP	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkConcurrentSessionsOverTCP
+Native EOF failure never returns success	github.com/djosh34/s3-smb/internal/smb2/server/TestEndOfFileFailureIsNotSuccess
+MinIO nine credential sources startup snapshots	github.com/djosh34/s3-smb/test/credentials/TestCredentialAcceptance/nine_sources_startup_only
+Passphrase helper enabled and disabled execution	github.com/djosh34/s3-smb/test/credentials/TestCredentialAcceptance/passphrase_helper_execution
+Secret ownership permissions warnings real MinIO text JSON	github.com/djosh34/s3-smb/test/credentials/TestCredentialAcceptance/existing_modes_and_owner_warn_only
+Helper failure privacy and no fallback text JSON	github.com/djosh34/s3-smb/test/credentials/TestCredentialAcceptance/helper_failures_private_no_fallback
+MinIO path-style true CA	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/path_style_true/private_ca
+MinIO path-style true mTLS	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/path_style_true/mutual_tls
+MinIO path-style false CA	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/path_style_false/private_ca
+MinIO path-style false mTLS	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/path_style_false/mutual_tls
+MinIO wrong CA rejected	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/wrong_ca
+MinIO private CA not trusted by default	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/untrusted_private_ca
+MinIO missing mTLS client cert rejected	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/missing_client_certificate
+MinIO CA replacement requires restart snapshot	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/ca_replacement_requires_new_snapshot
+MinIO explicit HTTP	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/explicit_http
+MinIO static session token	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/static_session_token
+MinIO missing static session token rejected	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/session_token_fail_closed/missing
+MinIO wrong static session token rejected	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/session_token_fail_closed/invalid
+MinIO credential sources value-value	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/value_value
+MinIO credential sources value-file	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/value_file
+MinIO credential sources value-command	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/value_command
+MinIO credential sources file-value	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/file_value
+MinIO credential sources file-file	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/file_file
+MinIO credential sources file-command	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/file_command
+MinIO credential sources command-value	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/command_value
+MinIO credential sources command-file	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/command_file
+MinIO credential sources command-command	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/credential_sources/command_command
+MinIO invalid credentials fail	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/invalid_static_credentials
+MinIO caller deadline	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/caller_deadline
+Decimal omitted zero small positive conversion	github.com/djosh34/s3-smb/internal/config/TestSizeDecimalOmittedZeroSmallPositive
+Native byte capacity interface	github.com/djosh34/s3-smb/internal/storage/TestCacheConfig
+Native zero stale-cache nonuse unwritable directory cold read	github.com/djosh34/s3-smb/internal/storage/TestZeroCacheColdRead
+MinIO nonzero eviction refetch data exceeds cache cold complete hashes	github.com/djosh34/s3-smb/test/cache/TestMinIOPositiveDiskCache
+MinIO zero-cache unusable disk path cold full hashes	github.com/djosh34/s3-smb/test/e2e/TestZeroCacheUnusableDirectory
+MinIO native bootstrap lost upload response and zero cache upload interruption	github.com/djosh34/s3-smb/internal/storage/TestMinIOBootstrapLostResponse
+Plaintext SMB cold recovery after crash during observed S3 writes	github.com/djosh34/s3-smb/test/e2e/TestCrashDuringChunkPut/plaintext
+Encrypted SMB cold recovery after crash during observed S3 writes	github.com/djosh34/s3-smb/test/e2e/TestCrashDuringChunkPut/encrypted
+Actual daemon scheduled metadata backup failure stops writable serving	github.com/djosh34/s3-smb/test/e2e/TestScheduledBackupFailure
+Native partial local state never treated as absent	github.com/djosh34/s3-smb/internal/app/TestLocalMetadataNeverTreatsPartialStateAsAbsent
+Native missing marker requires validated backup	github.com/djosh34/s3-smb/internal/app/TestMissingMarkerRequiresValidatedNativeBackup
+Native key wrong secrets missing corrupt mode mismatch	github.com/djosh34/s3-smb/internal/storage/TestVolumeKeyFailureAndMode
+Native PKCS8 authenticated profile bounds	github.com/djosh34/s3-smb/internal/storage/TestProtectedKeyProfile
+Native corrupt backup fails without fallback	github.com/djosh34/s3-smb/internal/backup/TestInspectCorruptionDoesNotFallback
+Actual MinIO partial remote initialization never reformats	github.com/djosh34/s3-smb/test/e2e/TestStartupRejectsPartialRemoteState
+Actual MinIO failed listing never establishes empty state	github.com/djosh34/s3-smb/test/e2e/TestStartupListingFailuresAreNotEmpty
+Actual MinIO missing corrupt key backup wrong secrets mode mismatch no fallback	github.com/djosh34/s3-smb/test/e2e/TestStartupRejectsBrokenRecovery
+Actual MinIO identity absent recovery preserves current connection config	github.com/djosh34/s3-smb/test/e2e/TestIdentityMissingRecoveryUsesCurrentConfig
+Read-only cold recovery full hashes no remote mutation	github.com/djosh34/s3-smb/test/e2e/TestReadOnlyColdRecoveryDoesNotMutateS3
+Missing S3 referenced data returns explicit SMB response error not empty success	github.com/djosh34/s3-smb/test/e2e/TestMissingDataIsSMBError
+Native full staging never uploads	github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs/TestBackupStagingFailureNeverUploads
+Native gzip finalization failure	github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs/TestBackupGzipFinalizationError
+Native private staging readback	github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs/TestNativeBackupPrivateStagingAndReadback
+Native timestamp collision backward clocks ambiguous upload	github.com/djosh34/s3-smb/internal/backup/TestBackupCollisionBackwardClockAndAmbiguousUpload
+Native bounded retries preserve receipt	github.com/djosh34/s3-smb/internal/backup/TestBackupRetriesAreBoundedAndPreserveReceipt
+Native scheduled failure and suspension	github.com/djosh34/s3-smb/internal/backup/TestBackupScheduledFailureAndSuspension
+Native stuck export joined	github.com/djosh34/s3-smb/internal/backup/TestBackupTimeoutWaitJoinsNativeExport
+Native trash aliases handles protect exported data	github.com/djosh34/s3-smb/internal/smbfs/TestTrashHandlePreservesExportedData
+Native retirement gate	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestNativeRetirementGate
+Native queued deletion suspension	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestQueuedNativeDeletionAfterSuspension
+SQLite effective FULL every connection	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteFullEveryConnection
+SQLite real commit I/O failure propagates	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteCommitIOFailurePropagates
+Expired protection blocks native bulk trash retirement	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSecurityReviewExpiredTrashBatchRetirement
+Read-only orphan locks cleared after authority crash recovery	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestReadOnlyOrphanLocksCrashRecovery
+Abandoned native recovery staging cleanup leaves unknown files	github.com/djosh34/s3-smb/internal/backup/TestCleanupRecoveryStagingLeavesUnknownFiles
+SQLite concurrent consistent export	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteExportConsistentDuringMutation
+SQLite export panic does not leak	github.com/djosh34/s3-smb/internal/juicefs/pkg/meta/TestSQLiteExportPanicDoesNotLeak
+Logging levels formats redaction	github.com/djosh34/s3-smb/internal/logging/TestFormatsLevelsAndRedaction
+Native fatal panic preserved	github.com/djosh34/s3-smb/internal/logging/TestNativeTermination
+Native SQL failure no arguments	github.com/djosh34/s3-smb/internal/thirdparty/xorm/TestSQLFailureAndExplicitSessionShowSQL
+SMB xattr resource fork payload never logged	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkPayloadNeverLogged
+Actual daemon JSON both streams synthetic marker absence both modes	github.com/djosh34/s3-smb/test/e2e/TestRecovery
+Actual stalled native I/O bounded process shutdown	github.com/djosh34/s3-smb/test/e2e/TestStalledIOBoundedShutdown
+Basic cold warm listing write and metadata export process RSS completed staging bytes durations	github.com/djosh34/s3-smb/test/e2e/TestSMBMeasurements
+Real deliberate-failure artifacts and labeled disposable volume retained validated	github.com/djosh34/s3-smb/test/harness/TestFailureArtifacts

@@ -71,7 +71,17 @@ roots/client certificates are a startup snapshot and never modify OS trust.
 publication-fault, native object encryption, decimal/zero cache, cold native
 file-backed reads, failed uploads, and final deletion-guard regressions. Fixture
 publication faults are **not** proof of real S3 lost-response behavior. The native
-file-backed zero tests are **not** MinIO/SMB acceptance. Transport acceptance and
-SMB-to-MinIO suites use the shared Docker entrypoint; see `test/transport` and the
-release evidence for exact executed outcomes. No power-loss or Mac acceptance is
-implied by these unit tests.
+file-backed zero tests are **not** MinIO/SMB acceptance.
+
+`TestMinIOBootstrapLostResponse` additionally runs in the shared Docker unit/race
+phases (`scripts/test-linux.sh unit ./internal/storage`): a proxy closes the
+connection after a real MinIO key PUT succeeds. Production bootstrap must resolve
+exact readback without replacing the key. It tests actual conditional collision,
+native encrypted reopen, wrong/corrupt/missing key failure without mutation, and
+zero-cache chunk upload-response loss returning failure while earlier completed
+data remains readable from a cold native store. This does not simulate a partially
+received upload body or host power failure.
+
+Transport acceptance and SMB-to-MinIO suites use the shared Docker entrypoint;
+see `test/transport` and the release evidence for exact executed outcomes. No
+power-loss or Mac acceptance is implied by these tests.

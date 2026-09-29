@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -95,6 +96,47 @@ func Inspect(ctx context.Context, blob object.ObjectStorage, key string) (*meta.
 	}
 	f, err := inspectReader(r)
 	return f, errors.Join(err, r.Close(), ctx.Err())
+}
+
+// CleanupRecoveryStaging removes abandoned application recovery directories.
+// Caller MUST hold the exclusive state lock, with no recovery worker alive.
+// Unknown contents and symlinks are never traversed or removed.
+func CleanupRecoveryStaging(stateDir string) error {
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return err
+	}
+	known := map[string]bool{"selected.json.gz": true, "metadata.db": true, "metadata.db-wal": true, "metadata.db-shm": true}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".s3-smb-recovery-") {
+			continue
+		}
+		dir := filepath.Join(stateDir, entry.Name())
+		files, err := os.ReadDir(dir)
+		if err != nil {
+			return err
+		}
+		owned := true
+		for _, file := range files {
+			if !known[file.Name()] || !file.Type().IsRegular() {
+				owned = false
+				break
+			}
+		}
+		if !owned {
+			slog.Warn("unknown recovery staging contents left untouched")
+			continue
+		}
+		for _, file := range files {
+			if err = os.Remove(filepath.Join(dir, file.Name())); err != nil {
+				return err
+			}
+		}
+		if err = os.Remove(dir); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Recover imports precisely the selected point into private, fresh SQLite. It

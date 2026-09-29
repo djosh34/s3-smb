@@ -1340,6 +1340,23 @@ func (f *File) Pread(ctx meta.Context, b []byte, offset int64) (n int, err error
 }
 
 func (f *File) pread(ctx meta.Context, b []byte, offset int64) (n int, err error) {
+	// s3-smb: File.info is an open-time snapshot. Refresh regular native
+	// inodes while holding File.Lock (both callers do), including another
+	// handle's buffered writer, before using that snapshot to bound a read.
+	// Synthetic internal files retain their generated data/attributes.
+	if !vfs.IsSpecialNode(f.inode) {
+		if eno := f.fs.writer.Flush(ctx, f.inode); eno != 0 {
+			return 0, eno
+		}
+		var attr Attr
+		if eno := f.fs.m.GetAttr(ctx, f.inode, &attr); eno != 0 {
+			return 0, eno
+		}
+		f.info.attr = &attr
+		if f.rdata != nil && f.rdata.GetLength() != attr.Length {
+			f.fs.reader.Truncate(f.inode, attr.Length)
+		}
+	}
 	if offset >= f.info.Size() {
 		return 0, io.EOF
 	}
@@ -1349,13 +1366,6 @@ func (f *File) pread(ctx meta.Context, b []byte, offset int64) (n int, err error
 	if f.data != nil {
 		n := copy(b, f.data[offset:])
 		return n, nil
-	}
-	if f.wdata != nil {
-		eno := f.wdata.Flush(ctx)
-		if eno != 0 {
-			err = eno
-			return
-		}
 	}
 	if f.rdata == nil {
 		f.rdata = f.fs.reader.Open(f.inode, uint64(f.info.Size()))

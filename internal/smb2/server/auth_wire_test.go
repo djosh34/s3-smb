@@ -185,9 +185,14 @@ func TestSigningRejectsTamperedAndUnsignedWire(t *testing.T) {
 			wire := append([]byte(nil), c.received...)
 			c.mu.Unlock()
 			for len(wire) >= 4 {
-				n := int(binary.BigEndian.Uint32(wire[:4])); if len(wire) < 4+n { break }
-				p := PacketCodec(wire[4:4+n])
-				if p.Command() == SMB2_TREE_CONNECT && p.Status() == 0 { t.Fatal("invalid request reached TREE_CONNECT: successful wire response") }
+				n := int(binary.BigEndian.Uint32(wire[:4]))
+				if len(wire) < 4+n {
+					break
+				}
+				p := PacketCodec(wire[4 : 4+n])
+				if p.Command() == SMB2_TREE_CONNECT && p.Status() == 0 {
+					t.Fatal("invalid request reached TREE_CONNECT: successful wire response")
+				}
 				wire = wire[4+n:]
 			}
 		})

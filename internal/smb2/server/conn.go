@@ -199,7 +199,11 @@ func (conn *conn) encodePacket(req Packet, tc *treeConn, ctx context.Context) ([
 		}
 	}
 
-	pkt := make([]byte, req.Size())
+	size := req.Size()
+	if hdr.NextCommand != 0 {
+		size = Align(size, 8)
+	}
+	pkt := make([]byte, size)
 
 	req.Encode(pkt)
 
@@ -267,26 +271,46 @@ func (conn *conn) runReciever() {
 		var isEncrypted bool
 		if hasSession {
 			pkt, encryptedSession, e, isEncrypted = conn.tryDecrypt(pkt)
-			if e != nil { err = e; goto exit }
+			if e != nil {
+				err = e
+				goto exit
+			}
 		}
 		packets, e := splitRequests(pkt)
-		if e != nil { err = e; goto exit }
+		if e != nil {
+			err = e
+			goto exit
+		}
 		var compCtx *compoundContext
 		if len(packets) > 1 {
 			first := PacketCodec(packets[0])
-			compCtx = &compoundContext{treeId:uint64(first.TreeId()), sessionId:first.SessionId(), lastMsgId:PacketCodec(packets[len(packets)-1]).MessageId()}
+			compCtx = &compoundContext{treeId: uint64(first.TreeId()), sessionId: first.SessionId(), lastMsgId: PacketCodec(packets[len(packets)-1]).MessageId()}
 		}
 		var reqSession *session
 		for _, part := range packets {
 			p := PacketCodec(part)
 			if hasSession {
-				if p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS == 0 { reqSession = conn.lookupSession(p.SessionId()) }
-				if encryptedSession != nil && reqSession != encryptedSession { err = &InvalidRequestError{"encrypted session mismatch"}; goto exit }
+				if p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS == 0 {
+					reqSession = conn.lookupSession(p.SessionId())
+				}
+				if encryptedSession != nil && reqSession != encryptedSession {
+					err = &InvalidRequestError{"encrypted session mismatch"}
+					goto exit
+				}
 				isSessionlessEcho := p.Command() == SMB2_ECHO && p.SessionId() == 0 && p.Flags()&SMB2_FLAGS_SIGNED == 0
-				if reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && !isSessionlessEcho { err = &InvalidRequestError{"unknown session id"}; goto exit }
-				if e = conn.tryVerify(part, reqSession, isEncrypted); e != nil { err = e; goto exit }
+				if reqSession == nil && p.Command() != SMB2_NEGOTIATE && p.Command() != SMB2_SESSION_SETUP && !isSessionlessEcho {
+					err = &InvalidRequestError{"unknown session id"}
+					goto exit
+				}
+				if e = conn.tryVerify(part, reqSession, isEncrypted); e != nil {
+					err = e
+					goto exit
+				}
 			}
-			if e = conn.tryHandle(part, reqSession, compCtx, nil); e != nil { err = e; goto exit }
+			if e = conn.tryHandle(part, reqSession, compCtx, nil); e != nil {
+				err = e
+				goto exit
+			}
 		}
 	}
 
@@ -430,7 +454,9 @@ func (conn *conn) tryVerify(pkt []byte, s *session, isEncrypted bool) error {
 	// splitRequests rejects a related leading request; signatures still cover
 	// the original bytes, not a rewritten effective-session header.
 	matchesSession := s != nil && (s.sessionId == p.SessionId() || (p.Flags()&SMB2_FLAGS_RELATED_OPERATIONS != 0 && p.SessionId() == ^uint64(0)))
-	if s != nil && !matchesSession { return &InvalidResponseError{"unknown session id returned"} }
+	if s != nil && !matchesSession {
+		return &InvalidResponseError{"unknown session id returned"}
+	}
 	if p.Flags()&SMB2_FLAGS_SIGNED != 0 {
 		if !matchesSession {
 			return &InvalidResponseError{"unknown session id returned"}

@@ -232,6 +232,11 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
+		// Only confirmed recovery may remove abandoned application staging;
+		// the helper leaves unknown files and symlinks untouched.
+		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
+			return fmt.Errorf("clean abandoned recovery staging: %w", err)
+		}
 		// Native SQLite import is synchronous and cannot be interrupted by a
 		// context. Terminate the process, retaining the lock, if it gets stuck.
 		recoveryTimer := time.AfterFunc(backupTimeout+shutdownTimeout, hardExit)
@@ -279,6 +284,17 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 				return err
 			}
 		}
+	}
+	if !recovered {
+		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
+			return fmt.Errorf("clean abandoned recovery staging: %w", err)
+		}
+	}
+	// Read-only sessions use sid 0 for advisory locks. The OS authority lock
+	// proves their prior process is gone; clear only those orphan lock rows,
+	// for both writable and read-only startup, before any session or SMB work.
+	if err = meta.ClearOrphanLocks(r.metadata); err != nil {
+		return fmt.Errorf("clear orphan native advisory locks: %w", err)
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
