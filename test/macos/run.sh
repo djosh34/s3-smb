@@ -23,7 +23,12 @@ else
 fi
 mkdir -m 700 "$MAC_WORK" "$MAC_ARTIFACTS"
 exec 3>&1 4>&2
-exec > "$MAC_ARTIFACTS/entrypoint.log" 2>&1
+# Stream the existing stage events to Actions as well as the retained log.
+# A tracked tee child is drained before artifact hashing (also on Bash 3.2).
+mkfifo "$MAC_WORK/entrypoint.pipe"
+tee "$MAC_ARTIFACTS/entrypoint.log" < "$MAC_WORK/entrypoint.pipe" &
+log_pid=$!
+exec > "$MAC_WORK/entrypoint.pipe" 2>&1
 record_exit() {
   local rc=$?
   printf '%s\n' "$rc" > "$MAC_ARTIFACTS/exit-status"
@@ -35,6 +40,11 @@ record_exit() {
   # No evidence writers remain after build supervision/native cleanup. Close
   # this log too before hashing it. Handoff errors remain in the Actions log.
   exec 1>&3 2>&4
+  if ! wait "$log_pid"; then
+    rc=1
+    printf '1\n' > "$MAC_ARTIFACTS/exit-status"
+  fi
+  rm "$MAC_WORK/entrypoint.pipe"
   if ! sudo -n "$(command -v python3)" "$repo/test/macos/artifacts.py" handoff \
        "$MAC_ARTIFACTS" "$(id -u)" "$(id -g)"; then
     rc=1

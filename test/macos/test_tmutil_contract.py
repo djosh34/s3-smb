@@ -98,7 +98,7 @@ class TmutilContract(unittest.TestCase):
             a.share = Path(directory) / 'smb'
             a.cmd = Mock()
             a.mount_share()
-            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', a.share])
+            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1:1445/TimeMachine', a.share])
 
     def test_password_control_uses_same_explicit_synthetic_password(self):
         import plistlib
@@ -111,8 +111,8 @@ class TmutilContract(unittest.TestCase):
             a.save = Mock()
             a.mount_share()
             a.configure_destination()
-            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:synthetic-tm-control@127.0.0.1/TimeMachine', a.share])
-            a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:synthetic-tm-control@127.0.0.1/TimeMachine'])
+            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine', a.share])
+            a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine'])
             a.cmd.set_destination_empty_password.assert_not_called()
             self.assertEqual(a.destination, 'control-destination')
 
@@ -124,7 +124,7 @@ class TmutilContract(unittest.TestCase):
         a.cmd.run.return_value = (plistlib.dumps({'Destinations': [{'ID': 'test-destination'}]}).decode(), 0)
         a.save = Mock()
         a.configure_destination()
-        a.cmd.set_destination_empty_password.assert_called_once_with('smb://timemachine@127.0.0.1/TimeMachine')
+        a.cmd.set_destination_empty_password.assert_called_once_with('smb://timemachine@127.0.0.1:1445/TimeMachine')
         self.assertEqual(a.destination, 'test-destination')
 
     def test_destination_empty_dict_is_native_rejection_not_schema_error(self):

@@ -23,6 +23,10 @@ EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
 HOME = Path(os.environ['MAC_RUNNER_HOME']).resolve()
 BIN = Path(os.environ['MAC_BIN']).resolve()
 TRANSFER = Path(os.environ.get('MAC_TRANSFER', str(WORK / 'transfer'))).resolve()
+# Apple SMBClient explicitly permits local servers on nonstandard SMB ports;
+# its NetFS path rejects local 139/445 by default (unlike mount_smbfs).
+SMB_PORT = 1445
+SMB_SERVER = f'127.0.0.1:{SMB_PORT}'
 
 
 class Acceptance:
@@ -98,7 +102,7 @@ class Acceptance:
 
     def start_services(self, fresh):
         import socket
-        for port in (445, 19000, 19001, 19002, 19003):
+        for port in (SMB_PORT, 19000, 19001, 19002, 19003):
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', port))
         # Public synthetic values only: this isolated loopback fixture has no
@@ -144,7 +148,7 @@ class Acceptance:
         self.local.mkdir(mode=0o700, exist_ok=False)
         config = self.local / 'config.yaml'
         config.write_text(f'''smb:
-  listen: 127.0.0.1:445
+  listen: {SMB_SERVER}
   share: TimeMachine
   username: timemachine
   password: "{self.password}"
@@ -176,7 +180,7 @@ logging:
 
     def mount_share(self):
         self.share.mkdir(exist_ok=True)
-        self.cmd.run(['/sbin/mount_smbfs', '-N', f'//timemachine:{self.password}@127.0.0.1/TimeMachine', self.share])
+        self.cmd.run(['/sbin/mount_smbfs', '-N', f'//timemachine:{self.password}@{SMB_SERVER}/TimeMachine', self.share])
         self.cmd.run(['/usr/bin/smbutil', 'statshares', '-a'])
         self.cmd.run(['/sbin/mount'])
 
@@ -185,9 +189,9 @@ logging:
             # Explicit independently labelled positive control, not a fallback
             # after failed empty-password authentication in this run.
             output, _ = self.cmd.run(['/usr/bin/tmutil', 'setdestination',
-                                     f'smb://timemachine:{self.password}@127.0.0.1/TimeMachine'])
+                                     f'smb://timemachine:{self.password}@{SMB_SERVER}/TimeMachine'])
         else:
-            output = self.cmd.set_destination_empty_password('smb://timemachine@127.0.0.1/TimeMachine')
+            output = self.cmd.set_destination_empty_password(f'smb://timemachine@{SMB_SERVER}/TimeMachine')
         if 'The backup destination could not be set.' in output:
             raise RuntimeError('tmutil reported the backup destination could not be set despite exit 0')
         text, _ = self.cmd.run(['/usr/bin/tmutil', 'destinationinfo', '-X'])
@@ -265,7 +269,7 @@ logging:
         devices = list(self.attachments)
         for image in plistlib.loads(info.encode()).get('images', []):
             path = image.get('image-path', '')
-            owned = path.startswith(str(self.share) + '/') or '/127.0.0.1/' in path
+            owned = path.startswith(str(self.share) + '/') or '/127.0.0.1/' in path or f'/{SMB_SERVER}/' in path
             if path.endswith('.sparsebundle') and owned:
                 entries = [e['dev-entry'] for e in image.get('system-entities', []) if 'dev-entry' in e]
                 if entries and entries[0] not in devices:
@@ -275,11 +279,11 @@ logging:
         self.attachments.clear()
         mounts, _ = self.cmd.run(['/sbin/mount'])
         for line in mounts.splitlines():
-            if '(smbfs' in line and '127.0.0.1/TimeMachine on ' in line:
+            if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line:
                 mountpoint = line.split(' on ', 1)[1].split(' (', 1)[0]
                 self.cmd.run(['/sbin/umount', mountpoint], timeout=120)
         remaining, _ = self.cmd.run(['/sbin/mount'])
-        if any('(smbfs' in line and '127.0.0.1/TimeMachine' in line for line in remaining.splitlines()):
+        if any('(smbfs' in line and f'{SMB_SERVER}/TimeMachine' in line for line in remaining.splitlines()):
             raise RuntimeError('task SMB mount remains')
 
     def remote_backup(self, label, identifier=None, inherit=False):
@@ -468,8 +472,8 @@ logging:
             attempt('service log close', log.close)
         for argv in (['/usr/bin/tmutil', 'status'], ['/sbin/mount'],
                      ['/usr/bin/hdiutil', 'info', '-plist'], ['/bin/df', '-k'],
-                     ['/usr/bin/log', 'show', '--style', 'json', '--last', '6h',
-                      '--predicate', 'process == "backupd" OR process == "backupd-helper"']):
+                     ['/usr/bin/log', 'show', '--style', 'json', '--last', '6h', '--info', '--debug',
+                      '--predicate', 'process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb"']):
             try:
                 self.cmd.run(argv, timeout=90, diagnostic=True, capture=False)
             except Exception as error:

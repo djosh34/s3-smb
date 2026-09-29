@@ -181,6 +181,7 @@ class Lifecycle(unittest.TestCase):
         with patch.object(acceptance, 'Daemon', return_value=Mock(pid=42)):
             instance.start_daemon('initialize')
         self.assertIn('password: "synthetic-tm-control"', (instance.local / 'config.yaml').read_text())
+        self.assertIn('listen: 127.0.0.1:1445', (instance.local / 'config.yaml').read_text())
         event = json.loads((self.base / 'acceptance.jsonl').read_text())
         self.assertEqual(event['scenario'], 'password-control')
 
@@ -205,6 +206,15 @@ class Lifecycle(unittest.TestCase):
         self.a.cmd.run.assert_called_once()
         self.a.remote_backup.assert_called_once_with('normal', 'baseline', inherit=True)
         self.assertEqual((self.base / 'tree-differences.jsonl').read_text(), '')
+
+    def test_detach_task_mount_with_explicit_smb_port(self):
+        import plistlib
+        mountpoint = str(self.work / 'smb')
+        mounted = f'//timemachine@127.0.0.1:1445/TimeMachine on {mountpoint} (smbfs, nodev)\n'
+        self.a.cmd.run.side_effect = [(plistlib.dumps({'images': []}).decode(), 0),
+                                     (mounted, 0), ('', 0), ('', 0)]
+        self.a.detach_clients()
+        self.a.cmd.run.assert_any_call(['/sbin/umount', mountpoint], timeout=120)
 
     def test_normal_run_does_not_include_crash(self):
         self.a.backup_phase = Mock(return_value='backup')
