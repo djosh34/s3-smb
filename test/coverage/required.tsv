@@ -60,7 +60,10 @@ MinIO invalid credentials fail	github.com/djosh34/s3-smb/internal/storage/TestTr
 MinIO caller deadline	github.com/djosh34/s3-smb/internal/storage/TestTransportAcceptance/caller_deadline
 Decimal omitted zero small positive conversion	github.com/djosh34/s3-smb/internal/config/TestSizeDecimalOmittedZeroSmallPositive
 Native byte capacity interface	github.com/djosh34/s3-smb/internal/storage/TestCacheConfig
-Native zero stale-cache nonuse unwritable directory cold read	github.com/djosh34/s3-smb/internal/storage/TestZeroCacheColdRead
+Native zero unusable cache directory cold read	github.com/djosh34/s3-smb/internal/storage/TestZeroCacheColdRead
+MinIO zero ignores intact previously populated disk cache across process restart	github.com/djosh34/s3-smb/test/cache/TestMinIOZeroCacheIgnoresPopulatedDiskCache
+Resource fork short offset EOF and native read errors	github.com/djosh34/s3-smb/internal/smb2/server/TestResourceForkReadRangesAndErrors
+Apple default information stream ranged reads and genuine native errors	github.com/djosh34/s3-smb/internal/smb2/server/TestAppleInformationDefaultRangedRead
 MinIO nonzero eviction refetch data exceeds cache cold complete hashes	github.com/djosh34/s3-smb/test/cache/TestMinIOPositiveDiskCache
 MinIO zero-cache unusable disk path cold full hashes	github.com/djosh34/s3-smb/test/e2e/TestZeroCacheUnusableDirectory
 MinIO native bootstrap lost upload response and zero cache upload interruption	github.com/djosh34/s3-smb/internal/storage/TestMinIOBootstrapLostResponse

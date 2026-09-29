@@ -50,6 +50,28 @@ Reviewed `abfb2192185b567346889beb5a1ebf758726c969` against the same base, in an
 - **Batch trash retirement — accepted; same fix.** This reviewer executed the actual native `emptyDir` path and observed metadata retirement with zero protection callbacks. This proves the metadata guard omission, not S3 block deletion.
 - No additional concrete cryptographic/bootstrap vulnerability was found in source inspection. That is not a substitute for executed native-parser, MinIO, or full recovery tests.
 
+## Stage 3: Linux acceptance harness, documentation and final deltas
+
+Reviewed immutable candidate `b99973b38f16ae23ec3d1618e15f8966d6b97c63`.
+
+### Standards
+
+[Full report](implementation-stage3-standards.md).
+
+- **Resource-fork READ ignores offsets and EOF — accepted.** The actual signed SMB/MinIO test repeated the stream contents and eventually returned a permission error. Fix bounded native-value reads, slice by the requested offset/length, return EOF correctly, and propagate native errors. Preserve the default absent Apple information stream without hiding I/O failures. The original complete-file E2E remains unchanged; short/offset/EOF/error regressions were added.
+
+### Spec
+
+[Full report](implementation-stage3-spec.md).
+
+- **Resource-fork ranged READ — accepted; same correction as Standards.** Candidate 1 correctly failed both E2E and its release coverage gate (1 of 104 required cases unproven); it was not promoted.
+- **Populated old-cache nonuse was not actually tested — accepted.** The earlier zero-cache tests used an unusable cache path, not a populated old native cache. A new MinIO/subprocess test first proves an intact positive cache satisfies reads with remote GET denied, then switches to explicit zero without deleting/changing that cache: denied remote reads must fail; allowed remote reads must verify the full hash. The old cache tree's names, modes, sizes, timestamps and bytes remain unchanged.
+
+### Other reviewed corrections and rejected proposals
+
+- Native file truncation errors and xattr lookup errors must not become successful destructive operations. Resource-fork resizing must preserve the existing prefix; all are covered by concrete failing-before regressions and narrow corrections.
+- An initial proposal to subtract an additional hour from accepted backup intervals was withdrawn after full call-path inspection showed native scheduled trash cleanup already adds two hours, covering hourly bucket rounding. Keep native policy and the existing strict `interval + budget < trash_days * 24h` relationship. Only the native arithmetic safety maximum of 106751 days was added, preventing `(24*days+2)*time.Hour` overflow.
+
 ## Verification still required
 
 Fixes above are tracked by their regression tests and owner evidence. Final fixed-revision reviewer confirmation, the complete frozen-revision local release suite, identical Linux CI, public installation, documentation/test review and actual hosted-Mac Time Machine acceptance remain separate gates. Do not interpret this disposition record as closing those gates.

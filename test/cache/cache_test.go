@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"math/rand"
 	"net/http"
 	"net/http/httptest"
@@ -110,6 +111,98 @@ func TestMinIOPositiveDiskCache(t *testing.T) {
 	assertGets(false)
 }
 
+// TestMinIOZeroCacheIgnoresPopulatedDiskCache keeps one real populated cache
+// tree across positive-to-zero restarts. A valid old cache cannot rescue a
+// zero-cache read when remote data GETs are denied.
+func TestMinIOZeroCacheIgnoresPopulatedDiskCache(t *testing.T) {
+	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
+	if endpoint == "" {
+		t.Skip("requires shared disposable MinIO: scripts/test-linux.sh unit ./test/cache")
+	}
+	upstream, err := url.Parse(endpoint)
+	if err != nil || upstream.Scheme != "http" || upstream.Host == "" {
+		t.Fatal("expected shared disposable HTTP MinIO endpoint")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	proxy := httputil.NewSingleHostReverseProxy(upstream)
+	var mu sync.Mutex
+	var deny bool
+	var denied, gets int
+	proxy.ModifyResponse = func(r *http.Response) error {
+		if r.Request.Method == http.MethodGet && strings.Contains(r.Request.URL.Path, "/chunks/") && (r.StatusCode == 200 || r.StatusCode == 206) {
+			mu.Lock()
+			gets++
+			mu.Unlock()
+		}
+		return nil
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		blocked := deny && r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/chunks/")
+		if blocked {
+			denied++
+		}
+		mu.Unlock()
+		if blocked {
+			w.Header().Set("Content-Type", "application/xml")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = io.WriteString(w, `<Error><Code>AccessDenied</Code><Message>cache acceptance injected denial</Message></Error>`)
+			return
+		}
+		proxy.ServeHTTP(w, r)
+	}))
+	defer server.Close()
+	state := t.TempDir()
+	bucket := "cache-zero-" + uuid.NewString()
+	worker := func(phase string) {
+		t.Helper()
+		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestCacheWorker$", "-test.v")
+		cmd.Env = append(os.Environ(), "S3_SMB_CACHE_PHASE="+phase, "S3_SMB_CACHE_SINGLE=1", "S3_SMB_CACHE_STATE="+state, "S3_SMB_CACHE_ENDPOINT="+server.URL, "S3_SMB_CACHE_BUCKET="+bucket, "GOMAXPROCS=2")
+		out, err := cmd.CombinedOutput()
+		t.Logf("retained-cache phase %s:\n%s", phase, out)
+		if err != nil {
+			t.Fatalf("retained-cache phase %s: %v", phase, err)
+		}
+	}
+	worker("write")
+	worker("cold") // Positive capacity populates native retained disk cache.
+	mu.Lock()
+	deny, denied, gets = true, 0, 0
+	mu.Unlock()
+	worker("cold") // Prove that exact old cache is valid even without remote GETs.
+	mu.Lock()
+	warmDenied, warmGets := denied, gets
+	mu.Unlock()
+	if warmDenied != 0 || warmGets != 0 {
+		t.Fatalf("valid positive cache unexpectedly requested remote data: denied=%d successful=%d", warmDenied, warmGets)
+	}
+	oldTree := retainedCacheTree(t, filepath.Join(state, "cache"))
+	t.Log("valid populated native disk cache survived positive-process exit; no remote GET needed")
+	worker("zero-denied")
+	mu.Lock()
+	blocked := denied
+	deny, gets = false, 0
+	mu.Unlock()
+	if blocked == 0 {
+		t.Fatal("zero-cache denied read never attempted remote data GET")
+	}
+	if !maps.Equal(oldTree, retainedCacheTree(t, filepath.Join(state, "cache"))) {
+		t.Fatal("explicit zero modified or replaced the retained positive cache tree")
+	}
+	worker("zero-cold")
+	mu.Lock()
+	fetched := gets
+	mu.Unlock()
+	if fetched == 0 {
+		t.Fatal("zero-cache successful full read did not fetch MinIO data")
+	}
+	if !maps.Equal(oldTree, retainedCacheTree(t, filepath.Join(state, "cache"))) {
+		t.Fatal("explicit zero changed old cache after successful remote read")
+	}
+	t.Logf("unchanged populated cache tree: explicit-zero denial failed after %d attempted GETs; allowed restart verified full hash with %d real MinIO GET responses", blocked, fetched)
+}
+
 // A subprocess entry point, not an independently skipped acceptance case.
 func TestCacheWorker(t *testing.T) {
 	phase := os.Getenv("S3_SMB_CACHE_PHASE")
@@ -119,6 +212,10 @@ func TestCacheWorker(t *testing.T) {
 	state := os.Getenv("S3_SMB_CACHE_STATE")
 	if state == "" {
 		t.Fatal("missing private cache-test state directory")
+	}
+	count := fileCount
+	if os.Getenv("S3_SMB_CACHE_SINGLE") == "1" {
+		count = 1
 	}
 	ctx := context.Background()
 	pathStyle := true
@@ -197,10 +294,14 @@ func TestCacheWorker(t *testing.T) {
 		t.Fatalf("decimal cache input %d: %v", parsed, err)
 	}
 	cacheBytes := int64(parsed)
-	cacheDir := filepath.Join(state, "cache")
+	zero := strings.HasPrefix(phase, "zero-")
+	if zero {
+		cacheBytes = 0
+	}
+	cacheDir := filepath.Join(state, "cache") // Intentionally unchanged for zero.
 	nativeConf, err := storage.CacheConfig(format, cacheDir, &cacheBytes)
-	if err != nil || nativeConf.CacheSize != uint64(capacity) || nativeConf.CacheDir == "memory" {
-		t.Fatalf("decimal capacity did not reach native disk-cache configuration: %v", err)
+	if err != nil || nativeConf.CacheSize != uint64(cacheBytes) || (nativeConf.CacheDir == "memory") != zero {
+		t.Fatalf("explicit capacity did not reach native cache configuration: %v", err)
 	}
 	runtime, err := storage.OpenFilesystem(m, blob, format, cacheDir, &cacheBytes, func() error { return fmt.Errorf("cache acceptance never permits destructive maintenance") })
 	if err != nil {
@@ -214,7 +315,7 @@ func TestCacheWorker(t *testing.T) {
 	mctx := meta.NewContext(1, 0, []uint32{0})
 	switch phase {
 	case "write":
-		for i := 0; i < fileCount; i++ {
+		for i := 0; i < count; i++ {
 			f, errno := runtime.FS.Create(mctx, fixtureName(i), 0600, 0)
 			if errno != 0 {
 				t.Fatal(errno)
@@ -232,7 +333,7 @@ func TestCacheWorker(t *testing.T) {
 		}
 		// Native full-block writes do not retain a cache entry unless
 		// CacheLargeWrite is enabled. Cache acceptance starts with reads.
-		t.Logf("wrote and fsynced %d files / %d bytes; retained disk capacity=%d bytes", fileCount, fileCount*fileSize, cacheBytes)
+		t.Logf("wrote and fsynced %d files / %d bytes; retained disk capacity=%d bytes", count, count*fileSize, cacheBytes)
 	case "evict":
 		slices := make([]meta.Slice, fileCount)
 		for i := range slices {
@@ -277,8 +378,24 @@ func TestCacheWorker(t *testing.T) {
 			t.Fatal("evicted object was not cached after refetch")
 		}
 		t.Logf("native pressure evicted file %d / slice %d; refetch SHA-256 verified", evicted, slices[evicted].Id)
-	case "cold":
-		for i := 0; i < fileCount; i++ {
+	case "zero-denied":
+		f, errno := runtime.FS.Open(mctx, fixtureName(0), 0)
+		if errno != 0 {
+			t.Fatal(errno)
+		}
+		n, readErr := f.Read(mctx, make([]byte, fileSize))
+		if errno := f.Close(mctx); errno != 0 {
+			t.Fatal(errno)
+		}
+		if readErr == nil || readErr == io.EOF || n != 0 {
+			t.Fatalf("zero-cache read served old cached data or empty success despite remote denial: n=%d err=%v", n, readErr)
+		}
+		if runtime.Store.UsedMemory() != 0 {
+			t.Fatal("explicit zero retained memory cache")
+		}
+		t.Logf("zero-cache native FS read correctly failed despite valid retained disk cache: %v", readErr)
+	case "cold", "zero-cold":
+		for i := 0; i < count; i++ {
 			f, errno := runtime.FS.Open(mctx, fixtureName(i), 0)
 			if errno != 0 {
 				t.Fatal(errno)
@@ -305,10 +422,60 @@ func TestCacheWorker(t *testing.T) {
 			}
 			t.Logf("cold restart complete file %d: %d bytes sha256=%x", i, total, want)
 		}
-		waitDisk(t, runtime.Store, cacheDir)
+		if zero {
+			if runtime.Store.UsedMemory() != 0 {
+				t.Fatal("explicit zero retained memory cache after remote read")
+			}
+		} else {
+			waitDisk(t, runtime.Store, cacheDir)
+		}
 	default:
 		t.Fatal("unknown cache worker phase")
 	}
+}
+
+// Snapshot only observes the old cache; zero-mode phases never delete, chmod,
+// replace or move it. Contents, names, modes, sizes and mtimes must survive.
+func retainedCacheTree(t *testing.T, dir string) map[string]string {
+	t.Helper()
+	tree := make(map[string]string)
+	blocks := 0
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		var sum [32]byte
+		if info.Mode().IsRegular() {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			sum = sha256.Sum256(data)
+			if strings.Contains(filepath.ToSlash(path), "/raw/chunks/") {
+				if info.Size() < fileSize {
+					return fmt.Errorf("retained native block is shorter than fixture")
+				}
+				blocks++
+			}
+		}
+		tree[rel] = fmt.Sprintf("%v:%d:%d:%x", info.Mode(), info.Size(), info.ModTime().UnixNano(), sum)
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocks != 1 {
+		t.Fatalf("expected one real populated native disk-cache block, found %d", blocks)
+	}
+	return tree
 }
 
 func fixtureName(i int) string { return fmt.Sprintf("/fixture-%02d", i) }

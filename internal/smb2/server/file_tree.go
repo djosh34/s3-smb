@@ -655,41 +655,32 @@ func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
 	return c.sendPacket(rsp, &t.treeConn, ctx)
 }
 
-func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf []byte, pkt []byte) error {
-	c := t.session.conn
-
-	status := uint32(0) //STATUS_END_OF_FILE
-	n, err := t.fs.Getxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, buf)
-
+func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf []byte, offset uint64, pkt []byte) error {
+	value, err := t.readXattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey)
+	// Preserve Apple's default information stream when it is absent/empty,
+	// without concealing genuine native I/O or permission failures.
+	if open.eaKey == "AFP_AfpInfo" && (errors.Is(err, missingXattrError) || (err == nil && len(value) == 0)) {
+		value = make([]byte, 60)
+		info := AfpInfo{Signature: [4]byte{'A', 'F', 'P', '_'}}
+		info.Encode(value)
+		err = nil
+	}
 	if err != nil {
-		status = uint32(STATUS_ACCESS_DENIED)
-	} else if n == 0 {
-		status = uint32(STATUS_END_OF_FILE)
+		return t.sendError(ctx, pkt, err)
 	}
-
-	if status != 0 {
-		// special cases for Apple
-		if open.eaKey == "AFP_AfpInfo" && len(buf) == 60 {
-			info := AfpInfo{
-				Signature: [4]byte{'A', 'F', 'P', '_'},
-				//Version:   [4]byte{0x00, 0x01, 0x00, 0x00},
-			}
-			info.Encode(buf)
-			n = 60
-			//t.fs.Setxattr(h, open.eaKey, buf)
-		} else {
-			rsp := new(ErrorResponse)
-			PrepareResponse(rsp.Header(), pkt, status)
-			return c.sendPacket(rsp, &t.treeConn, ctx)
-		}
+	if len(buf) != 0 && offset >= uint64(len(value)) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_END_OF_FILE))
+		return t.conn.sendPacket(rsp, &t.treeConn, ctx)
 	}
-
+	n := 0
+	if len(buf) != 0 {
+		n = copy(buf, value[int(offset):])
+	}
 	rsp := new(ReadResponse)
 	PrepareResponse(&rsp.PacketHeader, pkt, 0)
-	rsp.DataRemaining = 0
 	rsp.Data = buf[:n]
-	return c.sendPacket(rsp, &t.treeConn, ctx)
-
+	return t.conn.sendPacket(rsp, &t.treeConn, ctx)
 }
 
 func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
@@ -757,7 +748,7 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 	var err error
 
 	if open.isEa {
-		return t.readEA(ctx, fileId, open, buf, pkt)
+		return t.readEA(ctx, fileId, open, buf, r.Offset(), pkt)
 	}
 	if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), false) {
 		rsp := new(ErrorResponse)

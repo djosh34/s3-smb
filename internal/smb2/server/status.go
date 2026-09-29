@@ -15,7 +15,7 @@ func statusFromError(err error) NtStatus {
 		return STATUS_SUCCESS
 	case errors.Is(err, syscall.EBADF):
 		return STATUS_INVALID_HANDLE
-	case errors.Is(err, syscall.ENOENT):
+	case errors.Is(err, syscall.ENOENT), errors.Is(err, missingXattrError):
 		return STATUS_OBJECT_NAME_NOT_FOUND
 	case errors.Is(err, syscall.ENOTDIR):
 		return STATUS_NOT_A_DIRECTORY

@@ -1,0 +1,17 @@
+# Stage 3 — independent Spec review
+
+## Findings
+
+**P1 — Resource-fork reads repeat bytes instead of honoring offsets/EOF.** `internal/smb2/server/file_tree.go:658–667,759–760` routes named-stream reads through `Getxattr` without applying the SMB READ offset. Every subsequent read starts at byte zero; a buffer smaller than the whole attribute produces `ERANGE`, which becomes misleading `ACCESS_DENIED`. The final candidate's actual signed-SMB/MinIO `TestResourceForkOffsetsAndResize` reproduced this at `test/e2e/operations_test.go:115`: expected `abXYef`, received repeated `abXYef` followed by “permission denied.” The test never reached resize/cold-recovery assertions. This violates the contract's native file/resource-fork correctness and meaningful-error requirements; successful offset-WRITE unit tests do not establish readable streams. Read the attribute with its native size semantics, return the requested range, implement EOF, and preserve native error statuses. Keep the failing full-stream E2E assertion and rerun the complete frozen-revision release suite after correction.
+
+**P2 — Stale-cache nonuse is claimed but not exercised.** `test/coverage/required.tsv:63` labels `TestZeroCacheColdRead` as stale-cache evidence, but `internal/storage/runtime_test.go:74–78` creates a regular file, not a populated native cache. Likewise `test/e2e/operations_test.go:67–88` proves an unusable path is ignored, not that usable retained blocks from a previous positive-capacity run are ignored. Issue #27 explicitly requires stale-cache nonuse, separately from unusable-directory and cold-refetch cases. Extend the existing MinIO cache fixture with a positive-cache → process restart with zero-capacity phase, preserving populated cache entries; assert remote refetch and no stale successful read when the referenced remote object is unavailable. This is a demonstrated coverage omission, **not** a claim that the implementation currently consults stale blocks.
+
+## Evidence and boundaries
+
+Reviewed clean ordinary clone `/tmp/s3-smb-acceptance-candidate1`, **b99973b38f16ae23ec3d1618e15f8966d6b97c63**. Examined final `abfb219...HEAD` and overall `f408f1a...HEAD` scoped diffs; `git log f408f1a..HEAD --oneline` lists b99973b, abfb219, f672621, 0856e0b. Read requested documentation, published earlier dispositions/reports, and fetched issues 27/28.
+
+Mapped ledger assertions to implementation, including signed SMB, key/mode recovery, complete hashes/resumed writes/second recovery, held successful S3 responses, fail-stop/shutdown locks, negative-startup/readonly remote fingerprints, TLS/addressing/sources, native SQLite/retirement, logging and measurements. Shared local/CI entrypoint and shell preflight assertions are substantive; `harness.json` represents that real negative preflight, not a fabricated Go execution.
+
+The owner's already-running **`scripts/test-linux.sh release` finished during review with exit 1**. Evidence: `/tmp/s3-smb-swarm/release-candidate1/{environment.txt,phases.tsv,e2e.log,coverage.log,exit-status}`. Unit/race/transport/cache/credentials/packaging/build passed; E2E failed above; coverage correctly rejected 1/104 rows. Failed-run MinIO volume was retained. These are inspected owner executions, not reviewer reruns. No source edits, extra tests, subagents, model changes or other current-reviewer report consulted.
+
+**Linux acceptance is not green. GitHub Linux CI, public installation and final hosted-Mac full backup/crash/restore remain pending; no project-completion or Time Machine compatibility approval.**
