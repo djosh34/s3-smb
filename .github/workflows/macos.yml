@@ -6,7 +6,7 @@ on:
       public_version:
         description: Previously qualified released application (independent of harness SHA)
         required: true
-        default: v0.1.0-rc.4
+        default: v0.1.0-rc.6
         type: string
 permissions:
   contents: read
