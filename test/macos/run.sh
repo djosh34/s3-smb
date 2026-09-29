@@ -48,7 +48,15 @@ if [[ "$MAC_PHASE" = backup ]]; then
   : "${RUNNER_WORKSPACE:?hosted runner workspace required}"
   : "${RUNNER_TEMP:?hosted runner temporary directory required}"
   runner_root=$(dirname "$RUNNER_WORKSPACE")
-  for path in "$RUNNER_TEMP" "$HOME/runners" \
+  # Find the running agent's actual installation, not an assumed HOME/runners.
+  # lsof emits executable paths only (-d txt), never argv or credential contents.
+  runner_binary=$(sudo -n /usr/sbin/lsof -a -c Runner.Worker -d txt -Fn |
+    awk '/^n.*\/bin\/Runner[.]Worker$/ {sub(/^n/, ""); binary=$0} END {print binary}')
+  [[ -n "$runner_binary" ]]
+  runner_install=$(dirname "$(dirname "$runner_binary")")
+  [[ "$runner_install" = /* && "$runner_install" != / && "$runner_install" != "$HOME" && "$runner_install" != "$runner_root" ]]
+  printf '%s\n' "$runner_install" > "$MAC_ARTIFACTS/runner-control-root.txt"
+  for path in "$RUNNER_TEMP" "$runner_install" \
     "$runner_root/_actions" "$runner_root/_diag" \
     "$runner_root/.credentials" "$runner_root/.credentials_rsaparams" \
     "$runner_root/.runner" "$runner_root/.env" "$runner_root/.path"; do
