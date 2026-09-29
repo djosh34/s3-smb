@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
 """Bounded native command evidence and PTY consent."""
-from contextlib import contextmanager
 import datetime
 import json
 import os
@@ -67,52 +66,6 @@ class Commands:
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
-
-
-# TCP payload starts with NetBIOS framing (4 bytes), then the SMB header.
-# Select only NEGOTIATE requests, never SESSION_SETUP/authentication or file IO.
-NEGOTIATE_FILTER = (
-    'ip and tcp dst port 445 and '
-    '((tcp[((tcp[12] & 0xf0) >> 2) + 4:4] = 0xff534d42 and '
-    'tcp[((tcp[12] & 0xf0) >> 2) + 8] = 0x72) or '
-    '(tcp[((tcp[12] & 0xf0) >> 2) + 4:4] = 0xfe534d42 and '
-    'tcp[((tcp[12] & 0xf0) >> 2) + 16:2] = 0))'
-)
-
-
-@contextmanager
-def negotiate_header_evidence(evidence):
-    """Bounded diagnostic for the first real mount, without changing its route."""
-    evidence = Path(evidence)
-    path = evidence / 'smb-negotiate-header.log'
-    # Darwin lo0 DLT_NULL(4) + minimum IPv4/TCP(40) leaves at most 36
-    # bytes: NetBIOS(4) + SMB1 header(32). No body/auth bytes are retained.
-    # TCP/IP options only reduce captured SMB bytes. Retain tcpdump's actual
-    # link-type announcement in this same log; never save a full packet trace.
-    argv = ['/usr/sbin/tcpdump', '-i', 'lo0', '-y', 'NULL', '-n', '-s', '80', '-c', '4', '-XX', '-l', NEGOTIATE_FILTER]
-    with path.open('xb', buffering=0) as log:
-        process = subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
-        forced = False
-        try:
-            deadline = time.monotonic() + 10
-            while b'listening on lo0' not in path.read_bytes():
-                if process.poll() is not None or time.monotonic() >= deadline:
-                    raise RuntimeError('initial SMB header capture did not start; see smb-negotiate-header.log')
-                time.sleep(.05)
-            yield
-        finally:
-            if process.poll() is None:
-                process.send_signal(signal.SIGINT)
-            try:
-                code = process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                forced = True
-                process.kill()
-                code = process.wait(timeout=5)
-            (evidence / 'smb-negotiate-header-status.json').write_text(
-                json.dumps(dict(argv=argv, exit=code, forced=forced, ended=utc()), indent=2) + '\n')
-            if forced or code != 0:
-                raise RuntimeError('initial SMB header capture failed or required kill; see capture status')
 
 
 class Daemon:

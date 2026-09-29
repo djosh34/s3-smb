@@ -16,7 +16,7 @@ import traceback
 import urllib.request
 
 from manifest import manifest, compare
-from native import Commands, Daemon, utc, verify_tmutil_verb, negotiate_header_evidence
+from native import Commands, Daemon, utc, verify_tmutil_verb
 
 WORK = Path(os.environ['MAC_WORK']).resolve()
 EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
@@ -37,7 +37,6 @@ class Acceptance:
         self.fixture = BIN / 'fixture'
         self.serial = 0
         self.destination = None
-        self.first_mount = True
 
     def event(self, event, **fields):
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
@@ -170,18 +169,16 @@ logging:
 
     def mount_share(self):
         self.share.mkdir(exist_ok=True)
-        argv = ['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', self.share]
-        if self.first_mount:
-            self.first_mount = False
-            with negotiate_header_evidence(EVIDENCE):
-                self.cmd.run(argv)
-        else:
-            self.cmd.run(argv)
+        self.cmd.run(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', self.share])
         self.cmd.run(['/usr/bin/smbutil', 'statshares', '-a'])
         self.cmd.run(['/sbin/mount'])
 
     def configure_destination(self):
-        self.cmd.run(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:@127.0.0.1/TimeMachine'])
+        # The explicit empty-password URL was rejected by tmutil before auth.
+        # Try its mount-point form on the existing named-empty SMB mount. The
+        # manual describes local volumes for this form; network acceptance is
+        # an actual runtime test, not an inferred/documented compatibility claim.
+        self.cmd.run(['/usr/bin/tmutil', 'setdestination', self.share])
         text, _ = self.cmd.run(['/usr/bin/tmutil', 'destinationinfo', '-X'])
         info = plistlib.loads(text.encode())
         destinations = info['Destinations']

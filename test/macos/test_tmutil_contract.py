@@ -88,14 +88,23 @@ class TmutilContract(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'cannot collect'):
             verify_tmutil_verb(self.manual, 'setdestination', [], 77)
 
-    def test_named_empty_smb_operation_is_unchanged(self):
+    def test_named_empty_mount_route_is_unchanged(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory:
+            a = acceptance.Acceptance()
+            a.share = Path(directory) / 'smb'
+            a.cmd = Mock()
+            a.mount_share()
+            a.cmd.run.assert_any_call(['/sbin/mount_smbfs', '-N', '//timemachine:@127.0.0.1/TimeMachine', a.share])
+
+    def test_destination_uses_already_authenticated_mount(self):
         import plistlib
         a = acceptance.Acceptance()
         a.cmd = Mock()
         a.cmd.run.return_value = (plistlib.dumps({'Destinations': [{'ID': 'test-destination'}]}).decode(), 0)
         a.save = Mock()
         a.configure_destination()
-        a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', 'smb://timemachine:@127.0.0.1/TimeMachine'])
+        a.cmd.run.assert_any_call(['/usr/bin/tmutil', 'setdestination', a.share])
         self.assertEqual(a.destination, 'test-destination')
 
 
