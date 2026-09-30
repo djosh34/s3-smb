@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,6 +24,9 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	f.endpoint = proxy.URL() // f.store still measures the real MinIO directly.
 	d := f.start()
 	share, closeShare := f.share()
+	// Explicit success teardown precedes daemon stop; deferred failure cleanup
+	// must not issue a second SMB disconnect after the connection is closed.
+	closeShare = sync.OnceFunc(closeShare)
 	defer closeShare()
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
@@ -53,7 +57,8 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	closeFile := sync.OnceValue(file.Close)
+	defer closeFile()
 	type observation struct{ chunkBytes, chunks, allBytes, puts int64 }
 	observe := func(stage string) observation {
 		t.Helper()
@@ -151,7 +156,7 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	t.Logf("overwrite measurement: submitted_bytes=%d added_chunk_payload_bytes=%d additional_PUTs=%d; retained COW objects are not unwritten-hole allocation or an Apple amplification ratio",
 		overwrites*len(payload), after.chunkBytes-written.chunkBytes, after.puts-written.puts)
 	read(offset-32, append(append(make([]byte, 32), payload...), make([]byte, 32)...))
-	if err = file.Close(); err != nil {
+	if err = closeFile(); err != nil {
 		t.Fatal(err)
 	}
 	closeShare()
