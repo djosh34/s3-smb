@@ -67,8 +67,9 @@ tree. All installed SDKs remain part of the normal full-Mac source.
 
 Retain durable free-space observations and native Time Machine percent/byte
 counters when available. Prepared future diagnostics sample only object-store,
-daemon and evidence footprints with a 30-second bound: before backup, after five
-minutes, then every ten minutes. Retained values carry their actual sample time;
+daemon and evidence footprints with a 30-second bound: before backup and roughly
+every five minutes throughout the active backup, without a sample-count cap.
+Retained values carry their actual sample time;
 failed samples are unknown, not zero. **Current immutable 68110a9 still takes only
 two task-footprint observations and carries those old values forward**; its later
 snapshots do not establish current store size. The prepared change does not

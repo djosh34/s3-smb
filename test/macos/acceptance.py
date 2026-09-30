@@ -299,7 +299,7 @@ logging:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')
             if now >= next_usage:
                 self.observe_task_usage()
-                next_usage = now + 600
+                next_usage = now + 300
             if now >= next_observation:
                 status, code = self.cmd.run(['/usr/bin/tmutil', 'status'], diagnostic=True)
                 self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code,

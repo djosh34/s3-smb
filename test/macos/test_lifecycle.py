@@ -292,7 +292,7 @@ class Lifecycle(unittest.TestCase):
         self.assertNotIn('native_status', snapshot)
         self.assertEqual(snapshot['task_usage_time'], 'earlier-observation')
 
-    def test_heartbeat_observes_task_usage_at_five_then_ten_minute_cadence(self):
+    def test_heartbeat_observes_task_usage_every_five_minutes_without_a_count_cap(self):
         process, log = Mock(returncode=0), Mock()
         process.poll.side_effect = [None, None, None, None, None, 0]
         self.a.backup = (process, log)
@@ -301,7 +301,7 @@ class Lifecycle(unittest.TestCase):
         self.a.observe_task_usage = Mock()
         status = 'Percent = 0.25;\nbytes = 100;\ntotalBytes = 400;'
         self.a.cmd.run.return_value = (status, 0)
-        with patch.object(acceptance.time, 'monotonic', side_effect=[0, 0, 301, 362, 901, 962, 1501]), patch.object(acceptance.time, 'sleep'):
+        with patch.object(acceptance.time, 'monotonic', side_effect=[0, 0, 301, 362, 601, 662, 901]), patch.object(acceptance.time, 'sleep'):
             self.a.complete_backup('baseline')
         self.assertEqual(self.a.observe_task_usage.call_count, 3)
         self.a.event.assert_any_call('time-machine-progress', label='baseline', native_status=status,
