@@ -23,7 +23,9 @@ test('rejects malformed measurements and nested labels', () => {
 test('retains only finite nonnegative optional runtime metrics without scaling', () => {
   const metrics = {tm_percent: 0.125, tm_bytes: 123, tm_total_bytes: 456,
     task_store_bytes: 1000, task_daemon_bytes: 0, task_evidence_bytes: 900};
-  assert.deepEqual(safeSnapshot({...base, ...metrics}), {...base, ...metrics});
+  const observed = {task_usage_time: '2026-09-29T22:00:00Z'};
+  assert.deepEqual(safeSnapshot({...base, ...metrics, ...observed}), {...base, ...metrics, ...observed});
+  assert.throws(() => safeSnapshot({...base, task_usage_time: {output: 'private'}}));
   for (const key of Object.keys(metrics)) {
     for (const value of [-1, Infinity, 'secret', {argv: 'private'}]) {
       assert.throws(() => safeSnapshot({...base, [key]: value}));

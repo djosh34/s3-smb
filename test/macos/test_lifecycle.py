@@ -268,39 +268,42 @@ class Lifecycle(unittest.TestCase):
         self.a.detach_clients()
         self.a.cmd.run.assert_any_call(['/sbin/umount', mountpoint], timeout=120)
 
-    def test_task_usage_is_two_bounded_task_only_observations(self):
+    def test_task_usage_is_bounded_task_only_and_records_observation_time(self):
         targets = [str(self.work / 'objects'), str(self.a.local), str(self.base)]
         self.a.cmd.run.return_value = ('\n'.join(f'{n}\t{p}' for n, p in enumerate(targets, 1)) + '\n999\t/Users\n', 0)
-        self.a.observe_task_usage()
+        with patch.object(acceptance, 'utc', return_value='observed-time'):
+            self.a.observe_task_usage()
+        self.assertEqual(self.a.task_usage_time, 'observed-time')
         self.assertEqual(self.a.task_bytes, dict(task_store_bytes=1024, task_daemon_bytes=2048, task_evidence_bytes=3072))
         self.a.cmd.run.assert_called_once_with(['/usr/bin/du', '-sk', *targets], timeout=30, diagnostic=True)
         self.a.cmd.run.return_value = ('unavailable', 124)
         self.a.observe_task_usage()  # Timeout is unknown, not a backup gate.
         self.assertEqual(self.a.task_bytes, {})
-        self.a.observe_task_usage()
         self.assertEqual(self.a.cmd.run.call_count, 2)
 
     def test_safe_numeric_fields_reach_progress_snapshot(self):
         self.a.task_bytes = dict(task_store_bytes=1024, task_daemon_bytes=2048, task_evidence_bytes=3072)
+        self.a.task_usage_time = 'earlier-observation'
         acceptance.Acceptance.event(self.a, 'time-machine-progress', tm_percent=.5, tm_bytes=10,
                                     tm_total_bytes=20, native_status='not-public')
         snapshot = json.loads((self.base / 'progress.json').read_text())
         for key, value in {**self.a.task_bytes, 'tm_percent': .5, 'tm_bytes': 10, 'tm_total_bytes': 20}.items():
             self.assertEqual(snapshot[key], value)
         self.assertNotIn('native_status', snapshot)
+        self.assertEqual(snapshot['task_usage_time'], 'earlier-observation')
 
-    def test_heartbeat_observes_native_numbers_and_task_usage_once_after_five_minutes(self):
+    def test_heartbeat_observes_task_usage_at_five_then_ten_minute_cadence(self):
         process, log = Mock(returncode=0), Mock()
-        process.poll.side_effect = [None, None, 0]
+        process.poll.side_effect = [None, None, None, None, None, 0]
         self.a.backup = (process, log)
         self.a.daemon = Mock()
         self.a.status = Mock(return_value=False)
         self.a.observe_task_usage = Mock()
         status = 'Percent = 0.25;\nbytes = 100;\ntotalBytes = 400;'
         self.a.cmd.run.return_value = (status, 0)
-        with patch.object(acceptance.time, 'monotonic', side_effect=[0, 0, 301, 362]), patch.object(acceptance.time, 'sleep'):
+        with patch.object(acceptance.time, 'monotonic', side_effect=[0, 0, 301, 362, 901, 962, 1501]), patch.object(acceptance.time, 'sleep'):
             self.a.complete_backup('baseline')
-        self.a.observe_task_usage.assert_called_once()
+        self.assertEqual(self.a.observe_task_usage.call_count, 3)
         self.a.event.assert_any_call('time-machine-progress', label='baseline', native_status=status,
                                      exit=0, tm_percent=.25, tm_bytes=100, tm_total_bytes=400)
 

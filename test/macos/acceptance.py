@@ -48,19 +48,21 @@ class Acceptance:
         self.serial = 0
         self.destination = None
         self.task_bytes = {}
-        self.task_usage_count = 0
+        self.task_usage_time = None
 
     def event(self, event, **fields):
-        # Latest of at most two bounded task-only observations, not fresh scans
-        # on every heartbeat. Missing observations remain unknown.
+        # Carry the last coarse task-only observation with its actual timestamp.
+        # Missing observations remain unknown; no source inventory is collected.
         fields = {**self.task_bytes, **fields}
+        if self.task_usage_time is not None:
+            fields['task_usage_time'] = self.task_usage_time
         fields.setdefault('scenario', self.scenario)
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
             f.write(json.dumps(dict(time=utc(), event=event, **fields), sort_keys=True) + '\n')
         progress(EVIDENCE, event, scenario=self.scenario, tm_percent=fields.get('tm_percent'),
                  tm_bytes=fields.get('tm_bytes'), tm_total_bytes=fields.get('tm_total_bytes'),
                  task_store_bytes=fields.get('task_store_bytes'), task_daemon_bytes=fields.get('task_daemon_bytes'),
-                 task_evidence_bytes=fields.get('task_evidence_bytes'))
+                 task_evidence_bytes=fields.get('task_evidence_bytes'), task_usage_time=fields.get('task_usage_time'))
         print(event, fields, flush=True)
 
     def save(self, name, data):
@@ -243,9 +245,6 @@ logging:
         return proof
 
     def observe_task_usage(self):
-        if self.task_usage_count >= 2:
-            return
-        self.task_usage_count += 1
         self.task_bytes = {}
         paths = {str(WORK / 'objects'): 'task_store_bytes', str(self.local): 'task_daemon_bytes',
                  str(EVIDENCE): 'task_evidence_bytes'}
@@ -255,6 +254,7 @@ logging:
                 size, separator, path = line.partition('\t')
                 if separator and size.isdigit() and path in paths:
                     self.task_bytes[paths[path]] = int(size) * 1024
+        self.task_usage_time = utc()
         self.event('task-usage-observed', exit=code)
 
     def confirm_backup_checkpoint(self):
@@ -291,15 +291,15 @@ logging:
         process, log = self.backup
         deadline = time.monotonic() + 5400
         next_observation = time.monotonic()
-        usage_observed = False
+        next_usage = deadline - 5400 + 300
         while process.poll() is None:
             self.daemon.pump()
             now = time.monotonic()
             if now >= deadline:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')
-            if not usage_observed and now >= deadline - 5400 + 300:
+            if now >= next_usage:
                 self.observe_task_usage()
-                usage_observed = True
+                next_usage = now + 600
             if now >= next_observation:
                 status, code = self.cmd.run(['/usr/bin/tmutil', 'status'], diagnostic=True)
                 self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code,

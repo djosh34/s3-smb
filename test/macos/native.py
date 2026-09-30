@@ -34,7 +34,7 @@ def tm_status_numbers(text):
 
 def progress(evidence, event, *, command=None, exit_code=None, scenario=None,
              tm_percent=None, tm_bytes=None, tm_total_bytes=None,
-             task_store_bytes=None, task_daemon_bytes=None, task_evidence_bytes=None):
+             task_store_bytes=None, task_daemon_bytes=None, task_evidence_bytes=None, task_usage_time=None):
     """Tiny credential-free snapshot for the workflow's durable progress upload."""
     evidence = Path(evidence)
     free = shutil.disk_usage(evidence).free
@@ -51,6 +51,8 @@ def progress(evidence, event, *, command=None, exit_code=None, scenario=None,
                        ('task_evidence_bytes', task_evidence_bytes)):
         if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
             record[key] = value
+    if task_usage_time is not None:
+        record['task_usage_time'] = task_usage_time
     temporary = evidence / 'progress.json.tmp'
     temporary.write_text(json.dumps(record, sort_keys=True) + '\n')
     # EVIDENCE remains runner-private; the ordinary artifact uploader

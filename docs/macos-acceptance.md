@@ -65,9 +65,15 @@ installed Xcode/SDKs, simulator runtimes, user content or the repository checkou
 Do not add exclusions to shrink the normal source or restrict it to the created
 tree. All installed SDKs remain part of the normal full-Mac source.
 
-Retain durable free-space observations, native Time Machine percent/byte counters
-when available, and a couple of bounded task-owned storage footprints. These are
-runtime diagnostics—not an eligible-source inventory, size estimator, capacity
+Retain durable free-space observations and native Time Machine percent/byte
+counters when available. Prepared future diagnostics sample only object-store,
+daemon and evidence footprints with a 30-second bound: before backup, after five
+minutes, then every ten minutes. Retained values carry their actual sample time;
+failed samples are unknown, not zero. **Current immutable 68110a9 still takes only
+two task-footprint observations and carries those old values forward**; its later
+snapshots do not establish current store size. The prepared change does not
+rewrite that evidence. These are runtime diagnostics—not an eligible-source
+inventory, size estimator, capacity
 gate or guarantee. Do not repeat the ARM setup assuming a few GB of scratch
 cleanup is sufficient. Report the Intel run's actual outcome.
 
