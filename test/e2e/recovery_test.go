@@ -36,6 +36,7 @@ type fixture struct {
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
+	compression                  string // Empty means omitted, including fresh-local recovery.
 	readonly, wider, failStart   bool
 	store                        *s3.Client
 	generation                   int
@@ -91,6 +92,10 @@ func (f *fixture) config() string {
 	if capacity == "" {
 		capacity = "0 MB"
 	}
+	compression := ""
+	if f.compression != "" {
+		compression = fmt.Sprintf("  compression: %q\n", f.compression)
+	}
 	listen := f.addr
 	if f.wider {
 		_, port, _ := net.SplitHostPort(f.addr)
@@ -106,7 +111,7 @@ func (f *fixture) config() string {
   password: %q
   read_only: %t
 storage:
-  state_dir: ./state
+%s  state_dir: ./state
   cache_dir: ./cache
   cache_size: %q
 s3:
@@ -125,7 +130,7 @@ backup:
 logging:
   format: json
   level: info
-`, listen, f.password, f.readonly, capacity, f.bucket, f.endpoint, f.encrypted, key)
+`, listen, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()

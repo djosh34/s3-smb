@@ -126,6 +126,26 @@ An old metadata backup does not guarantee its data remains available. Do not use
 external S3 lifecycle deletion rules that destroy current data, recovery points,
 or encryption bootstrap keys.
 
+## Data compression (pending product change)
+
+This selected opt-in feature is **not available in qualified v0.1.0-rc.6**. A new
+immutable release remains pending product qualification; do not use the setting
+with rc6 or infer Time Machine completion or sufficient capacity from its addition.
+
+The optional setting is `storage.compression: zstd` or
+`storage.compression: none`. These are the only explicit values. Omission on a
+new dataset keeps the existing `none` default; `zstd` selects JuiceFS's existing
+lossless chunk compression before application encryption. There is no compression
+level, custom codec, migration or capacity guarantee.
+
+For an existing dataset, including fresh-install recovery, omit the setting to
+use the codec recorded in its native format. This also preserves existing native
+`lz4` formats, although `lz4` is not a selectable new-dataset value. An explicit
+`none` or `zstd` must match the stored format or startup fails without changing
+it. The setting is not a conversion command. Cold recovery does not require the
+old YAML or a separately remembered codec. Metadata backups retain their existing
+gzip encoding; cache, retention and encryption defaults are unchanged.
+
 ## Credentials and helpers
 
 Select one of these mappings separately for each S3 key, and for the encryption

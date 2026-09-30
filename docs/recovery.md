@@ -27,7 +27,9 @@ The daemon's metadata backups contain the filesystem namespace, attributes and b
 6. Read and verify the recovered contents through SMB. A successful metadata import does not prove that every referenced data object exists. Missing data must be an explicit read error, not an empty-file success.
 7. Resume writes only after checking the expected files. For a Time Machine dataset, use Apple's Time Machine restore and backup tools as well; listing sparsebundle files over SMB does not prove the inner backup can be restored.
 
-Do not delete remote objects, reformat the bucket, change encryption mode, or generate a replacement key to get past a recovery error. A corrupt selected backup must fail visibly rather than silently choose an older point. Keep logs and preserve the bucket for diagnosis.
+The [pending compression selector](configuration.md#data-compression-pending-product-change) is not available in qualified rc6 and must be qualified/released before use. With that feature, omit `storage.compression` during recovery to use the codec in the surviving native format, including existing `lz4` formats. An explicit `none` or `zstd` is only a matching assertion: a different value fails startup without converting the dataset. No old configuration or separately retained codec setting is needed.
+
+Do not delete remote objects, reformat the bucket, change encryption/compression mode, or generate a replacement key to get past a recovery error. A corrupt selected backup must fail visibly rather than silently choose an older point. Keep logs and preserve the bucket for diagnosis.
 
 Normal restarts with valid local metadata do not require a terminal. New initialization and recovery do: confirmation uses the controlling terminal, not the log stream. A missing terminal is an error when consent is needed.
 
