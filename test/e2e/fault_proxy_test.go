@@ -43,6 +43,7 @@ type faultProxy struct {
 	eventMu         sync.Mutex
 	metadataFailure atomic.Bool
 	metadataSeen    chan faultEvent
+	chunkPuts       atomic.Int64 // Successful real data PUTs, no headers/bodies retained.
 }
 
 func newFaultProxy(t *testing.T, upstream string) *faultProxy {
@@ -76,6 +77,7 @@ func newFaultProxy(t *testing.T, upstream string) *faultProxy {
 		if res.Request.Method != http.MethodPut || !strings.Contains(res.Request.URL.Path, "/chunks/") || res.StatusCode < 200 || res.StatusCode >= 300 {
 			return nil
 		}
+		p.chunkPuts.Add(1)
 		p.mu.Lock()
 		hold := p.next
 		if hold != nil {
