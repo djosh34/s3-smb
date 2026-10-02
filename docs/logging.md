@@ -28,7 +28,7 @@ but cannot render, including on terminals. There is no syslog stream.
 
 Baseline: JuiceFS v1.4.1 (`0b90c7db5a929ae6adc5faad948d108efd2c99f9`), SMB
 `277a9300411249a881a05f7a910f5a83ae3395f2`, and their pinned bundled Xorm source.
-Import relocation/source selection are documented separately in packaging docs.
+Import relocation/source selection are documented in [vendored source](vendored.md).
 
 - `internal/juicefs/pkg/utils/logger.go`: each actual logrus handle receives the
   slog formatter at creation; slog owns levels. Native logrus fatal exits with

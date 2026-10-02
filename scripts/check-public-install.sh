@@ -1,17 +1,12 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-only
-# Run only after publishing the reviewed Linux candidate. Never substitutes a
-# local proxy/checkout for a public install. Darwin execution belongs last.
+# Installs a published version from the public Go proxy with empty caches.
 set -eu
 version=${1:?usage: check-public-install.sh vX.Y.Z[-prerelease]}
 case "$version" in
   v[0-9]*.[0-9]*.[0-9]*) ;;
   *) echo 'provide an immutable published version, not latest or a branch' >&2; exit 1 ;;
 esac
-if [ "$(go env GOOS)" != linux ]; then
-  echo 'This public-install entry point is Linux-only; Darwin acceptance is last.' >&2
-  exit 1
-fi
 work=$(mktemp -d)
 trap 'chmod -R u+w "$work"; rm -rf "$work"' EXIT HUP INT TERM
 mkdir -p "$work/empty" "$work/bin"
@@ -25,4 +20,4 @@ go install -p 2 "github.com/djosh34/s3-smb@$version"
 "$work/bin/s3-smb" help
 "$work/bin/s3-smb" version
 go version -m "$work/bin/s3-smb"
-echo "Public Linux fresh-cache install passed: $version"
+echo "Public fresh-cache install passed: $version"
