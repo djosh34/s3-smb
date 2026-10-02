@@ -382,14 +382,10 @@ logging:
         if any('(smbfs' in line and f'{SMB_SERVER}/TimeMachine' in line for line in remaining.splitlines()):
             raise RuntimeError('task SMB mount remains')
 
-    def remote_backup(self, label, identifier=None, inherit=False):
+    def remote_backup(self, label, identifier=None):
         bundles = sorted(self.share.glob('*.sparsebundle'))
         if len(bundles) != 1:
             raise RuntimeError(f'expected one real Time Machine sparsebundle, got {bundles}')
-        if inherit:
-            # Documented machine identity reassignment on fresh Mac B; no old
-            # daemon authority or machine-local Time Machine state is copied.
-            self.cmd.run(['/usr/bin/tmutil', 'inheritbackup', bundles[0]], timeout=300)
         text, _ = self.cmd.run(['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', bundles[0]], timeout=300)
         entities = plistlib.loads(text.encode())['system-entities']
         devices = [e['dev-entry'] for e in entities if 'dev-entry' in e]
@@ -399,8 +395,12 @@ logging:
             raise RuntimeError('unknown Time Machine image volume layout')
         volume = volumes[0]
         # backupd answers only after Spotlight has indexed the volume. That took 90 seconds.
-        output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, '-m'], timeout=600)
-        backups = [Path(line) for line in output.splitlines() if line.startswith('/')]
+        # The second Mac did not make this backup, so ask without -m when -m lists nothing.
+        for flags in (['-m'], []):
+            output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, *flags], timeout=600)
+            backups = [Path(line) for line in output.splitlines() if line.startswith('/')]
+            if backups:
+                break
         if identifier is None:
             latest, _ = self.cmd.run(['/usr/bin/tmutil', 'latestbackup', '-d', volume, '-m'], timeout=600)
             selected = Path(latest.strip())
@@ -429,7 +429,7 @@ logging:
         return found[0]
 
     def restore_tree(self, recovery):
-        selected = self.remote_backup('normal', recovery['baseline'], inherit=True)
+        selected = self.remote_backup('normal', recovery['baseline'])
         relative = Path(recovery['source_relative'])
         if relative.is_absolute() or '..' in relative.parts:
             raise RuntimeError('invalid created-tree source path')
