@@ -502,3 +502,47 @@ func TestProtectionUsesWallTimeAndEffectiveRetention(t *testing.T) {
 		t.Fatal("fail-stop gate reopened")
 	}
 }
+
+type failingGetStore struct{ object.ObjectStorage }
+
+func (failingGetStore) Get(context.Context, string, int64, int64, ...object.AttrGetter) (io.ReadCloser, error) {
+	return nil, errors.New("injected transport failure")
+}
+
+func TestReuseTakesNewBackupWhenLastIsMissingOrChanged(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	clock := func() time.Time { return now }
+	for name, damage := range map[string]func(path string) error{
+		"missing": os.Remove,
+		"changed": func(path string) error { return os.WriteFile(path, []byte("other bytes"), 0600) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, _ := newMetadata(t)
+			s, dir := newStore(t), t.TempDir()
+			r, err := newManager(t, m, s, dir, clock, 5*time.Second).Backup(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = damage(filepath.Join(s.dir, filepath.FromSlash(r.Key))); err != nil {
+				t.Fatal(err)
+			}
+			now = now.Add(time.Minute)
+			restarted := newManager(t, m, s, dir, clock, 5*time.Second)
+			if ok, err := restarted.Reuse(context.Background()); ok || err != nil {
+				t.Fatalf("reuse=%v %v, want a new backup without an error", ok, err)
+			}
+			next, err := restarted.Backup(context.Background())
+			if err != nil || next.Key == r.Key {
+				t.Fatalf("new backup %q after %q: %v", next.Key, r.Key, err)
+			}
+		})
+	}
+	m, _ := newMetadata(t)
+	s, dir := newStore(t), t.TempDir()
+	if _, err := newManager(t, m, s, dir, clock, 5*time.Second).Backup(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := newManager(t, m, failingGetStore{s}, dir, clock, 5*time.Second).Reuse(context.Background()); ok || err == nil {
+		t.Fatalf("reuse=%v %v, want the transport error", ok, err)
+	}
+}

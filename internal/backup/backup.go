@@ -260,6 +260,10 @@ func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)
 	defer cancel()
 	reader, err := m.blob.Get(ctx, r.Key, 0, -1)
+	if errors.Is(err, os.ErrNotExist) {
+		slog.Warn("last metadata backup is missing from S3; taking a new one", "key", r.Key)
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -269,7 +273,8 @@ func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 		return false, err
 	}
 	if hex.EncodeToString(h.Sum(nil)) != r.SHA256 {
-		return false, errors.New("metadata receipt readback mismatch")
+		slog.Warn("last metadata backup in S3 differs from the one recorded locally; taking a new one", "key", r.Key)
+		return false, nil
 	}
 	if err = m.opts.Protection.protect(r.Snapshot); err != nil {
 		return false, nil
