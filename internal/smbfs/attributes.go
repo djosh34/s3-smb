@@ -139,7 +139,24 @@ func (s *FS) StatFS(h vfs.VfsHandle) (*vfs.FSAttributes, error) {
 	if e := s.meta.StatFS(s.ctx, meta.RootInode, &total, &avail, &used, &free); e != 0 {
 		return nil, e
 	}
+	total, avail = reportedSpace(total, avail)
 	return new(vfs.FSAttributes).SetBlockSize(4096).SetIOSize(1 << 20).SetBlocks(total / 4096).SetFreeBlocks(avail / 4096).SetAvailableBlocks(avail / 4096).SetFiles(used + free).SetFreeFiles(free), nil
+}
+
+// maxReportedFree is the most free space the share reports. Time Machine picks
+// the band size of a new sparsebundle from the share size: 8.59 GB bands for
+// the 1 PiB that an unlimited volume reports, and it writes about two whole
+// bands of zeros while formatting the image. Below 1 TiB the bands stay a few
+// hundred MB.
+const maxReportedFree = 1 << 40
+
+// reportedSpace limits free space to maxReportedFree and keeps the used space
+// as it is, so the share never looks full while the store has room.
+func reportedSpace(total, avail uint64) (uint64, uint64) {
+	if avail <= maxReportedFree {
+		return total, avail
+	}
+	return total - avail + maxReportedFree, maxReportedFree
 }
 func (s *FS) Listxattr(h vfs.VfsHandle) ([]string, error) {
 	s.mu.Lock()
