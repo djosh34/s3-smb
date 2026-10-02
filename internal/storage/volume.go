@@ -19,8 +19,11 @@ import (
 	"github.com/google/uuid"
 )
 
-const identityKey = "s3-smb/format.json"
-const keyPrefix = "s3-smb/keys/"
+// VolumeName is the JuiceFS volume name and the bucket prefix of every object.
+const VolumeName = "s3-smb"
+
+const identityKey = VolumeName + "/format.json"
+const keyPrefix = VolumeName + "/keys/"
 
 var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
@@ -192,12 +195,12 @@ func PublishMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Forma
 // backup inspection must validate the returned candidate against the export
 // before loading it. Missing identity never implies a new dataset.
 func DiscoverRecoveryVolume(ctx context.Context, raw object.ObjectStorage, encrypted bool, passphrase string) (object.ObjectStorage, *meta.Format, error) {
-	f, err := NewFormat("s3-smb", encrypted, 14)
+	f, err := NewFormat(VolumeName, encrypted, 14)
 	if err != nil {
 		return nil, nil, err
 	}
 	if !encrypted {
-		return object.WithPrefix(raw, "s3-smb/"), nil, nil
+		return object.WithPrefix(raw, VolumeName+"/"), nil, nil
 	}
 	entries, more, _, err := raw.List(ctx, keyPrefix, "", "", "", 2, true)
 	if err != nil {

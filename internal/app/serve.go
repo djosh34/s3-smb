@@ -154,19 +154,11 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if e != nil {
 			return fmt.Errorf("discover existing volume without identity: %w", e)
 		}
-		points, e := backup.List(ctx, discovered)
+		point, format, e = newestPoint(ctx, discovered)
 		if e != nil {
-			return e
+			return fmt.Errorf("remote volume identity is missing; refusing initialization: %w", e)
 		}
-		if len(points) == 0 {
-			return errors.New("remote identity is missing and no native backup establishes a volume; refusing initialization")
-		}
-		point = &points[0]
-		format, e = backup.Inspect(ctx, discovered, point.Key)
-		if e != nil {
-			return fmt.Errorf("selected backup cannot establish identity; no fallback: %w", e)
-		}
-		if format.Name != "s3-smb" || (format.EncryptAlgo != "") != c.Encryption.Enabled {
+		if format.Name != storage.VolumeName || (format.EncryptAlgo != "") != c.Encryption.Enabled {
 			return errors.New("discovered backup does not match the configured dataset mode or native prefix")
 		}
 		if candidate != nil && (format.UUID != candidate.UUID || format.EncryptKey != candidate.EncryptKey || format.EncryptAlgo != candidate.EncryptAlgo) {
@@ -185,7 +177,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		format, err = storage.NewFormat("s3-smb", c.Encryption.Enabled, c.Backup.TrashDays)
+		format, err = storage.NewFormat(storage.VolumeName, c.Encryption.Enabled, c.Backup.TrashDays)
 		if err != nil {
 			return err
 		}
@@ -217,17 +209,10 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	recovered := false
 	if !fresh && !localExists {
-		points, e := backup.List(ctx, blob)
-		if e != nil {
-			return fmt.Errorf("list recovery points: %w", e)
-		}
-		if len(points) == 0 {
-			return errors.New("existing remote dataset has no metadata recovery point; refusing initialization")
-		}
-		point = &points[0]
-		saved, e := backup.Inspect(ctx, blob, point.Key)
-		if e != nil {
-			return fmt.Errorf("selected recovery point is invalid; no older-point fallback: %w", e)
+		var saved *meta.Format
+		point, saved, err = newestPoint(ctx, blob)
+		if err != nil {
+			return fmt.Errorf("local metadata is missing; refusing initialization: %w", err)
 		}
 		if !sameVolume(saved, format) {
 			return errors.New("selected recovery point does not match remote volume identity")
@@ -394,21 +379,31 @@ func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *
 	if backupValidated {
 		return nil
 	}
-	points, err := backup.List(ctx, blob)
+	_, saved, err := newestPoint(ctx, blob)
 	if err != nil {
-		return err
-	}
-	if len(points) == 0 {
-		return errors.New("native marker missing and no validated backup supplies identity")
-	}
-	saved, err := backup.Inspect(ctx, blob, points[0].Key)
-	if err != nil {
-		return err
+		return fmt.Errorf("volume marker is missing: %w", err)
 	}
 	if !sameVolume(saved, format) {
 		return errors.New("backup identity does not match remote volume")
 	}
 	return nil
+}
+
+// newestPoint inspects the newest metadata backup. It fails when there is none
+// or when the newest one is invalid, and does not try an older one.
+func newestPoint(ctx context.Context, blob object.ObjectStorage) (*backup.Point, *meta.Format, error) {
+	points, err := backup.List(ctx, blob)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list metadata backups: %w", err)
+	}
+	if len(points) == 0 {
+		return nil, nil, errors.New("the bucket holds no metadata backup")
+	}
+	format, err := backup.Inspect(ctx, blob, points[0].Key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("newest metadata backup %s is invalid: %w", points[0].Key, err)
+	}
+	return &points[0], format, nil
 }
 
 func localMetadataExists(path string) (bool, error) {
