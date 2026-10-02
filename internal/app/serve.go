@@ -229,12 +229,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
-		// Native SQLite import is synchronous and cannot be interrupted by a
-		// context. Terminate the process, retaining the lock, if it gets stuck.
-		recoveryTimer := time.AfterFunc(backupTimeout+shutdownTimeout, hardExit)
-		_, err = backup.Recover(ctx, blob, point.Key, dbPath, format)
-		recoveryTimer.Stop()
-		if err != nil {
+		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, format); err != nil {
 			return fmt.Errorf("recover selected metadata: %w", err)
 		}
 		recovered = true
