@@ -7,7 +7,7 @@ on:
       public_version:
         description: Released application version to install from the public Go proxy
         required: true
-        default: v0.1.0-rc.7
+        default: v0.1.0-rc.8
         type: string
       mode:
         description: What to run
