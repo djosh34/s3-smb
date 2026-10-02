@@ -68,6 +68,11 @@ func waitHeldPut(t *testing.T, held <-chan faultEvent, write <-chan error) fault
 }
 func killAtObservedPut(t *testing.T, d *daemon, p *faultProxy) {
 	t.Helper()
+	sigkill(t, d)
+	p.Release()
+}
+func sigkill(t *testing.T, d *daemon) {
+	t.Helper()
 	if err := d.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -86,7 +91,6 @@ func killAtObservedPut(t *testing.T, d *daemon, p *faultProxy) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("SIGKILL daemon exit deadline")
 	}
-	p.Release()
 }
 func waitInterruptedSMB(t *testing.T, done <-chan error) {
 	t.Helper()
