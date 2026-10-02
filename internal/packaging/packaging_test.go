@@ -30,7 +30,7 @@ func root(t *testing.T) string {
 
 func TestSourceDistribution(t *testing.T) {
 	dir := root(t)
-	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb2/LICENSE", "internal/smb2/Attributions.txt", "internal/thirdparty/cli/LICENSE", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
+	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb2/LICENSE", "internal/smb2/Attributions.txt", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || len(b) < 100 {
 			t.Errorf("missing license/notice %s: %v", name, err)

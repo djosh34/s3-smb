@@ -19,17 +19,7 @@ package utils
 import (
 	"errors"
 	"strconv"
-
-	"github.com/djosh34/s3-smb/internal/thirdparty/cli"
 )
-
-func ParseBytes(ctx *cli.Context, key string, unit byte) uint64 {
-	str := ctx.String(key)
-	if len(str) == 0 {
-		return 0
-	}
-	return ParseBytesStr(key, str, unit)
-}
 
 func ParseBytesStr(key, str string, unit byte) uint64 {
 	s := str
@@ -63,15 +53,6 @@ func ParseBytesStr(key, str string, unit byte) uint64 {
 		logger.Fatalf("Invalid value \"%s\" for \"%s\": %s", str, key, err)
 	}
 	return uint64(val)
-}
-
-func ParseMbps(ctx *cli.Context, key string) int64 {
-	str := ctx.String(key)
-	if len(str) == 0 {
-		return 0
-	}
-
-	return ParseMbpsStr(key, str)
 }
 
 func ParseMbpsStr(key, str string) int64 {

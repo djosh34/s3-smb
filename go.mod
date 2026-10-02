@@ -12,7 +12,6 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
 	github.com/aws/smithy-go v1.24.2
 	github.com/charlievieth/fastwalk v1.0.14
-	github.com/cpuguy83/go-md2man/v2 v2.0.2
 	github.com/davies/groupcache v0.0.0-20230821031435-e4e8362f58e1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/emmansun/gmsm v0.41.1
@@ -36,10 +35,8 @@ require (
 	github.com/twmb/murmur3 v1.1.8
 	github.com/viki-org/dnscache v0.0.0-20130720023526-c70c1f23c5d8
 	github.com/vmihailenco/msgpack/v5 v5.4.1
-	github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673
 	golang.org/x/crypto v0.49.0
 	golang.org/x/exp v0.0.0-20240119083558-1b970713d09a
-	golang.org/x/net v0.52.0
 	golang.org/x/sync v0.20.0
 	golang.org/x/sys v0.42.0
 	google.golang.org/protobuf v1.36.11
@@ -80,8 +77,8 @@ require (
 	github.com/prometheus/procfs v0.15.1 // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
-	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
+	golang.org/x/net v0.52.0 // indirect
 )
