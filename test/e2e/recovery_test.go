@@ -265,9 +265,6 @@ func (d *daemon) closeLogs() {
 		f.Close()
 		checkDaemonLog(d.t, f.Name())
 	}
-	if usage, ok := d.cmd.ProcessState.SysUsage().(*syscall.Rusage); ok {
-		d.t.Logf("daemon peak_rss_kib=%d user_time=%v system_time=%v", usage.Maxrss, d.cmd.ProcessState.UserTime(), d.cmd.ProcessState.SystemTime())
-	}
 }
 func checkDaemonLog(t *testing.T, path string) {
 	t.Helper()
@@ -331,7 +328,6 @@ func (f *fixture) share() (*smb.Share, func()) {
 }
 func writeFile(t *testing.T, share *smb.Share, name string, data []byte) {
 	t.Helper()
-	started := time.Now()
 	file, err := share.Create(name)
 	if err != nil {
 		t.Fatal(err)
@@ -345,12 +341,10 @@ func writeFile(t *testing.T, share *smb.Share, name string, data []byte) {
 	if err = file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("write+flush+close %s bytes=%d duration=%s", name, len(data), time.Since(started))
 }
 func verifyFiles(t *testing.T, share *smb.Share, files map[string][]byte) {
 	t.Helper()
 	for name, want := range files {
-		start := time.Now()
 		got, err := share.ReadFile(name)
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -358,29 +352,16 @@ func verifyFiles(t *testing.T, share *smb.Share, files map[string][]byte) {
 		if sha256.Sum256(got) != sha256.Sum256(want) {
 			t.Fatalf("full SHA256 mismatch %s: got %x want %x", name, sha256.Sum256(got), sha256.Sum256(want))
 		}
-		t.Logf("verified %s bytes=%d sha256=%x read_duration=%s", name, len(got), sha256.Sum256(got), time.Since(start))
 	}
 }
 func (f *fixture) protectedAfter(after time.Time) {
 	f.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
-	var peakStaging int64
 	for time.Now().Before(deadline) {
-		entries, _ := os.ReadDir(filepath.Join(f.root, "state", "backup-staging"))
-		var staging int64
-		for _, entry := range entries {
-			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
-				staging += info.Size()
-			}
-		}
-		if staging > peakStaging {
-			peakStaging = staging
-		}
 		data, err := os.ReadFile(filepath.Join(f.root, "state", "backup-receipt.json"))
 		if err == nil {
 			var receipt backup.Receipt
 			if json.Unmarshal(data, &receipt) == nil && receipt.Snapshot.After(after) {
-				f.t.Logf("metadata export observable_completion=%s peak_observed_staging_bytes=%d (sampling; zero may miss short export)", time.Since(receipt.Snapshot), peakStaging)
 				return
 			}
 		}

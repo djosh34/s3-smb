@@ -7,10 +7,9 @@ import (
 	"testing"
 )
 
-// Stage-2 security review's executed reproducer, retained as regression evidence.
-// This is the native emptyDir -> BatchUnlink -> SQL batch-retirement path, not
-// just a call to the maintenance callback or single-entry unlink helper.
-func TestSecurityReviewExpiredTrashBatchRetirement(t *testing.T) {
+// This runs emptyDir, BatchUnlink and the SQL batch retirement, and does not
+// stop at the maintenance callback or the single-entry unlink helper.
+func TestExpiredTrashBatchRetirement(t *testing.T) {
 	var expired atomic.Bool
 	var calls atomic.Int32
 	m := protectedDB(t, func() error {

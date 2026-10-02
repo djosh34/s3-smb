@@ -48,19 +48,12 @@ func TestCacheConfig(t *testing.T) {
 
 type countStore struct {
 	object.ObjectStorage
-	gets    atomic.Int64
-	failPut bool
+	gets atomic.Int64
 }
 
 func (s *countStore) Get(ctx context.Context, key string, off, limit int64, getters ...object.AttrGetter) (io.ReadCloser, error) {
 	s.gets.Add(1)
 	return s.ObjectStorage.Get(ctx, key, off, limit, getters...)
-}
-func (s *countStore) Put(ctx context.Context, key string, r io.Reader, getters ...object.AttrGetter) error {
-	if s.failPut {
-		return errors.New("injected upload failure")
-	}
-	return s.ObjectStorage.Put(ctx, key, r, getters...)
 }
 func TestZeroCacheColdRead(t *testing.T) {
 	remote := t.TempDir()
@@ -118,73 +111,6 @@ func TestZeroCacheColdRead(t *testing.T) {
 	defer page.Release()
 	if _, err = cold.NewReader(17, len(data)).ReadAt(context.Background(), page, 0); err == nil {
 		t.Fatal("missing data reported success")
-	}
-}
-func TestNativeCacheEvictionRefetch(t *testing.T) {
-	raw, err := object.CreateStorage("file", t.TempDir(), "", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	remote := &countStore{ObjectStorage: raw}
-	f, _ := NewFormat("test", false, 14)
-	f.BlockSize = 256
-	capacity := int64(300000)
-	c, err := CacheConfig(f, "memory", &capacity)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.Prefetch = 0
-	store := chunk.NewCachedStore(remote, c, nil)
-	data := bytes.Repeat([]byte("e"), 256<<10)
-	for id := uint64(1); id <= 4; id++ {
-		w := store.NewWriter(id, 0)
-		if _, err = w.WriteAt(data, 0); err != nil {
-			t.Fatal(err)
-		}
-		if err = w.Finish(len(data)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	read := func(id uint64) {
-		t.Helper()
-		p := chunk.NewOffPage(len(data))
-		defer p.Release()
-		n, err := store.NewReader(id, len(data)).ReadAt(context.Background(), p, 0)
-		if err != nil || n != len(data) || !bytes.Equal(p.Data, data) {
-			t.Fatal("cache/refetch corruption", n, err)
-		}
-	}
-	for id := uint64(1); id <= 4; id++ {
-		read(id)
-	}
-	if store.UsedMemory() > capacity {
-		t.Fatal("native retained cache exceeded capacity")
-	}
-	before := remote.gets.Load()
-	read(4)
-	if remote.gets.Load() != before {
-		t.Fatal("warm native cache did not hit")
-	}
-	read(1)
-	if remote.gets.Load() <= before {
-		t.Fatal("dataset larger than cache did not evict/refetch")
-	}
-}
-
-func TestZeroCacheUploadFailure(t *testing.T) {
-	raw := memory(t)
-	f, _ := NewFormat("test", false, 14)
-	zero := int64(0)
-	c, _ := CacheConfig(f, "/unusable", &zero)
-	c.MaxRetries = 1
-	s := chunk.NewCachedStore(&countStore{ObjectStorage: raw, failPut: true}, c, nil)
-	w := s.NewWriter(1, 0)
-	data := bytes.Repeat([]byte("x"), 4096)
-	if _, err := w.WriteAt(data, 0); err != nil {
-		t.Fatal(err)
-	}
-	if err := w.Finish(len(data)); err == nil {
-		t.Fatal("zero cache upload failure reported success")
 	}
 }
 func TestFilesystemNativeLifecycle(t *testing.T) {

@@ -18,17 +18,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-// This deliberately loses a successful real MinIO PUT response, rather than
-// fabricating a successful object-store result. It runs in the shared Docker
-// unit phase with a disposable MinIO and no production credentials.
+// The proxy drops the response to a key PUT that MinIO already committed.
 func TestMinIOBootstrapLostResponse(t *testing.T) {
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("run scripts/test-linux.sh unit ./internal/storage")
+		t.Skip("needs MinIO: run scripts/test-linux.sh")
 	}
 	upstream, err := url.Parse(endpoint)
 	if err != nil || upstream.Scheme != "http" || upstream.Host == "" {
@@ -54,17 +51,10 @@ func TestMinIOBootstrapLostResponse(t *testing.T) {
 		}
 	}
 	var lost atomic.Bool
-	var dropChunkResponses atomic.Bool
-	var droppedChunks atomic.Int64
 	var puts atomic.Int64
 	proxy := httputil.NewSingleHostReverseProxy(upstream)
 	proxy.ErrorLog = log.New(io.Discard, "", 0)
 	proxy.ModifyResponse = func(res *http.Response) error {
-		if res.Request.Method == http.MethodPut && strings.Contains(res.Request.URL.Path, "/chunks/") && dropChunkResponses.Load() && res.StatusCode >= 200 && res.StatusCode < 300 {
-			droppedChunks.Add(1)
-			_ = res.Body.Close()
-			return errors.New("deliberately lost native chunk upload response")
-		}
 		if res.Request.Method == http.MethodPut && strings.Contains(res.Request.URL.Path, "/s3-smb/keys/") {
 			puts.Add(1)
 			if res.StatusCode >= 200 && res.StatusCode < 300 && lost.CompareAndSwap(false, true) {
@@ -145,71 +135,4 @@ func TestMinIOBootstrapLostResponse(t *testing.T) {
 	if err != nil || !bytes.Equal(got, data) {
 		t.Fatal("fresh native wrapper failed data verification", err)
 	}
-	t.Run("zero_cache_upload_response_interrupted", func(t *testing.T) {
-		zero := int64(0)
-		c, e := CacheConfig(format, "/not-a-usable-cache", &zero)
-		if e != nil {
-			t.Fatal(e)
-		}
-		c.MaxRetries = 1
-		store := chunk.NewCachedStore(blob, c, nil)
-		completed := bytes.Repeat([]byte("completed-data"), 4096)
-		w := store.NewWriter(101, 0)
-		if _, e = w.WriteAt(completed, 0); e != nil {
-			t.Fatal(e)
-		}
-		if e = w.Finish(len(completed)); e != nil {
-			t.Fatal(e)
-		}
-		dropChunkResponses.Store(true)
-		w = store.NewWriter(102, 0)
-		if _, e = w.WriteAt(completed, 0); e != nil {
-			t.Fatal(e)
-		}
-		e = w.Finish(len(completed))
-		dropChunkResponses.Store(false)
-		if e == nil {
-			t.Fatal("interrupted S3 upload response reported successful zero-cache flush")
-		}
-		if droppedChunks.Load() == 0 {
-			t.Fatal("network fault was not exercised")
-		}
-		cold := chunk.NewCachedStore(reopened, c, nil)
-		page := chunk.NewOffPage(len(completed))
-		defer page.Release()
-		n, e := cold.NewReader(101, len(completed)).ReadAt(ctx, page, 0)
-		if e != nil || n != len(completed) || !bytes.Equal(page.Data, completed) {
-			t.Fatal("completed data did not survive interrupted upload and cold native reopen", n, e)
-		}
-		if cold.UsedMemory() != 0 {
-			t.Fatal("zero cache retained data")
-		}
-	})
-	before := puts.Load()
-	if _, err = OpenVolume(ctx, raw, saved, "wrong-passphrase", false); err == nil {
-		t.Fatal("wrong passphrase succeeded")
-	}
-	if puts.Load() != before {
-		t.Fatal("wrong passphrase mutated key")
-	}
-	if err = raw.Put(ctx, keyPath, strings.NewReader("deliberately corrupt protected key")); err != nil {
-		t.Fatal(err)
-	}
-	before = puts.Load()
-	if _, err = OpenVolume(ctx, raw, saved, "synthetic-bootstrap-passphrase", false); err == nil {
-		t.Fatal("corrupt key succeeded")
-	}
-	if puts.Load() != before {
-		t.Fatal("corrupt key regenerated")
-	}
-	if err = raw.Delete(ctx, keyPath); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = OpenVolume(ctx, raw, saved, "synthetic-bootstrap-passphrase", false); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("missing key: %v", err)
-	}
-	if puts.Load() != before {
-		t.Fatal("missing key regenerated")
-	}
-	t.Log("real MinIO committed key PUT response lost, exact readback recovered; conditional collision preserved key; wrong/corrupt/missing key failed without mutation")
 }

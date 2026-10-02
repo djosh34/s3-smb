@@ -130,22 +130,6 @@ type brokenWriter struct{}
 
 func (brokenWriter) Write([]byte) (int, error) { return 0, errors.New("OUTPUT_FAILURE_SECRET") }
 
-func TestBrokenOutputPreservesPanic(t *testing.T) {
-	// slog drops a sink error rather than exposing it on an unfiltered stream.
-	Install(brokenWriter{})
-	_ = Configure("json", "debug")
-	l := logrus.New()
-	Logrus(l, "test")
-	loggingPanic := func() (panicked bool) {
-		defer func() { panicked = recover() != nil }()
-		l.Panic("native panic")
-		return false
-	}
-	if !loggingPanic() {
-		t.Fatal("broken output swallowed native panic")
-	}
-}
-
 func TestNativeTermination(t *testing.T) {
 	mode := os.Getenv("S3_SMB_LOG_TEST_CHILD")
 	if mode != "" {

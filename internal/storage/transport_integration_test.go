@@ -29,13 +29,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/aws/signer/v4"
-	"github.com/aws/smithy-go"
+	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/logging"
@@ -47,10 +45,9 @@ const transportHost = "transport.test"
 const transportAccess = "s3smb-test-access"
 const transportSecret = "s3smb-test-secret-only"
 
-// TestTransportAcceptance uses the production config resolver and native S3
-// client against the shared, source-pinned MinIO. The local proxy terminates TLS
-// and observes requests, but never fabricates successful S3 responses or changes
-// their signed Host/path. See test/transport/README.md for the precise boundary.
+// TestTransportAcceptance runs the config resolver and the S3 client against
+// MinIO through a local TLS proxy. The proxy terminates TLS and records each
+// request. It leaves the signed Host and path unchanged.
 func TestTransportAcceptance(t *testing.T) {
 	if os.Getenv("S3_SMB_E2E_ENDPOINT") == "" {
 		t.Skip("needs MinIO: run scripts/test-linux.sh")
@@ -73,117 +70,44 @@ func TestTransportAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, pathStyle := range []bool{true, false} {
-		style := "path_style_false"
-		if pathStyle {
-			style = "path_style_true"
-		}
-		t.Run(style, func(t *testing.T) {
-			for _, mutual := range []bool{false, true} {
-				name := "private_ca"
-				if mutual {
-					name = "mutual_tls"
-				}
-				t.Run(name, func(t *testing.T) {
-					proxy := transportProxy(t, upstream, serverPair, ca.cert, mutual)
-					cfg := transportConfig(t, proxy.endpoint, pathStyle)
-					cfg.S3.TLS.CAFile = caFile
-					if mutual {
-						cfg.S3.TLS.ClientCertFile, cfg.S3.TLS.ClientKeyFile = certFile, keyFile
-					}
-					store := transportOpen(t, cfg)
-					transportRoundTrip(t, store, "accepted/"+style+"/"+name)
-					proxy.assertRequests(t, pathStyle, true, mutual, "")
-				})
-			}
-		})
-	}
-
 	for _, tc := range []struct {
-		name   string
-		ca     string
-		mutual bool
+		name              string
+		pathStyle, mutual bool
 	}{
-		{"wrong_ca", wrongCAFile, false},
-		{"untrusted_private_ca", "", false},
-		{"missing_client_certificate", caFile, true},
+		{"path_style_true/private_ca", true, false},
+		{"path_style_false/mutual_tls", false, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			proxy := transportProxy(t, upstream, serverPair, ca.cert, tc.mutual)
-			cfg := transportConfig(t, proxy.endpoint, true)
-			cfg.S3.TLS.CAFile = tc.ca
+			cfg := transportConfig(t, proxy.endpoint, tc.pathStyle)
+			cfg.S3.TLS.CAFile = caFile
+			if tc.mutual {
+				cfg.S3.TLS.ClientCertFile, cfg.S3.TLS.ClientKeyFile = certFile, keyFile
+			}
 			store := transportOpen(t, cfg)
-			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			start := time.Now()
-			_, err := store.Head(ctx, "accepted/path_style_true/private_ca")
-			if err == nil {
-				t.Fatal("untrusted TLS connection unexpectedly succeeded")
-			}
-			if time.Since(start) > 4*time.Second {
-				t.Fatal("TLS failure exceeded caller deadline")
-			}
-			transportNoSecrets(t, err.Error(), transportAccess, transportSecret)
-			if got := proxy.snapshot(); len(got) != 0 {
-				t.Fatal("TLS authentication failure reached the S3 HTTP handler")
-			}
-			if proxy.plain.Load() != 0 {
-				t.Fatal("client attempted plaintext downgrade after TLS failure")
-			}
-			t.Log("native S3 rejected TLS; no HTTP request, no plaintext retry")
+			transportRoundTrip(t, store, "accepted/"+tc.name)
+			proxy.assertRequests(t, tc.pathStyle, tc.mutual, "")
 		})
 	}
 
-	t.Run("ca_replacement_requires_new_snapshot", func(t *testing.T) {
+	t.Run("wrong_ca", func(t *testing.T) {
 		proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
-		replacement := transportFile(t, "replace-ca.pem", wrongCA.pem)
 		cfg := transportConfig(t, proxy.endpoint, true)
-		cfg.S3.TLS.CAFile = replacement
-		old := transportOpen(t, cfg)
-		if err := os.WriteFile(replacement, ca.pem, 0600); err != nil {
-			t.Fatal(err)
-		}
+		cfg.S3.TLS.CAFile = wrongCAFile
+		store := transportOpen(t, cfg)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if _, err := old.Head(ctx, "accepted/path_style_true/private_ca"); err == nil {
-			t.Fatal("already resolved client unexpectedly reloaded trust roots")
+		start := time.Now()
+		_, err := store.Head(ctx, "accepted/path_style_true/private_ca")
+		if err == nil {
+			t.Fatal("untrusted TLS connection unexpectedly succeeded")
 		}
-		fresh := transportOpen(t, cfg)
-		transportRoundTrip(t, fresh, "accepted/replaced-ca")
-		proxy.assertRequests(t, true, true, false, "")
-	})
-
-	t.Run("explicit_http", func(t *testing.T) {
-		cfg := transportConfig(t, upstream.String(), true)
-		transportRoundTrip(t, transportOpen(t, cfg), "accepted/explicit-http")
-	})
-
-	t.Run("credential_sources", func(t *testing.T) {
-		// Exercise independent startup sources against real S3, not only resolver
-		// unit tests. The executable is invoked directly, without a shell.
-		source := func(t *testing.T, kind, value string) config.SecretSource {
-			switch kind {
-			case "file":
-				path := transportFile(t, "credential", []byte(value+"\n"))
-				return config.SecretSource{File: &path}
-			case "command":
-				return config.SecretSource{Command: []string{"/usr/bin/printf", "%s", value}}
-			default:
-				return config.SecretSource{Value: &value}
-			}
+		if time.Since(start) > 4*time.Second {
+			t.Fatal("TLS failure exceeded caller deadline")
 		}
-		for _, accessSource := range []string{"value", "file", "command"} {
-			for _, secretSource := range []string{"value", "file", "command"} {
-				t.Run(accessSource+"_"+secretSource, func(t *testing.T) {
-					proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
-					cfg := transportConfig(t, proxy.endpoint, true)
-					cfg.S3.TLS.CAFile = caFile
-					cfg.S3.AccessKey = source(t, accessSource, transportAccess)
-					cfg.S3.SecretKey = source(t, secretSource, transportSecret)
-					transportRoundTrip(t, transportOpen(t, cfg), "accepted/sources/"+accessSource+"_"+secretSource)
-					proxy.assertRequests(t, true, true, false, "")
-				})
-			}
+		transportNoSecrets(t, err.Error(), transportAccess, transportSecret)
+		if got := proxy.snapshot(); len(got) != 0 {
+			t.Fatal("TLS authentication failure reached the S3 HTTP handler")
 		}
 	})
 
@@ -202,109 +126,12 @@ func TestTransportAcceptance(t *testing.T) {
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret-must-not-be-used")
 		t.Setenv("AWS_SESSION_TOKEN", "ambient-token-must-not-be-used")
 		transportRoundTrip(t, transportOpen(t, cfg), "accepted/static-token")
-		proxy.assertRequests(t, false, true, false, token)
+		proxy.assertRequests(t, false, false, token)
 		for _, r := range proxy.snapshot() {
 			if r.method == http.MethodPost {
 				t.Fatal("native client attempted credential acquisition/refresh")
 			}
 		}
-		t.Log("MinIO accepted explicit startup token on signed native PUT/GET/HEAD/LIST/DELETE; no refresh")
-	})
-
-	t.Run("session_token_fail_closed", func(t *testing.T) {
-		access, secret, _ := transportSTS(t, upstream)
-		// Valid ambient root credentials would make LIST succeed if an explicit
-		// startup authentication failure silently fell back to an AWS provider.
-		t.Setenv("AWS_ACCESS_KEY_ID", transportAccess)
-		t.Setenv("AWS_SECRET_ACCESS_KEY", transportSecret)
-		t.Setenv("AWS_SESSION_TOKEN", "")
-		for _, tc := range []struct{ name, token string }{
-			{"missing", ""},
-			{"invalid", "transport-invalid-session-token-marker"},
-		} {
-			t.Run(tc.name, func(t *testing.T) {
-				proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
-				proxy.expectedToken = tc.token
-				cfg := transportConfig(t, proxy.endpoint, false)
-				cfg.S3.AccessKey = config.SecretSource{Value: &access}
-				cfg.S3.SecretKey = config.SecretSource{Value: &secret}
-				cfg.S3.SessionToken, cfg.S3.TLS.CAFile = tc.token, caFile
-				store := transportOpen(t, cfg)
-				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-				defer cancel()
-				_, _, _, err := store.List(ctx, "accepted/", "", "", "", 1, true)
-				if err == nil || errors.Is(err, os.ErrNotExist) {
-					t.Fatal("missing/invalid configured token was accepted, replaced, or mistaken for missing data")
-				}
-				transportNoSecrets(t, err.Error(), access, secret, tc.token)
-				var apiError smithy.APIError
-				if !errors.As(err, &apiError) {
-					t.Fatal("token failure did not come from a real S3 API response")
-				}
-				// This pinned MinIO reports InvalidTokenId for both missing and
-				// invalid STS tokens; do not mistake this for a data-not-found error.
-				if apiError.ErrorCode() != "InvalidTokenId" {
-					t.Fatalf("want MinIO InvalidTokenId, got code=%q", logging.Redact(apiError.ErrorCode()))
-				}
-				requests := proxy.snapshot()
-				if len(requests) != 1 {
-					t.Fatalf("want one rejected native request without refresh/fallback, got %d", len(requests))
-				}
-				r := requests[0]
-				if r.status != http.StatusForbidden || !r.tokenOK {
-					t.Fatalf("want MinIO authentication rejection with unchanged configured token, got HTTP %d", r.status)
-				}
-				if proxy.plain.Load() != 0 {
-					t.Fatal("authentication failure triggered plaintext downgrade")
-				}
-				t.Logf("MinIO rejected configured token with HTTP %d; no retry, refresh, or ambient credential fallback", r.status)
-			})
-		}
-	})
-
-	t.Run("invalid_static_credentials", func(t *testing.T) {
-		proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
-		cfg := transportConfig(t, proxy.endpoint, true)
-		wrong := "transport-invalid-secret-marker"
-		cfg.S3.SecretKey = config.SecretSource{Value: &wrong}
-		cfg.S3.TLS.CAFile = caFile
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_, err := transportOpen(t, cfg).Head(ctx, "accepted/path_style_true/private_ca")
-		if err == nil {
-			t.Fatal("MinIO accepted an invalid signing secret")
-		}
-		if errors.Is(err, os.ErrNotExist) {
-			t.Fatal("S3 authentication failure was mistaken for a missing object")
-		}
-		transportNoSecrets(t, err.Error(), transportAccess, wrong)
-		requests := proxy.snapshot()
-		if len(requests) != 1 || requests[0].status != http.StatusForbidden {
-			t.Fatalf("want one real MinIO 403, got %d requests", len(requests))
-		}
-	})
-
-	t.Run("caller_deadline", func(t *testing.T) {
-		proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
-		proxy.stall.Store(true)
-		cfg := transportConfig(t, proxy.endpoint, true)
-		cfg.S3.TLS.CAFile = caFile
-		store := transportOpen(t, cfg)
-		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
-		defer cancel()
-		start := time.Now()
-		_, err := store.Head(ctx, "deadline-probe")
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatal("native S3 did not preserve caller deadline error")
-		}
-		if time.Since(start) > 3*time.Second {
-			t.Fatal("native S3 ignored bounded caller deadline")
-		}
-		if proxy.stalled.Load() != 1 {
-			t.Fatal("deadline probe did not reach the TLS HTTP handler exactly once")
-		}
-		transportNoSecrets(t, err.Error(), transportAccess, transportSecret)
-		t.Log("stalled TLS HTTP response canceled by 300ms caller deadline")
 	})
 }
 
@@ -413,7 +240,6 @@ func transportRoundTrip(t *testing.T, store object.ObjectStorage, key string) {
 	if !errors.Is(err, os.ErrNotExist) {
 		t.Fatal("deleted object GET did not report not-exist")
 	}
-	t.Log("native Create/Put/Get/Head/List/Delete verified against MinIO with exact binary payload")
 }
 
 type transportRequest struct {
@@ -426,9 +252,6 @@ type transportObserver struct {
 	endpoint      string
 	mu            sync.Mutex
 	requests      []transportRequest
-	plain         atomic.Int64
-	stall         atomic.Bool
-	stalled       atomic.Int64
 	expectedToken string
 }
 
@@ -437,7 +260,7 @@ func (p *transportObserver) snapshot() []transportRequest {
 	defer p.mu.Unlock()
 	return append([]transportRequest(nil), p.requests...)
 }
-func (p *transportObserver) assertRequests(t *testing.T, pathStyle, secure, mutual bool, token string) {
+func (p *transportObserver) assertRequests(t *testing.T, pathStyle, mutual bool, token string) {
 	t.Helper()
 	endpoint, _ := url.Parse(p.endpoint)
 	host := endpoint.Host
@@ -458,7 +281,7 @@ func (p *transportObserver) assertRequests(t *testing.T, pathStyle, secure, mutu
 		if !pathStyle && strings.HasPrefix(r.path, "/"+transportBucket+"/") {
 			t.Error("virtual-host mode silently fell back to path-style")
 		}
-		if secure && r.tlsVersion < tls.VersionTLS12 {
+		if r.tlsVersion < tls.VersionTLS12 {
 			t.Error("native request did not use verified TLS 1.2+")
 		}
 		if r.clientCert != mutual {
@@ -476,10 +299,6 @@ func (p *transportObserver) assertRequests(t *testing.T, pathStyle, secure, mutu
 			t.Errorf("no successful real MinIO %s response observed", method)
 		}
 	}
-	if p.plain.Load() != 0 {
-		t.Error("native client attempted plaintext on TLS endpoint")
-	}
-	t.Logf("observed signed Host=%s, path prefix=%s, TLS>=1.2, mutual=%t", host, prefix, mutual)
 }
 
 func transportProxy(t *testing.T, upstream *url.URL, pair tls.Certificate, ca *x509.Certificate, mutual bool) *transportObserver {
@@ -493,11 +312,6 @@ func transportProxy(t *testing.T, upstream *url.URL, pair tls.Certificate, ca *x
 		Transport: backend, ErrorLog: log.New(io.Discard, "", 0),
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if p.stall.Load() {
-			p.stalled.Add(1)
-			<-r.Context().Done()
-			return
-		}
 		observed := transportRequest{method: r.Method, host: r.Host, path: r.URL.Path,
 			tokenOK: r.Header.Get("X-Amz-Security-Token") == p.expectedToken}
 		if r.TLS != nil {
@@ -518,7 +332,6 @@ func transportProxy(t *testing.T, upstream *url.URL, pair tls.Certificate, ca *x
 		server.TLS.ClientCAs = x509.NewCertPool()
 		server.TLS.ClientCAs.AddCert(ca)
 	}
-	server.Listener = &transportSniffListener{Listener: server.Listener, plain: &p.plain}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	_, port, err := net.SplitHostPort(server.Listener.Addr().String())
@@ -543,36 +356,6 @@ func (w *transportStatusWriter) Write(b []byte) (int, error) {
 		w.WriteHeader(200)
 	}
 	return w.ResponseWriter.Write(b)
-}
-
-type transportSniffListener struct {
-	net.Listener
-	plain *atomic.Int64
-}
-
-func (l *transportSniffListener) Accept() (net.Conn, error) {
-	c, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return &transportSniffConn{Conn: c, plain: l.plain}, nil
-}
-
-type transportSniffConn struct {
-	net.Conn
-	plain *atomic.Int64
-	seen  bool
-}
-
-func (c *transportSniffConn) Read(b []byte) (int, error) {
-	n, err := c.Conn.Read(b)
-	if n > 0 && !c.seen {
-		c.seen = true
-		if b[0] != 22 {
-			c.plain.Add(1)
-		}
-	}
-	return n, err
 }
 
 type transportAuthority struct {

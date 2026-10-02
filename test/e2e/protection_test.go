@@ -55,12 +55,10 @@ func TestScheduledBackupFailure(t *testing.T) {
 			}
 			key := protectionObjectKey(t, f, receipt.Key)
 			baselineDigest := protectionObjectDigest(t, f, key)
-			proxy.Record("baseline-receipt-verified")
 			failureStart := time.Now()
 			proxy.SetMetadataFailure(true)
 			select {
 			case <-proxy.MetadataFailureSeen():
-				proxy.Record("scheduled-metadata-failure-observed")
 			case err := <-d.done:
 				d.stopped = true
 				d.closeLogs()
@@ -82,7 +80,6 @@ func TestScheduledBackupFailure(t *testing.T) {
 					t.Fatal("scheduled backup failure produced successful process exit")
 				}
 				d.closeLogs()
-				proxy.Record("daemon-nonzero-exit-after-metadata-failure")
 				t.Logf("scheduled native backup failure stopped executable in %s: %v", time.Since(failureStart), err)
 			case <-timer.C:
 				_ = d.cmd.Process.Kill()
@@ -124,7 +121,6 @@ func TestScheduledBackupFailure(t *testing.T) {
 			closeRecovered()
 			f.protectedAfter(time.Now())
 			restored.stop()
-			proxy.Record("all-baseline-hashes-recovered-and-writes-resumed")
 		})
 	}
 }
