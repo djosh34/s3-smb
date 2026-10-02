@@ -68,6 +68,7 @@ class Acceptance:
         self.fixture = BIN / 'fixture'
         self.serial = 0
         self.destination = None
+        self.capture = None
 
     def event(self, event, **fields):
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
@@ -139,6 +140,14 @@ class Acceptance:
         for port in (SMB_PORT, 19000, 19001, 19002, 19003):
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', port))
+        # The application closed Time Machine's connection once on a frame
+        # shorter than four bytes. Keep every SMB segment that carries 1 to 16
+        # bytes, so that such a frame can be read afterwards.
+        payload = '(ip[2:2] - ((ip[0]&0xf)<<2) - ((tcp[12]&0xf0)>>2))'
+        self.capture = subprocess.Popen(
+            ['/usr/sbin/tcpdump', '-i', 'lo0', '-U', '-w', str(EVIDENCE / 'smb-small-segments.pcap'),
+             f'tcp port {SMB_PORT} and {payload} > 0 and {payload} <= 16'],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Public synthetic values only: this isolated loopback fixture has no
         # real account. These same documented inputs are reconstructed on B.
         os.environ['MINIO_ROOT_USER'] = 'mac-acceptance'
@@ -572,13 +581,16 @@ logging:
             attempt('application stop', self.daemon.stop)
             outcomes.append(dict(process='application', pid=self.daemon.pid,
                                  reaped=self.daemon.reaped, status=self.daemon.exit_status))
+        if self.capture:
+            attempt('capture stop', self.capture.terminate)
+            attempt('capture reap', lambda: self.capture.wait(timeout=30))
         for process, log in reversed(self.services):
             attempt('service reap', lambda p=process: reap(p, str(p.args[0]), service=True))
             attempt('service log close', log.close)
         for argv in (['/usr/bin/tmutil', 'status'], ['/sbin/mount'],
                      ['/usr/bin/hdiutil', 'info', '-plist'], ['/bin/df', '-k'],
                      ['/usr/bin/log', 'show', '--style', 'json', '--last', '6h', '--info', '--debug',
-                      '--predicate', 'process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb"']):
+                      '--predicate', 'process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb" OR senderImagePath CONTAINS "smbfs"']):
             try:
                 self.cmd.run(argv, timeout=90, diagnostic=True, capture=False)
             except Exception as error:
