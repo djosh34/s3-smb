@@ -353,9 +353,6 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return fmt.Errorf("listen on configured SMB address (no fallback): %w", err)
 	}
-	if !c.Encryption.Enabled {
-		slog.Warn("application encryption is disabled; sufficient S3 read access exposes file data and metadata")
-	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- r.server.Serve(r.listener) }()
 	var backupFailure <-chan error
