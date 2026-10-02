@@ -214,7 +214,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err != nil {
 			return fmt.Errorf("local metadata is missing; refusing initialization: %w", err)
 		}
-		if !sameVolume(saved, format) {
+		if !backup.SameVolume(saved, format) {
 			return errors.New("selected recovery point does not match remote volume identity")
 		}
 		message := fmt.Sprintf("Recover metadata from %s (%s)? Changes after this point may be lost. The old writer MUST be stopped, including on other hosts. Metadata validation is not a full file-content check.", point.Key, point.Time.UTC().Format(time.RFC3339))
@@ -265,7 +265,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if e != nil {
 			return e
 		}
-		if !sameVolume(local, format) {
+		if !backup.SameVolume(local, format) {
 			return errors.New("local metadata identity or data layout does not match remote dataset")
 		}
 		// Current YAML controls retention, not a stale recovery export. It does not
@@ -383,7 +383,7 @@ func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *
 	if err != nil {
 		return fmt.Errorf("volume marker is missing: %w", err)
 	}
-	if !sameVolume(saved, format) {
+	if !backup.SameVolume(saved, format) {
 		return errors.New("backup identity does not match remote volume")
 	}
 	return nil
@@ -419,8 +419,4 @@ func localMetadataExists(path string) (bool, error) {
 	}
 	warnPermissions(info, "metadata database", 0600)
 	return true, nil
-}
-
-func sameVolume(a, b *meta.Format) bool {
-	return a != nil && b != nil && a.UUID == b.UUID && a.Name == b.Name && a.BlockSize == b.BlockSize && a.Compression == b.Compression && a.Shards == b.Shards && a.HashPrefix == b.HashPrefix && a.EncryptAlgo == b.EncryptAlgo && a.EncryptKey == b.EncryptKey
 }

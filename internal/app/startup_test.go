@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/djosh34/s3-smb/internal/backup"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/storage"
@@ -100,7 +101,7 @@ func TestNativeIdentityComparisonIncludesDataLayoutAndKey(t *testing.T) {
 	} {
 		b := *a
 		change(&b)
-		if sameVolume(a, &b) {
+		if backup.SameVolume(a, &b) {
 			t.Fatal("accepted changed native identity/data layout")
 		}
 	}
@@ -108,7 +109,7 @@ func TestNativeIdentityComparisonIncludesDataLayoutAndKey(t *testing.T) {
 	b.Bucket = "old-endpoint"
 	b.AccessKey = "old-credential"
 	b.TrashDays++
-	if !sameVolume(a, &b) {
+	if !backup.SameVolume(a, &b) {
 		t.Fatal("connection settings are not native volume identity")
 	}
 }

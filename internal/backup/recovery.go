@@ -98,6 +98,12 @@ func Inspect(ctx context.Context, blob object.ObjectStorage, key string) (*meta.
 	return f, errors.Join(err, r.Close(), ctx.Err())
 }
 
+// SameVolume reports whether two formats name the same volume with the same
+// data layout and key.
+func SameVolume(a, b *meta.Format) bool {
+	return a != nil && b != nil && a.UUID == b.UUID && a.Name == b.Name && a.BlockSize == b.BlockSize && a.Compression == b.Compression && a.Shards == b.Shards && a.HashPrefix == b.HashPrefix && a.EncryptAlgo == b.EncryptAlgo && a.EncryptKey == b.EncryptKey
+}
+
 // CleanupRecoveryStaging removes abandoned application recovery directories.
 // Caller MUST hold the exclusive state lock, with no recovery worker alive.
 // Unknown contents and symlinks are never traversed or removed.
@@ -182,7 +188,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err != nil {
 		return nil, err
 	}
-	if saved.UUID != current.UUID || saved.Name != current.Name || saved.BlockSize != current.BlockSize || saved.Compression != current.Compression || saved.HashPrefix != current.HashPrefix || saved.Shards != current.Shards || (saved.EncryptKey != "") != (current.EncryptKey != "") || saved.EncryptAlgo != current.EncryptAlgo {
+	if !SameVolume(saved, current) {
 		return nil, errors.New("recovery volume identity, layout or encryption mode mismatch")
 	}
 	if err = ctx.Err(); err != nil {
