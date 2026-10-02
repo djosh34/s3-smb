@@ -13,7 +13,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	smb "github.com/hirochachacha/go-smb2"
 )
 
 // Exercise signed SMB EOF/WRITE/FLUSH against encrypted, uncompressed storage.
@@ -45,13 +44,6 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	if err != nil || format.Compression != "none" || format.EncryptAlgo == "" || format.BlockSize <= 0 {
 		t.Fatalf("expected native encrypted none format: %+v, %v", format, err)
 	}
-	capacity, err := share.Statfs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	unit := capacity.BlockSize() * capacity.FragmentSize()
-	t.Logf("wire FS capacity: allocation_unit_bytes=%d total_bytes=%d available_bytes=%d (logical advertised capacity, NOT backend free space)",
-		unit, capacity.TotalBlockCount()*unit, capacity.AvailableBlockCount()*unit)
 
 	file, err := share.OpenFile("large-sparse.bin", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
@@ -59,8 +51,8 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	}
 	closeFile := sync.OnceValue(file.Close)
 	defer closeFile()
-	type observation struct{ chunkBytes, chunks, allBytes, puts int64 }
-	observe := func(stage string) observation {
+	type observation struct{ chunkBytes, puts int64 }
+	observe := func() observation {
 		t.Helper()
 		var result observation
 		pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
@@ -70,25 +62,12 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 				t.Fatal(e)
 			}
 			for _, object := range page.Contents {
-				size := aws.ToInt64(object.Size)
-				result.allBytes += size
 				if strings.Contains(aws.ToString(object.Key), "/chunks/") {
-					result.chunkBytes += size
-					result.chunks++
+					result.chunkBytes += aws.ToInt64(object.Size)
 				}
 			}
 		}
 		result.puts = proxy.chunkPuts.Load()
-		info, e := file.Stat()
-		if e != nil {
-			t.Fatal(e)
-		}
-		stat, ok := info.(*smb.FileStat)
-		if !ok {
-			t.Fatalf("unexpected SMB stat type %T", info)
-		}
-		t.Logf("%s: EOF=%d SMB_AllocationSize=%d S3_chunk_objects=%d S3_chunk_payload_bytes=%d S3_all_payload_bytes=%d successful_chunk_PUTs=%d",
-			stage, stat.EndOfFile, stat.AllocationSize, result.chunks, result.chunkBytes, result.allBytes, result.puts)
 		return result
 	}
 	read := func(offset int64, want []byte) {
@@ -104,13 +83,13 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	before := observe("empty")
+	before := observe()
 	const logicalSize int64 = 256 << 20
 	if err = file.Truncate(logicalSize); err != nil {
 		t.Fatal(err)
 	}
 	flush()
-	grown := observe("256MiB-logical-EOF-no-writes")
+	grown := observe()
 	if grown.chunkBytes != before.chunkBytes || grown.puts != before.puts {
 		t.Fatal("SMB logical growth without writes materialized data objects")
 	}
@@ -132,7 +111,7 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 		flush()
 	}
 	write(payload)
-	written := observe("tiny-high-offset-write-and-flush")
+	written := observe()
 	// A single-block write may allocate a whole native block plus encryption
 	// framing, but must not materialize the unwritten logical extent.
 	blockEnvelope := int64(format.BlockSize)*1024 + 4096
@@ -149,12 +128,10 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 		write(payload)
 		read(offset, payload)
 	}
-	after := observe("eight-same-range-overwrites-each-flushed")
+	after := observe()
 	if delta := after.puts - written.puts; delta <= 0 || after.chunkBytes-written.chunkBytes > delta*blockEnvelope {
 		t.Fatalf("overwrite growth exceeds observed PUTs times native block/framing: before=%+v after=%+v", written, after)
 	}
-	t.Logf("overwrite measurement: submitted_bytes=%d added_chunk_payload_bytes=%d additional_PUTs=%d; retained COW objects are not unwritten-hole allocation or an Apple amplification ratio",
-		overwrites*len(payload), after.chunkBytes-written.chunkBytes, after.puts-written.puts)
 	read(offset-32, append(append(make([]byte, 32), payload...), make([]byte, 32)...))
 	if err = closeFile(); err != nil {
 		t.Fatal(err)

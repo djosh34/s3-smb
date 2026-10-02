@@ -58,7 +58,6 @@ func waitHeldPut(t *testing.T, held <-chan faultEvent, write <-chan error) fault
 		if event.Method != "PUT" || !strings.Contains(event.Path, "/chunks/") || event.Status < 200 || event.Status >= 300 {
 			t.Fatalf("not a held actual successful chunk PUT: %+v", event)
 		}
-		t.Logf("observed in-flight native S3 PUT response path=%s upstream_status=%d time=%s", event.Path, event.Status, event.Time.Format(time.RFC3339Nano))
 		return event
 	case err := <-write:
 		t.Fatalf("SMB write ended without observed held chunk PUT: %v", err)
@@ -69,7 +68,6 @@ func waitHeldPut(t *testing.T, held <-chan faultEvent, write <-chan error) fault
 }
 func killAtObservedPut(t *testing.T, d *daemon, p *faultProxy) {
 	t.Helper()
-	p.Record("daemon_sigkill_after_observed_chunk_put")
 	if err := d.cmd.Process.Kill(); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +82,6 @@ func killAtObservedPut(t *testing.T, d *daemon, p *faultProxy) {
 		if !ok || !status.Signaled() || status.Signal() != syscall.SIGKILL {
 			t.Fatalf("daemon did not exit from intentional SIGKILL: %v", err)
 		}
-		p.Record("daemon_sigkill_observed_exit")
 		d.closeLogs()
 	case <-time.After(5 * time.Second):
 		t.Fatal("SIGKILL daemon exit deadline")
@@ -122,7 +119,6 @@ func TestCrashDuringChunkPut(t *testing.T) {
 			verifyFiles(t, s, files)
 			closeShare()
 			f.protectedAfter(time.Now())
-			p.Record("baseline_successful_native_backup")
 			s, closeShare = f.share()
 			held := p.HoldNextChunkResponse()
 			pending := pendingSMBWrite(s, "interrupted-new-file.bin", bytes.Repeat([]byte("subsequent-SMB-write\n"), 500_000))
@@ -133,7 +129,6 @@ func TestCrashDuringChunkPut(t *testing.T) {
 			// Preserve the actual MinIO bucket, discard every daemon-local path and
 			// confirm normal startup's selected latest native recovery point via PTY.
 			f.freshLocal()
-			p.Record("all_original_local_paths_removed")
 			d = f.start()
 			s, closeShare = f.share()
 			verifyFiles(t, s, files)
@@ -141,16 +136,13 @@ func TestCrashDuringChunkPut(t *testing.T) {
 			writeFile(t, s, "resumed-after-crash.txt", files["resumed-after-crash.txt"])
 			closeShare()
 			f.protectedAfter(time.Now())
-			p.Record("resumed_write_successful_native_backup")
 			d.stop()
 			f.freshLocal()
-			p.Record("second_all_local_paths_removed")
 			d = f.start()
 			s, closeShare = f.share()
 			verifyFiles(t, s, files)
 			closeShare()
 			d.stop()
-			p.Record("second_cold_recovery_all_expected_hashes_verified")
 		})
 	}
 }
@@ -185,7 +177,6 @@ func TestStalledIOBoundedShutdown(t *testing.T) {
 		t.Fatal("daemon did not hold local authority lock before shutdown")
 	}
 	start := time.Now()
-	p.Record("sigterm_with_native_s3_response_still_held")
 	if err = d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +206,6 @@ wait:
 		}
 	}
 	d.stopped = true
-	p.Record("bounded_nonzero_shutdown_observed")
 	p.Release()
 	d.closeLogs()
 	if exitErr == nil {
@@ -235,7 +225,9 @@ wait:
 		}
 		output = append(output, data...)
 	}
-	if !bytes.Contains(output, []byte("shutdown deadline exceeded")) {
+	// The SMB shutdown context and the hard-exit timer both expire after 30
+	// seconds, and either one can report first.
+	if !bytes.Contains(output, []byte("shutdown deadline exceeded")) && !bytes.Contains(output, []byte("SMB shutdown failed; state lock retained: context deadline exceeded")) {
 		t.Fatal("stalled native operation did not report explicit shutdown deadline failure")
 	}
 	waitInterruptedSMB(t, pending)

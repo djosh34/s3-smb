@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/emmansun/gmsm/pkcs"
@@ -25,9 +24,7 @@ var fixtureErr error
 func protectedFixture(t *testing.T) []byte {
 	t.Helper()
 	fixtureOnce.Do(func() {
-		start := time.Now()
 		fixtureKey, fixtureErr = generateKey("synthetic-test-passphrase")
-		t.Logf("RSA3072 generation + scrypt protect: %s, PEM %.3f kB, KDF memory %.3f MB", time.Since(start), float64(len(fixtureKey))/1000, float64(128*scryptN*8)/1e6)
 	})
 	if fixtureErr != nil {
 		t.Fatal(fixtureErr)
@@ -36,12 +33,10 @@ func protectedFixture(t *testing.T) []byte {
 }
 func TestProtectedKeyProfile(t *testing.T) {
 	data := protectedFixture(t)
-	start := time.Now()
 	key, err := unlockKey(data, "synthetic-test-passphrase")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("native parser unlock: %s", time.Since(start))
 	if key.N.BitLen() != 3072 {
 		t.Fatal("wrong key size")
 	}
@@ -147,21 +142,6 @@ func TestBootstrapPublication(t *testing.T) {
 		t.Fatal("identical retry", err)
 	}
 }
-func BenchmarkProtectedKeyUnlock(b *testing.B) {
-	data, err := generateKey("synthetic-test-passphrase")
-	if err != nil {
-		b.Fatal(err)
-	}
-	b.ReportAllocs()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err = unlockKey(data, "synthetic-test-passphrase"); err != nil {
-			b.Fatal(err)
-		}
-	}
-	b.ReportMetric(float64(128*scryptN*8)/1e6, "KDF-MB")
-}
-
 func TestIdentityAndRecoveryDiscovery(t *testing.T) {
 	ctx := context.Background()
 	raw := memory(t)

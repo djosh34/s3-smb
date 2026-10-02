@@ -74,10 +74,10 @@ application's separate hard shutdown deadline uses bounded best-effort logging.
 
 ## Tests and acceptance boundary
 
-Focused, real local unit/subprocess tests (shared-VM build lock):
+Focused, real local unit/subprocess tests:
 
 ```sh
-flock /tmp/s3-smb-heavy.lock env GOMAXPROCS=2 go test -p 2 \
+go test \
   ./internal/logging ./internal/juicefs/pkg/utils \
   ./internal/juicefs/pkg/chunk ./internal/thirdparty/xorm \
   ./internal/thirdparty/xorm/log

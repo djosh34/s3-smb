@@ -262,20 +262,9 @@ Run the isolated configuration tests with:
 GOMAXPROCS=2 go test -p 2 ./internal/config
 ```
 
-These tests include real subprocess helpers, lingering-descendant termination,
-and local verified/mutual TLS HTTP handshakes. Native S3 credential acceptance
-uses the same disposable Docker/MinIO runner as the rest of the Linux suite:
-
-```sh
-scripts/test-linux.sh unit ./test/credentials
-```
-
-That package tests all nine source combinations with real S3 reads/writes,
-startup snapshots, passphrase helper execution/nonexecution, and actual
-permissive/differently-owned readable files with text/JSON warnings. It never
-uses host credentials; the root test container creates its disposable
-foreign-owner fixture. A host-only run without the fixture endpoint explicitly
-skips that acceptance test, not marks it as passed.
+These tests include real subprocess helpers and local verified/mutual TLS HTTP
+handshakes. `scripts/test-linux.sh` runs them again in Docker, together with the
+transport test in `internal/storage` that uses real MinIO.
 
 Neither suite substitutes for SMB authentication, CLI placement/side-effects,
 remote encryption/recovery, or final Time Machine gates. Native addressing and

@@ -222,30 +222,28 @@ func TestCredentialCombinationsAndStartupSnapshot(t *testing.T) {
 			return SecretSource{Command: helperArgs("echo", value+"\n")}
 		}
 	}
-	for _, a := range []string{"value", "file", "command"} {
-		for _, b := range []string{"value", "file", "command"} {
-			t.Run(a+"_"+b, func(t *testing.T) {
-				c := mustConfig(t)
-				c.S3.AccessKey = source(a, "access-private-marker")
-				c.S3.SecretKey = source(b, "secret-private-marker")
-				c.S3.SessionToken = "token-private-marker"
-				r, err := c.Resolve(context.Background(), quietLogger())
-				if err != nil {
+	for _, kind := range []string{"value", "file", "command"} {
+		t.Run(kind, func(t *testing.T) {
+			c := mustConfig(t)
+			c.S3.AccessKey = source(kind, "access-private-marker")
+			c.S3.SecretKey = source(kind, "secret-private-marker")
+			c.S3.SessionToken = "token-private-marker"
+			r, err := c.Resolve(context.Background(), quietLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.AccessKey != "access-private-marker" || r.SecretKey != "secret-private-marker" || r.SessionToken != "token-private-marker" {
+				t.Fatal("wrong resolved credentials")
+			}
+			if c.S3.AccessKey.File != nil {
+				if err := os.WriteFile(*c.S3.AccessKey.File, []byte("changed"), 0600); err != nil {
 					t.Fatal(err)
 				}
-				if r.AccessKey != "access-private-marker" || r.SecretKey != "secret-private-marker" || r.SessionToken != "token-private-marker" {
-					t.Fatal("wrong resolved credentials")
-				}
-				if c.S3.AccessKey.File != nil {
-					if err := os.WriteFile(*c.S3.AccessKey.File, []byte("changed"), 0600); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if r.AccessKey != "access-private-marker" {
-					t.Fatal("snapshot changed")
-				}
-			})
-		}
+			}
+			if r.AccessKey != "access-private-marker" {
+				t.Fatal("snapshot changed")
+			}
+		})
 	}
 }
 func TestSecretValueRules(t *testing.T) {

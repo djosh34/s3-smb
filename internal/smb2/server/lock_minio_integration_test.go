@@ -173,7 +173,7 @@ func (q *minioLockPeer) lock(t *testing.T, id *FileId, offset, length uint64, fl
 func TestMinIOSMBNativeByteRangeLocks(t *testing.T) {
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("requires disposable MinIO: scripts/test-linux.sh race ./internal/smb2/server")
+		t.Skip("needs MinIO: run scripts/test-linux.sh")
 	}
 	u, e := url.Parse(endpoint)
 	if e != nil || u.Scheme != "http" || u.Host == "" {

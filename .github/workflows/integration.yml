@@ -1,0 +1,17 @@
+name: integration
+on:
+  push: {branches: [main]}
+  pull_request:
+  workflow_dispatch:
+permissions: {contents: read}
+jobs:
+  linux:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - run: scripts/test-linux.sh
+        env: {S3_SMB_TEST_LOGS: "${{ runner.temp }}/s3-smb-logs"}
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with: {name: daemon-logs, path: "${{ runner.temp }}/s3-smb-logs", retention-days: 7}

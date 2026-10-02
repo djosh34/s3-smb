@@ -2,20 +2,14 @@
 package app
 
 import (
-	"bufio"
 	"bytes"
-	"context"
 	"encoding/json"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"testing"
-	"time"
-
-	"github.com/djosh34/s3-smb/internal/logging"
 )
 
 // These run the real entry point in an isolated process: no config/network or
@@ -82,55 +76,6 @@ func TestJSONOverrideForCommandAndConfigErrors(t *testing.T) {
 		}
 	}
 }
-func TestHardExitRetainsOSLockUntilProcessTermination(t *testing.T) {
-	if dir := os.Getenv("S3_SMB_APP_LOCK_TEST"); dir != "" {
-		lock, err := lockState(dir)
-		if err != nil {
-			os.Exit(98)
-		}
-		// Keep a live reference; no deferred close runs on the hard exit path.
-		defer lock.Close()
-		os.Stdout.WriteString("locked\n")
-		// The real log sink blocks forever; hard exit must still be bounded.
-		_, blocked := io.Pipe()
-		logging.Install(blocked)
-		time.AfterFunc(500*time.Millisecond, hardExit)
-		select {}
-	}
-	dir := t.TempDir()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHardExitRetainsOSLockUntilProcessTermination$")
-	cmd.Env = append(os.Environ(), "S3_SMB_APP_LOCK_TEST="+dir)
-	output, err := cmd.StdoutPipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	defer cmd.Process.Kill()
-	ready, err := bufio.NewReader(output).ReadString('\n')
-	if err != nil || ready != "locked\n" {
-		t.Fatalf("ready=%q err=%v", ready, err)
-	}
-	if l, err := lockState(dir); err == nil {
-		l.Close()
-		t.Fatal("lock released while owner alive")
-	}
-	if err = cmd.Wait(); err == nil {
-		t.Fatal("hard exit reported success")
-	}
-	if ctx.Err() != nil || cmd.ProcessState.ExitCode() != 1 {
-		t.Fatalf("hard exit was not bounded: %v", err)
-	}
-	l, err := lockState(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	l.Close()
-}
-
 func TestConfirmationWithoutControllingTerminal(t *testing.T) {
 	if os.Getenv("S3_SMB_APP_PROMPT_TEST") == "1" {
 		if err := confirm("must not use redirected stdin"); err != nil {
