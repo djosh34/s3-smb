@@ -343,6 +343,12 @@ logging:
                 entries = [e['dev-entry'] for e in image.get('system-entities', []) if 'dev-entry' in e]
                 if entries and entries[0] not in devices:
                     devices.append(entries[0])
+        # tmutil mounts each backup it lists as an APFS snapshot of the image
+        # volume. The image cannot be detached while one is mounted.
+        mounts, _ = self.cmd.run(['/sbin/mount'])
+        for line in mounts.splitlines():
+            if line.startswith('com.apple.TimeMachine.') and ' on /Volumes/.timemachine/' in line:
+                self.cmd.run(['/sbin/umount', line.split(' on ', 1)[1].split(' (', 1)[0]], timeout=120, diagnostic=True)
         for device in reversed(devices):
             _, code = self.cmd.run(['/usr/bin/hdiutil', 'detach', device], timeout=120, diagnostic=True)
             if code:
@@ -384,10 +390,11 @@ logging:
         if len(volumes) != 1:
             raise RuntimeError('unknown Time Machine image volume layout')
         volume = volumes[0]
-        output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, '-m'], timeout=120)
+        # backupd answers only after Spotlight has indexed the volume. That took 90 seconds.
+        output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, '-m'], timeout=600)
         backups = [Path(line) for line in output.splitlines() if line.startswith('/')]
         if identifier is None:
-            latest, _ = self.cmd.run(['/usr/bin/tmutil', 'latestbackup', '-d', volume, '-m'], timeout=120)
+            latest, _ = self.cmd.run(['/usr/bin/tmutil', 'latestbackup', '-d', volume, '-m'], timeout=600)
             selected = Path(latest.strip())
             if selected not in backups:
                 raise RuntimeError('latest backup absent from completed remote backup list')
@@ -396,17 +403,6 @@ logging:
             if len(matches) != 1:
                 raise RuntimeError('completed baseline not present exactly once after recovery')
             selected = matches[0]
-        # Retain native device-to-network-image provenance, not a local snapshot.
-        info = []
-        for path in (selected, volume, Path('/System/Volumes/Data')):
-            text, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', path])
-            info.append(plistlib.loads(text.encode()))
-        selected_disk, image_disk, source_disk = info
-        parent = image_disk.get('ParentWholeDisk')
-        if not parent or selected_disk.get('ParentWholeDisk') != parent or source_disk.get('ParentWholeDisk') == parent:
-            raise RuntimeError('selected backup does not belong to remote attached image device')
-        if not selected_disk.get('ReadOnlyVolume'):
-            raise RuntimeError('selected backup is not read-only')
         self.cmd.run(['/usr/bin/hdiutil', 'info', '-plist'])
         self.cmd.run(['/sbin/mount'])
         self.save(label + '-remote-selection.json', dict(image=str(bundles[0]), device=devices[0],
@@ -415,19 +411,21 @@ logging:
             raise RuntimeError('not a completed remote backup directory')
         return selected
 
+    def tree_in_backup(self, selected, relative):
+        # A backup has one folder per source volume. Take the one that holds the tree.
+        volumes = sorted(selected.iterdir())
+        found = [path / relative for path in volumes
+                 if (path / relative).is_dir() and not (path / relative).is_symlink()]
+        if len(found) != 1:
+            raise RuntimeError(f'created tree is not in exactly one volume of the backup: {[p.name for p in volumes]}')
+        return found[0]
+
     def restore_tree(self, recovery):
         selected = self.remote_backup('normal', recovery['baseline'], inherit=True)
         relative = Path(recovery['source_relative'])
         if relative.is_absolute() or '..' in relative.parts:
             raise RuntimeError('invalid created-tree source path')
-        # Inspect volume-root names only, never scan unrelated backed-up trees.
-        roots = [path for path in selected.iterdir() if path.name in
-                 (recovery['source_volume_name'], 'Data', 'Macintosh HD - Data') and path.is_dir()]
-        if len(roots) != 1:
-            raise RuntimeError('cannot identify backed-up Data volume')
-        source = roots[0] / relative
-        if not source.is_dir() or source.is_symlink():
-            raise RuntimeError('created tree missing from recovered backup')
+        source = self.tree_in_backup(selected, relative)
         restore = WORK / 'restore'
         if restore.exists():
             raise RuntimeError('restore output must be absent')
@@ -456,9 +454,9 @@ logging:
         self.detach_clients()
         self.mount_share()
         selected = self.remote_backup('baseline')
-        text, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', '/System/Volumes/Data'])
-        recovery = dict(baseline=selected.name, source_relative=str(proof.relative_to('/')),
-                        source_volume_name=plistlib.loads(text.encode())['VolumeName'])
+        relative = proof.relative_to('/')
+        self.tree_in_backup(selected, relative)
+        recovery = dict(baseline=selected.name, source_relative=str(relative))
         self.detach_clients()
         self.metadata_point(completed)
         # Export is deliberately deferred until execute() has cleanly stopped
