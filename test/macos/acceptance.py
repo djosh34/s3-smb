@@ -267,6 +267,7 @@ logging:
         log = open(EVIDENCE / (label + '-startbackup.log'), 'xb', buffering=0)
         argv = ['/usr/bin/tmutil', 'startbackup', '--block', '--destination', self.destination]
         self.backup = (subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT), log)
+        self.backup_started = time.monotonic()
         self.event('time-machine-start', label=label, argv=argv)
 
     def status(self):
@@ -298,7 +299,8 @@ logging:
         if process.returncode or self.status():
             raise RuntimeError(f'Time Machine did not complete cleanly: {process.returncode}')
         completed = utc()
-        self.event('time-machine-command-completed', label=label, completed=completed)
+        self.event('time-machine-command-completed', label=label, completed=completed,
+                   seconds=round(time.monotonic() - self.backup_started))
         return completed
 
     def metadata_point(self, after):
@@ -310,10 +312,20 @@ logging:
             self.daemon.pump()
             if receipt_path.exists():
                 receipt = json.loads(receipt_path.read_text())
-                snapshot = datetime.datetime.fromisoformat(receipt['Snapshot'].replace('Z', '+00:00'))
+                # Go writes up to nine fraction digits and drops trailing zeros.
+                whole, _, fraction = receipt['Snapshot'].rstrip('Z').partition('.')
+                snapshot = datetime.datetime.strptime(whole, '%Y-%m-%dT%H:%M:%S').replace(
+                    microsecond=int(fraction.ljust(6, '0')[:6]), tzinfo=datetime.timezone.utc)
                 if snapshot > threshold:
                     self.save('baseline-receipt.json', receipt)
-                    self.event('native-point-after-completion', receipt=receipt)
+                    # The application writes the receipt when the upload has ended.
+                    written = datetime.datetime.fromtimestamp(receipt_path.stat().st_mtime, datetime.timezone.utc)
+                    output, _ = self.cmd.run([self.fixture, 'bucket-list', '--endpoint', 'http://127.0.0.1:19000',
+                                              '--bucket', 'time-machine', '--prefix', 's3-smb/meta/'])
+                    sizes = {o['key']: o['size'] for o in json.loads(output)['objects']}
+                    self.event('native-point-after-completion', receipt=receipt,
+                               object_bytes=sizes['s3-smb/' + receipt['Key']],
+                               seconds=round((written - snapshot).total_seconds(), 1))
                     return
             if time.monotonic() >= next_observation:
                 self.event('waiting-for-native-point', after=after)
@@ -336,13 +348,22 @@ logging:
             if code:
                 self.cmd.run(['/usr/bin/hdiutil', 'detach', '-force', device], timeout=120)
         self.attachments.clear()
-        mounts, _ = self.cmd.run(['/sbin/mount'])
-        for line in mounts.splitlines():
-            if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line:
-                mountpoint = line.split(' on ', 1)[1].split(' (', 1)[0]
+        # backupd can still be ejecting its mount after a completed backup.
+        deadline = time.monotonic() + 60
+        while True:
+            mounts, _ = self.cmd.run(['/sbin/mount'])
+            mountpoints = [line.split(' on ', 1)[1].split(' (', 1)[0] for line in mounts.splitlines()
+                           if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line]
+            if not mountpoints:
+                return
+            late = time.monotonic() >= deadline
+            for mountpoint in mountpoints:
                 _, code = self.cmd.run(['/sbin/umount', mountpoint], timeout=120, diagnostic=True)
-                if code:
+                if code and late:
                     self.cmd.run(['/sbin/umount', '-f', mountpoint], timeout=120)
+            if late:
+                break
+            time.sleep(5)
         remaining, _ = self.cmd.run(['/sbin/mount'])
         if any('(smbfs' in line and f'{SMB_SERVER}/TimeMachine' in line for line in remaining.splitlines()):
             raise RuntimeError('task SMB mount remains')
@@ -508,7 +529,8 @@ logging:
     def export_store(self, recovery):
         if self.backup or self.attachments or not self.daemon or not self.daemon.reaped or any(p.poll() is None for p, _ in self.services):
             raise RuntimeError('cannot export active storage')
-        self.event('stopped-store-export-start')
+        output, _ = self.cmd.run(['/usr/bin/du', '-sk', WORK / 'objects'], timeout=600)
+        self.event('stopped-store-export-start', store_kilobytes=int(output.split()[0]))
         self.cmd.run(['/usr/bin/tar', '-C', WORK, '-cf', TRANSFER / 'store.tar', 'objects'], timeout=1800)
         (TRANSFER / 'reference/recovery.json').write_text(json.dumps(recovery, indent=2) + '\n')
         self.event('stopped-store-export-complete')
