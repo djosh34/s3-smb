@@ -140,13 +140,12 @@ class Acceptance:
         for port in (SMB_PORT, 19000, 19001, 19002, 19003):
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', port))
-        # The application closed Time Machine's connection once on a frame
-        # shorter than four bytes. Keep every SMB segment that carries 1 to 16
-        # bytes, so that such a frame can be read afterwards.
-        payload = '(ip[2:2] - ((ip[0]&0xf)<<2) - ((tcp[12]&0xf0)>>2))'
+        # The application closed Time Machine's connection twice on a frame
+        # shorter than four bytes. Keep the last 300 MB of SMB traffic, so that
+        # the frames before it can be read afterwards.
         self.capture = subprocess.Popen(
-            ['/usr/sbin/tcpdump', '-i', 'lo0', '-U', '-w', str(EVIDENCE / 'smb-small-segments.pcap'),
-             f'tcp port {SMB_PORT} and {payload} > 0 and {payload} <= 16'],
+            ['/usr/sbin/tcpdump', '-i', 'lo0', '-s', '0', '-B', '131072', '-C', '150', '-W', '2', '-Z', 'root',
+             '-w', str(EVIDENCE / 'smb.pcap'), f'tcp port {SMB_PORT}'],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Public synthetic values only: this isolated loopback fixture has no
         # real account. These same documented inputs are reconstructed on B.
