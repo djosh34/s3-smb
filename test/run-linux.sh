@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+# The tests run as root. Let the calling user read the daemon logs.
+trap 'chmod -R a+rX /artifacts' EXIT
 cd /src
 go mod tidy -diff
 go build -buildvcs=false -o /tmp/s3-smb .
