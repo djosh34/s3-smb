@@ -61,9 +61,6 @@ const (
 )
 
 func (s SecretSource) resolve(ctx context.Context, dir, label string, logger *slog.Logger) (string, error) {
-	if err := s.validate(label); err != nil {
-		return "", err
-	}
 	var data []byte
 	switch {
 	case s.Value != nil:

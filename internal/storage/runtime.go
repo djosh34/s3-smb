@@ -42,9 +42,6 @@ func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config
 	}
 	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 20, MaxDownload: 200, MaxRetries: 10, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
-		if *capacity < 0 {
-			return c, errors.New("cache capacity must not be negative")
-		}
 		c.CacheSize = uint64(*capacity)
 	}
 	c.SelfCheck(format.UUID)
@@ -66,9 +63,6 @@ type maintenanceStore struct {
 }
 
 func (s *maintenanceStore) Delete(ctx context.Context, key string, getters ...object.AttrGetter) error {
-	if s.check == nil {
-		return errors.New("destructive maintenance has no protection guard")
-	}
 	if err := s.check(); err != nil {
 		return err
 	}
@@ -84,18 +78,12 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 	}
 	store := chunk.NewCachedStore(&maintenanceStore{blob, checkMaintenance}, c, nil)
 	m.OnMsg(meta.DeleteSlice, func(args ...interface{}) error {
-		if checkMaintenance == nil {
-			return errors.New("missing maintenance guard")
-		}
 		if err := checkMaintenance(); err != nil {
 			return err
 		}
 		return store.Remove(args[0].(uint64), int(args[1].(uint32)))
 	})
 	m.OnMsg(meta.CompactChunk, func(args ...interface{}) error {
-		if checkMaintenance == nil {
-			return errors.New("missing maintenance guard")
-		}
 		if err := checkMaintenance(); err != nil {
 			return err
 		}

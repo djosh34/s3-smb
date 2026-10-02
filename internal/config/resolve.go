@@ -30,12 +30,6 @@ func (*Config) LogValue() slog.Value   { return slog.StringValue("[redacted conf
 // It does not create files or change permissions. TLS roots augment the process
 // trust pool only; no OS trust modification or insecure verification is used.
 func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if err := c.validate(); err != nil {
-		return nil, err
-	}
 	logging.RegisterSecret(c.SMB.Password, c.S3.SessionToken)
 	warnExisting(c.path, "configuration", logger)
 	warnExisting(c.Storage.StateDir, "storage.state_dir", logger)
