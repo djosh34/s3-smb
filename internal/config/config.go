@@ -28,11 +28,11 @@ type Config struct {
 	path       string
 }
 type SMBConfig struct {
-	Listen   string  `yaml:"listen"`
-	Share    string  `yaml:"share"`
-	Username string  `yaml:"username"`
-	Password *string `yaml:"password"`
-	ReadOnly bool    `yaml:"read_only"`
+	Listen   string `yaml:"listen"`
+	Share    string `yaml:"share"`
+	Username string `yaml:"username"`
+	Password string `yaml:"password"`
+	ReadOnly bool   `yaml:"read_only"`
 }
 type StorageConfig struct {
 	StateDir  string    `yaml:"state_dir"`
@@ -196,10 +196,10 @@ func (c *Config) validate() error {
 	if c.SMB.Username == "" || strings.ContainsRune(c.SMB.Username, 0) {
 		return errors.New("smb.username is required")
 	}
-	if c.SMB.Password == nil {
-		return errors.New("smb.password is required; use an explicit empty string for named passwordless access")
+	if c.SMB.Password == "" {
+		return errors.New("smb.password must be nonempty")
 	}
-	if strings.ContainsRune(*c.SMB.Password, 0) {
+	if strings.ContainsRune(c.SMB.Password, 0) {
 		return errors.New("smb.password contains NUL")
 	}
 	if c.Storage.StateDir == "" || c.Storage.CacheDir == "" || strings.ContainsRune(c.Storage.StateDir+c.Storage.CacheDir, 0) {

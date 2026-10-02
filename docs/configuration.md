@@ -70,7 +70,7 @@ logging:
 | `smb.listen` | `127.0.0.1:445`; explicit other addresses/ports allowed |
 | `smb.share` | `TimeMachine` |
 | `smb.username` | Required nonempty named account |
-| `smb.password` | Required string; explicit `""` enables named-empty access |
+| `smb.password` | Required nonempty string |
 | `smb.read_only` | `false` |
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
@@ -214,22 +214,11 @@ destination and transport. Imported metadata must never redirect it or install
 old credentials/TLS settings. For forced virtual-host-style addressing, arrange
 DNS and certificates for `bucket.endpoint-host`, including in test fixtures.
 
-## Passwordless and encryption opt-out
+## SMB password and encryption opt-out
 
-Use a named account plus an **explicit empty string**, not an omitted/null
-password, for passwordless access:
-
-```yaml
-smb:
-  username: backup
-  password: ""
-```
-
-This uses the native named-account authentication/signing path, not guest or
-anonymous mode. An explicitly wider bind is allowed, with a warning that anyone
-who can reach it can access the share. The application never widens its loopback
-bind automatically. This setting alone is not proof of compatibility with every
-SMB client/signing policy or of successful Time Machine acceptance.
+The SMB account needs a nonempty password. A config with `password: ""`, a null
+password or no password fails to load. The application never widens its loopback
+bind automatically.
 
 To opt out of application encryption for both objects and remote metadata:
 

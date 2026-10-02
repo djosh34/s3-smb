@@ -13,7 +13,7 @@ import (
 
 func TestEnabledPassphraseAndImmediateRegistration(t *testing.T) {
 	c := mustConfig(t)
-	c.SMB.Password = ptr("smb-distinct-sensitive-marker")
+	c.SMB.Password = "smb-distinct-sensitive-marker"
 	c.S3.AccessKey = SecretSource{Value: ptr("access-distinct-sensitive-marker")}
 	c.S3.SecretKey = SecretSource{Value: ptr("secret-distinct-sensitive-marker")}
 	c.S3.SessionToken = "token-distinct-sensitive-marker"
@@ -26,7 +26,7 @@ func TestEnabledPassphraseAndImmediateRegistration(t *testing.T) {
 	if r.Passphrase != "phrase-distinct-sensitive-marker" {
 		t.Fatal("passphrase not resolved")
 	}
-	for _, secret := range []string{*c.SMB.Password, r.AccessKey, r.SecretKey, r.SessionToken, r.Passphrase} {
+	for _, secret := range []string{c.SMB.Password, r.AccessKey, r.SecretKey, r.SessionToken, r.Passphrase} {
 		if logging.Redact(secret) != "[REDACTED]" {
 			t.Fatal("resolved secret not registered")
 		}

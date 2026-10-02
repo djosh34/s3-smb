@@ -37,7 +37,7 @@ type fixture struct {
 	password, secret             string
 	cacheSize                    string
 	compression                  string // Empty means omitted, including fresh-local recovery.
-	readonly, wider, failStart   bool
+	readonly, failStart          bool
 	store                        *s3.Client
 	generation                   int
 }
@@ -99,11 +99,6 @@ func (f *fixture) config() string {
 	if f.compression != "" {
 		compression = fmt.Sprintf("  compression: %q\n", f.compression)
 	}
-	listen := f.addr
-	if f.wider {
-		_, port, _ := net.SplitHostPort(f.addr)
-		listen = net.JoinHostPort("0.0.0.0", port)
-	}
 	if !f.encrypted {
 		key = "{command: [/does-not-exist/encryption-disabled-must-not-execute]}"
 	}
@@ -133,7 +128,7 @@ backup:
 logging:
   format: json
   level: info
-`, listen, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key)
+`, f.addr, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()
@@ -455,31 +450,19 @@ func TestRecovery(t *testing.T) {
 	}
 }
 func TestAuthentication(t *testing.T) {
-	for _, empty := range []bool{false, true} {
-		name := "password"
-		if empty {
-			name = "named-empty"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t, false)
-			if empty {
-				f.password = ""
-				f.wider = true
-			}
-			d := f.start()
-			s, close := f.share()
-			writeFile(t, s, "signed.txt", []byte("signed session"))
+	f := newFixture(t, false)
+	d := f.start()
+	s, close := f.share()
+	writeFile(t, s, "signed.txt", []byte("signed session"))
+	close()
+	for _, cred := range [][2]string{{"backup", "wrong-password"}, {"wrong-user", f.password}} {
+		_, close, err := f.connect(cred[0], cred[1])
+		if err == nil {
 			close()
-			for _, cred := range [][2]string{{"backup", "wrong-password"}, {"wrong-user", f.password}} {
-				_, close, err := f.connect(cred[0], cred[1])
-				if err == nil {
-					close()
-					t.Error("invalid SMB credentials authenticated")
-				}
-			}
-			d.stop()
-		})
+			t.Error("invalid SMB credentials authenticated")
+		}
 	}
+	d.stop()
 }
 func TestReadOnly(t *testing.T) {
 	f := newFixture(t, false)

@@ -20,7 +20,7 @@ prompts must use the controlling terminal, never either diagnostic stream.
 
 Never log whole configurations, helper argv/output, passwords, keys, SQL
 arguments, xattr contents or SDK HTTP/signing/body traces. Sensitive structured
-attribute names are also suppressed. Permission, passwordless and unencrypted
+attribute names are also suppressed. Permission and unencrypted
 storage warnings retain warning severity. Native progress counters remain usable
 but cannot render, including on terminals. There is no syslog stream.
 

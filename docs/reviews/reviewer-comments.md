@@ -2,7 +2,7 @@
 
 This is the complete comment index for the four final plan reviews. It includes alternatives, minor observations, cautions and disagreements, not only the recommendations chosen for the plan. Repeated questions are mapped to their findings rather than counted twice.
 
-The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) is the approved specification, with execution still on hold; [the unified audit](plan-audit.md) groups overlapping findings. Subsequent user updates require passwordless SMB, decimal units and zero-cache tests, permissions-as-warnings, local Docker-first testing and a final hosted-Mac Time Machine test. These later changes were not audited by the four original reports.
+The reports reviewed revision `fa36915f6a0de6fdb12b1292cc2102a79349071d`, before the user made encryption optional. They are preserved as written and are not the current specification. The [implementation contract](../implementation-plan.md) is the approved specification, with execution still on hold; [the unified audit](plan-audit.md) groups overlapping findings. Subsequent user updates require SMB access without a password (withdrawn on 2026-10-02), decimal units and zero-cache tests, permissions-as-warnings, local Docker-first testing and a final hosted-Mac Time Machine test. These later changes were not audited by the four original reports.
 
 ## Full reports
 

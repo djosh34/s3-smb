@@ -40,7 +40,7 @@ An unsupported runner capability leaves this final requirement unmet. Neither ge
 
 ### The hosted Mac is already a VM
 
-GitHub documents macOS hosted runners as fresh VMs with passwordless `sudo`. Its current standard ARM64 table lists three M1 CPU cores, 7 GB RAM and 14 GB SSD storage. `macos-15` is an available explicit OS label. The label still receives image updates, so record the image version and macOS build from the actual run. GitHub documents no nested virtualization support on ARM64 macOS runners; this does not prevent the host macOS guest from running its own Time Machine service.[1]
+GitHub documents macOS hosted runners as fresh VMs where `sudo` asks for no password. Its current standard ARM64 table lists three M1 CPU cores, 7 GB RAM and 14 GB SSD storage. `macos-15` is an available explicit OS label. The label still receives image updates, so record the image version and macOS build from the actual run. GitHub documents no nested virtualization support on ARM64 macOS runners; this does not prevent the host macOS guest from running its own Time Machine service.[1]
 
 GitHub limits a hosted job to six hours. Its image-build tests currently check at least 30 GB free space, while the public runner table states 14 GB storage. The image-build check is not a promise about space available to this job after checkout and builds. Measure actual space and arrange enough backup/restore storage for the full-machine test. A resource limit is a constraint to solve or report, not permission to reduce the backup to a fixture. [2], [5]
 
@@ -61,7 +61,7 @@ The final task must inspect the delivered service state and, if needed, enable/l
 
 ### Root and Full Disk Access are separate requirements
 
-GitHub's passwordless `sudo` supplies Unix administrative privileges. Apple separately requires consent for protected file access, including network volumes and full-storage access. Apple's developer documentation says an application cannot grant itself Full Disk Access through code or an entitlement. [1], [6], [7]
+GitHub's `sudo` without a password supplies Unix administrative privileges. Apple separately requires consent for protected file access, including network volumes and full-storage access. Apple's developer documentation says an application cannot grant itself Full Disk Access through code or an entitlement. [1], [6], [7]
 
 The pinned runner image's TCC provisioning script includes `kTCCServiceSystemPolicyAllFiles` entries for `/bin/bash` and runner startup scripts. It also includes network-volume permission entries. This is encouraging evidence for unattended use, not a runtime guarantee. Permissions depend on the responsible process and launch context; do not assume an entry for a shell or Terminal authorizes every workflow child, `sudo` invocation or helper.[4]
 

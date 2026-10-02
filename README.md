@@ -28,8 +28,8 @@ The default share is `TimeMachine`, listening on `127.0.0.1:445`. Access it usin
 
 ## Storage and access
 
-- One SMB share/account, with a password or explicit named-empty access (`password: ""`). Omitting the password is an error. Empty-password access uses ordinary named-account authentication/signing, not anonymous guest mode.
-- Wider binding such as `0.0.0.0:445` is explicit. Combining it with empty-password access exposes the share to anyone who can reach it and produces a warning. Optional read-only serving is available.
+- One SMB share and one account. The SMB account needs a nonempty password.
+- Wider binding such as `0.0.0.0:445` is explicit. Optional read-only serving is available.
 - Native JuiceFS data caching. Public sizes are decimal: **1 MB = 1,000,000 bytes; 1 GB = 1,000,000,000 bytes**. Omitted capacity retains the native default; explicit `cache_size: 0` disables retained disk/RAM block caches, not SQLite, temporary staging or working I/O buffers.
 - Independent S3 access-key and secret-key sources: literal value, file, or direct command argv. Resolve once at startup, with no implicit shell, fallback or automatic renewal. Helpers run with the daemon's privileges; trust the config.
 - Custom S3 endpoints, explicit path-style or virtual-host-style addressing, verified HTTPS, private CA roots and mutual TLS. Local certificate replacement takes effect after restart. Intentional HTTP must be configured explicitly.
@@ -63,7 +63,7 @@ The final [hosted-Mac gate](docs/macos-acceptance.md) uses a normal full-Mac Tim
 - [Approved implementation contract](docs/implementation-plan.md) and [delivery backlog #18](https://github.com/djosh34/s3-smb/issues/18).
 - [Domain terminology](CONTEXT.md), [decision map](https://github.com/djosh34/s3-smb/issues/1), and [scope clarification](https://github.com/djosh34/s3-smb/issues/33).
 - [Plan approval](https://github.com/djosh34/s3-smb/issues/29), [four-reviewer audit](docs/reviews/plan-audit.md), and [all original review comments](docs/reviews/reviewer-comments.md).
-- [Passwordless/zero-cache research](docs/research/guest-and-zero-cache.md) and [hosted-Mac prerequisites](docs/research/github-macos-time-machine.md), with their original evidence limits.
+- [Hosted-Mac prerequisites](docs/research/github-macos-time-machine.md), with their original evidence limits.
 
 The user released the prior execution hold on 2026-09-29. Authorization and source inspection are not completed acceptance evidence.
 

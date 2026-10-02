@@ -18,7 +18,7 @@ No competing test process launched. Inspected the coordinator’s ongoing local 
 S3_SMB_TEST_ARTIFACTS=/tmp/s3-smb-swarm/release-candidate1 scripts/test-linux.sh release
 ```
 
-`release-candidate1/environment.txt` records the exact fixed revision and clean checkout. `unit.log` and `race.log` contain PASS events for all four signing-rejection subtests, unauthenticated TREE_CONNECT, named-password/named-empty authentication, concurrent authentication, signed related compounds, and invalid inherited-session sentinels. SMB package PASS: **2026-09-29T12:29:25Z** (unit), **12:30:03Z** (race).
+`release-candidate1/environment.txt` records the exact fixed revision and clean checkout. `unit.log` and `race.log` contain PASS events for all four signing-rejection subtests, unauthenticated TREE_CONNECT, named-account authentication with and without a password, concurrent authentication, signed related compounds, and invalid inherited-session sentinels. SMB package PASS: **2026-09-29T12:29:25Z** (unit), **12:30:03Z** (race).
 
 Runner commands (`GOMAXPROCS=2`): `go test -p 2 -count=1 -timeout=15m -json "${packages[@]}"` and `go test -race -p 2 -count=1 -timeout=20m -json "${packages[@]}"`; package selection is recorded in `packages.txt` (excluding `/test/e2e`). Both phases marked PASS in `phases.tsv`.
 

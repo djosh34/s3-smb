@@ -345,7 +345,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	r.server, err = smbserver.New(c.SMB.Share, c.SMB.Username, *c.SMB.Password, r.adapter)
+	r.server, err = smbserver.New(c.SMB.Share, c.SMB.Username, c.SMB.Password, r.adapter)
 	if err != nil {
 		return err
 	}
@@ -355,13 +355,6 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	if !c.Encryption.Enabled {
 		slog.Warn("application encryption is disabled; sufficient S3 read access exposes file data and metadata")
-	}
-	if *c.SMB.Password == "" {
-		host, _, _ := net.SplitHostPort(c.SMB.Listen)
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			slog.Warn("named empty-password SMB access is exposed on an explicitly configured non-loopback address")
-		}
 	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- r.server.Serve(r.listener) }()

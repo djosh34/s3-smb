@@ -45,7 +45,7 @@ The required SMB FLUSH/write-through durability is the application's data flush 
 
 ## Access and secrets
 
-The default SMB listener is `127.0.0.1:445`. Explicit wider binding is supported but exposes access to other hosts. Named-empty passwordless access still names an account and uses native NTLM/signing; it is not anonymous guest access. Missing password configuration must not silently enable it.
+The default SMB listener is `127.0.0.1:445`. Explicit wider binding is supported but exposes access to other hosts. The SMB account must have a password.
 
 With `encryption.enabled: false`, S3 readers with sufficient access can read data and metadata. TLS, S3 credentials, the configured SMB access policy and metadata protection still apply. Encryption mode is fixed when a dataset is created; changing the YAML is not a conversion procedure.
 

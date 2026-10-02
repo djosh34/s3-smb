@@ -75,9 +75,7 @@ func Main(args []string, version string) int {
 		slog.Error("logging configuration error", "error", err)
 		return 1
 	}
-	if cfg.SMB.Password != nil {
-		logging.RegisterSecret(*cfg.SMB.Password)
-	}
+	logging.RegisterSecret(cfg.SMB.Password)
 	resolved, err := cfg.Resolve(ctx, slog.Default())
 	if err != nil {
 		slog.Error("resolve startup credentials or TLS failed", "error", err)

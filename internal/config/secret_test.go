@@ -205,20 +205,13 @@ func TestDifferentOwnerWarns(t *testing.T) {
 		}
 	}
 }
-func TestWiderPasswordlessAndDisabledWarnings(t *testing.T) {
-	for _, address := range []string{"127.0.0.1:445", "[::1]:445", "0.0.0.0:445"} {
-		var b bytes.Buffer
-		c := mustConfig(t)
-		c.SMB.Listen = address
-		_, err := c.Resolve(context.Background(), slog.New(slog.NewJSONHandler(&b, nil)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(b.String(), "non-loopback") != (address == "0.0.0.0:445") {
-			t.Fatal("wrong bind warning", b.String())
-		}
-		if !strings.Contains(b.String(), "encryption is disabled") || strings.Contains(b.String(), "secret-marker") {
-			t.Fatal("missing warning/leak", b.String())
-		}
+func TestDisabledEncryptionWarning(t *testing.T) {
+	var b bytes.Buffer
+	_, err := mustConfig(t).Resolve(context.Background(), slog.New(slog.NewJSONHandler(&b, nil)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(b.String(), "encryption is disabled") || strings.Contains(b.String(), "secret-marker") {
+		t.Fatal("missing warning/leak", b.String())
 	}
 }
