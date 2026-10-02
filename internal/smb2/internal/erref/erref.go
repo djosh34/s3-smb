@@ -1,3 +1,3 @@
-//go:generate sh -c "go run mkntstatus.go > ntstatus.go && gofmt -w ntstatus.go"
+// Modified for s3-smb, 2026. See docs/vendored.md.
 
 package erref

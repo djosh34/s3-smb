@@ -11,20 +11,15 @@ This distribution incorporates modified copies of:
   https://github.com/macos-fuse-t/go-smb2
   AGPL-3.0; see internal/smb2/LICENSE and internal/smb2/Attributions.txt
   for original author and incorporated BSD/MIT/Apache notices.
-* Customized urfave/cli, juicedata/cli v2.19.4-0.20230605075551-9c9c5c0dce83
-  MIT; internal/thirdparty/cli/LICENSE.
 * Customized mpb, juicedata/mpb v7.0.4-0.20231024073412-2b8d31be510b
   Unlicense; internal/thirdparty/mpb/UNLICENSE.
 * Customized Xorm, gitea.com/davies/xorm v1.0.8-0.20220528043536-552d84d1b34a
   BSD-3-Clause; internal/thirdparty/xorm/LICENSE.
-* Customized golang-lru, juicedata/golang-lru
-  v2.0.8-0.20251126062551-1b321869f904
-  MPL-2.0; internal/thirdparty/lru/LICENSE and per-file notices.
 
 Their original license grants and copyright notices remain applicable to
 those files; this distribution does not relicense upstream files.
-Modified-source details and exact source selection are recorded in
-docs/packaging.md and docs/source-manifest.json. Other Go dependencies and
+All import paths were rewritten to github.com/djosh34/s3-smb/internal/...
+docs/vendored.md lists every other change. Other Go dependencies and
 versions are identified by go.mod/go.sum; their source/license texts are
 available through `go mod download` and their upstream repositories.
 
@@ -36,11 +31,9 @@ pins, and build/test scripts are available without charge at:
 Use the tag/commit matching the distributed version. `s3-smb version` reports
 version/build information. There is no separately withheld proprietary
 component, signing key, or service needed to build the program. Normal Go,
-a C compiler and the target platform SDK are required. See docs/packaging.md.
+a C compiler and the target platform SDK are required.
 
 If you modify or redistribute the program, preserve these notices, provide
 the corresponding source for your actual version as required by the relevant
 licenses, and preserve the AGPL network-source opportunity. A link to this
 unmodified upstream repository is not a substitute for your modified source.
-This notice accompanies a source distribution; it is not a claim that an
-unpublished release or any pending acceptance test has completed.

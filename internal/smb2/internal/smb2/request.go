@@ -1,3 +1,5 @@
+// Modified for s3-smb, 2026. See docs/vendored.md.
+
 package smb2
 
 import "github.com/djosh34/s3-smb/internal/smb2/internal/utf16le"
