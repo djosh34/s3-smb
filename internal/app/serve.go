@@ -389,7 +389,7 @@ func newestPoint(ctx context.Context, blob object.ObjectStorage) (*backup.Point,
 		return nil, nil, fmt.Errorf("list metadata backups: %w", err)
 	}
 	if len(points) == 0 {
-		return nil, nil, errors.New("the bucket holds no metadata backup")
+		return nil, nil, errors.New("the bucket holds objects but no metadata backup; if the first start of this dataset never finished, empty the bucket prefix " + storage.VolumeName + "/ and the local state directory, then start again")
 	}
 	format, err := backup.Inspect(ctx, blob, points[0].Key)
 	if err != nil {
