@@ -225,7 +225,9 @@ wait:
 		}
 		output = append(output, data...)
 	}
-	if !bytes.Contains(output, []byte("shutdown deadline exceeded")) {
+	// The SMB shutdown context and the hard-exit timer both expire after 30
+	// seconds, and either one can report first.
+	if !bytes.Contains(output, []byte("shutdown deadline exceeded")) && !bytes.Contains(output, []byte("SMB shutdown failed; state lock retained: context deadline exceeded")) {
 		t.Fatal("stalled native operation did not report explicit shutdown deadline failure")
 	}
 	waitInterruptedSMB(t, pending)
