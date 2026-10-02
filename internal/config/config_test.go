@@ -176,6 +176,7 @@ func TestValidation(t *testing.T) {
 		"username":                 func(c *Config) { c.SMB.Username = "" },
 		"bucket":                   func(c *Config) { c.S3.Bucket = "" },
 		"share":                    func(c *Config) { c.SMB.Share = "../secret-marker" },
+		"share IPC$":               func(c *Config) { c.SMB.Share = "ipc$" },
 		"password NUL":             func(c *Config) { c.SMB.Password = "private-marker\x00" },
 		"token NUL":                func(c *Config) { c.S3.SessionToken = "secret-marker\x00" },
 		"logging":                  func(c *Config) { c.Logging.Level = "private-marker" },

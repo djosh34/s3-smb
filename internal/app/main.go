@@ -14,8 +14,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/logging"
 )
 
-// Main is the foreground process entry point. A hard deadline terminates the
-// process rather than releasing a lock while native I/O may still be running.
+// Main runs the foreground process. When shutdown exceeds its deadline the
+// process exits with the state lock held, because JuiceFS I/O may still be
+// running.
 func Main(args []string, version string) int {
 	logging.Install(os.Stderr)
 	if override := logOverride(args); override != "" {
@@ -36,8 +37,8 @@ func Main(args []string, version string) int {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// This also bounds a signal received during a blocked startup operation or tty
-	// read, before the ordinary resource cleanup path can run.
+	// A signal can arrive during a blocked startup step or terminal read, where
+	// serve cannot clean up. Exit once the shutdown deadline has passed.
 	finished := make(chan struct{})
 	defer close(finished)
 	go func() {
@@ -75,13 +76,11 @@ func Main(args []string, version string) int {
 		slog.Error("logging configuration error", "error", err)
 		return 1
 	}
-	logging.RegisterSecret(cfg.SMB.Password)
 	resolved, err := cfg.Resolve(ctx, slog.Default())
 	if err != nil {
 		slog.Error("resolve startup credentials or TLS failed", "error", err)
 		return 1
 	}
-	logging.RegisterSecret(resolved.AccessKey, resolved.SecretKey, resolved.SessionToken, resolved.Passphrase)
 	if err = serve(ctx, resolved); err != nil {
 		logFailure("service stopped with failure", err)
 		return 1
@@ -101,8 +100,8 @@ func exitFailure(message string, err error) {
 }
 
 func logFailure(message string, err error) {
-	// A blocked log pipe must not disable the process exit deadline. Give the
-	// diagnostic a short best-effort window, then let the OS release the lock.
+	// A blocked log pipe would keep the process from exiting. Wait 100 ms for the
+	// message, then return so the caller can exit.
 	done := make(chan struct{})
 	go func() {
 		if err != nil {

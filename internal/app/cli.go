@@ -21,8 +21,8 @@ Source: https://github.com/djosh34/s3-smb (AGPL-3.0-only; see NOTICE for upstrea
 
 type arguments struct{ command, configPath, logFormat string }
 
-// logOverride is deliberately independent of parsing/configuration: even a
-// malformed command or config must honor a valid explicit logging override.
+// logOverride finds --log-format before the command line is parsed, so an
+// error in the command line or the config is reported in that format too.
 func logOverride(args []string) string {
 	format := ""
 	for i, arg := range args {

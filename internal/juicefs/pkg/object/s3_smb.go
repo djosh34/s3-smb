@@ -39,14 +39,17 @@ func NewS3(o S3Options) (ObjectStorage, error) {
 			return nil, fmt.Errorf("S3 endpoint must be an explicit HTTP(S) origin")
 		}
 	}
+	// The cloned default transport already limits a dial to 30 seconds. A
+	// request has no total limit, so a large metadata backup can finish.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 30 * time.Second
 	if o.TLSConfig != nil {
 		if o.TLSConfig.InsecureSkipVerify {
 			return nil, fmt.Errorf("TLS certificate verification cannot be disabled")
 		}
 		transport.TLSClientConfig = o.TLSConfig.Clone()
 	}
-	cfg := aws.Config{Region: o.Region, Credentials: credentials.NewStaticCredentialsProvider(o.AccessKey, o.SecretKey, o.SessionToken), HTTPClient: &http.Client{Transport: transport, Timeout: time.Minute}, Logger: logging.SDKLogger{}}
+	cfg := aws.Config{Region: o.Region, Credentials: credentials.NewStaticCredentialsProvider(o.AccessKey, o.SecretKey, o.SessionToken), HTTPClient: &http.Client{Transport: transport}, Logger: logging.SDKLogger{}}
 	client := s3.NewFromConfig(cfg, func(opts *s3.Options) {
 		opts.RetryMaxAttempts = 1 // native chunk layer owns data retries
 		if o.Endpoint != "" {

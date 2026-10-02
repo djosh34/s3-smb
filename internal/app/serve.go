@@ -16,15 +16,14 @@ import (
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
+	smb2 "github.com/djosh34/s3-smb/internal/smb2/server"
+	"github.com/djosh34/s3-smb/internal/smb2/vfs"
 	"github.com/djosh34/s3-smb/internal/smbfs"
-	"github.com/djosh34/s3-smb/internal/smbserver"
 	"github.com/djosh34/s3-smb/internal/storage"
 )
 
-const backupTimeout = 2 * time.Minute
-
-// resources contains actual native resources, in ownership order. No lock is
-// released after a failed or stuck close: Main terminates the owning process.
+// resources holds what serve opened, in the order it was opened. After a failed
+// or stuck close the state lock stays held and the process exits.
 type resources struct {
 	lock         *stateLock
 	raw          object.ObjectStorage
@@ -32,7 +31,7 @@ type resources struct {
 	session      bool
 	runtime      *storage.Runtime
 	adapter      *smbfs.FS
-	server       *smbserver.Server
+	server       *smb2.Server
 	listener     net.Listener
 	protection   *backup.Protection
 	manager      *backup.Manager
@@ -55,7 +54,7 @@ func (r *resources) close() error {
 	if r.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := r.server.Shutdown(ctx); err != nil {
+		if err := r.server.ShutdownContext(ctx); err != nil {
 			return fmt.Errorf("SMB shutdown failed; state lock retained: %w", err)
 		}
 	}
@@ -72,13 +71,13 @@ func (r *resources) close() error {
 	}
 	if r.runtime != nil {
 		if err := r.runtime.Close(); err != nil {
-			return fmt.Errorf("native filesystem shutdown failed; state lock retained: %w", err)
+			return fmt.Errorf("JuiceFS filesystem shutdown failed; state lock retained: %w", err)
 		}
 	}
 	if r.metadata != nil {
 		if r.session && r.runtime == nil {
 			if err := r.metadata.CloseSession(); err != nil {
-				return fmt.Errorf("native session shutdown failed; state lock retained: %w", err)
+				return fmt.Errorf("JuiceFS session shutdown failed; state lock retained: %w", err)
 			}
 		}
 		if err := r.metadata.Shutdown(); err != nil {
@@ -100,8 +99,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	var r resources
 	defer func() {
 		if closeErr := r.close(); closeErr != nil {
-			// A failed close is not permission to release live writers' lock.
-			// Exit here, keeping r reachable until process termination.
+			// A failed close may leave a writer running. Exit with the state lock
+			// held, so no second process can start while that writer is alive.
 			exitFailure("shutdown failed; terminating with state lock retained", errors.Join(result, closeErr))
 		}
 	}()
@@ -112,7 +111,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	checkMaintenance := func() error { return backup.ErrUnprotected }
 	if !c.SMB.ReadOnly {
-		r.protection, err = backup.NewProtection(c.Backup.Interval, backupTimeout, c.Backup.TrashDays)
+		// A metadata backup may take as long as the backup interval.
+		r.protection, err = backup.NewProtection(c.Backup.Interval, c.Backup.Interval, c.Backup.TrashDays)
 		if err != nil {
 			return err
 		}
@@ -122,8 +122,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	// Listing is mandatory even with a local database. An authentication/listing
-	// error, or a partial marker/key/backup, never establishes an empty dataset.
+	// List the bucket even when a local database exists. Only a complete, empty
+	// listing counts as an empty dataset.
 	entries, more, _, err := r.raw.List(ctx, "", "", "", "", 1, false)
 	if err != nil {
 		return errors.New("remote dataset listing failed; refusing initialization")
@@ -145,31 +145,21 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	fresh := false
 	var point *backup.Point
 	if identityMissing && !remoteEmpty {
-		// The bootstrap identity is convenient, not the only route to an
-		// existing volume. Unlock only an existing unique key, then let a
-		// validated native export provide the actual format. Never fall back
-		// to a different encryption mode or an older point.
+		// format.json is missing but the bucket is not empty. Take the volume
+		// identity from the newest metadata backup, read with the one stored key.
 		discovered, candidate, e := storage.DiscoverRecoveryVolume(ctx, r.raw, c.Encryption.Enabled, c.Passphrase)
 		if e != nil {
 			return fmt.Errorf("discover existing volume without identity: %w", e)
 		}
-		points, e := backup.List(ctx, discovered)
+		point, format, e = newestPoint(ctx, discovered)
 		if e != nil {
-			return e
+			return fmt.Errorf("remote volume identity is missing; refusing initialization: %w", e)
 		}
-		if len(points) == 0 {
-			return errors.New("remote identity is missing and no native backup establishes a volume; refusing initialization")
-		}
-		point = &points[0]
-		format, e = backup.Inspect(ctx, discovered, point.Key)
-		if e != nil {
-			return fmt.Errorf("selected backup cannot establish identity; no fallback: %w", e)
-		}
-		if format.Name != "s3-smb" || (format.EncryptAlgo != "") != c.Encryption.Enabled {
-			return errors.New("discovered backup does not match the configured dataset mode or native prefix")
+		if format.Name != storage.VolumeName || (format.EncryptAlgo != "") != c.Encryption.Enabled {
+			return errors.New("newest metadata backup does not match the configured encryption mode or volume name")
 		}
 		if candidate != nil && (format.UUID != candidate.UUID || format.EncryptKey != candidate.EncryptKey || format.EncryptAlgo != candidate.EncryptAlgo) {
-			return errors.New("discovered backup does not match the existing bootstrap key")
+			return errors.New("newest metadata backup does not match the stored volume key")
 		}
 	} else if identityMissing {
 		if localExists {
@@ -184,7 +174,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		format, err = storage.NewFormat("s3-smb", c.Encryption.Enabled, c.Backup.TrashDays)
+		format, err = storage.NewFormat(storage.VolumeName, c.Encryption.Enabled, c.Backup.TrashDays)
 		if err != nil {
 			return err
 		}
@@ -198,8 +188,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if !fresh && c.Storage.Compression != nil && *c.Storage.Compression != format.Compression {
 		return errors.New("configured compression differs from existing dataset; omit storage.compression to use its stored format")
 	}
-	// Remote format/export fields are identity/layout information, never a
-	// source of connection credentials. OpenS3 already used current YAML/TLS.
+	// The stored format supplies identity and data layout. The bucket and the
+	// credentials come from the current configuration.
 	format.Storage = "s3"
 	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
@@ -216,19 +206,12 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	recovered := false
 	if !fresh && !localExists {
-		points, e := backup.List(ctx, blob)
-		if e != nil {
-			return fmt.Errorf("list recovery points: %w", e)
+		var saved *meta.Format
+		point, saved, err = newestPoint(ctx, blob)
+		if err != nil {
+			return fmt.Errorf("local metadata is missing; refusing initialization: %w", err)
 		}
-		if len(points) == 0 {
-			return errors.New("existing remote dataset has no metadata recovery point; refusing initialization")
-		}
-		point = &points[0]
-		saved, e := backup.Inspect(ctx, blob, point.Key)
-		if e != nil {
-			return fmt.Errorf("selected recovery point is invalid; no older-point fallback: %w", e)
-		}
-		if !sameVolume(saved, format) {
+		if !backup.SameVolume(saved, format) {
 			return errors.New("selected recovery point does not match remote volume identity")
 		}
 		message := fmt.Sprintf("Recover metadata from %s (%s)? Changes after this point may be lost. The old writer MUST be stopped, including on other hosts. Metadata validation is not a full file-content check.", point.Key, point.Time.UTC().Format(time.RFC3339))
@@ -238,17 +221,12 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		// Only confirmed recovery may remove abandoned application staging;
-		// the helper leaves unknown files and symlinks untouched.
+		// The user confirmed recovery, so remove staging left by an earlier
+		// attempt.
 		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
-		// Native SQLite import is synchronous and cannot be interrupted by a
-		// context. Terminate the process, retaining the lock, if it gets stuck.
-		recoveryTimer := time.AfterFunc(backupTimeout+shutdownTimeout, hardExit)
-		_, err = backup.Recover(ctx, blob, point.Key, dbPath, format)
-		recoveryTimer.Stop()
-		if err != nil {
+		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, format); err != nil {
 			return fmt.Errorf("recover selected metadata: %w", err)
 		}
 		recovered = true
@@ -266,7 +244,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		attr := meta.Attr{Uid: smbfs.UID, Gid: smbfs.GID, Mode: 0770}
 		if errno := r.metadata.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &attr); errno != 0 {
-			return fmt.Errorf("set native root ownership: %w", errno)
+			return fmt.Errorf("set root directory ownership: %w", errno)
 		}
 		if err = storage.PublishIdentity(ctx, r.raw, format); err != nil {
 			return err
@@ -279,11 +257,11 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if e != nil {
 			return e
 		}
-		if !sameVolume(local, format) {
+		if !backup.SameVolume(local, format) {
 			return errors.New("local metadata identity or data layout does not match remote dataset")
 		}
-		// Current YAML controls retention, not a stale recovery export. It does not
-		// supply connection settings: OpenS3 already used the startup TLS snapshot.
+		// The current configuration sets trash retention. Recovered metadata may
+		// hold an older value.
 		format.TrashDays = c.Backup.TrashDays
 		if !c.SMB.ReadOnly {
 			if err = r.metadata.Init(format, false); err != nil {
@@ -296,15 +274,15 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
 	}
-	// Read-only sessions use sid 0 for advisory locks. The OS authority lock
-	// proves their prior process is gone; clear only those orphan lock rows,
-	// for both writable and read-only startup, before any session or SMB work.
+	// Read-only sessions take file locks under session id 0. This process holds
+	// the state lock, so the earlier process is gone. Clear its lock rows before
+	// any session or SMB work starts.
 	if err = meta.ClearOrphanLocks(r.metadata); err != nil {
-		return fmt.Errorf("clear orphan native advisory locks: %w", err)
+		return fmt.Errorf("clear file locks left by an earlier process: %w", err)
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, Interval: c.Backup.Interval, Timeout: backupTimeout, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
 		if err != nil {
 			return err
 		}
@@ -334,9 +312,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	// Register native storage callbacks before starting session workers. Neither
-	// native mutable session jobs nor SMB access exist before protection.
-	// NewSession may partially start workers even if it returns an error.
+	// OpenFilesystem has registered the delete callbacks, so the JuiceFS session
+	// workers may start. NewSession can start workers even when it returns an
+	// error, so record the session first.
 	r.session = true
 	if err = r.metadata.NewSession(true); err != nil {
 		return err
@@ -345,19 +323,14 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	r.server, err = smbserver.New(c.SMB.Share, c.SMB.Username, c.SMB.Password, r.adapter)
-	if err != nil {
-		return err
-	}
+	auth := &smb2.NTLMAuthenticator{UserPassword: map[string]string{c.SMB.Username: c.SMB.Password}, NbName: "s3-smb"}
+	r.server = smb2.NewServer(&smb2.ServerConfig{Xatrrs: true}, auth, map[string]vfs.VFSFileSystem{c.SMB.Share: r.adapter})
 	r.listener, err = net.Listen("tcp", c.SMB.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on configured SMB address (no fallback): %w", err)
 	}
-	if !c.Encryption.Enabled {
-		slog.Warn("application encryption is disabled; sufficient S3 read access exposes file data and metadata")
-	}
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- r.server.Serve(r.listener) }()
+	go func() { serveDone <- r.server.ServeListener(r.listener) }()
 	var backupFailure <-chan error
 	if !c.SMB.ReadOnly {
 		backupCtx, cancel := context.WithCancel(ctx)
@@ -387,32 +360,42 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 }
 
-// A validated native backup supplies identity when the marker is missing. Check
-// before publishing recovered local metadata, not after it has become active.
+// verifyRemoteMarker accepts a missing volume marker when the newest metadata
+// backup matches the volume. It runs before recovered metadata is put in place.
 func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *meta.Format, backupValidated bool) error {
 	if err := storage.VerifyMarker(ctx, blob, format); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("verify native volume marker: %w", err)
+		return fmt.Errorf("verify volume marker: %w", err)
 	}
 	if backupValidated {
 		return nil
 	}
-	points, err := backup.List(ctx, blob)
+	_, saved, err := newestPoint(ctx, blob)
 	if err != nil {
-		return err
+		return fmt.Errorf("volume marker is missing: %w", err)
 	}
-	if len(points) == 0 {
-		return errors.New("native marker missing and no validated backup supplies identity")
-	}
-	saved, err := backup.Inspect(ctx, blob, points[0].Key)
-	if err != nil {
-		return err
-	}
-	if !sameVolume(saved, format) {
+	if !backup.SameVolume(saved, format) {
 		return errors.New("backup identity does not match remote volume")
 	}
 	return nil
+}
+
+// newestPoint inspects the newest metadata backup. It fails when there is none
+// or when the newest one is invalid, and does not try an older one.
+func newestPoint(ctx context.Context, blob object.ObjectStorage) (*backup.Point, *meta.Format, error) {
+	points, err := backup.List(ctx, blob)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list metadata backups: %w", err)
+	}
+	if len(points) == 0 {
+		return nil, nil, errors.New("the bucket holds objects but no metadata backup; if the first start of this dataset never finished, empty the bucket prefix " + storage.VolumeName + "/ and the local state directory, then start again")
+	}
+	format, err := backup.Inspect(ctx, blob, points[0].Key)
+	if err != nil {
+		return nil, nil, fmt.Errorf("newest metadata backup %s is invalid: %w", points[0].Key, err)
+	}
+	return &points[0], format, nil
 }
 
 func localMetadataExists(path string) (bool, error) {
@@ -428,8 +411,4 @@ func localMetadataExists(path string) (bool, error) {
 	}
 	warnPermissions(info, "metadata database", 0600)
 	return true, nil
-}
-
-func sameVolume(a, b *meta.Format) bool {
-	return a != nil && b != nil && a.UUID == b.UUID && a.Name == b.Name && a.BlockSize == b.BlockSize && a.Compression == b.Compression && a.Shards == b.Shards && a.HashPrefix == b.HashPrefix && a.EncryptAlgo == b.EncryptAlgo && a.EncryptKey == b.EncryptKey
 }

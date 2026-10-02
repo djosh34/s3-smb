@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Package smbfs implements the pinned SMB VFS directly over native JuiceFS.
+// Package smbfs implements the SMB server's filesystem interface on JuiceFS.
 package smbfs
 
 import (
@@ -19,18 +19,17 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb2/vfs"
 )
 
-// UID and GID are the single SMB account's native, unprivileged identity.
-// Dataset initialization must grant this identity access to the share root.
+// UID and GID are the JuiceFS identity of the one SMB account. serve gives it
+// the root directory when it creates a dataset.
 const UID uint32 = 65534
 const GID uint32 = 65534
 
-// FS owns SMB handles, not the native filesystem or its metadata session.
-// Namespace operations are serialized with handle operations so a checked path
-// cannot be replaced by another SMB operation before it is used. Native storage
-// maintenance must never introduce client-controlled paths.
+// FS holds the open SMB handles. The caller owns the JuiceFS filesystem and its
+// session. Namespace operations take the write lock, so no other SMB operation
+// can replace a checked path before it is used.
 type FS struct {
 	mu                sync.RWMutex
-	native            *jfs.FileSystem
+	jfs               *jfs.FileSystem
 	meta              meta.Meta
 	ctx               meta.Context
 	readOnly, stopped bool
@@ -52,11 +51,11 @@ var nextHandle atomic.Uint64
 var _ vfs.VFSFileSystem = (*FS)(nil)
 var _ vfs.ByteRangeLocker = (*FS)(nil)
 
-func New(native *jfs.FileSystem, readOnly bool) (*FS, error) {
-	if native == nil {
+func New(filesystem *jfs.FileSystem, readOnly bool) (*FS, error) {
+	if filesystem == nil {
 		return nil, syscall.EINVAL
 	}
-	return &FS{native: native, meta: native.Meta(), ctx: meta.WrapWithoutCancel(context.Background(), 1, UID, []uint32{GID}), readOnly: readOnly, handles: make(map[vfs.VfsHandle]*handle)}, nil
+	return &FS{jfs: filesystem, meta: filesystem.Meta(), ctx: meta.WrapWithoutCancel(context.Background(), 1, UID, []uint32{GID}), readOnly: readOnly, handles: make(map[vfs.VfsHandle]*handle)}, nil
 }
 func errno(e syscall.Errno) error {
 	if e == 0 {
@@ -89,8 +88,8 @@ func forbidden(ino meta.Ino, a *meta.Attr) bool {
 	return jvfs.IsSpecialNode(ino) || a.Parent.IsTrash() || (ino != meta.RootInode && !ino.IsNormal())
 }
 
-// checkedPath uses native resolution, including its native symlink handling.
-// Check every resolved prefix, not merely the spelling of the final component.
+// checkedPath resolves p through JuiceFS, symlinks included, and checks each
+// resolved prefix against the forbidden inodes.
 func (s *FS) checkedPath(p string, follow, missing bool) (string, error) {
 	p, e := clientPath(p)
 	if e != nil {
@@ -109,9 +108,9 @@ func (s *FS) checkedPath(p string, follow, missing bool) (string, error) {
 		var st *jfs.FileStat
 		var er syscall.Errno
 		if i == len(parts)-1 && !follow {
-			st, er = s.native.Lstat(s.ctx, cur)
+			st, er = s.jfs.Lstat(s.ctx, cur)
 		} else {
-			st, er = s.native.Stat(s.ctx, cur)
+			st, er = s.jfs.Stat(s.ctx, cur)
 		}
 		if er == syscall.ENOENT && missing {
 			return p, nil
@@ -149,8 +148,9 @@ func (s *FS) writable(f *handle) error {
 	if forbidden(f.file.Inode(), &a) {
 		return syscall.EACCES
 	}
-	// Hardlinked files have no unique Attr.Parent. A live non-trash link
-	// remains writable; an unlinked/stale handle must not become a trash alias.
+	// A hard-linked file has no single Attr.Parent. It stays writable while one
+	// link is outside the trash. Do not write through a handle whose links are
+	// all gone or in the trash, or the trashed copy changes.
 	if a.Parent == 0 {
 		for parent := range s.meta.GetParents(s.ctx, f.file.Inode()) {
 			if !parent.IsTrash() {
@@ -163,7 +163,7 @@ func (s *FS) writable(f *handle) error {
 			if e != nil {
 				return syscall.EACCES
 			}
-			st, er := s.native.Stat(s.ctx, p)
+			st, er := s.jfs.Stat(s.ctx, p)
 			if er != 0 || st.Inode() != f.file.Inode() {
 				return syscall.EACCES
 			}
@@ -174,7 +174,7 @@ func (s *FS) writable(f *handle) error {
 }
 func (s *FS) add(f *jfs.File, p string, flags int) vfs.VfsHandle {
 	h := vfs.VfsHandle(nextHandle.Add(1))
-	info, _ := f.Stat() // native snapshot; file type is immutable for this inode
+	info, _ := f.Stat() // taken at open; an inode keeps its file type
 	s.handles[h] = &handle{file: f, path: p, flags: flags, typ: info.Sys().(*meta.Attr).Typ, done: make(chan struct{})}
 	return h
 }
@@ -203,13 +203,13 @@ func (s *FS) Open(p string, flags, mode int) (vfs.VfsHandle, error) {
 			return 0, e
 		}
 	}
-	// The pinned server uses 0x200000 for opening a reparse point itself.
+	// The SMB server passes 0x200000 to open a reparse point itself.
 	nofollow := flags&0x200000 != 0
 	p, e := s.checkedPath(p, !nofollow, flags&syscall.O_CREAT != 0)
 	if e != nil {
 		return 0, e
 	}
-	st, er := s.native.Lstat(s.ctx, p)
+	st, er := s.jfs.Lstat(s.ctx, p)
 	if er != 0 && er != syscall.ENOENT {
 		return 0, er
 	}
@@ -221,19 +221,19 @@ func (s *FS) Open(p string, flags, mode int) (vfs.VfsHandle, error) {
 	}
 	var f *jfs.File
 	if er == syscall.ENOENT && flags&syscall.O_CREAT != 0 {
-		f, er = s.native.Create(s.ctx, p, uint16(mode)&0777, 0)
+		f, er = s.jfs.Create(s.ctx, p, uint16(mode)&0777, 0)
 		if er != 0 {
 			return 0, er
 		}
-		// Create returns a write-only native File; reopen with the requested rights.
+		// Create returns a write-only file. Reopen it with the requested access.
 		if er = f.Close(s.ctx); er != 0 {
 			return 0, er
 		}
 	}
 	if nofollow {
-		f, er = s.native.Lopen(s.ctx, p, accessFlags(flags))
+		f, er = s.jfs.Lopen(s.ctx, p, accessFlags(flags))
 	} else {
-		f, er = s.native.Open(s.ctx, p, accessFlags(flags))
+		f, er = s.jfs.Open(s.ctx, p, accessFlags(flags))
 	}
 	if er != 0 {
 		return 0, er
@@ -289,8 +289,8 @@ func (s *FS) close(h vfs.VfsHandle) error {
 }
 func (s *FS) Close(h vfs.VfsHandle) error { s.mu.Lock(); defer s.mu.Unlock(); return s.close(h) }
 
-// Shutdown is called after the SMB server has stopped accepting and drained
-// requests. It also safely rejects new work and wakes any pending lock calls.
+// Shutdown flushes and closes every handle after the SMB server has drained its
+// requests. Later calls fail and pending lock calls wake up.
 func (s *FS) Shutdown() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -362,8 +362,8 @@ func (s *FS) Write(h vfs.VfsHandle, b []byte, off uint64, flags int) (int, error
 	if er != 0 {
 		return n, er
 	}
-	// The protocol handler owns SMB WRITE_THROUGH, including xattrs. Honor
-	// native O_SYNC here without adding a second SMB durability boundary.
+	// The SMB server handles WRITE_THROUGH itself. A handle opened with O_SYNC
+	// syncs here.
 	if f.flags&syscall.O_SYNC != 0 {
 		return n, errno(f.file.Fsync(s.ctx))
 	}

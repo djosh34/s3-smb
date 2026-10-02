@@ -16,13 +16,14 @@ import (
 )
 
 const maxKeyBytes = 32768
-const scryptN = 131072 // 128*N*r = 134217728 bytes; no attacker-selected costs.
+const scryptN = 131072 // 128*N*r = 134217728 bytes
 var oidPBES2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 13}
 var oidScrypt = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11591, 4, 11}
 var oidAES256GCM = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 46}
 
-// These are ASN.1 envelopes, not an alternative crypto implementation. Validate
-// the untrusted cost/algorithm fields before calling the pinned native parser.
+// These types decode the algorithm and cost fields of a stored key, so they
+// are checked before the key is parsed and a tampered object cannot choose its
+// own scrypt cost.
 type encryptedKeyInfo struct {
 	Algorithm pkix.AlgorithmIdentifier
 	Data      []byte

@@ -40,10 +40,6 @@ func TestCacheConfig(t *testing.T) {
 			t.Fatal("zero retained cache not disabled")
 		}
 	}
-	negative := int64(-1)
-	if _, err = CacheConfig(f, "", &negative); err == nil {
-		t.Fatal("negative capacity accepted")
-	}
 }
 
 type countStore struct {

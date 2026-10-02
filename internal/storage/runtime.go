@@ -21,8 +21,7 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("metadata path must be absolute")
 	}
-	// O_EXCL preserves existing modes. The caller's private state directory and
-	// state lock protect the SQLite/WAL files; existing files are never chmodded.
+	// Create the database with mode 0600. An existing file keeps its mode.
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err == nil {
 		if err = file.Close(); err != nil {
@@ -34,17 +33,14 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 	return meta.NewSQLite(path, conf)
 }
 
-// CacheConfig keeps native policy/defaults. Native CacheSize is already bytes:
-// decimal input needs no MiB truncation, including a one-byte positive capacity.
+// CacheConfig returns the JuiceFS defaults with the configured cache directory
+// and size. The size is in bytes.
 func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config, error) {
 	if err := validateFormat(format); err != nil {
 		return chunk.Config{}, err
 	}
 	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 20, MaxDownload: 200, MaxRetries: 10, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
-		if *capacity < 0 {
-			return c, errors.New("cache capacity must not be negative")
-		}
 		c.CacheSize = uint64(*capacity)
 	}
 	c.SelfCheck(format.UUID)
@@ -58,25 +54,23 @@ type Runtime struct {
 	closeErr error
 }
 
-// maintenanceStore is a final check at actual object deletion, including work
-// queued while protection was still valid. It leaves native storage unchanged.
+// maintenanceStore checks the delete guard again at each object deletion, so a
+// delete queued while protection was open fails once it has closed.
 type maintenanceStore struct {
 	object.ObjectStorage
 	check func() error
 }
 
 func (s *maintenanceStore) Delete(ctx context.Context, key string, getters ...object.AttrGetter) error {
-	if s.check == nil {
-		return errors.New("destructive maintenance has no protection guard")
-	}
 	if err := s.check(); err != nil {
 		return err
 	}
 	return s.ObjectStorage.Delete(ctx, key, getters...)
 }
 
-// OpenFilesystem registers the native CLI's delete/compact callbacks. It does
-// not format metadata or start a session: lifecycle owns protection ordering.
+// OpenFilesystem builds the chunk store and the JuiceFS filesystem and
+// registers the delete and compact callbacks behind the delete guard. The
+// caller starts the session afterwards.
 func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format, cacheDir string, cacheBytes *int64, checkMaintenance func() error) (*Runtime, error) {
 	c, err := CacheConfig(format, cacheDir, cacheBytes)
 	if err != nil {
@@ -84,18 +78,12 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 	}
 	store := chunk.NewCachedStore(&maintenanceStore{blob, checkMaintenance}, c, nil)
 	m.OnMsg(meta.DeleteSlice, func(args ...interface{}) error {
-		if checkMaintenance == nil {
-			return errors.New("missing maintenance guard")
-		}
 		if err := checkMaintenance(); err != nil {
 			return err
 		}
 		return store.Remove(args[0].(uint64), int(args[1].(uint32)))
 	})
 	m.OnMsg(meta.CompactChunk, func(args ...interface{}) error {
-		if checkMaintenance == nil {
-			return errors.New("missing maintenance guard")
-		}
 		if err := checkMaintenance(); err != nil {
 			return err
 		}
@@ -109,7 +97,6 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 	return &Runtime{FS: filesystem, Store: store}, nil
 }
 
-// Close follows native FS.Close, which flushes metadata and closes its session.
-// All SMB handles must already be flushed/closed, and backup stopped/joined.
-// The caller then owns Meta.Shutdown, transport Close, and state-lock release.
+// Close flushes JuiceFS metadata and closes its session. Call it after the SMB
+// handles are closed and the backup loop has stopped.
 func (r *Runtime) Close() error { r.once.Do(func() { r.closeErr = r.FS.Close() }); return r.closeErr }

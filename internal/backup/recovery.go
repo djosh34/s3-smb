@@ -28,18 +28,17 @@ func parsePoint(key string) (Point, error) {
 	const prefix = "meta/dump-"
 	const suffix = ".json.gz"
 	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
-		return Point{}, errors.New("not a native metadata backup name")
+		return Point{}, errors.New("not a metadata backup name")
 	}
 	ts := strings.TrimSuffix(strings.TrimPrefix(key, prefix), suffix)
 	t, err := time.Parse("2006-01-02-150405", ts)
 	if err != nil {
-		return Point{}, errors.New("invalid native metadata backup timestamp")
+		return Point{}, errors.New("invalid metadata backup timestamp")
 	}
 	return Point{key, t}, nil
 }
 
-// List returns native points newest-first. It does not silently select an older
-// one if validation of the newest fails; selection/confirmation is caller-owned.
+// List returns the metadata backups in the bucket, newest first.
 func List(ctx context.Context, blob object.ObjectStorage) ([]Point, error) {
 	ch, err := object.ListAll(ctx, blob, "meta/dump-", "", true, false)
 	if err != nil {
@@ -68,9 +67,9 @@ func inspectReader(r io.Reader) (*meta.Format, error) {
 	var dump meta.DumpedMeta
 	dec := json.NewDecoder(gz)
 	if err = dec.Decode(&dump); err != nil {
-		return nil, errors.New("invalid native metadata backup")
+		return nil, errors.New("invalid metadata backup")
 	}
-	// Reading through EOF is necessary to verify the gzip checksum/trailer.
+	// Read to EOF, so gzip verifies its checksum.
 	var extra any
 	if err = dec.Decode(&extra); err != io.EOF {
 		return nil, errors.New("invalid metadata backup trailer or trailing content")
@@ -79,7 +78,7 @@ func inspectReader(r io.Reader) (*meta.Format, error) {
 		return nil, err
 	}
 	if dump.Setting.UUID == "" || dump.Setting.Name == "" || dump.Counters == nil || dump.FSTree == nil || dump.FSTree.Attr == nil || dump.FSTree.Attr.Inode != meta.RootInode || dump.FSTree.Attr.Type != "directory" {
-		return nil, errors.New("metadata backup is missing native identity or root")
+		return nil, errors.New("metadata backup has no volume identity or root directory")
 	}
 	if err = dump.Setting.CheckVersion(); err != nil {
 		return nil, err
@@ -98,9 +97,15 @@ func Inspect(ctx context.Context, blob object.ObjectStorage, key string) (*meta.
 	return f, errors.Join(err, r.Close(), ctx.Err())
 }
 
-// CleanupRecoveryStaging removes abandoned application recovery directories.
-// Caller MUST hold the exclusive state lock, with no recovery worker alive.
-// Unknown contents and symlinks are never traversed or removed.
+// SameVolume reports whether two formats name the same volume with the same
+// data layout and key.
+func SameVolume(a, b *meta.Format) bool {
+	return a != nil && b != nil && a.UUID == b.UUID && a.Name == b.Name && a.BlockSize == b.BlockSize && a.Compression == b.Compression && a.Shards == b.Shards && a.HashPrefix == b.HashPrefix && a.EncryptAlgo == b.EncryptAlgo && a.EncryptKey == b.EncryptKey
+}
+
+// CleanupRecoveryStaging removes staging directories left by an interrupted
+// recovery. The caller holds the state lock. A directory with a file this
+// package did not create, or with a symlink, stays as it is.
 func CleanupRecoveryStaging(stateDir string) error {
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
@@ -139,11 +144,10 @@ func CleanupRecoveryStaging(stateDir string) error {
 	return nil
 }
 
-// Recover imports precisely the selected point into private, fresh SQLite. It
-// publishes only after load, identity validation and database close/checkpoint.
-// It never replaces an existing database. This is NOT a data-content scrub.
-// Native LoadMeta is synchronous: lifecycle must arm its hard startup watchdog
-// because context cancellation alone cannot interrupt the native import.
+// Recover loads one metadata backup into a new SQLite file in a staging
+// directory and links it to dbPath after the load, the identity check and a
+// clean close. It fails when dbPath exists. It checks metadata only and reads
+// no file data. The JuiceFS load cannot be cancelled through ctx.
 func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format) (*meta.Format, error) {
 	if current == nil {
 		return nil, errors.New("current validated volume settings required")
@@ -182,7 +186,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err != nil {
 		return nil, err
 	}
-	if saved.UUID != current.UUID || saved.Name != current.Name || saved.BlockSize != current.BlockSize || saved.Compression != current.Compression || saved.HashPrefix != current.HashPrefix || saved.Shards != current.Shards || (saved.EncryptKey != "") != (current.EncryptKey != "") || saved.EncryptAlgo != current.EncryptAlgo {
+	if !SameVolume(saved, current) {
 		return nil, errors.New("recovery volume identity, layout or encryption mode mismatch")
 	}
 	if err = ctx.Err(); err != nil {
@@ -221,8 +225,9 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err != nil {
 		return nil, err
 	}
-	// Preserve native identity and layout but NEVER adopt old connection secrets
-	// or destination. Transport/TLS remains owned by the already-open current store.
+	// Keep the identity and layout from the backup. Take the bucket, the
+	// credentials and the retention from the current configuration, so an old
+	// backup cannot redirect the store.
 	saved.Storage = current.Storage
 	saved.StorageClass = current.StorageClass
 	saved.Tiers = current.Tiers
@@ -250,8 +255,8 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 		return nil, err
 	}
 	closed = true
-	// SQLite closes/checkpoints its WAL on the last connection. Never publish
-	// only the main file if a nonempty WAL unexpectedly remains.
+	// SQLite checkpoints its WAL when the last connection closes. A nonempty
+	// WAL means the main file is incomplete, so do not link it into place.
 	if st, e := os.Stat(path + "-wal"); e == nil && st.Size() > 0 {
 		return nil, errors.New("recovered SQLite still has an active WAL")
 	} else if e != nil && !os.IsNotExist(e) {
@@ -267,7 +272,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	// Hard-link publication is atomic and fails if destination already exists.
+	// A hard link is atomic and fails when dbPath already exists.
 	if err = os.Link(path, dbPath); err != nil {
 		return nil, err
 	}

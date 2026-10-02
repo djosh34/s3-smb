@@ -103,18 +103,17 @@ fit locally. Native I/O buffering defaults remain 314,572,800 bytes (314.5728 MB
 Writable protection requires positive trash retention and this strict bound:
 
 ```text
-backup.interval + total backup operation budget < backup.trash_days * 24h
+2 * backup.interval < backup.trash_days * 24h
 ```
 
 Native cleanup's existing two-hour slack covers its UTC-hour trash-bucket
 rounding, so this bound is already conservative. The application does not
 subtract another hour or add a grace period or retention policy.
 
-For `trash_days: 1`, the combined interval and total budget must be **strictly
-less than 24 hours**. An interval of 23h30m plus a 2-minute total budget is within
-that bound. The ordinary defaults (1-hour interval, 2-minute total budget,
-14-day trash) remain valid. Runtime protection validates this relationship;
-`trash_days: 0` is unsafe for writable serving.
+One metadata backup, with its retries, may take as long as `backup.interval`.
+A backup that has not finished by then fails and the daemon stops. For
+`trash_days: 1` the interval must be shorter than 12 hours. Startup checks this
+bound. `trash_days: 0` is unsafe for writable serving.
 
 Writable protection also limits `trash_days` to **106751** to avoid overflow in
 native cleanup's `time.Duration(24*days+2) * time.Hour` calculation. This maximum

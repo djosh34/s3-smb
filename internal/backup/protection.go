@@ -9,9 +9,10 @@ import (
 
 var ErrUnprotected = errors.New("metadata protection is absent or expired")
 
-// Protection is shared by native retirement and the final object deletion guard.
-// It deliberately uses wall time (not a timer callback) so suspension cannot
-// revive expired protection. The initial state is closed until a verified point.
+// Protection allows deleting data only while a recent metadata backup exists.
+// JuiceFS cleanup and the object delete guard both call Check. Check compares
+// wall time, so protection that expired during a host suspend stays expired. It
+// starts closed and opens at the first verified backup.
 type Protection struct {
 	mu               sync.RWMutex
 	interval, budget time.Duration
@@ -24,16 +25,14 @@ func NewProtection(interval, budget time.Duration, trashDays int) (*Protection, 
 	if interval <= 0 || budget <= 0 || trashDays <= 0 || interval > time.Duration(1<<63-1)-budget {
 		return nil, errors.New("invalid backup interval, budget or trash retention")
 	}
-	// Native doCleanupTrash computes time.Duration(24*days+2)*time.Hour.
-	// Bound that arithmetic, not the namespace/workload. Native's existing
-	// two-hour slack already covers its hourly bucket rounding; do not add
-	// another margin or change native retention policy.
-	const maxNativeTrashDays = int((time.Duration(1<<63-1)/time.Hour - 2) / 24)
-	if trashDays > maxNativeTrashDays {
-		return nil, errors.New("trash retention exceeds native SQLite cleanup duration limit (106751 days)")
+	// JuiceFS computes trash expiry as time.Duration(24*days+2)*time.Hour.
+	// More days than this overflow that duration.
+	const maxTrashDays = int((time.Duration(1<<63-1)/time.Hour - 2) / 24)
+	if trashDays > maxTrashDays {
+		return nil, errors.New("backup.trash_days exceeds the JuiceFS limit of 106751 days")
 	}
 	if interval+budget >= time.Duration(trashDays)*24*time.Hour {
-		return nil, errors.New("backup interval plus operation budget must be shorter than native trash retention")
+		return nil, errors.New("backup interval plus the time allowed for one backup must be shorter than trash retention")
 	}
 	return &Protection{interval: interval, budget: budget, now: time.Now}, nil
 }
@@ -48,7 +47,8 @@ func (p *Protection) Check() error {
 	return nil
 }
 
-// Close is irreversible for this process. In-flight backups cannot reopen it.
+// Close ends protection for the rest of the process. A backup that finishes
+// later does not reopen it.
 func (p *Protection) Close() { p.mu.Lock(); p.stopped = true; p.mu.Unlock() }
 func (p *Protection) protect(snapshot time.Time) error {
 	p.mu.Lock()

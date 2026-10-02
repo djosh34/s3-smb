@@ -35,7 +35,7 @@ func (s *FS) Lookup(h vfs.VfsHandle, name string) (*vfs.Attributes, error) {
 	if e != nil {
 		return nil, e
 	}
-	st, er := s.native.Lstat(s.ctx, p)
+	st, er := s.jfs.Lstat(s.ctx, p)
 	if er != 0 {
 		return nil, er
 	}
@@ -54,10 +54,10 @@ func (s *FS) Mkdir(p string, mode int) (*vfs.Attributes, error) {
 	if e != nil {
 		return nil, e
 	}
-	if er := s.native.Mkdir(s.ctx, p, uint16(mode)&0777, 0); er != 0 {
+	if er := s.jfs.Mkdir(s.ctx, p, uint16(mode)&0777, 0); er != 0 {
 		return nil, er
 	}
-	st, er := s.native.Lstat(s.ctx, p)
+	st, er := s.jfs.Lstat(s.ctx, p)
 	if er != 0 {
 		return nil, er
 	}
@@ -100,7 +100,8 @@ func (s *FS) ReadDir(h vfs.VfsHandle, flags, max int) ([]vfs.DirInfo, error) {
 	return result, nil
 }
 
-// A handle is inode-bound. Never let a stale name delete/rename a replacement.
+// pathIdentity fails when the handle's path now names another inode, so a
+// delete or rename through a stale handle cannot hit the file that replaced it.
 func (s *FS) pathIdentity(f *handle) error {
 	if f.path == "" {
 		return syscall.ENOENT
@@ -108,7 +109,7 @@ func (s *FS) pathIdentity(f *handle) error {
 	if _, e := s.checkedPath(strings.TrimPrefix(f.path, "/"), false, false); e != nil {
 		return e
 	}
-	st, er := s.native.Lstat(s.ctx, f.path)
+	st, er := s.jfs.Lstat(s.ctx, f.path)
 	if er != 0 {
 		return er
 	}
@@ -134,7 +135,7 @@ func (s *FS) Unlink(h vfs.VfsHandle) error {
 		return syscall.EACCES
 	}
 	p := f.path
-	if er := s.native.Delete(s.ctx, p); er != 0 {
+	if er := s.jfs.Delete(s.ctx, p); er != 0 {
 		return er
 	}
 	for _, other := range s.handles {
@@ -167,12 +168,12 @@ func (s *FS) Rename(h vfs.VfsHandle, to string, flags int) error {
 	if f.path == "/" || target == "/" {
 		return syscall.EACCES
 	}
-	var nativeFlags uint32
+	var renameFlags uint32
 	if flags == 0 {
-		nativeFlags = meta.RenameNoReplace
+		renameFlags = meta.RenameNoReplace
 	}
 	old := f.path
-	if er := s.native.Rename(s.ctx, old, target, nativeFlags); er != 0 {
+	if er := s.jfs.Rename(s.ctx, old, target, renameFlags); er != 0 {
 		return er
 	}
 	for _, other := range s.handles {
@@ -260,7 +261,7 @@ func (s *FS) Symlink(h vfs.VfsHandle, target string, flags int) (*vfs.Attributes
 		return nil, syscall.EINVAL
 	}
 	p := f.path
-	if er := s.native.Delete(s.ctx, p); er != 0 {
+	if er := s.jfs.Delete(s.ctx, p); er != 0 {
 		return nil, er
 	}
 	for _, other := range s.handles {
@@ -268,18 +269,18 @@ func (s *FS) Symlink(h vfs.VfsHandle, target string, flags int) (*vfs.Attributes
 			other.path = ""
 		}
 	}
-	if er := s.native.Symlink(s.ctx, strings.ReplaceAll(target, "\\", "/"), p); er != 0 {
+	if er := s.jfs.Symlink(s.ctx, strings.ReplaceAll(target, "\\", "/"), p); er != 0 {
 		return nil, er
 	}
-	native, er := s.native.Lopen(s.ctx, p, 0)
+	link, er := s.jfs.Lopen(s.ctx, p, 0)
 	if er != 0 {
 		return nil, er
 	}
 	if er = f.file.Close(s.ctx); er != 0 {
-		_ = native.Close(s.ctx)
+		_ = link.Close(s.ctx)
 		return nil, er
 	}
-	f.file = native
+	f.file = link
 	f.typ = meta.TypeSymlink
 	f.path = p
 	return s.attr(f)
@@ -329,6 +330,6 @@ func (s *FS) Link(source, parent vfs.VfsNode, name string) (*vfs.Attributes, err
 	if er := s.meta.Link(s.ctx, meta.Ino(source), meta.Ino(parent), name, &a); er != 0 {
 		return nil, er
 	}
-	s.native.InvalidateEntry(meta.Ino(parent), name)
+	s.jfs.InvalidateEntry(meta.Ino(parent), name)
 	return attributes(meta.Ino(source), &a), nil
 }

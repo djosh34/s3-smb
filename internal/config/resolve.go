@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 package config
 
 import (
@@ -10,8 +11,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/logging"
 )
 
-// Resolved is a startup snapshot. Consumers must use these credentials and TLS
-// settings, never values imported from a metadata export. Never log this value.
+// Resolved is the startup snapshot of credentials and TLS settings. A metadata
+// backup may hold older ones, so callers use these. It prints as a placeholder
+// in logs.
 type Resolved struct {
 	*Config
 	AccessKey    string
@@ -26,16 +28,10 @@ func (*Resolved) LogValue() slog.Value { return slog.StringValue("[redacted reso
 func (*Config) String() string         { return "[redacted configuration]" }
 func (*Config) LogValue() slog.Value   { return slog.StringValue("[redacted configuration]") }
 
-// Resolve is explicitly invoked once at startup, after configuring the logger.
-// It does not create files or change permissions. TLS roots augment the process
-// trust pool only; no OS trust modification or insecure verification is used.
+// Resolve runs once at startup, after the logger is configured. It reads the
+// secrets and TLS files and warns about loose permissions. A configured CA file
+// adds to the system trust pool for this process.
 func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, error) {
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if err := c.validate(); err != nil {
-		return nil, err
-	}
 	logging.RegisterSecret(c.SMB.Password, c.S3.SessionToken)
 	warnExisting(c.path, "configuration", logger)
 	warnExisting(c.Storage.StateDir, "storage.state_dir", logger)
