@@ -28,11 +28,14 @@ func TestPackaging(t *testing.T) {
 		t.Error("go.mod has a replace directive")
 	}
 	upstream := []string{"github.com/juicedata/juicefs", "github.com/macos-fuse-t/go-smb2", "xorm.io/xorm", "github.com/vbauerster/mpb/v7", "github.com/urfave/cli/v2", "github.com/hashicorp/golang-lru/v2", "github.com/hanwen/go-fuse"}
-	err = filepath.WalkDir("internal", func(path string, d fs.DirEntry, err error) error {
+	err = filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
-		if d.Name() == "go.mod" || d.Name() == "go.work" || d.Name() == "vendor" {
+		if d.IsDir() && path == ".git" {
+			return filepath.SkipDir
+		}
+		if strings.HasPrefix(path, "internal/") && (d.Name() == "go.mod" || d.Name() == "go.work" || d.Name() == "vendor") {
 			t.Errorf("%s must not exist under internal", path)
 		}
 		if d.IsDir() || !strings.HasSuffix(path, ".go") {
