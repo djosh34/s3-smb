@@ -19,9 +19,6 @@ on:
           - acceptance
 permissions:
   contents: read
-concurrency:
-  group: final-hosted-mac
-  cancel-in-progress: false
 env:
   PUBLIC_VERSION: ${{ inputs.public_version }}
 jobs:
