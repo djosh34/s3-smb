@@ -18,6 +18,7 @@ case "$MAC_PHASE" in
   scenario) minutes=110 ;;
   *) echo "MAC_PHASE must be discover, backup, recover or scenario" >&2; exit 1 ;;
 esac
+[[ "$MAC_PHASE" != scenario || -n "${MAC_SCENARIO:-}" ]]
 export MAC_DEADLINE_EPOCH=$(( $(date +%s) + minutes * 60 ))
 [[ "$MAC_ARTIFACTS" = /* && "$MAC_WORK" = /* && "$MAC_WORK" != / && "$MAC_TRANSFER" = /* && "$MAC_TRANSFER" != / ]]
 [[ ! -e "$MAC_WORK" && ! -e "$MAC_ARTIFACTS" ]]
@@ -34,7 +35,7 @@ export MAC_BIN="$MAC_WORK/bin"
 # operation must succeed; no TCC/SIP modification is attempted.
 sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_RUNNER_HOME=$HOME" "MAC_DEADLINE_EPOCH=$MAC_DEADLINE_EPOCH" \
-  "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_TRANSFER=$MAC_TRANSFER" \
+  "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_SCENARIO=${MAC_SCENARIO:-}" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_IMAGE=${ImageOS:-unknown} ${ImageVersion:-unknown}" \
   PYTHONDONTWRITEBYTECODE=1 \
   python3 "$repo/test/macos/acceptance.py"

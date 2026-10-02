@@ -68,6 +68,7 @@ class Daemon:
         self.buffer = b''
         self.phase = phase
         self.confirmed = False
+        self.point = None  # The metadata backup the application offered to recover from.
         self.reaped = False
         self.exit_status = None
         self.reader_error = None
@@ -94,6 +95,8 @@ class Daemon:
                     expected = b'Initialize a genuinely empty S3 dataset?' if self.phase == 'initialize' else b'Recover metadata from '
                     if self.phase == 'restart' or expected not in self.buffer:
                         raise RuntimeError('unexpected application confirmation; refusing automatic answer')
+                    match = re.search(rb'Recover metadata from (\S+)', self.buffer)
+                    self.point = match and match[1].decode()
                     os.write(self.fd, b'yes\n')
                     self.confirmed = True
         except BaseException as e:

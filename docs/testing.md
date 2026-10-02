@@ -29,3 +29,7 @@ Go module and build caches persist in two Docker volumes. Remove them with
 
 GitHub runs both commands on every pull request and on `main`. No Linux test
 shows that Time Machine works. See [Hosted-Mac acceptance](macos-acceptance.md).
+
+The Mac workflow also interrupts a second backup in five ways and then restores
+the first backup. It kills the application or the Time Machine client. It does
+not cut power and it does not remove objects from S3.
