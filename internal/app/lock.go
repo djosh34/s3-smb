@@ -10,8 +10,8 @@ import (
 	"syscall"
 )
 
-// The lock file is never unlinked: replacing its inode would allow two owners.
-// On a stuck shutdown the process watchdog exits without explicitly unlocking.
+// Do not unlink the lock file. A new inode would let two processes hold the
+// lock. On a stuck shutdown the process exits without unlocking.
 type stateLock struct{ file *os.File }
 
 func lockState(dir string) (*stateLock, error) {

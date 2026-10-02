@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Package logging owns the daemon's single diagnostic stream. Call Install before
-// parsing configuration, then Configure once CLI overrides have been applied.
+// Package logging writes every log line of the daemon through one slog handler
+// that redacts secrets. Call Install before parsing configuration and Configure
+// after it.
 package logging
 
 import (
@@ -27,8 +28,8 @@ var state = struct {
 	secrets []string
 }{writer: os.Stderr}
 
-// Install installs text/INFO logging, including the standard library log bridge.
-// It does not forget secrets already registered during this process lifetime.
+// Install sets text output at INFO and routes the standard log package and the
+// standard logrus logger through it. Registered secrets stay registered.
 func Install(w io.Writer) {
 	if w == nil {
 		w = os.Stderr
@@ -40,11 +41,11 @@ func Install(w io.Writer) {
 	slog.SetDefault(slog.New(&handler{}))
 	log.SetFlags(0)
 	log.SetPrefix("")
-	Logrus(logrus.StandardLogger(), "native")
+	Logrus(logrus.StandardLogger(), "logrus")
 }
 
-// Configure validates both settings before changing the live logger. Empty values
-// select text and info. Invalid values are not echoed: they may come from secrets.
+// Configure checks both settings before it changes the logger. Empty values
+// select text and info. The error omits an invalid value, which may be a secret.
 func Configure(format, level string) error {
 	if format == "" {
 		format = "text"
@@ -76,8 +77,8 @@ func Configure(format, level string) error {
 	return nil
 }
 
-// RegisterSecret is defense in depth, not permission to log sensitive objects.
-// Empty secrets are ignored; longer overlapping secrets are replaced first.
+// RegisterSecret adds values to redact from every log line. It skips empty
+// values. Redaction replaces longer secrets first.
 func RegisterSecret(values ...string) {
 	state.Lock()
 	defer state.Unlock()
@@ -87,8 +88,8 @@ func RegisterSecret(values ...string) {
 		}
 		quoted := strconv.Quote(value)
 		jsonQuoted, _ := json.Marshal(value)
-		// Native %q errors and JSON-in-message strings escape control characters
-		// before reaching slog; redact those representations as well as raw values.
+		// A secret can reach the log quoted by %q, as JSON or URL-escaped.
+		// Redact those forms too.
 		for _, v := range []string{value, url.QueryEscape(value), url.PathEscape(value), quoted[1 : len(quoted)-1], string(jsonQuoted[1 : len(jsonQuoted)-1])} {
 			found := false
 			for _, old := range state.secrets {
@@ -105,8 +106,8 @@ func RegisterSecret(values ...string) {
 	sort.Slice(state.secrets, func(i, j int) bool { return len(state.secrets[i]) > len(state.secrets[j]) })
 }
 
-// Redact also supports native panic payloads, which otherwise bypass slog when
-// the runtime prints an unrecovered panic. Runtime stack dumps are not JSON.
+// Redact replaces registered secrets in value. The logrus bridge also uses it
+// on panic messages, which the Go runtime prints without slog.
 func Redact(value string) string {
 	state.RLock()
 	defer state.RUnlock()
@@ -116,8 +117,8 @@ func Redact(value string) string {
 	return value
 }
 
-// Bound attributes are retained until emission so subsequently registered secrets
-// and changed output settings also apply to loggers created before configuration.
+// bound keeps a logger's attributes and groups until a record is written, so
+// secrets registered later and a changed output format apply to it too.
 type bound struct {
 	groups []string
 	attrs  []slog.Attr

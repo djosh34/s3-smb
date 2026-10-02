@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-// Prompts must never go to stdout/stderr: those may be JSON log streams.
+// confirm asks on the terminal, because stdout and stderr may carry JSON logs.
 func confirm(message string) error {
 	tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
 	if err != nil {

@@ -12,17 +12,17 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-// Logrus installs a bridge on an actual native logger, retaining native Fatal
-// (os.Exit(1)) and Panic behavior. Do not add another stderr/syslog hook to it.
+// Logrus routes a logrus logger through slog. Fatal still exits with status 1
+// and Panic still panics.
 func Logrus(l *logrus.Logger, component string) {
 	l.SetOutput(io.Discard)
-	l.SetFormatter(nativeFormatter{component: component})
-	l.SetLevel(logrus.TraceLevel) // slog owns filtering, including later CLI changes.
+	l.SetFormatter(logrusFormatter{component: component})
+	l.SetLevel(logrus.TraceLevel) // slog filters by level
 }
 
-type nativeFormatter struct{ component string }
+type logrusFormatter struct{ component string }
 
-func (f nativeFormatter) Format(e *logrus.Entry) ([]byte, error) {
+func (f logrusFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	level := slog.LevelInfo
 	switch e.Level {
 	case logrus.TraceLevel, logrus.DebugLevel:
@@ -32,10 +32,10 @@ func (f nativeFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
 		level = slog.LevelError
 	}
-	// logrus panics with this Entry after formatting: never leave the raw message
-	// or arbitrary native fields in the panic payload.
+	// logrus panics with this entry after formatting it. Redact the message and,
+	// below, drop the fields, so the panic output holds no secret.
 	e.Message = Redact(e.Message)
-	attrs := []slog.Attr{slog.String("component", f.component), slog.String("native_level", e.Level.String())}
+	attrs := []slog.Attr{slog.String("component", f.component), slog.String("logrus_level", e.Level.String())}
 	for key, value := range e.Data {
 		attrs = append(attrs, cleanAttr(slog.Any(key, value)))
 	}
@@ -46,9 +46,8 @@ func (f nativeFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	return nil, nil
 }
 
-// SDKLogger is supplied before AWS SDK construction and region discovery. Never
-// enable SDK request/response body, signing, or HTTP-header trace modes: redaction
-// is not a substitute for keeping those payloads out of diagnostics.
+// SDKLogger forwards AWS SDK warnings and debug lines to slog. The SDK's
+// request, signing and body traces stay off.
 type SDKLogger struct{}
 
 func (SDKLogger) Logf(classification smithylog.Classification, format string, args ...interface{}) {

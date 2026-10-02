@@ -37,8 +37,9 @@ func attributes(ino meta.Ino, a *meta.Attr) *vfs.Attributes {
 		SetLastStatusChangeTime(time.Unix(a.Ctime, int64(a.Ctimensec)))
 }
 func (s *FS) attr(f *handle) (*vfs.Attributes, error) {
-	// Native File.Stat is an open-time snapshot. Commit buffered size changes
-	// before querying metadata; do not synthesize a second inode attribute cache.
+	// File.Stat returns the attributes from open time, and JuiceFS metadata
+	// learns a new length only at flush. Flush every handle on this inode, then
+	// read the metadata.
 	for _, other := range s.handles {
 		if other.file.Inode() == f.file.Inode() {
 			if e := other.file.Flush(s.ctx); e != 0 {
@@ -101,7 +102,7 @@ func (s *FS) SetAttr(h vfs.VfsHandle, a *vfs.Attributes) (*vfs.Attributes, error
 		n.Mtimensec = uint32(v.Nanosecond())
 		mask |= meta.SetAttrMtime
 	}
-	// JuiceFS has no independent birth time. Do not reinterpret it as ctime.
+	// JuiceFS stores no birth time, so a birth time in the request is ignored.
 	if size, ok := a.GetSizeBytes(); ok {
 		if e := dataFile(f); e != nil {
 			return nil, e
@@ -120,7 +121,7 @@ func (s *FS) SetAttr(h vfs.VfsHandle, a *vfs.Attributes) (*vfs.Attributes, error
 		if er := s.meta.SetAttr(s.ctx, f.file.Inode(), mask, 0, &n); er != 0 {
 			return nil, er
 		}
-		s.native.InvalidateAttr(f.file.Inode())
+		s.jfs.InvalidateAttr(f.file.Inode())
 	}
 	return s.attr(f)
 }
@@ -176,8 +177,8 @@ func (s *FS) Getxattr(h vfs.VfsHandle, key string, b []byte) (int, error) {
 	return copy(b, value), nil
 }
 func (s *FS) Setxattr(h vfs.VfsHandle, key string, b []byte) error {
-	// The direct metadata API does not apply the native VFS xattr bound.
-	// Use the same bound as the SMB resource-fork range allocator.
+	// The metadata API has no size limit for xattrs. Apply the limit the SMB
+	// server uses for resource forks.
 	if len(b) > vfs.MaxXattrSize {
 		return syscall.E2BIG
 	}
@@ -193,8 +194,8 @@ func (s *FS) Setxattr(h vfs.VfsHandle, key string, b []byte) error {
 	if er := s.meta.Access(s.ctx, f.file.Inode(), meta.MODE_MASK_W, nil); er != 0 {
 		return er
 	}
-	// Empty attributes exist and differ from missing ones. SQLite's native
-	// schema requires a non-NULL blob; a nil Go slice would bind SQL NULL.
+	// An empty xattr exists and differs from a missing one. The SQLite column
+	// is NOT NULL, and a nil slice would bind NULL.
 	if b == nil {
 		b = []byte{}
 	}

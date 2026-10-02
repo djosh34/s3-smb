@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Package backup coordinates native JuiceFS metadata export, retention and load.
-// It does not define a second remote backup format.
+// Package backup schedules JuiceFS metadata backups, removes old ones and loads
+// one into a new database.
 package backup
 
 import (
@@ -24,13 +24,13 @@ import (
 
 type Options struct {
 	StateDir          string
-	Interval, Timeout time.Duration // Timeout is the total budget, including retries.
+	Interval, Timeout time.Duration // Timeout covers all attempts of one backup.
 	Attempts          int
 	Protection        *Protection
 }
 type Receipt struct {
 	Key, UUID, SHA256 string
-	Snapshot          time.Time // start of export, never completion or restart time
+	Snapshot          time.Time // when the export started
 }
 type Manager struct {
 	meta    meta.Meta
@@ -54,7 +54,7 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 			return nil, err
 		}
 	}
-	// Only our own export files in this locked state directory; never follow links.
+	// Remove export files left by an earlier run. Links and other names stay.
 	entries, err := os.ReadDir(filepath.Join(opts.StateDir, "backup-staging"))
 	if err != nil {
 		return nil, err
@@ -73,9 +73,9 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 	return &Manager{meta: m, blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now}, nil
 }
 
-// Backup bounds the whole operation. Native SQL dump cannot be forcibly canceled:
-// on timeout this closes protection, and lifecycle MUST exit within its shutdown
-// deadline without releasing the authority lock while a native worker is alive.
+// Backup takes one metadata backup within Timeout. A JuiceFS dump cannot be
+// cancelled, so on timeout Backup closes protection and returns while the dump
+// may still run. The caller then calls Wait or exits with the state lock held.
 func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)
 	defer cancel()
@@ -99,8 +99,9 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 		if e == nil {
 			e = m.save(r)
 		}
-		// Keep receipt sync and retention inside the joined, bounded worker too.
-		// Initial protection is closed, so initial export never cleans old points.
+		// Saving the receipt and removing old backups run in this worker, so
+		// Wait covers them. Protection is closed during the first backup after
+		// startup, so that one removes nothing.
 		if e == nil && m.opts.Protection.Check() == nil {
 			cleanupCtx, stop := context.WithTimeout(ctx, 10*time.Second)
 			if err := vfs.CleanupBackups(cleanupCtx, guardedStore{m.blob, m.opts.Protection}, m.now()); err != nil {
@@ -147,8 +148,8 @@ wait:
 	return r, nil
 }
 
-// Wait joins a native export left running by a timeout. Lifecycle must call it
-// under its hard shutdown watchdog before closing metadata or releasing lock.
+// Wait blocks until an export left running by a timeout has ended. Call it
+// before closing the metadata database.
 func (m *Manager) Wait() { m.busy <- struct{}{}; <-m.busy }
 
 func (m *Manager) attempts(ctx context.Context) (Receipt, error) {
@@ -180,11 +181,12 @@ func (m *Manager) attempts(ctx context.Context) (Receipt, error) {
 			}
 		}
 	}
-	return Receipt{}, fmt.Errorf("metadata backup failed after bounded attempts: %w", last)
+	return Receipt{}, fmt.Errorf("metadata backup failed after %d attempts: %w", m.opts.Attempts, last)
 }
 func (m *Manager) reserve(key string) error {
-	// Reservations persist across process restarts and ambiguous uploads. Under
-	// the single-writer authority rule, HEAD plus this O_EXCL journal prevents reuse.
+	// One empty file per backup name, kept across restarts. With a single
+	// writer, this file and the HEAD request keep a name from being used twice,
+	// also after an upload whose response was lost.
 	dir := filepath.Join(m.opts.StateDir, "backup-names")
 	f, err := os.OpenFile(filepath.Join(dir, filepath.Base(key)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
 	if err != nil {
@@ -229,8 +231,10 @@ func (m *Manager) save(r Receipt) error {
 	return syncDir(m.opts.StateDir)
 }
 
-// Reuse verifies full remote readback and volume identity. It does not shift the
-// original snapshot or schedule. Missing/stale evidence requires a new backup.
+// Reuse accepts the last backup of the previous run when it is younger than the
+// interval, belongs to this volume and reads back from S3 with the recorded
+// hash. The schedule continues from that backup's time. Otherwise it returns
+// false and the caller takes a new backup.
 func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 	b, err := os.ReadFile(filepath.Join(m.opts.StateDir, "backup-receipt.json"))
 	if os.IsNotExist(err) {
@@ -285,8 +289,8 @@ func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// Run returns an error on the first exhausted scheduled operation, and closes
-// the maintenance gate even if cancellation was the cause. Caller stops SMB.
+// Run takes a backup each interval and returns the first failure. It closes
+// protection when it returns, also on cancellation. The caller stops SMB.
 func (m *Manager) Run(ctx context.Context) error {
 	defer m.opts.Protection.Close()
 	for {
@@ -303,8 +307,8 @@ func (m *Manager) Run(ctx context.Context) error {
 		if wait < 0 {
 			wait = 0
 		}
-		// Go timers can retain a pre-suspension monotonic delay. Re-evaluate
-		// wall time at least once per second after resume, not one interval later.
+		// Go timers do not advance while the host is suspended. Wake each second
+		// and compare wall time, so a backup due after resume starts at once.
 		if wait > time.Second {
 			wait = time.Second
 		}

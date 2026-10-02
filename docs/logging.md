@@ -32,7 +32,7 @@ Import relocation/source selection are documented in [vendored source](vendored.
 
 - `internal/juicefs/pkg/utils/logger.go`: each actual logrus handle receives the
   slog formatter at creation; slog owns levels. Native logrus fatal exits with
-  status 1 and panic still panics. Both are ERROR diagnostics with `native_level`
+  status 1 and panic still panics. Both are ERROR diagnostics with `logrus_level`
   distinguishing fatal/panic; the panic entry is sanitized before unwinding.
 - `utils/logger_syslog.go`: do not install native syslog hooks or their direct
   stderr failure paths. `utils/utils_linux.go`: OOM-adjustment errors use the

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 package config
 
 import (
@@ -15,8 +16,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/logging"
 )
 
-// SecretSource selects exactly one source. File and Value pointers preserve an
-// explicitly empty selection. Command is direct argv, never an implicit shell.
+// SecretSource selects exactly one source. Value and File are pointers, so an
+// empty string still counts as set. Command is an argv list and runs without a
+// shell.
 type SecretSource struct {
 	Value   *string  `yaml:"value"`
 	File    *string  `yaml:"file"`
@@ -120,7 +122,7 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 	cmd.Dir = dir
 	cmd.Stdin = strings.NewReader("")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// Kill the helper process group, not just a wrapper leaving children/pipes alive.
+	// Kill the helper's process group, so its children and their pipes go too.
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		if err == syscall.ESRCH {
@@ -134,8 +136,8 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 	cmd.Stdout = out
 	cmd.Stderr = stderr
 	err := cmd.Run()
-	// Also terminate the process group after a helper exits while a child still owns
-	// its pipes. WaitDelay bounds our wait; this prevents lingering children.
+	// A helper can exit while a child still holds its pipes. Kill the group
+	// again. WaitDelay limits how long Run waited for those pipes.
 	if cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}

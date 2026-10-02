@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only
 package config
 
 import (
@@ -9,8 +10,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ByteSize is a nonnegative capacity in bytes, not native MiB. A nil *ByteSize
-// means use the native default; zero explicitly disables retained caches.
+// ByteSize is a capacity in bytes. A nil *ByteSize means the JuiceFS default,
+// and zero disables the disk cache.
 type ByteSize int64
 
 var decimalSize = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)?$`)

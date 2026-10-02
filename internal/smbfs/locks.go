@@ -25,9 +25,9 @@ func (s *FS) Lock(h vfs.VfsHandle, locks []vfs.ByteRangeLock) error {
 	return s.LockContext(context.Background(), h, locks)
 }
 
-// LockContext adds cancellation to the pinned optional locking interface. Native
-// Setlk remains the authority for conflicts. Polling nonblocking Setlk avoids
-// tying up native sessions or shutdown while waiting for another SMB handle.
+// LockContext is Lock with cancellation. JuiceFS Setlk decides conflicts.
+// LockContext polls a nonblocking Setlk, so a wait for another SMB handle ends
+// on cancellation or shutdown.
 func (s *FS) LockContext(ctx context.Context, h vfs.VfsHandle, locks []vfs.ByteRangeLock) error {
 	if len(locks) == 0 {
 		return syscall.EINVAL
@@ -93,8 +93,8 @@ func (s *FS) tryLocks(h vfs.VfsHandle, f *handle, locks []vfs.ByteRangeLock) (er
 			desired = append(desired, l)
 		}
 	}
-	// SMB retains individual ranges; native POSIX locks coalesce them. Rebuild the
-	// native owner's projection after an exact SMB unlock, preserving overlaps.
+	// SMB keeps each locked range and JuiceFS merges adjacent POSIX locks. After
+	// an unlock, set the JuiceFS locks again from the ranges that remain.
 	if e := s.replaceLocks(h, f, desired); e != nil {
 		restore := s.replaceLocks(h, f, f.locks)
 		return errors.Join(e, restore), false
@@ -103,7 +103,7 @@ func (s *FS) tryLocks(h vfs.VfsHandle, f *handle, locks []vfs.ByteRangeLock) (er
 	return nil, false
 }
 func (s *FS) replaceLocks(h vfs.VfsHandle, f *handle, locks []vfs.ByteRangeLock) error {
-	f.lockOwnerUsed = true // cleanup must also cover an ambiguously failed batch
+	f.lockOwnerUsed = true // close must unlock even when this batch fails part-way
 	if er := s.meta.Setlk(s.ctx, f.file.Inode(), uint64(h), false, syscall.F_UNLCK, 0, math.MaxUint64, 1); er != 0 {
 		return er
 	}

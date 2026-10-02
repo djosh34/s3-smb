@@ -1,4 +1,5 @@
-// Package config loads one strict, startup-only application configuration.
+// SPDX-License-Identifier: AGPL-3.0-only
+// Package config loads and validates the YAML configuration once, at startup.
 package config
 
 import (
@@ -17,7 +18,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Config contains configuration, not resolved credentials. Never log it.
+// Config is the parsed file. Secrets are still sources here. It prints as a
+// placeholder in logs.
 type Config struct {
 	SMB        SMBConfig        `yaml:"smb"`
 	Storage    StorageConfig    `yaml:"storage"`
@@ -38,7 +40,8 @@ type StorageConfig struct {
 	StateDir  string    `yaml:"state_dir"`
 	CacheDir  string    `yaml:"cache_dir"`
 	CacheSize *ByteSize `yaml:"cache_size"`
-	// Omission adopts an existing format; explicit selection must match it.
+	// When omitted, an existing dataset keeps its stored compression. A set
+	// value must match it.
 	Compression *string `yaml:"compression"`
 }
 type S3Config struct {
@@ -69,7 +72,7 @@ type LoggingConfig struct {
 	Level  string `yaml:"level"`
 }
 
-// DefaultPath follows XDG on Linux and macOS. It performs no file access.
+// DefaultPath follows XDG on Linux and macOS.
 func DefaultPath() (string, error) {
 	dir, err := xdg("XDG_CONFIG_HOME", ".config")
 	if err != nil {
@@ -93,8 +96,8 @@ func xdg(env, fallback string) (string, error) {
 
 const maxConfigBytes = 1 << 20
 
-// Load reads and validates YAML, without executing helpers, reading credential/TLS
-// files, contacting the network, or creating state. Relative paths use its directory.
+// Load reads and validates the YAML file. Resolve reads the secrets and TLS
+// files later. Relative paths are resolved against the file's directory.
 func Load(path string) (*Config, error) {
 	absolute, err := filepath.Abs(path)
 	if err != nil {
@@ -119,8 +122,8 @@ func Load(path string) (*Config, error) {
 	return parse(data, absolute)
 }
 func parse(data []byte, path string) (*Config, error) {
-	// Inspect nodes first: null, aliases and merge keys obscure explicitness. Error
-	// details from YAML may quote secrets or user-chosen keys, so never expose them.
+	// Check the nodes first. Null, aliases and merge keys hide whether a field
+	// was set. YAML error text may quote secrets, so the errors here are fixed.
 	var node yaml.Node
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	if err := dec.Decode(&node); err != nil {
