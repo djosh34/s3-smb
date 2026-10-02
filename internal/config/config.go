@@ -190,7 +190,7 @@ func (c *Config) validate() error {
 	if err != nil || e != nil || p < 1 || p > 65535 {
 		return errors.New("smb.listen requires a host and port from 1 to 65535")
 	}
-	if c.SMB.Share == "" || strings.ContainsAny(c.SMB.Share, "/\\\x00") {
+	if c.SMB.Share == "" || strings.ContainsAny(c.SMB.Share, "/\\\x00") || strings.EqualFold(c.SMB.Share, "IPC$") {
 		return errors.New("smb.share must be a nonempty share name")
 	}
 	if c.SMB.Username == "" || strings.ContainsRune(c.SMB.Username, 0) {

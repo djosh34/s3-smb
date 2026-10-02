@@ -16,8 +16,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
+	smb2 "github.com/djosh34/s3-smb/internal/smb2/server"
+	"github.com/djosh34/s3-smb/internal/smb2/vfs"
 	"github.com/djosh34/s3-smb/internal/smbfs"
-	"github.com/djosh34/s3-smb/internal/smbserver"
 	"github.com/djosh34/s3-smb/internal/storage"
 )
 
@@ -32,7 +33,7 @@ type resources struct {
 	session      bool
 	runtime      *storage.Runtime
 	adapter      *smbfs.FS
-	server       *smbserver.Server
+	server       *smb2.Server
 	listener     net.Listener
 	protection   *backup.Protection
 	manager      *backup.Manager
@@ -55,7 +56,7 @@ func (r *resources) close() error {
 	if r.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := r.server.Shutdown(ctx); err != nil {
+		if err := r.server.ShutdownContext(ctx); err != nil {
 			return fmt.Errorf("SMB shutdown failed; state lock retained: %w", err)
 		}
 	}
@@ -345,16 +346,14 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err != nil {
 		return err
 	}
-	r.server, err = smbserver.New(c.SMB.Share, c.SMB.Username, c.SMB.Password, r.adapter)
-	if err != nil {
-		return err
-	}
+	auth := &smb2.NTLMAuthenticator{UserPassword: map[string]string{c.SMB.Username: c.SMB.Password}, NbName: "s3-smb"}
+	r.server = smb2.NewServer(&smb2.ServerConfig{Xatrrs: true}, auth, map[string]vfs.VFSFileSystem{c.SMB.Share: r.adapter})
 	r.listener, err = net.Listen("tcp", c.SMB.Listen)
 	if err != nil {
 		return fmt.Errorf("listen on configured SMB address (no fallback): %w", err)
 	}
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- r.server.Serve(r.listener) }()
+	go func() { serveDone <- r.server.ServeListener(r.listener) }()
 	var backupFailure <-chan error
 	if !c.SMB.ReadOnly {
 		backupCtx, cancel := context.WithCancel(ctx)
