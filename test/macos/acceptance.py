@@ -49,8 +49,8 @@ EXCLUSIONS = [
     '/Users/runner/Documents', '/Users/runner/Downloads', '/Users/runner/Library',
     '/Users/runner/Movies', '/Users/runner/actionarchivecache',
     '/Users/runner/actions-runner', '/Users/runner/bootstrap',
-    '/Users/runner/hostedtoolcache', '/Users/runner/image-generation',
-    '/Users/runner/work',
+    '/Users/runner/go', '/Users/runner/hostedtoolcache',
+    '/Users/runner/image-generation', '/Users/runner/work',
 ]
 
 
