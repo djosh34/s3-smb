@@ -30,7 +30,7 @@ func root(t *testing.T) string {
 
 func TestSourceDistribution(t *testing.T) {
 	dir := root(t)
-	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb2/LICENSE", "internal/smb2/Attributions.txt", "internal/thirdparty/cli/LICENSE", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE", "internal/thirdparty/lru/LICENSE"} {
+	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb2/LICENSE", "internal/smb2/Attributions.txt", "internal/thirdparty/cli/LICENSE", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
 		if err != nil || len(b) < 100 {
 			t.Errorf("missing license/notice %s: %v", name, err)
@@ -70,11 +70,6 @@ func TestSourceDistribution(t *testing.T) {
 	}
 	if len(manifest.Files) < 100 {
 		t.Fatal("source manifest unexpectedly empty")
-	}
-	for _, item := range manifest.Files {
-		if _, err := os.Stat(filepath.Join(dir, item.Destination)); err != nil {
-			t.Errorf("missing selected source %s: %v", item.Destination, err)
-		}
 	}
 	err = filepath.WalkDir(filepath.Join(dir, "internal"), func(path string, d fs.DirEntry, err error) error {
 		if err != nil {

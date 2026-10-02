@@ -17,9 +17,6 @@ This distribution incorporates modified copies of:
   Unlicense; internal/thirdparty/mpb/UNLICENSE.
 * Customized Xorm, gitea.com/davies/xorm v1.0.8-0.20220528043536-552d84d1b34a
   BSD-3-Clause; internal/thirdparty/xorm/LICENSE.
-* Customized golang-lru, juicedata/golang-lru
-  v2.0.8-0.20251126062551-1b321869f904
-  MPL-2.0; internal/thirdparty/lru/LICENSE and per-file notices.
 
 Their original license grants and copyright notices remain applicable to
 those files; this distribution does not relicense upstream files.

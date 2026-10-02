@@ -26,18 +26,15 @@ require (
 	github.com/mattn/go-isatty v0.0.20
 	github.com/mattn/go-runewidth v0.0.15
 	github.com/mattn/go-sqlite3 v1.14.24
-	github.com/oliverisaac/shellescape v0.0.0-20220131224704-1b6c6b87b668
 	github.com/pkg/errors v0.9.1
 	github.com/pkg/sftp v1.13.10
 	github.com/prometheus/client_golang v1.21.1
 	github.com/prometheus/client_model v0.6.2
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/sirupsen/logrus v1.9.3
-	github.com/spf13/cast v1.7.1
 	github.com/syndtr/goleveldb v1.0.0
 	github.com/twmb/murmur3 v1.1.8
 	github.com/viki-org/dnscache v0.0.0-20130720023526-c70c1f23c5d8
-	github.com/vimeo/go-util v1.4.1
 	github.com/vmihailenco/msgpack/v5 v5.4.1
 	github.com/xrash/smetrics v0.0.0-20201216005158-039620a65673
 	golang.org/x/crypto v0.49.0
@@ -74,6 +71,7 @@ require (
 	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.5 // indirect
 	github.com/kr/fs v0.1.0 // indirect
+	github.com/kr/text v0.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/onsi/ginkgo v1.16.5 // indirect
 	github.com/onsi/gomega v1.37.0 // indirect
