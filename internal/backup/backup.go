@@ -53,13 +53,6 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 		if err := os.MkdirAll(d, 0700); err != nil {
 			return nil, err
 		}
-		st, err := os.Stat(d)
-		if err != nil {
-			return nil, err
-		}
-		if st.Mode().Perm()&0077 != 0 {
-			slog.Warn("existing backup directory permissions are not private")
-		}
 	}
 	// Only our own export files in this locked state directory; never follow links.
 	entries, err := os.ReadDir(filepath.Join(opts.StateDir, "backup-staging"))

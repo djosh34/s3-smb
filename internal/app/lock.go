@@ -18,11 +18,6 @@ func lockState(dir string) (*stateLock, error) {
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	if info, err := os.Stat(dir); err != nil {
-		return nil, err
-	} else {
-		warnPermissions(info, "state directory", 0700)
-	}
 	fd, err := syscall.Open(filepath.Join(dir, "state.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open state lock: %w", err)
