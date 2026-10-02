@@ -101,7 +101,7 @@ Source base: JuiceFS v1.4.1, commit
 Run isolated regressions with:
 
 ```
-flock /tmp/s3-smb-heavy.lock env GOMAXPROCS=2 go test -p 2 \
+go test \
   ./internal/backup ./internal/juicefs/pkg/meta ./internal/juicefs/pkg/vfs
 ```
 

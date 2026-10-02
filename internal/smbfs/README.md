@@ -21,10 +21,10 @@ Stop accepting and drain protocol requests first, then call `Shutdown() error`, 
 
 Fast native integration tests use real SQLite metadata, native filesystem/cache/chunks, and native file-backed object storage. `TestTrashHandlePreservesExportedData` exports native metadata, deletes the live file, rejects destructive handle operations, imports the export into fresh SQLite and verifies the exact content. It is not an S3 backup or Time Machine proof. Object-upload fault tests wrap the real file store's `Put` to return `ENOSPC` and assert failed native sync/flush/close operations are not acknowledged.
 
-Run with the shared memory gate:
+Run them with:
 
 ```sh
-flock /tmp/s3-smb-heavy.lock env GOMAXPROCS=2 go test -p 2 -race ./internal/smbfs -count=1
+go test -race -count=1 ./internal/smbfs
 ```
 
-Run this same package through the shared Docker entry point with `scripts/test-linux.sh race ./internal/smbfs` (the script owns the heavy lock). The test owner records actual SMB-to-MinIO evidence separately. Birth-time preservation, complete Mac metadata behavior, power-loss durability, and real Time Machine remain later release gates, not conclusions from these native fixtures.
+Run this same package in Docker with `scripts/test-linux.sh ./internal/smbfs`. The test owner records actual SMB-to-MinIO evidence separately. Birth-time preservation, complete Mac metadata behavior, power-loss durability, and real Time Machine remain later release gates, not conclusions from these native fixtures.

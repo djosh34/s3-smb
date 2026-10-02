@@ -50,10 +50,11 @@ A scheduled backup that fails after bounded retries stops writable service. A me
 ## Development and evidence
 
 ```sh
-scripts/test-linux.sh suite
+go vet ./... && go test ./...
+scripts/test-linux.sh
 ```
 
-The shared Docker entry point builds the application and a pinned MinIO fixture, runs unit/race tests and actual SMB-to-S3 integration tests, and retains logs/artifacts. GitHub Linux CI must run this same entry point after local success. The separate `release` mode also checks the required coverage ledger; a green targeted test is not release approval. See [testing](docs/testing.md), [logging](docs/logging.md) and [source packaging](docs/packaging.md).
+The first line runs the fast tests. The script builds the application and a pinned MinIO in Docker, then runs every test with the race detector, including the tests that use real SMB and S3. GitHub runs both on every pull request. See [testing](docs/testing.md), [logging](docs/logging.md) and [source packaging](docs/packaging.md).
 
 The final [hosted-Mac gate](docs/macos-acceptance.md) uses a normal full-Mac Time Machine backup, then transfers the stopped MinIO store to a second fresh Mac for application recovery and Apple's native restore. Verification covers only deliberately created files and folders, including nested and empty directories, against an independent reference. Normal recovery must pass before later crash/resume acceptance. No fixture-only backup, generic copy, local-snapshot restore or metadata import substitutes for it. Harness-only iterations reuse the qualified application version and record harness/application revisions separately.
 

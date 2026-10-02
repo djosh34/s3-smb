@@ -75,8 +75,7 @@ the contract, with their regression tests:
   synthetic special files. Regression: `internal/smbfs/coherence_test.go`.
   In `pkg/chunk/disk_cache.go`, disk-full/staging-full flags use atomic loads
   and stores between the native free-space monitor and cache I/O, without
-  changing cache policy. The actual MinIO regression/race seam is
-  `test/cache/cache_test.go` (positive disk-cache pressure/refetch/restart);
+  changing cache policy;
 - SMB protocol: error propagation, write-through and connection/handle cleanup;
 - utils/progress and Xorm/SMB diagnostics: slog routing and redaction.
 
@@ -100,7 +99,7 @@ source provenance evidence, not behavioral acceptance.
 ## Linux packaging checks
 
 ```sh
-flock /tmp/s3-smb-heavy.lock env GOMAXPROCS=2 scripts/check-packaging.sh
+scripts/check-packaging.sh
 # Full local Docker suite: see docs/testing.md.
 ```
 
