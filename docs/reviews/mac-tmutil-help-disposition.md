@@ -34,7 +34,7 @@ permission changes, additional Mac probe or retry was used for diagnosis.
   the manual. Require that actual operation and parsed status at the platform
   gate rather than an unobserved help summary. Subsequent real status gates stay.
 
-The actual named-empty `smb://timemachine:@127.0.0.1/TimeMachine` destination
+The actual blank-password `smb://timemachine:@127.0.0.1/TimeMachine` destination
 operation is **unchanged**. No AFP, guest, mount-point reinterpretation, fixture
 backup, source shrinking or local-snapshot restore fallback was added. Full
 baseline/resumed pre-wipe expectations, actual completed backups, native points,
@@ -54,7 +54,7 @@ when the next independent check is reached. It was run before the correction:
 failure. After correction `mac-tmutil-contract-green.log` records six passing
 checks: real-path captured regression; equivalent brief-help omissions; required
 SMB/URL contract absence; option scoping/grouped flags; missing verb/help failure;
-and unchanged named-empty SMB destination operation. Synthetic other-verb help
+and unchanged blank-password SMB destination operation. Synthetic other-verb help
 summaries are regression inputs, not claimed native observations.
 
 Original failed workflow, logs, help/manual and inventory remain unchanged.

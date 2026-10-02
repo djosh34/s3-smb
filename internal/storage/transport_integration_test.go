@@ -139,7 +139,7 @@ func transportConfig(t *testing.T, endpoint string, pathStyle bool) *config.Conf
 	t.Helper()
 	password, access, secret := "transport-smb-password-marker", transportAccess, transportSecret
 	return &config.Config{
-		SMB:     config.SMBConfig{Listen: "127.0.0.1:445", Share: "transport", Username: "transport", Password: &password},
+		SMB:     config.SMBConfig{Listen: "127.0.0.1:445", Share: "transport", Username: "transport", Password: password},
 		Storage: config.StorageConfig{StateDir: t.TempDir(), CacheDir: t.TempDir()},
 		S3: config.S3Config{Bucket: transportBucket, Region: "us-east-1", Endpoint: endpoint, PathStyle: &pathStyle,
 			AccessKey: config.SecretSource{Value: &access}, SecretKey: config.SecretSource{Value: &secret}},
@@ -159,7 +159,7 @@ func transportOpen(t *testing.T, cfg *config.Config) object.ObjectStorage {
 	t.Cleanup(func() {
 		logging.Install(os.Stderr)
 		data := logs.String()
-		secrets := []string{transportAccess, transportSecret, cfg.S3.SessionToken, *cfg.SMB.Password}
+		secrets := []string{transportAccess, transportSecret, cfg.S3.SessionToken, cfg.SMB.Password}
 		if cfg.S3.AccessKey.Value != nil {
 			secrets = append(secrets, *cfg.S3.AccessKey.Value)
 		}

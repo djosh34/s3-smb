@@ -14,8 +14,6 @@ import (
 
 type Server struct{ native *smb2.Server }
 
-// New uses normal NTLM authentication even when password is explicitly empty.
-// Configuration must distinguish an explicit empty password from missing input.
 func New(share, account, password string, filesystem vfs.VFSFileSystem) (*Server, error) {
 	if strings.TrimSpace(share) == "" || strings.ContainsAny(share, `/\\`) || strings.EqualFold(share, "IPC$") {
 		return nil, errors.New("invalid SMB share name")

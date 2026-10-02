@@ -14,7 +14,7 @@ import (
 
 const validYAML = `smb:
   username: backup
-  password: ""
+  password: smb-password
 s3:
   bucket: backups
   access_key: {value: access-marker}
@@ -49,10 +49,11 @@ func TestStrictYAML(t *testing.T) {
 		"duplicate":         validYAML + "smb: {username: backup, password: private-marker}\n",
 		"nested duplicate":  strings.Replace(validYAML, "  bucket: backups", "  bucket: backups\n  bucket: private-marker", 1),
 		"trailing document": validYAML + "---\nprivate-marker\n",
-		"missing password":  strings.Replace(validYAML, "  password: \"\"\n", "", 1),
-		"null password":     strings.Replace(validYAML, "password: \"\"", "password: null", 1),
+		"missing password":  strings.Replace(validYAML, "  password: smb-password\n", "", 1),
+		"null password":     strings.Replace(validYAML, "password: smb-password", "password: null", 1),
+		"blank password":    strings.Replace(validYAML, "password: smb-password", "password: \"\"", 1),
 		"null enabled":      strings.Replace(validYAML, "enabled: false", "enabled: null", 1),
-		"alias":             "smb: &private-marker {username: backup, password: ''}\ns3: *private-marker\n",
+		"alias":             "smb: &private-marker {username: backup, password: smb-password}\ns3: *private-marker\n",
 		"malformed":         "private-marker: [secret-marker\n",
 		"empty":             "",
 		"array":             "[private-marker]",
@@ -94,7 +95,7 @@ func TestDefaultsPathsAndExplicitness(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(t.TempDir(), "data"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(t.TempDir(), "cache"))
 	c := mustConfig(t)
-	if c.SMB.Listen != "127.0.0.1:445" || c.SMB.Share != "TimeMachine" || c.SMB.Password == nil || *c.SMB.Password != "" || c.SMB.ReadOnly || c.Storage.CacheSize != nil || c.S3.PathStyle != nil || c.Backup.Interval != time.Hour || c.Backup.TrashDays != 14 || c.Logging.Format != "text" {
+	if c.SMB.Listen != "127.0.0.1:445" || c.SMB.Share != "TimeMachine" || c.SMB.Password != "smb-password" || c.SMB.ReadOnly || c.Storage.CacheSize != nil || c.S3.PathStyle != nil || c.Backup.Interval != time.Hour || c.Backup.TrashDays != 14 || c.Logging.Format != "text" {
 		t.Fatalf("incorrect defaults")
 	}
 	if c.Storage.StateDir != filepath.Join(os.Getenv("XDG_DATA_HOME"), "s3-smb") || c.Storage.CacheDir != filepath.Join(os.Getenv("XDG_CACHE_HOME"), "s3-smb") {
@@ -175,7 +176,7 @@ func TestValidation(t *testing.T) {
 		"username":                 func(c *Config) { c.SMB.Username = "" },
 		"bucket":                   func(c *Config) { c.S3.Bucket = "" },
 		"share":                    func(c *Config) { c.SMB.Share = "../secret-marker" },
-		"password NUL":             func(c *Config) { c.SMB.Password = ptr("private-marker\x00") },
+		"password NUL":             func(c *Config) { c.SMB.Password = "private-marker\x00" },
 		"token NUL":                func(c *Config) { c.S3.SessionToken = "secret-marker\x00" },
 		"logging":                  func(c *Config) { c.Logging.Level = "private-marker" },
 		"enabled needs passphrase": func(c *Config) { c.Encryption.Enabled = true },

@@ -7,8 +7,8 @@ This contract specifies required behavior, how the application uses JuiceFS, and
 ## Product and command
 
 - A foreground executable named `s3-smb`, installed without checkout using `go install github.com/djosh34/s3-smb@<version>`.
-- One SMB share/account, supporting a normal password or an explicitly empty password. The user confirmed that named-empty access satisfies the passwordless requirement; anonymous/no-username access is not required. Keep the native normal authentication/signing path rather than enable guest mode. The [source check and small NTLM probe](research/guest-and-zero-cache.md) support this route; complete SMB/Mac tests remain required. Missing configuration must not silently disable authentication.
-- Default bind `127.0.0.1:445`; explicit `0.0.0.0` and custom ports work. Passwordless access on an explicitly configured wider bind is allowed, with a clear warning about access. Never widen binding automatically.
+- One SMB share/account. The account must have a password. Keep the native normal authentication/signing path rather than enable guest mode.
+- Default bind `127.0.0.1:445`; explicit `0.0.0.0` and custom ports work. Never widen binding automatically.
 - `serve` uses one YAML config with `-c` override accepted before or after the subcommand. Default path is `$XDG_CONFIG_HOME/s3-smb/config.yaml`, otherwise `$HOME/.config/s3-smb/config.yaml`, on both platforms. Help/version have no credential, network or initialization side effects.
 - No separate `init`. `serve` asks before initializing a genuinely new dataset or recovering existing remote state. Keep prompts separate from logs; fail clearly when required confirmation has no controlling terminal. Normal restarts require no terminal.
 - Support an optional read-only mode. No GUI, daemonization, service installer, FUSE mount, client backup scheduler or custom backup browser. Test scripts may start and stop the foreground process.
@@ -20,7 +20,7 @@ Use strict YAML, clear errors, documented defaults and paths relative to the con
 
 | Area | Required settings and behavior |
 | --- | --- |
-| SMB | Listen address, share, account/password and explicit passwordless access. Native protocol/signing limits must be documented and tested, not hidden by reporting successful authentication. |
+| SMB | Listen address, share, account and required password. Native protocol/signing limits must be documented and tested, not hidden by reporting successful authentication. |
 | Local storage | State directory, native cache directory and optional `cache_size`. Use XDG data/cache defaults. Omitted capacity uses the native default; explicit `0` must not be replaced by that default. |
 | Units | Public size inputs, help and status use decimal units: 1 MB = 1,000,000 bytes; 1 GB = 1,000,000,000 bytes. Convert correctly at the native interface. A small positive capacity must not accidentally become zero because of unit conversion. |
 | S3 | Bucket, region, custom endpoint, `path_style`, independent access/secret sources and optional static session token. Explicit `path_style: true` and `false` must reach the S3 client and work in tests; omission may use native selection. |
@@ -92,7 +92,7 @@ Pin the MinIO fixture and relevant toolchains/images. Tests use disposable volum
 
 Required E2E coverage:
 
-- Password authentication and passwordless access, explicit wider binding and read-only behavior.
+- Password authentication, explicit wider binding and read-only behavior.
 - File/attribute/directory operations, locks, write-through/flush failures and malformed requests.
 - Independent credential-source combinations, custom endpoint, forced path-style and virtual-host-style requests, private CA and mutual TLS.
 - Decimal capacity conversion, omitted versus zero cache, eviction/refetch and remote data larger than the nonzero cache.
@@ -114,7 +114,7 @@ The user-approved replacement in [#34](https://github.com/djosh34/s3-smb/issues/
 
 First remove the superseded exhaustive eligible-source scan, native eligibility parser/path association, capacity estimator/size gate, full-source coverage assertion and whole-backup metadata comparisons, including their obsolete helpers/tests. Do not hide them behind flags or add another planning/comparison framework. Preserve useful native commands, application/Linux tests and historical failure evidence.
 
-The user subsequently authorized a labelled synthetic-nonempty-password positive control using qualified rc6 to advance the normal path, then crash/resume. Native named-empty Apple SMB mounting has passed, but named-empty Time Machine destination setup remains separately unresolved; control success must not be claimed as satisfying it. The earlier execution stop rule is rescinded. Keep authentication mode explicit in evidence, avoid an authentication framework, and do not repeat Linux/release qualification for control-only harness changes. See [current execution](macos-acceptance.md#current-execution-labelled-positive-control).
+The user subsequently authorized a labelled positive control with a synthetic password using qualified rc6 to advance the normal path, then crash/resume. On 2026-10-02 the owner withdrew the requirement for access without a password, so password authentication is the only path. The earlier execution stop rule is rescinded. Keep authentication mode explicit in evidence, avoid an authentication framework, and do not repeat Linux/release qualification for control-only harness changes. See [current execution](macos-acceptance.md#current-execution-labelled-positive-control).
 
 The normal path uses two dependent fresh GitHub-hosted Mac jobs:
 

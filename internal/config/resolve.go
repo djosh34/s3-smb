@@ -6,7 +6,6 @@ import (
 	"crypto/x509"
 	"errors"
 	"log/slog"
-	"net"
 
 	"github.com/djosh34/s3-smb/internal/logging"
 )
@@ -37,7 +36,7 @@ func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, e
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
-	logging.RegisterSecret(*c.SMB.Password, c.S3.SessionToken)
+	logging.RegisterSecret(c.SMB.Password, c.S3.SessionToken)
 	warnExisting(c.path, "configuration", logger)
 	warnExisting(c.Storage.StateDir, "storage.state_dir", logger)
 	warnExisting(c.Storage.CacheDir, "storage.cache_dir", logger)
@@ -62,13 +61,6 @@ func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, e
 	r.TLSConfig, err = c.S3.TLS.load(logger)
 	if err != nil {
 		return nil, err
-	}
-	if *c.SMB.Password == "" {
-		host, _, _ := net.SplitHostPort(c.SMB.Listen)
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			logger.Warn("named passwordless SMB access is enabled on a non-loopback bind; anyone who can reach it can access the share")
-		}
 	}
 	return r, nil
 }

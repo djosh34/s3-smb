@@ -9,13 +9,12 @@ on:
         default: v0.1.0-rc.6
         type: string
       scenario:
-        description: Labelled password control is not named-empty Time Machine acceptance
+        description: Authentication used for the Time Machine destination
         required: true
         default: password-control
         type: choice
         options:
           - password-control
-          - named-empty
 permissions:
   contents: read
 concurrency:

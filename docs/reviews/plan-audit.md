@@ -15,7 +15,7 @@ The [implementation contract](../implementation-plan.md) and [implementation bac
 
 [Every reviewer comment and its disposition](reviewer-comments.md) includes alternatives, minor observations, cautions and links to all four complete final reports. Comments not selected as requirements are preserved there, not silently omitted.
 
-Later user changes also require passwordless SMB, decimal MB/GB, tested native zero cache, warnings for existing file-permission issues, local Docker/MinIO-first tests and a required hosted-Mac Time Machine test as the final task. The contract now specifies outcomes and necessary native integration/fixes rather than prescribing ordinary JuiceFS mechanics or illustrative internal constants. These changes postdate the four reviews.
+Later user changes also require SMB access without a password (withdrawn on 2026-10-02), decimal MB/GB, tested native zero cache, warnings for existing file-permission issues, local Docker/MinIO-first tests and a required hosted-Mac Time Machine test as the final task. The contract now specifies outcomes and necessary native integration/fixes rather than prescribing ordinary JuiceFS mechanics or illustrative internal constants. These changes postdate the four reviews.
 
 ## Direct answers
 
