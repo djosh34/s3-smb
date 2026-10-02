@@ -546,3 +546,30 @@ func TestReuseTakesNewBackupWhenLastIsMissingOrChanged(t *testing.T) {
 		t.Fatalf("reuse=%v %v, want the transport error", ok, err)
 	}
 }
+
+type slowStore struct {
+	*fixtureStore
+	clock *atomic.Int64
+}
+
+// PutIfAbsent takes three minutes by the injected clock and long enough in real
+// time for Backup to compare that clock with its deadline.
+func (s slowStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	s.clock.Add(int64(3 * time.Minute))
+	time.Sleep(1500 * time.Millisecond)
+	return s.fixtureStore.PutIfAbsent(ctx, key, r)
+}
+
+func TestBackupMayTakeUpToTheInterval(t *testing.T) {
+	m, _ := newMetadata(t)
+	var clock atomic.Int64
+	clock.Store(time.Now().UTC().UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
+	mgr := newManager(t, m, slowStore{newStore(t), &clock}, t.TempDir(), now, time.Hour)
+	if _, err := mgr.Backup(context.Background()); err != nil {
+		t.Fatal("a three-minute backup failed within a one-hour interval:", err)
+	}
+	if err := mgr.opts.Protection.Check(); err != nil {
+		t.Fatal(err)
+	}
+}

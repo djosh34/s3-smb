@@ -22,8 +22,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/storage"
 )
 
-const backupTimeout = 2 * time.Minute
-
 // resources contains actual native resources, in ownership order. No lock is
 // released after a failed or stuck close: Main terminates the owning process.
 type resources struct {
@@ -113,7 +111,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	checkMaintenance := func() error { return backup.ErrUnprotected }
 	if !c.SMB.ReadOnly {
-		r.protection, err = backup.NewProtection(c.Backup.Interval, backupTimeout, c.Backup.TrashDays)
+		// A metadata backup may take as long as the backup interval.
+		r.protection, err = backup.NewProtection(c.Backup.Interval, c.Backup.Interval, c.Backup.TrashDays)
 		if err != nil {
 			return err
 		}
@@ -285,7 +284,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, Interval: c.Backup.Interval, Timeout: backupTimeout, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
 		if err != nil {
 			return err
 		}
