@@ -53,8 +53,11 @@ type daemon struct {
 func newFixture(t *testing.T, encrypted bool) *fixture {
 	t.Helper()
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
-	if endpoint == "" || os.Getenv("S3_SMB_E2E_BINARY") == "" {
-		t.Fatal("real Docker fixture required: scripts/test-linux.sh e2e")
+	if endpoint == "" {
+		t.Skip("needs MinIO: run scripts/test-linux.sh")
+	}
+	if os.Getenv("S3_SMB_E2E_BINARY") == "" {
+		t.Fatal("S3_SMB_E2E_BINARY is not set: run scripts/test-linux.sh")
 	}
 	f := &fixture{t: t, endpoint: endpoint, encrypted: encrypted, password: password, secret: passphrase, bucket: fmt.Sprintf("smb-e2e-%d", time.Now().UnixNano())}
 	f.store = s3.New(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String(endpoint), UsePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("s3smb-test-access", "s3smb-test-secret-only", "")})
@@ -387,6 +390,7 @@ func (f *fixture) protectedAfter(after time.Time) {
 }
 func TestSMBToS3Smoke(t *testing.T) {
 	f := newFixture(t, false)
+	f.cacheSize = "8 MB"
 	d := f.start()
 	share, close := f.share()
 	data := []byte("real signed SMB -> native JuiceFS -> MinIO\n")

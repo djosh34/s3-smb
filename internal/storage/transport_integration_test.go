@@ -52,8 +52,8 @@ const transportSecret = "s3smb-test-secret-only"
 // and observes requests, but never fabricates successful S3 responses or changes
 // their signed Host/path. See test/transport/README.md for the precise boundary.
 func TestTransportAcceptance(t *testing.T) {
-	if os.Getenv("S3_SMB_TRANSPORT") != "1" {
-		t.Skip("run scripts/test-linux.sh e2e for native S3 transport acceptance")
+	if os.Getenv("S3_SMB_E2E_ENDPOINT") == "" {
+		t.Skip("needs MinIO: run scripts/test-linux.sh")
 	}
 	upstream, err := url.Parse(os.Getenv("S3_SMB_E2E_ENDPOINT"))
 	if err != nil || upstream.Host == "" || upstream.Scheme != "http" {
