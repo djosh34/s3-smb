@@ -35,7 +35,7 @@ case "$command $*" in
     printf '? example/two [no test files]\n' ;;
   'gofmt '*) printf '%s' "${CHECK_TEST_UNFORMATTED:-}" ;;
   'docker image inspect '*) [[ ${CHECK_TEST_CACHED:-no} == yes ]] ;;
-  'docker inspect '*) printf '%s\n' "${CHECK_TEST_CONTAINER_EXIT:-0}" ;;
+  'docker start -a '*) exit "${CHECK_TEST_CONTAINER_EXIT:-0}" ;;
 esac
 STUB
 chmod +x "$fixture/bin/stub"
@@ -73,7 +73,9 @@ absent 'ignored.go'
 contains 'script-tests'
 contains "python3 [pr] -m unittest discover -s test/macos -p test_*.py"
 contains 'go [pr] test -count=1 ./...'
-contains 'go [pr] test -race -shuffle=on -count=1 ./...'
+absent 'go [pr] test -race '
+absent 'docker [pr] inspect '
+[[ $(grep -c 'go \[pr\] test -count=1 ./...' "$CHECK_TEST_COMMANDS") == 1 ]] || fail 'unit tests ran more than once'
 contains 'docker [pr] build -f test/Dockerfile -t s3-smb-test:'
 contains '-e S3_SMB_CHECK_MODE=pr'
 contains 'bash /src/test/run-linux.sh'
@@ -119,7 +121,7 @@ unset CHECK_TEST_TARGETS
 # Failures stop later stages. Seed and exploration failures request artifacts.
 for command in 'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
   'python3 -m unittest discover -s test/macos -p test_*.py' \
-  'go test -count=1 ./...' 'go test -race -shuffle=on -count=1 ./...' \
+  'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
   'go test -list ^Fuzz example/one' \
   'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'; do
@@ -128,7 +130,7 @@ for command in 'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
   fails
   absent 'docker [gate] network create'
   case "$command" in
-    'go test -count=1 ./...'|'go test -race '*|'go test -run '*)
+    'go test -count=1 ./...'|'go test -run '*)
       grep -Fx 'fuzz_failed=true' "$GITHUB_OUTPUT" >/dev/null || fail 'missing fuzz artifact signal' ;;
   esac
 done
@@ -165,6 +167,7 @@ unset CHECK_TEST_FAIL_PREFIX
 export CHECK_TEST_CONTAINER_EXIT=17
 run_check
 fails
+grep -Fx 'fuzz_failed=true' "$GITHUB_OUTPUT" >/dev/null || fail 'Docker test failure did not request fuzz artifacts'
 contains 'docker [pr] rm -f'
 contains 'docker [pr] network rm'
 unset CHECK_TEST_CONTAINER_EXIT

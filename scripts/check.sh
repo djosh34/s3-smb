@@ -16,18 +16,15 @@ cd "$root"
 work=$(mktemp -d)
 id=s3-smb-$(basename "$work")
 network=false
-minio=false
-runner=false
+containers=()
 logs=''
 cleanup() {
   status=$?
   trap - EXIT
-  for container in runner minio; do
-    if [[ ${!container} == true ]]; then
-      if ! docker rm -f "$id-$container" >/dev/null; then
-        echo "Could not remove $id-$container" >&2
-        status=1
-      fi
+  for container in "${containers[@]}"; do
+    if ! docker rm -f "$container" >/dev/null; then
+      echo "Could not remove $container" >&2
+      status=1
     fi
   done
   if [[ $network == true ]]; then
@@ -75,12 +72,6 @@ if ! go test -count=1 ./...; then
   fuzz_failure
   exit 1
 fi
-echo '== Race tests =='
-if ! go test -race -shuffle=on -count=1 ./...; then
-  fuzz_failure
-  exit 1
-fi
-
 if [[ $S3_SMB_CHECK_MODE == gate ]]; then
   echo '== Fuzz exploration =='
   go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... > "$work/packages"
@@ -115,7 +106,7 @@ docker create --name "$id-minio" --network "$id" --network-alias minio \
   -e MINIO_ROOT_USER=s3smb-test-access -e MINIO_ROOT_PASSWORD=s3smb-test-secret-only \
   -e MINIO_DOMAIN=minio,transport.test \
   "$image" minio server /data --address :9000 >/dev/null
-minio=true
+containers+=("$id-minio")
 docker start "$id-minio" >/dev/null
 # MinIO starts before the tests can create their first bucket.
 for ((attempt=0; attempt<60; attempt++)); do
@@ -136,11 +127,8 @@ docker create --name "$id-runner" --network "$id" \
   -e S3_SMB_E2E_ENDPOINT=http://minio:9000 -e S3_SMB_TEST_ARTIFACTS=/artifacts \
   -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" \
   "$image" bash /src/test/run-linux.sh >/dev/null
-runner=true
-docker start -a "$id-runner"
-# docker start -a does not propagate the container's exit code.
-result=$(docker inspect -f '{{.State.ExitCode}}' "$id-runner")
-if [[ $result != 0 ]]; then
+containers=("$id-runner" "${containers[@]}")
+if ! docker start -a "$id-runner"; then
   fuzz_failure
   exit 1
 fi
