@@ -3,11 +3,14 @@ name: Time Machine end-to-end
 on:
   workflow_dispatch:
     inputs:
-      public_version:
-        description: Released application version to install from the public Go proxy
+      server:
+        description: Server build from the checked-out code
         required: true
-        default: v0.1.0
-        type: string
+        default: default
+        type: choice
+        options:
+          - default
+          - smbnext
       mode:
         description: What to run
         required: true
@@ -25,7 +28,7 @@ on:
 permissions:
   contents: read
 env:
-  PUBLIC_VERSION: ${{ inputs.public_version }}
+  MAC_SERVER: ${{ inputs.server }}
 jobs:
   discover:
     name: exclusion discovery
