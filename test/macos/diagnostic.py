@@ -28,7 +28,7 @@ class Diagnostic(Acceptance):
 
     def start_capture(self):
         self.capture_log = (EVIDENCE / 'tcpdump-stderr.log').open('xb', buffering=0)
-        argv = ['/usr/sbin/tcpdump', '-i', 'lo0', '-nn', '-s', '0', '-B', '131072', '-U',
+        argv = ['/usr/sbin/tcpdump', '-i', 'lo0', '-nn', '-s', '0', '-B', '262144',
                 '-w', str(WORK / 'private-traffic.pcap'), 'tcp port 1445']
         self.save('capture-command.json', dict(argv=argv, started=utc(),
                   raw_policy='private scratch only; never uploaded', export='numeric metadata only'))

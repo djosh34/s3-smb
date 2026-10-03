@@ -21,6 +21,11 @@ printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
   if [[ -f /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs ]]; then
     shasum -a 256 /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs
   fi
+  printf 'capture_buffer_requested_bytes=268435456\ncapture_packet_flush=false\n'
+  printf 'capture_effective_descriptor_buffer_bytes=unknown (tcpdump does not report BIOCGBLEN)\n'
+  for key in debug.bpf_bufsize debug.bpf_maxbufsize net.bpf.bufsize net.bpf.maxbufsize; do
+    /usr/sbin/sysctl "$key" || true
+  done
   df -k; diskutil list; diskutil apfs list
 } > "$MAC_ARTIFACTS/platform.txt" 2>&1
 [[ "$(go env GOVERSION)" = go1.26.3 ]]
