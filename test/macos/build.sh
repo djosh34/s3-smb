@@ -23,7 +23,7 @@ printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
   if [[ -f /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs ]]; then
     shasum -a 256 /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs
   fi
-  printf 'capture_buffer_requested_bytes=8388608\ncapture_packet_flush=false\n'
+  printf 'capture_buffer_requested_bytes=33554432\ncapture_packet_flush=false\n'
   printf 'capture_effective_descriptor_buffer_bytes=see capture/ready.json BIOCGBLEN\n'
   for key in debug.bpf_bufsize debug.bpf_maxbufsize net.bpf.bufsize net.bpf.maxbufsize; do
     /usr/sbin/sysctl "$key" || true

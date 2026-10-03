@@ -28,6 +28,7 @@ class Diagnostic(Acceptance):
         self.resource_start_status = 'not-run'
         self.budget_initial_free = None
         self.outcome = dict(attempt=1, parent_attempt=None, workload='time-machine', lifecycle='fresh',
+                            source_fixture_seed=64, recovery_performed=False,
                             start_monotonic_ns=None, end_monotonic_ns=None,
                             run_stage_completed=False, tm_command_completed=False,
                             tm_command_exit=None, completed_backup_selected=False,
@@ -54,11 +55,12 @@ class Diagnostic(Acceptance):
         free = shutil.disk_usage(WORK).free
         self.budget_initial_free = free
         self.save('budget-preflight.json', dict(time=utc(), free_bytes=free,
-                  required_free_bytes=128 * 2**30, raw_cap_bytes=32 * 2**30,
-                  ciphertext_budget_bytes=34 * 2**30, noncapture_growth_budget_bytes=40 * 2**30,
-                  minimum_live_free_bytes=54 * 2**30, retained_reserve_bytes=20 * 2**30,
-                  compression_assumed=False, admitted=free >= 128 * 2**30))
-        if free < 128 * 2**30:
+                  required_free_bytes=96 * 2**30, raw_cap_bytes=24 * 2**30,
+                  private_log_planning_bytes=1 * 2**30, budget_slack_bytes=1 * 2**30,
+                  ciphertext_budget_bytes=26 * 2**30, noncapture_growth_budget_bytes=24 * 2**30,
+                  minimum_live_free_bytes=46 * 2**30, retained_reserve_bytes=20 * 2**30,
+                  compression_assumed=False, admitted=free >= 96 * 2**30))
+        if free < 96 * 2**30:
             raise RuntimeError('runner physical budget not admitted; no Time Machine work started')
 
     def check_workload_resources(self):
@@ -68,7 +70,7 @@ class Diagnostic(Acceptance):
         raw = WORK / 'private-traffic.pcap'
         allocated = raw.stat().st_blocks * 512 if raw.exists() else 0
         other_growth = max(0, self.budget_initial_free - free - allocated)
-        if free < 54 * 2**30 or other_growth > 40 * 2**30:
+        if free < 46 * 2**30 or other_growth > 24 * 2**30:
             self.outcome['resource_guard_hit'] = True
             self.event('resource-budget-stop', free_bytes=free,
                        noncapture_growth_estimate_bytes=other_growth)
@@ -83,7 +85,7 @@ class Diagnostic(Acceptance):
         with (EVIDENCE / 'store-samples.jsonl').open('a') as f:
             f.write(json.dumps(dict(monotonic_ns=time.monotonic_ns(), command_exit=code,
                                    allocated_bytes=value)) + '\n')
-        if value is not None and value > 40 * 2**30:
+        if value is not None and value > 24 * 2**30:
             self.outcome['resource_guard_hit'] = True
             self.event('resource-budget-stop', store_allocated_bytes=value)
             raise RuntimeError('physical store budget reached; not a product failure')
@@ -143,9 +145,9 @@ class Diagnostic(Acceptance):
         meta = EVIDENCE / 'capture'
         meta.mkdir(mode=0o700)
         self.capture_log = (EVIDENCE / 'capture-private.log').open('xb', buffering=0)
-        argv = [str(BIN / 'passive-capture'), 'capture', 'lo0', '1445', str(8 * 2**20),
-                str(WORK / 'private-traffic.pcap'), str(meta), str(32 * 2**30),
-                '1800', str(54 * 2**30)]
+        argv = [str(BIN / 'passive-capture'), 'capture', 'lo0', '1445', str(32 * 2**20),
+                str(WORK / 'private-traffic.pcap'), str(meta), str(24 * 2**30),
+                '1800', str(46 * 2**30)]
         self.save('capture-command.json', dict(argv=argv, started=utc(),
                   raw_policy='authenticated encrypted retention only; no plaintext upload',
                   offline_analysis='deferred until encrypted retention and resource admission'))
@@ -236,7 +238,9 @@ class Diagnostic(Acceptance):
                 errors[text] = count
             joined = bool(self.daemon and not self.daemon.reader.is_alive())
             self.save('framing-error-counts.json', dict(time=utc(), errors=errors,
-                      counted_after_reader_join=joined, server_log_scope='run-only'))
+                      counted_after_reader_join=joined, server_log_scope='run-only',
+                      reader_error_absent=bool(self.daemon and self.daemon.reader_error is None),
+                      application_log_files=len(list(EVIDENCE.glob('application-*.log')))))
             capture_ok = False
             if self.capture is not None:
                 was_alive = self.capture.poll() is None

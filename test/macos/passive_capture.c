@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Passive libpcap-to-disk capture. No packet decoding or payload logging.
-#include <pcap/pcap.h>
+#include <sys/types.h>
 #include <sys/ioctl.h>
+#ifdef __APPLE__
+// Native BPF must precede libpcap's compatibility declarations.
+#include <net/bpf.h>
+#endif
+#include <pcap/pcap.h>
 #include <sys/resource.h>
 #include <sys/select.h>
 #include <sys/stat.h>
@@ -15,9 +20,6 @@
 #include <time.h>
 #include <unistd.h>
 #include <errno.h>
-#ifdef __APPLE__
-#include <net/bpf.h>
-#endif
 
 static volatile sig_atomic_t stop_requested;
 static uint64_t packets, packet_bytes, file_bytes = 24, truncated, max_bytes;

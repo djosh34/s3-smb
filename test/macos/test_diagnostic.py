@@ -89,7 +89,7 @@ class DiagnosticTest(unittest.TestCase):
 
     def test_low_space_is_preflight_not_workload_failure(self):
         with tempfile.TemporaryDirectory() as root, patch.object(diagnostic, 'EVIDENCE', Path(root)), \
-                patch.object(diagnostic.shutil, 'disk_usage', return_value=Mock(free=100 * 2**30)):
+                patch.object(diagnostic.shutil, 'disk_usage', return_value=Mock(free=90 * 2**30)):
             obj = diagnostic.Diagnostic()
             with self.assertRaises(RuntimeError):
                 obj.budget_preflight()
