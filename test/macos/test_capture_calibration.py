@@ -6,6 +6,8 @@ import struct
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
+from types import SimpleNamespace
 
 import capture_calibration as calibration
 
@@ -135,6 +137,19 @@ class Publication(unittest.TestCase):
     def test_bool_not_integer(self):
         self.values['summary']['packets'] = True
         self.assertFalse(self.publish())
+    def test_retention_reservation(self):
+        (self.root/'private-traffic.pcap').write_bytes(b'fixture')
+        with patch.object(calibration.shutil, 'disk_usage', return_value=SimpleNamespace(free=20*1024**3)):
+            self.assertTrue(calibration.retention_preflight(self.root))
+    def test_retention_low_space(self):
+        (self.root/'private-traffic.pcap').write_bytes(b'fixture')
+        with patch.object(calibration.shutil, 'disk_usage', return_value=SimpleNamespace(free=4*1024**3)):
+            self.assertFalse(calibration.retention_preflight(self.root))
+    def test_retention_link_rejected(self):
+        (self.root/'private-traffic.pcap').write_bytes(b'fixture')
+        (self.root/'evidence/link').symlink_to(self.root/'private-traffic.pcap')
+        with self.assertRaises(ValueError):
+            calibration.retention_preflight(self.root)
     def test_tiny_ordinary_socket_hashes(self):
         result = calibration.transfer(1024*1024, 0, 0)
         self.assertTrue(result['workload_valid'])

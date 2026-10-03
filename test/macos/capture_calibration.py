@@ -10,6 +10,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import struct
 import subprocess
 import sys
@@ -102,7 +103,7 @@ def run(root):
     capture.mkdir(mode=0o700)
     if sys.platform != 'darwin' or os.geteuid() != 0:
         raise RuntimeError('Darwin root required')
-    if shutil.disk_usage(root).free < 56 * 1024**3:
+    if shutil.disk_usage(root).free < 64 * 1024**3:
         raise RuntimeError('insufficient disk reservation')
     # Read-only provenance; no TCP, signing, kernel-security or sysctl mutations.
     with (evidence / 'platform.log').open('xb') as log:
@@ -123,7 +124,7 @@ def run(root):
         try:
             process = subprocess.Popen([str(root / 'passive-capture'), 'capture', 'lo0', str(PORT),
                                         str(32*1024**2), str(root / 'private-traffic.pcap'), str(capture),
-                                        str(24*1024**3), '420', str(24*1024**3)], stdout=log, stderr=log)
+                                        str(24*1024**3), '420', str(32*1024**3)], stdout=log, stderr=log)
             until = time.monotonic()+15
             while not (capture / 'ready.json').exists():
                 if process.poll() is not None or time.monotonic() > until:
@@ -146,6 +147,28 @@ def run(root):
                     process.wait(timeout=5)
             save(evidence / 'workload.json', dict(workload, capture_exit=exit_code))
     return bool(workload['workload_valid'] and exit_code == 0)
+
+
+def retention_preflight(root):
+    raw = (root/'private-traffic.pcap').stat().st_size
+    logs = 0
+    files = 0
+    for directory, dirs, names in os.walk(root/'evidence', followlinks=False):
+        for name in dirs + names:
+            info = (Path(directory)/name).lstat()
+            if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+                raise ValueError('unexpected archive member')
+            if stat.S_ISREG(info.st_mode):
+                logs += info.st_size
+                files += 1
+    if raw > 24*1024**3 or logs > 1024**3 or files > 4096:
+        raise ValueError('retention size bound exceeded')
+    # One GiB covers tar/gzip/CMS expansion and metadata; no compressibility assumption.
+    ciphertext_upper = raw + logs + 1024**3
+    free = shutil.disk_usage(root).free
+    save(root/'evidence/retention-budget.json', dict(raw_bytes=raw, log_bytes=logs,
+         ciphertext_upper_bytes=ciphertext_upper, free_bytes=free, reserve_bytes=8*1024**3))
+    return free >= ciphertext_upper + 8*1024**3
 
 
 SCHEMAS = {
@@ -228,6 +251,8 @@ if __name__ == '__main__':
         signal.signal(signal.SIGALRM, timeout)
         signal.alarm(400)
         ok = run(Path(sys.argv[2]))
+    elif sys.argv[1] == 'retention-preflight':
+        ok = retention_preflight(Path(sys.argv[2]))
     elif sys.argv[1] == 'publish':
         ok = publish(Path(sys.argv[2]), Path(sys.argv[3]))
     else:

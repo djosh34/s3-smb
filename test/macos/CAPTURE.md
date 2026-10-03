@@ -37,8 +37,10 @@ Samples record capture/file byte throughput, native RSS/CPU and free disk once p
 second; batch-dispatch and final-flush timings measure observer costs, not endpoint
 stall durations. No live per-packet Python or SMB parsing.
 
-Calibration reserves at least56GiB free on runner, caps raw at24GiB and stops below
-24GiB free. There is no workload data file. Normal helper RSS is dominated by one
+Calibration requires at least64GiB free after tooling, caps raw at24GiB and stops
+below32GiB free. Before encryption a fresh check requires room for raw+logs+1GiB
+conservative archive/cipher expansion plus8GiB reserve; logs are capped at1GiB
+and4096files. No compressibility assumption. There is no workload data file. Normal helper RSS is dominated by one
 libpcap buffer plus4MiB stdio; kernel BPF buffers are additional. Wall time is
 bounded by400-second Python alarm,420-second capture bound,10-second stop wait,
 180-second offline audit, and25-minute job deadline. No deletion/rotation of raw.

@@ -29,6 +29,8 @@ jobs:
       - name: Retain authenticated ciphertext before offline analysis
         if: always()
         run: |
+          # shellcheck disable=SC2024
+          sudo python3 -B test/macos/capture_calibration.py retention-preflight "$CAPTURE_ROOT" > "$CAPTURE_ROOT/budget.log" 2>&1
           crypto="$(brew --prefix openssl@3)/bin/openssl"
           # shellcheck disable=SC2024
           sudo env CAPTURE_OPENSSL="$crypto" bash test/macos/encrypt_capture.sh "$CAPTURE_ROOT/private-traffic.pcap" "$CAPTURE_ROOT/public" test/macos/capture-recipient.pem "$CAPTURE_ROOT/evidence" > "$CAPTURE_ROOT/crypto.log" 2>&1
