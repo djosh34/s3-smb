@@ -1,0 +1,99 @@
+version: "2"
+
+run:
+  timeout: 5m
+  concurrency: 2
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - errcheck
+    - errorlint
+    - nilerr
+    - nilnil
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - unparam
+    - bodyclose
+    - noctx
+    - contextcheck
+    - exhaustive
+    - copyloopvar
+    - forbidigo
+    - gosec
+    - misspell
+    - revive
+    - gocritic
+    - gocognit
+    - nolintlint
+  settings:
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+    govet:
+      enable-all: true
+    forbidigo:
+      analyze-types: true
+      exclude-godoc-examples: false
+      forbid:
+        - pattern: '^(panic|recover)$'
+        - pattern: '^os\.Exit$'
+        - pattern: '^log\.Fatal(f|ln)?$'
+        - pattern: '^fmt\.Print.*$'
+    gocognit:
+      min-complexity: 30
+    nolintlint:
+      require-specific: true
+      require-explanation: true
+    revive:
+      rules:
+        - name: blank-imports
+        - name: context-as-argument
+        - name: dot-imports
+        - name: error-naming
+        - name: error-strings
+        - name: error-return
+        - name: exported
+        - name: var-naming
+  exclusions:
+    generated: disable
+    presets: []
+    rules:
+      - path: '_test\.go$'
+        linters: [forbidigo]
+        text: 'fmt\.Print'
+      - path: '(^|/)main\.go$'
+        linters: [forbidigo]
+        text: 'os\.Exit'
+    paths: &old-code
+      - '^internal/juicefs/'
+      - '^internal/thirdparty/'
+      - '^internal/smb-old/'
+      # P5 removes this list after the rewrite.
+      - '^main\.go$'
+      - '^packaging_test\.go$'
+      - '^internal/app/[^/]+\.go$'
+      - '^internal/backup/[^/]+\.go$'
+      - '^internal/config/[^/]+\.go$'
+      - '^internal/logging/[^/]+\.go$'
+      - '^internal/storage/[^/]+\.go$'
+      - '^test/e2e/[^/]+\.go$'
+      - '^test/macos/fixture/[^/]+\.go$'
+
+formatters:
+  enable:
+    - gofumpt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: [github.com/djosh34/s3-smb]
+  exclusions:
+    generated: disable
+    paths: *old-code
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

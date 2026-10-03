@@ -49,8 +49,18 @@ fuzz_failure() {
   fi
 }
 
-# Lint stage. Issue #195 adds golangci-lint, shellcheck and actionlint here.
 echo '== Lint =='
+tools=$(bash scripts/lint-tools.sh)
+"$tools/golangci-lint" config verify
+"$tools/golangci-lint" run ./...
+"$tools/golangci-lint" run --build-tags smbnext ./...
+find . -type d \( -path './.git' -o -path './internal/juicefs' \
+  -o -path './internal/thirdparty' -o -path './internal/smb-old' \) -prune \
+  -o -type f -name '*.sh' -print0 > "$work/shell-files"
+xargs -0 -r "$tools/shellcheck" < "$work/shell-files"
+# actionlint also checks inline shell with our pinned shellcheck, not PATH tools.
+find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 > "$work/workflows"
+xargs -0 -r "$tools/actionlint" -shellcheck "$tools/shellcheck" -pyflakes '' < "$work/workflows"
 go mod tidy -diff
 go vet ./...
 go vet -tags smbnext ./...

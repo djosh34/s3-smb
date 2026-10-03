@@ -65,14 +65,34 @@ scripts/check.sh         # PR checks, including fuzz seed replay
 scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 ```
 
-Both modes need Linux, Bash, Docker, Go 1.26.3, a C compiler and Python 3.
-They check `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and
-gofmt, then run the Mac harness Python unit tests and Go unit tests. The Docker
+Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
+a C compiler and Python 3. They run golangci-lint and `go vet` with and without
+`-tags smbnext`, shellcheck over our shell scripts and actionlint over every
+workflow. They also check `go mod tidy -diff` and gofmt, then run the Mac harness
+Python unit tests and Go unit tests. The Docker
 step runs `go test -race -shuffle=on` once over every package with MinIO
 available. Python tests do not write bytecode into the tree.
 The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
 and the frozen SMB server (`internal/smb-old`).
-The lint stage in `scripts/check.sh` is where additional linters belong.
+`scripts/lint-tools.sh` downloads golangci-lint 2.14.0, shellcheck 0.11.0 and
+actionlint 1.7.12 from their release archives and checks their pinned SHA-256
+hashes. The binaries live under `${XDG_CACHE_HOME:-$HOME/.cache}/s3-smb-lint`,
+keyed by the installer contents and CPU architecture. Both local checks and CI
+call these binaries by full path, not tools on PATH. actionlint uses the same
+pinned shellcheck for inline shell. It does not use an optional pyflakes on PATH.
+To update a tool, change its version and both archive hashes in the installer.
+
+`.golangci.yml` enables the strict Go linters and the gofumpt and goimports
+formatters. It always excludes `internal/juicefs`, `internal/thirdparty` and
+`internal/smb-old`. An explicit list excludes today's other Go packages and
+root files until P5. New packages, including new packages under `test/`, get
+all checks. Exclusions match files in existing packages, not new subpackages.
+Lint still loads dependencies; findings from excluded paths are not reported.
+
+Fix lint findings rather than suppressing them. If a suppression is needed,
+use `//nolint:<linter> // <reason>`. nolintlint requires the name and reason.
+Reviewers check each suppression. Panic, recover and fatal logging are banned;
+`fmt.Print*` is allowed in tests, and `os.Exit` is allowed in `main.go` only.
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
 `testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
