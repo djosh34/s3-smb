@@ -1,6 +1,8 @@
 # Passive capture calibration
 
-`capture-calibration.yml` is manual-only and uses one disposable Intel Mac. It
+This branch's `macos.yml` is manual-only and uses one disposable Intel Mac.
+It reuses the registered workflow filename; the existing multi-job acceptance
+workflow is unchanged on main. It
 transfers 19,000,000,000 bytes over one ordinary loopback TCP connection in about
 300 seconds. The receiver continuously drains; both peers half-close normally.
 Application byte counts and SHA-256 equality are checked without publishing hashes
