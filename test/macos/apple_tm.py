@@ -21,6 +21,7 @@ import traceback
 from acceptance import Acceptance, WORK, EVIDENCE, TRANSFER, PROOF, SMB_PORT
 from apple_tm_measure import BACKING_CAP, RAW_CAP, RESERVE, CIPHER_CAP, CAPTURE_BUFFER, budget_admitted, capacity, geometry, initial_result
 from client_outcome import status_observations, collect
+from smbd_lifecycle import StartupProbe
 
 PUBLIC = Path(os.environ['APPLE_PUBLIC'])
 RAW = WORK / 'capture.pcap'
@@ -38,6 +39,7 @@ class AppleTimeMachine(Acceptance):
         self.password = secrets.token_urlsafe(32)
         self.result = initial_result()
         self.server = self.capture = self.sampler = None
+        self.server_probe = None
         self.outer = WORK / 'backing.sparsebundle'
         self.outer_device = None
         self.backing_mount = Path('/private/var') / ('apple-tm-' + secrets.token_hex(8))
@@ -72,6 +74,7 @@ class AppleTimeMachine(Acceptance):
             harness_sha=sha if re.fullmatch(r'[0-9a-f]{40}', sha) else None,
             runner_image_version=image if re.fullmatch(r'[0-9.]+', image) else None,
             capture_binary_sha256=digest(WORK / 'passive-capture'),
+            process_identity_binary_sha256=digest(WORK / 'smbd-identity'),
             smbd_binary_sha256=digest('/usr/sbin/smbd'),
             direct_smb_port=SMB_PORT, requested_capture_buffer_bytes=CAPTURE_BUFFER))
 
@@ -129,18 +132,33 @@ class AppleTimeMachine(Acceptance):
         self.share_created = True
         self.cmd.run(['/usr/bin/dscl', '.', '-create', '/SharePoints/TimeMachine', 'timeMachineBackup', '1'])
         self.result['capability_step'] = 'direct-smbd-listener'
-        self.server = self.service(['/usr/sbin/smbd', '-ports', str(SMB_PORT)], 'apple-smbd')
-        deadline = time.monotonic() + 15
-        while True:
-            if self.server.poll() is not None:
-                raise RuntimeError('owned direct-port smbd exited; no launchd/PF/relay fallback')
-            try:
-                with socket.create_connection(('127.0.0.1', SMB_PORT), timeout=1):
-                    break
-            except OSError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError('direct Apple SMB listener unavailable')
-                time.sleep(.2)
+        self.server_probe = StartupProbe(self.cmd, WORK / 'smbd-identity', PUBLIC / 'startup.jsonl')
+        before = self.server_probe.snapshot(time.monotonic() + 10)
+        self.server_probe.record(kind='pre-launch', snapshot=before)
+        if not before['complete'] or before['listeners_1445']:
+            raise RuntimeError('preexisting or unmeasured test listener')
+        log = (EVIDENCE / 'apple-smbd.log').open('xb', buffering=0)
+        earliest = time.time_ns()
+        startup_wall = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(earliest / 1e9 - 1))
+        # Own group allows attribution of non-reparented group children; no TCP/security change.
+        self.server = subprocess.Popen(['/usr/sbin/smbd', '-ports', str(SMB_PORT)],
+                                       stdout=log, stderr=subprocess.STDOUT,
+                                       stdin=subprocess.DEVNULL, start_new_session=True)
+        self.services.append((self.server, log))
+        self.result['server_launcher_pid'] = self.server.pid
+        try:
+            self.result['server_startup_class'] = self.server_probe.wait(self.server, before, earliest)
+        finally:
+            self.result['server_launcher_exit'] = self.server.poll()
+            # Preserve startup diagnostics even when no TM attempt/capture exists.
+            end = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+            self.cmd.run(['/usr/bin/log', 'show', '--style', 'json', '--start', startup_wall,
+                          '--end', end, '--info', '--debug', '--predicate', 'process == "smbd"'],
+                         timeout=30, diagnostic=True, capture=False)
+        if self.server_probe.owned is None:
+            raise RuntimeError('no uniquely attributed owned direct listener')
+        with socket.create_connection(('127.0.0.1', SMB_PORT), timeout=1):
+            pass
         self.result['capability_step'] = 'complete'
         self.result['capability_stage'] = 'pass'
 
@@ -222,7 +240,7 @@ class AppleTimeMachine(Acceptance):
         self.observe('before')
         from resource_sampler import NumericResourceSampler
         self.sampler = NumericResourceSampler(PUBLIC / 'resources.jsonl', WORK)
-        self.sampler.set_pids(server=self.server.pid, capture=self.capture.pid)
+        self.sampler.set_pids(server=self.server_probe.owned['pid'], capture=self.capture.pid)
         self.sampler.start()
         self.start_wall = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() - 2))
         self.start_backup('ordinary')
@@ -233,10 +251,9 @@ class AppleTimeMachine(Acceptance):
         deadline = time.monotonic() + 900
         next_sample = next_budget = 0
         while process.poll() is None:
-            if self.server.poll() is not None or self.capture.poll() is not None:
-                self.result['workload_stop_reason'] = ('server-process-exit' if self.server.poll() is not None
-                                                       else 'harness-capture-exit')
-                raise RuntimeError('owned observation/server exited during workload')
+            if self.capture.poll() is not None:
+                self.result['workload_stop_reason'] = 'harness-capture-exit'
+                raise RuntimeError('owned observation exited during workload')
             if time.monotonic() >= deadline:
                 self.result['command_timeout'] = True
                 self.result['workload_stop_reason'] = 'harness-deadline'
@@ -245,6 +262,9 @@ class AppleTimeMachine(Acceptance):
                 self.observe('progress')
                 next_sample = time.monotonic() + 60
             if time.monotonic() >= next_budget:
+                if not self.server_probe.alive():
+                    self.result['workload_stop_reason'] = 'server-identity-unconfirmed'
+                    raise RuntimeError('owned listener process unavailable or changed')
                 self.budget_check()
                 next_budget = time.monotonic() + 5
             time.sleep(.5)
@@ -343,6 +363,8 @@ class AppleTimeMachine(Acceptance):
                 self.result.update(client_log_collection_exit=code, client_log_timeout=code == 124,
                                    client_log_scope='attempt-window', client_observations=collect('unified', private_log))
             attempt(logs)
+        if self.server_probe:
+            attempt(self.server_probe.stop)
         for process, log in reversed(self.services):
             def stop(p=process, f=log):
                 if p.poll() is None:
