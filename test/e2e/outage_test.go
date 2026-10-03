@@ -57,6 +57,11 @@ func TestS3FaultProxyOutage(t *testing.T) {
 	request(http.MethodGet, "/bucket/chunks/fixture", http.StatusNoContent)
 }
 
+type outageResult struct {
+	err      error
+	finished time.Time
+}
+
 func TestDataPathS3Outage(t *testing.T) {
 	outage := 3 * time.Second
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
@@ -107,40 +112,37 @@ func TestDataPathS3Outage(t *testing.T) {
 			}
 			t.Cleanup(p.RestoreS3)
 			start := p.FailS3For(outage)
-			done := make(chan error, 1)
+			done := make(chan outageResult, 1)
 			go func() {
+				var err error
 				if operation == "FLUSH" {
-					done <- file.Sync()
-					return
+					err = file.Sync()
+				} else {
+					got := make([]byte, len(data))
+					_, err = io.ReadFull(file, got)
+					if err == nil && !bytes.Equal(got, data) {
+						err = fmt.Errorf("cold read returned different bytes")
+					}
 				}
-				got := make([]byte, len(data))
-				_, err := io.ReadFull(file, got)
-				if err == nil && !bytes.Equal(got, data) {
-					err = fmt.Errorf("cold read returned different bytes")
-				}
-				done <- err
+				done <- outageResult{err: err, finished: time.Now()}
 			}()
 			select {
 			case event := <-p.outageSeen:
 				if event.Method != method || event.Status != http.StatusServiceUnavailable || time.Since(start) >= time.Second {
 					t.Fatalf("%s did not reach failed S3 in the first second: %+v after %s", operation, event, time.Since(start))
 				}
-			case err := <-done:
-				t.Fatalf("%s finished without reaching failed S3: %v", operation, err)
+			case result := <-done:
+				t.Fatalf("%s finished without reaching failed S3: %v", operation, result.err)
 			case <-time.After(time.Second):
 				t.Fatalf("%s did not reach S3 in the first second", operation)
 			}
-			timer := time.NewTimer(time.Until(start.Add(outage)))
-			defer timer.Stop()
 			select {
-			case err := <-done:
-				t.Fatalf("%s finished before S3 recovered: %v", operation, err)
-			case <-timer.C:
-			}
-			select {
-			case err := <-done:
-				if err != nil {
-					t.Fatalf("%s failed after S3 recovered: %v", operation, err)
+			case result := <-done:
+				if result.err != nil {
+					t.Fatalf("%s failed during or after the S3 outage: %v", operation, result.err)
+				}
+				if result.finished.Before(start.Add(outage)) {
+					t.Fatalf("%s finished before S3 recovered", operation)
 				}
 			case <-ctx.Done():
 				t.Fatalf("%s did not finish after S3 recovered: %v", operation, ctx.Err())
