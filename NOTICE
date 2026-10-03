@@ -9,7 +9,7 @@ This distribution incorporates modified copies of:
   Copyright Juicedata Inc.; Apache-2.0 (internal/juicefs/LICENSE).
 * macos-fuse-t/go-smb2, commit 277a9300411249a881a05f7a910f5a83ae3395f2
   https://github.com/macos-fuse-t/go-smb2
-  AGPL-3.0; see internal/smb2/LICENSE and internal/smb2/Attributions.txt
+  AGPL-3.0; see internal/smb-old/smb2/LICENSE and internal/smb-old/smb2/Attributions.txt
   for original author and incorporated BSD/MIT/Apache notices.
 * Customized mpb, juicedata/mpb v7.0.4-0.20231024073412-2b8d31be510b
   Unlicense; internal/thirdparty/mpb/UNLICENSE.

@@ -1,0 +1,45 @@
+package smb2
+
+import (
+	. "github.com/djosh34/s3-smb/internal/smb-old/smb2/internal/smb2"
+)
+
+// client
+
+const (
+	clientCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION
+
+	// TODO: Re-enable SMB2_GLOBAL_CAP_LEASING and SMB2_GLOBAL_CAP_DIRECTORY_LEASING
+	// after full SMB2 lease and directory lease behavior is implemented.
+	serverCapabilities = SMB2_GLOBAL_CAP_LARGE_MTU | SMB2_GLOBAL_CAP_ENCRYPTION |
+		SMB2_GLOBAL_CAP_DFS |
+		SMB2_GLOBAL_CAP_PERSISTENT_HANDLES
+	serverMaxTransactSize = 0x800000
+	serverMaxReadSize     = 0x800000
+	serverMaxWriteSize    = 0x800000
+)
+
+const (
+	serverDurableHandleTimeout = 60000 // 1 min
+)
+
+var (
+	serverHashAlgorithms = []uint16{SHA512}
+	serverCiphers        = []uint16{AES128GCM, AES128CCM}
+)
+
+var (
+	clientHashAlgorithms = []uint16{SHA512}
+	clientCiphers        = []uint16{AES128GCM, AES128CCM}
+	clientDialects       = []uint16{SMB311, SMB302, SMB300, SMB210, SMB202}
+
+	defaultDerverDialect = uint16(SMB311)
+)
+
+const (
+	clientMaxCreditBalance = 128
+)
+
+const (
+	clientMaxSymlinkDepth = 8
+)

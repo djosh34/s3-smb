@@ -15,7 +15,7 @@ import (
 
 // The rules in docs/vendored.md that keep `go install module@version` working.
 func TestPackaging(t *testing.T) {
-	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb2/LICENSE", "internal/smb2/Attributions.txt", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
+	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb-old/smb2/LICENSE", "internal/smb-old/smb2/Attributions.txt", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
 		if b, err := os.ReadFile(name); err != nil || len(b) < 100 {
 			t.Errorf("missing licence file %s: %v", name, err)
 		}

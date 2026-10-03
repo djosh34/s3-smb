@@ -6,9 +6,9 @@
 - `internal/config`: YAML loading, validation, secret sources and TLS files.
 - `internal/storage`: S3 connection, volume identity, encryption key, JuiceFS setup.
 - `internal/backup`: scheduled metadata backups, delete protection, recovery.
-- `internal/smbfs`: the SMB server's filesystem interface on top of JuiceFS.
+- `internal/smb-old/smbfs`: the SMB server's filesystem interface on top of JuiceFS.
 - `internal/logging`: `log/slog` setup, secret removal, bridges for JuiceFS logs.
-- `internal/juicefs`, `internal/smb2`, `internal/thirdparty`: patched upstream
+- `internal/juicefs`, `internal/smb-old/smb2`, `internal/thirdparty`: patched upstream
   code, described in [vendored source](vendored.md).
 - `test/e2e`: tests that run the built binary against MinIO over SMB.
 - `test/macos`: the Time Machine test for GitHub's Mac runners.

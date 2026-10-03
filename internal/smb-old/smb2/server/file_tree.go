@@ -1,0 +1,2627 @@
+// Modified for s3-smb, 2026. See docs/vendored.md.
+
+package smb2
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"strings"
+	"syscall"
+	"time"
+
+	. "github.com/djosh34/s3-smb/internal/smb-old/smb2/internal/erref"
+	. "github.com/djosh34/s3-smb/internal/smb-old/smb2/internal/smb2"
+	"github.com/djosh34/s3-smb/internal/smb-old/smb2/vfs"
+)
+
+const (
+	O_SHLOCK = 0x10
+	O_EXLOCK = 0x20
+)
+
+type fileTree struct {
+	treeConn
+	fs vfs.VFSFileSystem
+
+	openFiles      map[uint64]bool
+	aaplExtensions bool
+
+	ioReadSem  chan struct{}
+	ioWriteSem chan struct{}
+}
+
+func (t *fileTree) getTree() *treeConn {
+	return &t.treeConn
+}
+
+func (t *fileTree) create(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("fileTreeCreate")
+
+	c := t.session.conn
+
+	res, err := accept(SMB2_CREATE, pkt)
+	if err != nil {
+		return err
+	}
+
+	r := CreateRequestDecoder(res)
+	if r.IsInvalid() || !validCreateContexts(r.CreateContexts()) {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+
+	log.Debugf("create name: %s, options %d, disp %d", r.Name(), r.CreateOptions(), r.CreateDisposition())
+
+	rsp := new(CreateResponse)
+	rsp.FileId = &FileId{}
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+
+	name := r.Name()
+	if name == "" {
+		name = "/"
+	} else {
+		name = strings.ReplaceAll(name, "\\", "/")
+	}
+
+	isEA := IsEA(name)
+	eaKey := ""
+	if isEA {
+		name, eaKey = SplitEA(name)
+	}
+
+	if r.SmbCreateFlags() != 0 {
+		log.Errorf("Create flags: %d", r.SmbCreateFlags())
+	}
+
+	attrs, err := t.fs.Lookup(0, name)
+	if err != nil && !os.IsNotExist(err) {
+		return t.sendError(ctx, pkt, err)
+	}
+	fileExists := err == nil
+	isDir := fileExists && attrs.GetFileType() == vfs.FileTypeDirectory
+	flags := 0
+	createDir := r.CreateOptions()&FILE_DIRECTORY_FILE != 0
+	err = nil
+	isSymlink := fileExists && (attrs.GetFileType() == vfs.FileTypeSymlink) && (r.CreateOptions()&FILE_OPEN_REPARSE_POINT == 0)
+	d := r.CreateDisposition()
+	posixPerms, hasPosixPerms := t.decodeCreatePosixPerms(r)
+	fileCreateMode := 0644
+	dirCreateMode := 0777
+	if hasPosixPerms && d != FILE_OPEN {
+		mode := int(posixPerms & 07777)
+		if mode != 0 {
+			fileCreateMode = mode
+			dirCreateMode = mode
+		}
+	}
+
+	if fileExists && t.conn.serverCtx.isDeletePending(attrs.GetInodeNumber()) {
+		log.Debugf("Open: delete pending: %s", r.Name())
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_DELETE_PENDING))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if fileExists && !isDir && createDir {
+		status := STATUS_OBJECT_NAME_COLLISION
+		if d != FILE_CREATE {
+			status = STATUS_NOT_A_DIRECTORY
+		}
+		log.Errorf("requested file exists and it's not a directory")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if isEA && !fileExists {
+		log.Debugf("attempt to read ea from non-exsiting file: %s", name)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NO_SUCH_FILE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	action := FILE_OPENED
+	switch d {
+	case FILE_OPEN_IF:
+		flags = os.O_CREATE
+		if !fileExists && createDir {
+			_, err = t.fs.Mkdir(name, dirCreateMode)
+			isDir = true
+		}
+
+		if !fileExists {
+			action = FILE_CREATED
+		}
+	case FILE_OPEN:
+		if !fileExists {
+			log.Debugf("Open: doesn't exist: %s", r.Name())
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NO_SUCH_FILE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+	case FILE_CREATE:
+		if fileExists {
+			log.Debugf("Open: already exists: %s", r.Name())
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_OBJECT_NAME_COLLISION))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		if createDir {
+			_, err = t.fs.Mkdir(name, dirCreateMode)
+			isDir = true
+		}
+		action = FILE_CREATED
+		flags = os.O_CREATE | os.O_EXCL
+	case FILE_OVERWRITE:
+		if !fileExists {
+			log.Errorf("Open: doesn't exists: overwrite: %s", r.Name())
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NO_SUCH_FILE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		action = FILE_OVERWRITTEN
+		flags = os.O_CREATE | os.O_TRUNC
+	case FILE_OVERWRITE_IF:
+		action = FILE_CREATED
+		if fileExists {
+			action = FILE_OVERWRITTEN
+		}
+		flags = os.O_CREATE | os.O_TRUNC
+	case FILE_SUPERSEDE:
+		action = FILE_CREATED
+		if fileExists {
+			action = FILE_SUPERSEDED
+		}
+		flags = os.O_CREATE
+	}
+
+	if err != nil {
+		status := statusFromError(err)
+		log.Errorf("mkdir failed: %s, %v, status %x", name, err, status)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	lockLevel := r.RequestedOplockLevel()
+	lockState := LOCKSTATE_NONE
+	switch lockLevel {
+	case SMB2_OPLOCK_LEVEL_II:
+		flags |= O_SHLOCK
+		lockState = LOCKSTATE_HELD
+	case SMB2_OPLOCK_LEVEL_EXCLUSIVE:
+		flags |= O_EXLOCK
+		lockState = LOCKSTATE_HELD
+	case SMB2_OPLOCK_LEVEL_LEASE:
+		lockState = LOCKSTATE_HELD
+	default:
+		lockLevel = 0
+	}
+
+	access := r.DesiredAccess()
+	var h vfs.VfsHandle
+	if !isDir {
+		if access&(FILE_WRITE_DATA|FILE_APPEND_DATA|GENERIC_WRITE) != 0 {
+			flags |= os.O_RDWR
+		} else {
+			flags |= os.O_RDONLY
+		}
+
+		if isEA {
+			flags = 0
+		}
+
+		if fileExists && attrs.GetFileType() == vfs.FileTypeSymlink && r.CreateOptions()&FILE_OPEN_REPARSE_POINT != 0 {
+			flags |= 0x200000 // O_SYMLINK, O_PATH
+		}
+
+		h, err = t.fs.Open(name, flags, fileCreateMode)
+		log.Debugf("open file: %d, err %v", flags, err)
+	} else {
+		h, err = t.fs.OpenDir(name)
+		log.Debugf("open dir, err %v", err)
+	}
+
+	if err == nil {
+		attrs, err = t.fs.GetAttr(h)
+		if err != nil {
+			_ = t.fs.Close(h)
+		}
+	}
+	if err != nil {
+		status := statusFromError(err)
+		log.Errorf("open failed: %s, %v, co %x, status %x", name, err, r.CreateOptions(), status)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if isEA {
+		if status, err := t.handleCreateEA(d, h, eaKey); err != nil {
+			log.Debugf("handleCreateEA failed, disp %d, key %s", d, eaKey)
+			t.fs.Close(h)
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, status)
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+	}
+
+	node := attrs.GetInodeNumber()
+	rsp.FileId.SetHandleId(uint64(h))
+	rsp.FileId.SetNodeId(node)
+
+	rsp.OplockLevel = lockLevel
+	rsp.CreateAction = uint32(action)
+	rsp.FileAttributes = PermissionsFromVfs(attrs, name)
+	rsp.CreationTime = BirthTimeFromVfs(attrs)
+	rsp.LastAccessTime = AccessTimeFromVfs(attrs)
+	rsp.LastWriteTime = ModifiedTimeFromVfs(attrs)
+	rsp.ChangeTime = ChangeTimeFromVfs(attrs)
+	if !isEA {
+		rsp.EndofFile = int64(SizeFromVfs(attrs))
+		rsp.AllocationSize = int64(DiskSizeFromVfs(attrs))
+	} else {
+		len, _ := t.fs.Getxattr(h, eaKey, nil)
+		rsp.EndofFile = int64(len)
+		rsp.AllocationSize = int64(len)
+	}
+
+	open := &Open{
+		fileId:            rsp.FileId.HandleId(),
+		durableFileId:     rsp.FileId.NodeId(),
+		session:           t.session,
+		tree:              &t.treeConn,
+		oplockLevel:       lockLevel,
+		grantedAccess:     access,
+		oplockState:       lockState,
+		pathName:          name,
+		createOptions:     r.CreateOptions(),
+		createDisposition: r.CreateDisposition(),
+		fileAttributes:    rsp.FileAttributes,
+		isEa:              isEA,
+		eaKey:             eaKey,
+		isSymlink:         isSymlink,
+		deleteOnClose:     (r.CreateOptions()&FILE_DELETE_ON_CLOSE != 0),
+		posixSemantics:    t.conn.posixExtensions,
+	}
+
+	cc := r.CreateContexts()
+	for len(cc) > 0 {
+		res := CreateContextDecoder(cc)
+		switch res.Name() {
+		case "MxAc":
+			if enc, err := t.handleMaxAccessCC(attrs); err == nil {
+				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		case "AAPL":
+			t.aaplExtensions = true
+			if enc, err := t.handleAAPLCC(res.Buffer()); err == nil {
+				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		case string(SMB3PosixExtensionsTag[:]):
+			if t.conn.posixExtensions {
+				if enc, err := t.handlePosixCC(attrs); err == nil {
+					rsp.Contexts = append(rsp.Contexts, enc)
+				}
+			}
+		case "DH2Q":
+			if enc, err := t.handleDH2Q(res.Buffer(), open); err == nil {
+				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		case "RqLs":
+			if enc, err := t.handleRqLs(res.Buffer(), open); err == nil {
+				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		case "QFid":
+			if enc, err := t.handleQFid(res.Buffer(), open); err == nil {
+				rsp.Contexts = append(rsp.Contexts, enc)
+			}
+		}
+
+		cc = cc[res.Next():]
+		if res.Next() == 0 {
+			break
+		}
+	}
+
+	if ctx != nil {
+		ctx.fileId = rsp.FileId
+	}
+
+	t.conn.serverCtx.addOpen(open)
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) decodeCreatePosixPerms(r CreateRequestDecoder) (uint32, bool) {
+	if !t.conn.posixExtensions {
+		return 0, false
+	}
+	cc := r.CreateContexts()
+	for len(cc) > 0 {
+		res := CreateContextDecoder(cc)
+		if res.Name() == string(SMB3PosixExtensionsTag[:]) {
+			buf := res.Buffer()
+			if len(buf) >= 4 {
+				return le.Uint32(buf[:4]) & 07777, true
+			}
+			return 0, false
+		}
+		next := res.Next()
+		if next == 0 {
+			break
+		}
+		cc = cc[next:]
+	}
+	return 0, false
+}
+
+func (t *fileTree) handlePosixCC(attrs *vfs.Attributes) (Encoder, error) {
+	return &CreateContext{
+		Name: string(SMB3PosixExtensionsTag[:]),
+		Data: newPosixCreateContextResponse(attrs),
+	}, nil
+}
+
+func (t *fileTree) handleQFid(pkt []byte, open *Open) (Encoder, error) {
+	attrRoot, err := t.fs.GetAttr(0)
+	if err != nil {
+		return nil, err
+	}
+
+	return &CreateContext{
+		Name: "QFid",
+		Data: &DiskIdResponse{
+			DiskFileId: open.durableFileId,
+			VolumeId:   attrRoot.GetInodeNumber(),
+		},
+	}, nil
+}
+
+func (t *fileTree) handleDH2Q(pkt []byte, open *Open) (Encoder, error) {
+	r := DurableHandleRequest2Decoder(pkt)
+	timeout := r.Timeout()
+	if timeout == 0 {
+		timeout = serverDurableHandleTimeout
+	}
+
+	open.isPersistent = (r.Flags() & SMB2_DHANDLE_FLAG_PERSISTENT) != 0
+	open.isDurable = open.isPersistent
+	open.durableOpenTimeout = time.Duration(timeout) * time.Millisecond
+	copy(open.createGuid[:], r.CreateGuid())
+
+	return &CreateContext{
+		Name: "DH2Q",
+		Data: &DurableHandleResponse2{
+			Timeout: timeout,
+			Flags:   r.Flags(),
+		},
+	}, nil
+}
+
+func (t *fileTree) handleRqLs(pkt []byte, open *Open) (Encoder, error) {
+	if len(pkt) == 32 {
+		r := LeaseRequestDecoder(pkt)
+		open.lease = &Lease{
+			LeaseKey:      r.LeaseKey(),
+			LeaseState:    r.LeaseState(),
+			LeaseFlags:    r.LeaseFlags(),
+			LeaseDuration: r.LeaseDuration(),
+			Version:       1,
+		}
+		return &CreateContext{
+			Name: "RqLs",
+			Data: &LeaseResponse{
+				LeaseKey:      r.LeaseKey(),
+				LeaseState:    r.LeaseState(),
+				LeaseFlags:    r.LeaseFlags(),
+				LeaseDuration: r.LeaseDuration(),
+			},
+		}, nil
+	}
+
+	r := LeaseRequest2Decoder(pkt)
+	open.lease = &Lease{
+		LeaseKey:       r.LeaseKey(),
+		LeaseState:     r.LeaseState(),
+		LeaseFlags:     r.LeaseFlags(),
+		LeaseDuration:  r.LeaseDuration(),
+		ParentLeaseKey: r.ParentLeaseKey(),
+		Epoch:          r.Epoch(),
+		Version:        2,
+	}
+	return &CreateContext{
+		Name: "RqLs",
+		Data: &LeaseResponse2{
+			LeaseResponse: LeaseResponse{
+				LeaseKey:      r.LeaseKey(),
+				LeaseState:    r.LeaseState(),
+				LeaseFlags:    r.LeaseFlags(),
+				LeaseDuration: r.LeaseDuration(),
+			},
+			ParentLeaseKey: r.ParentLeaseKey(),
+			Epoch:          1,
+		},
+	}, nil
+}
+
+func (t *fileTree) handleCreateEA(disp uint32, h vfs.VfsHandle, eaKey string) (uint32, error) {
+	t.conn.serverCtx.xattrMu.Lock()
+	defer t.conn.serverCtx.xattrMu.Unlock()
+	var err error = nil
+	status := uint32(0)
+
+	// special cases for Apple
+	/*if eaKey == "AFP_AfpInfo" {
+		return 0, nil
+	}*/
+
+	switch disp {
+	case FILE_OPEN_IF:
+		// open or create
+		if _, err = t.fs.Getxattr(h, eaKey, nil); err != nil {
+			if !errors.Is(err, missingXattrError) {
+				return uint32(statusFromError(err)), err
+			}
+			if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
+				status = uint32(STATUS_OPEN_FAILED)
+			}
+		}
+	case FILE_OPEN:
+		// open exisiting
+		if _, err = t.fs.Getxattr(h, eaKey, nil); err != nil {
+			status = uint32(STATUS_OBJECT_NAME_NOT_FOUND)
+		}
+	case FILE_CREATE:
+		// if exists fail, otherwise create
+		if _, err = t.fs.Getxattr(h, eaKey, nil); err == nil {
+			status = uint32(STATUS_OBJECT_NAME_EXISTS)
+			err = fmt.Errorf("already exists")
+			break
+		}
+		if !errors.Is(err, missingXattrError) {
+			return uint32(statusFromError(err)), err
+		}
+		if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
+			status = uint32(STATUS_OPEN_FAILED)
+		}
+	case FILE_OVERWRITE:
+		// Do not truncate when the existing stream cannot be read.
+		if _, err = t.fs.Getxattr(h, eaKey, nil); err != nil {
+			if errors.Is(err, missingXattrError) {
+				return uint32(STATUS_OBJECT_NAME_NOT_FOUND), err
+			}
+			return uint32(statusFromError(err)), err
+		}
+		if err = t.fs.Setxattr(h, eaKey, nil); err != nil {
+			status = uint32(STATUS_OPEN_FAILED)
+		}
+	case FILE_SUPERSEDE, FILE_OVERWRITE_IF:
+		err = t.fs.Setxattr(h, eaKey, nil)
+	}
+
+	if err != nil && status == 0 {
+		status = uint32(STATUS_OPEN_FAILED)
+	}
+	return status, err
+}
+
+// https://github.com/openzfs/openzfs/blob/master/usr/src/uts/common/smbsrv/smb2_aapl.h
+func (t *fileTree) handleAAPLCC(pkt []byte) (Encoder, error) {
+	r := AAPLServerQueryRequestDecoder(pkt)
+	switch r.CommandCode() {
+	case AAPL_SERVER_QUERY:
+		rsp := CreateContext{
+			Name: "AAPL",
+			Data: &AAPLServerQueryResponse{
+				CommandCode: AAPL_SERVER_QUERY,
+				ReplyBitmap: AAPL_SERVER_CAPS | AAPL_VOLUME_CAPS | AAPL_MODEL_INFO,
+				ServerCaps:  AAPL_SUPPORTS_READDIR_ATTR | /*AAPL_SUPPORTS_OSX_COPYFILE |*/ AAPL_UNIX_BASED | AAPL_SUPPORTS_NFS_ACE,
+				VolumeCaps:/*AAPL_SUPPORT_RESOLVE_ID |AAPL_CASE_SENSITIVE |*/ AAPL_SUPPORTS_FULL_SYNC,
+				ModelString: "CloudMachine",
+			},
+		}
+		return rsp, nil
+	case AAPL_RESOLVE_ID:
+	}
+
+	return nil, fmt.Errorf("not supported command")
+}
+
+func (t *fileTree) handleMaxAccessCC(attrs *vfs.Attributes) (Encoder, error) {
+	ccMaxAccess := CreateContext{
+		Name: "MxAc",
+		Data: CreateContextMaximalAccessResponse{
+			QueryStatus:   0,
+			MaximalAccess: MaxAccessFromVfs(attrs),
+		},
+	}
+	return ccMaxAccess, nil
+}
+
+func (t *fileTree) close(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, err := accept(SMB2_CLOSE, pkt)
+	if err != nil {
+		return err
+	}
+
+	r := CloseRequestDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidRequestError{"broken close request"}
+	}
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("Close: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(CloseResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+
+	open := t.lookupOpen(fileId)
+	if open == nil {
+		return t.sendError(ctx, pkt, syscall.EBADF)
+	}
+	c.ioWG.Wait()
+	var closeErr error
+	if closePostQueryAttrsAllowed(r.Flags(), open) {
+		a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+		if err != nil {
+			closeErr = err
+			goto send
+		}
+
+		if open == nil {
+			log.Errorf("close: no open")
+			goto send
+		}
+		rsp.CloseFlags = SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB
+		rsp.CreationTime = BirthTimeFromVfs(a)
+		rsp.LastAccessTime = AccessTimeFromVfs(a)
+		rsp.LastWriteTime = ModifiedTimeFromVfs(a)
+		rsp.ChangeTime = ChangeTimeFromVfs(a)
+		rsp.EndofFile = int64(SizeFromVfs(a))
+		rsp.AllocationSize = int64(DiskSizeFromVfs(a))
+		rsp.FileAttributes = PermissionsFromVfs(a, open.pathName)
+	}
+send:
+	if err := t.closeHandle(fileId, open); closeErr == nil {
+		closeErr = err
+	}
+	if closeErr != nil {
+		return t.sendError(ctx, pkt, closeErr)
+	}
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func closePostQueryAttrsAllowed(flags uint16, open *Open) bool {
+	if flags&SMB2_CLOSE_FLAG_POSTQUERY_ATTRIB == 0 {
+		return false
+	}
+	// SMB2 close post-query attributes have no POSIX mode field. Returning
+	// them for POSIX opens makes Linux CIFS refresh the inode from DOS attrs
+	// and fall back to mount file_mode, dropping executable bits until the
+	// next POSIX query revalidates the inode.
+	return open == nil || !open.posixSemantics
+}
+
+func (t *fileTree) flush(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("flush")
+
+	c := t.session.conn
+
+	res, err := accept(SMB2_FLUSH, pkt)
+	if err != nil {
+		return err
+	}
+	r := FlushRequestDecoder(res)
+	if r.IsInvalid() {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("flush: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if t.lookupOpen(fileId) == nil {
+		return t.sendError(ctx, pkt, syscall.EBADF)
+	}
+	c.ioWG.Wait()
+	if err := t.fs.Flush(vfs.VfsHandle(fileId.HandleId())); err != nil {
+		return t.sendError(ctx, pkt, err)
+	}
+
+	rsp := new(FlushResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) readEA(ctx *compoundContext, fileId *FileId, open *Open, buf []byte, offset uint64, pkt []byte) error {
+	value, err := t.readXattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey)
+	// Preserve Apple's default information stream when it is absent/empty,
+	// without concealing genuine native I/O or permission failures.
+	if open.eaKey == "AFP_AfpInfo" && (errors.Is(err, missingXattrError) || (err == nil && len(value) == 0)) {
+		value = make([]byte, 60)
+		info := AfpInfo{Signature: [4]byte{'A', 'F', 'P', '_'}}
+		info.Encode(value)
+		err = nil
+	}
+	if err != nil {
+		return t.sendError(ctx, pkt, err)
+	}
+	if len(buf) != 0 && offset >= uint64(len(value)) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_END_OF_FILE))
+		return t.conn.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	n := 0
+	if len(buf) != 0 {
+		n = copy(buf, value[int(offset):])
+	}
+	rsp := new(ReadResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	rsp.Data = buf[:n]
+	return t.conn.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) read(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("read")
+	c := t.session.conn
+
+	res, err := accept(SMB2_READ, pkt)
+	if err != nil {
+		return err
+	}
+	r := ReadRequestDecoder(res)
+	if r.IsInvalid() || r.Length() > serverMaxReadSize {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("read: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	open := t.lookupOpen(fileId)
+	if open == nil {
+		log.Errorf("read: no open: %d", fileId.HandleId())
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	// async read
+	asyncId := randint64()
+	if ctx != nil || open.isEa {
+		return t.readImpl(ctx, pkt, fileId, open, 0)
+	}
+
+	c.ioWG.Add(1)
+	go func() {
+		defer c.ioWG.Done()
+		t.ioReadSem <- struct{}{}
+		defer func() { <-t.ioReadSem }()
+
+		rsp := new(ErrorResponse)
+		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
+		c.sendPacket(rsp, &t.treeConn, ctx)
+
+		t.readImpl(ctx, pkt, fileId, open, asyncId)
+	}()
+	return nil
+}
+
+func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_READ, pkt)
+	r := ReadRequestDecoder(res)
+
+	buf := make([]byte, r.Length())
+	var n int
+	var err error
+
+	if open.isEa {
+		return t.readEA(ctx, fileId, open, buf, r.Offset(), pkt)
+	}
+	if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), false) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	n, err = t.fs.Read(vfs.VfsHandle(fileId.HandleId()), buf, r.Offset(), 0)
+	if err != nil && n == 0 {
+		status := statusFromError(err)
+		if err == io.EOF {
+			if !open.isEa {
+				status = STATUS_END_OF_FILE
+			} else {
+				status = STATUS_OBJECT_NAME_NOT_FOUND
+			}
+		} else {
+			log.Errorf("Read: %v", err)
+		}
+		rsp := new(ErrorResponse)
+		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(ReadResponse)
+	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
+	rsp.DataRemaining = 0
+	rsp.Data = buf[:n]
+
+	log.Debugf("read async %d finished", asyncId)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) write(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("write")
+
+	c := t.session.conn
+
+	res, err := accept(SMB2_WRITE, pkt)
+	if err != nil {
+		return err
+	}
+	r := WriteRequestDecoder(res)
+	if r.IsInvalid() || r.Length() > serverMaxWriteSize {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("write: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	open := t.lookupOpen(fileId)
+	if open == nil {
+		log.Errorf("write: no open")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	// async write
+	asyncId := randint64()
+	if ctx != nil || open.isEa {
+		return t.writeImpl(ctx, pkt, fileId, open, 0)
+	}
+
+	c.ioWG.Add(1)
+	go func() {
+		defer c.ioWG.Done()
+		t.ioWriteSem <- struct{}{}
+		defer func() { <-t.ioWriteSem }()
+
+		rsp := new(ErrorResponse)
+		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_PENDING))
+		c.sendPacket(rsp, &t.treeConn, ctx)
+
+		t.writeImpl(ctx, pkt, fileId, open, asyncId)
+	}()
+	return nil
+}
+
+func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, open *Open, asyncId uint64) error {
+
+	var n int
+	var err error
+
+	c := t.session.conn
+
+	res, _ := accept(SMB2_WRITE, pkt)
+	r := WriteRequestDecoder(res)
+
+	if open.isEa {
+		err = t.writeXattrRange(vfs.VfsHandle(fileId.HandleId()), open.eaKey, r.Data(), r.Offset())
+		if err == nil {
+			n = len(r.Data())
+		}
+	} else {
+		if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), true) {
+			rsp := new(ErrorResponse)
+			PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())
+		n, err = t.fs.Write(vfs.VfsHandle(fileId.HandleId()), r.Data(), r.Offset(), int(r.Flags()))
+	}
+
+	if err == nil && n != len(r.Data()) {
+		err = io.ErrShortWrite
+	}
+	if err == nil && (r.Flags()&SMB2_WRITEFLAG_WRITE_THROUGH != 0 || open.createOptions&FILE_WRITE_THROUGH != 0) {
+		err = t.fs.Flush(vfs.VfsHandle(fileId.HandleId()))
+	}
+	if err != nil {
+		status := statusFromError(err)
+		rsp := new(ErrorResponse)
+		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(WriteResponse)
+	PrepareAsyncResponse(&rsp.PacketHeader, pkt, asyncId, 0)
+	rsp.Count = uint32(n)
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) lock(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("Lock")
+	c := t.session.conn
+
+	res, err := accept(SMB2_LOCK, pkt)
+	if err != nil {
+		return err
+	}
+	r := LockRequestDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidRequestError{"broken lock request"}
+	}
+
+	fileID := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileID = ctx.fileId
+	}
+	if IsInvalidFileId(fileID) {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	open := t.lookupOpen(fileID)
+	if open == nil {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	elements, status := decodeSMBLockElements(r.Locks())
+	if status != STATUS_SUCCESS {
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(status))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	finish := func(request []byte, compound *compoundContext) error {
+		old, status := c.serverCtx.reserveByteRangeLocks(open, elements)
+		if status == STATUS_SUCCESS {
+			if locker, ok := t.fs.(vfs.ByteRangeLocker); ok {
+				locks := make([]vfs.ByteRangeLock, len(elements))
+				for i, element := range elements {
+					locks[i] = element.vfsLock()
+				}
+				var err error
+				if contextual, ok := t.fs.(interface {
+					LockContext(context.Context, vfs.VfsHandle, []vfs.ByteRangeLock) error
+				}); ok {
+					err = contextual.LockContext(c.ctx, vfs.VfsHandle(open.fileId), locks)
+				} else {
+					err = locker.Lock(vfs.VfsHandle(open.fileId), locks)
+				}
+				if err != nil {
+					c.serverCtx.rollbackByteRangeLocks(open, old)
+					status = lockErrorStatus(err)
+				}
+			}
+		}
+		if status != STATUS_SUCCESS {
+			rsp := new(ErrorResponse)
+			PrepareResponse(rsp.Header(), request, uint32(status))
+			return c.sendPacket(rsp, &t.treeConn, compound)
+		}
+		rsp := new(LockResponse)
+		PrepareResponse(&rsp.PacketHeader, request, 0)
+		return c.sendPacket(rsp, &t.treeConn, compound)
+	}
+
+	// Do not occupy the connection's serial slow path while a blocking lock
+	// waits; the unlock that wakes it may arrive over the same connection.
+	blocking := false
+	for _, element := range elements {
+		if !element.unlock && !element.failImmediately {
+			blocking = true
+			break
+		}
+	}
+	if blocking && ctx == nil {
+		request := append([]byte(nil), pkt...)
+		c.lockWG.Add(1)
+		go func() {
+			defer c.lockWG.Done()
+			if err := finish(request, nil); err != nil {
+				log.Errorf("Lock response failed: %v", err)
+			}
+		}()
+		return nil
+	}
+	return finish(pkt, ctx)
+}
+
+func (t *fileTree) handleReparsePointReq(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	rd := SymbolicLinkReparseDataBufferDecoder(r.Data())
+	if rd.IsInvalid() {
+		log.Errorf("handleReparsePointReq: reparse tag not supported: 0x%x", rd.ReparseTag())
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+	if IsInvalidFileId(fileId) {
+		log.Errorf("handleReparsePointReq: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	log.Debugf("handleReparsePointReq: subst name %s", rd.SubstituteName())
+	source := strings.ReplaceAll(rd.SubstituteName(), "\\", "/")
+	_, err := t.fs.Symlink(vfs.VfsHandle(fileId.HandleId()), source, int(rd.Flags()))
+	if err != nil {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_SET_REPARSE_POINT
+	rsp.FileId = fileId
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) handleGetReparsePointReq(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+	if IsInvalidFileId(fileId) {
+		log.Errorf("handleReparsePointReq: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	l, err := t.fs.Readlink(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("handleGetReparsePointReq: Readlink() failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	l = strings.ReplaceAll(l, "/", "\\")
+	out := &SymbolicLinkReparseDataBuffer{
+		SubstituteName: l,
+		PrintName:      l,
+	}
+	if !path.IsAbs(l) {
+		out.Flags = SYMLINK_FLAG_RELATIVE
+	}
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_GET_REPARSE_POINT
+	rsp.FileId = fileId
+	rsp.Output = out
+
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) handleDeleteReparsePointReq(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+	if IsInvalidFileId(fileId) {
+		log.Errorf("handleDeleteReparsePointReq: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("handleDeleteReparsePointReq: Readlink() failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_GET_REPARSE_POINT
+	rsp.FileId = fileId
+
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) handleCreateOrGetObjectId(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+	if IsInvalidFileId(fileId) {
+		log.Errorf("handleCreateOrGetObjectId: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	attrRoot, _ := t.fs.GetAttr(0)
+
+	id := &FileObjectId1{
+		ObjectId:      FileId{Persistent: fileId.Persistent},
+		BirthObjectId: FileId{Persistent: fileId.Persistent},
+	}
+	le.PutUint64(id.BirthVolumeId.Persistent[:], attrRoot.GetInodeNumber())
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_CREATE_OR_GET_OBJECT_ID
+	rsp.FileId = fileId
+	rsp.Output = id
+
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) handleQueryNetworkInterfaceInfo(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	rsp := new(IoctlResponse)
+	rsp.CtlCode = FSCTL_QUERY_NETWORK_INTERFACE_INFO
+	rsp.FileId = r.FileId().Decode()
+	rsp.Output = NetworkInterfaceInfoList{
+		{
+			IfIndex:   1,
+			LinkSpeed: 1_000_000_000,
+			IPv4:      [4]byte{127, 0, 0, 1},
+		},
+	}
+
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) ioctl(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("Ioctl")
+
+	c := t.session.conn
+
+	res, _ := accept(SMB2_IOCTL, pkt)
+	r := IoctlRequestDecoder(res)
+
+	switch r.CtlCode() {
+	case FSCTL_SET_REPARSE_POINT:
+		return t.handleReparsePointReq(ctx, pkt)
+	case FSCTL_GET_REPARSE_POINT:
+		return t.handleGetReparsePointReq(ctx, pkt)
+	case FSCTL_DELETE_REPARSE_POINT:
+		return t.handleDeleteReparsePointReq(ctx, pkt)
+	case FSCTL_CREATE_OR_GET_OBJECT_ID:
+		return t.handleCreateOrGetObjectId(ctx, pkt)
+	case FSCTL_QUERY_NETWORK_INTERFACE_INFO:
+		return t.handleQueryNetworkInterfaceInfo(ctx, pkt)
+	}
+
+	log.Errorf("ioctl: code %d", r.CtlCode())
+	/*rsp := new(IoctlResponse)
+	rsp.CtlCode = r.CtlCode()
+	rsp.FileId = r.FileId().Decode()
+	*/
+	rsp := new(ErrorResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) cancel(ctx *compoundContext, pkt []byte) error {
+	log.Errorf("Cancel")
+	c := t.session.conn
+
+	rsp := new(ErrorResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func newFileDirectoryInformationInfo(d vfs.DirInfo) FileDirectoryInformationInfo {
+	info := FileDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+	return info
+}
+
+func newFileFullDirectoryInformationInfo(d vfs.DirInfo) FileFullDirectoryInformationInfo {
+	info := FileFullDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+	return info
+}
+
+func newFileIdFullDirectoryInformationInfo(d vfs.DirInfo) FileIdFullDirectoryInformationInfo {
+	info := FileIdFullDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+	return info
+}
+
+func newFileIdBothDirectoryInformationInfo(d vfs.DirInfo) FileIdBothDirectoryInformationInfo {
+	info := FileIdBothDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+		FileId:    d.GetInodeNumber(),
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+
+	return info
+}
+
+func newFileBothDirectoryInformationInfo(d vfs.DirInfo) FileBothDirectoryInformationInfo {
+	info := FileBothDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+
+	return info
+}
+
+func newFileIdAllExtdBothDirectoryInformationInfo(d vfs.DirInfo) FileIdAllExtdBothDirectoryInformationInfo {
+	info := FileIdAllExtdBothDirectoryInformationInfo{
+		FileIndex: 0,
+		FileName:  d.Name,
+		FileId:    d.GetInodeNumber(),
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.EaSize = IO_REPARSE_TAG_SYMLINK
+	}
+
+	return info
+}
+
+func posixPermsFromVfs(a *vfs.Attributes) uint32 {
+	if mode, ok := a.GetUnixMode(); ok {
+		return mode & 07777
+	}
+	if perms, ok := a.GetPermissions(); ok {
+		return perms.ToMode()
+	}
+	return 0777
+}
+
+func posixModeFromVfs(a *vfs.Attributes) uint32 {
+	mode := posixPermsFromVfs(a)
+	switch a.GetFileType() {
+	case vfs.FileTypeDirectory:
+		mode |= syscall.S_IFDIR
+	case vfs.FileTypeRegularFile:
+		mode |= syscall.S_IFREG
+	case vfs.FileTypeSymlink:
+		mode |= syscall.S_IFLNK
+	case vfs.FileTypeBlockDevice:
+		mode |= syscall.S_IFBLK
+	case vfs.FileTypeCharacterDevice:
+		mode |= syscall.S_IFCHR
+	case vfs.FileTypeFIFO:
+		mode |= syscall.S_IFIFO
+	case vfs.FileTypeSocket:
+		mode |= syscall.S_IFSOCK
+	}
+	return mode
+}
+
+func reparseTagFromVfs(a *vfs.Attributes) uint32 {
+	if a.GetFileType() == vfs.FileTypeSymlink {
+		return IO_REPARSE_TAG_SYMLINK
+	}
+	return 0
+}
+
+func newPosixCreateContextResponse(a *vfs.Attributes) *PosixCreateContextResponse {
+	uid, _ := a.GetUID()
+	gid, _ := a.GetGID()
+	return &PosixCreateContextResponse{
+		NumberOfLinks: a.GetLinkCount(),
+		ReparseTag:    reparseTagFromVfs(a),
+		PosixPerms:    posixModeFromVfs(a),
+		OwnerSID:      SIDFromUid(uid),
+		GroupSID:      SIDFromGid(gid),
+	}
+}
+
+func newFilePosixInformationInfo(d vfs.DirInfo) FilePosixInformationInfo {
+	device, _ := d.GetDeviceNumber()
+	uid, _ := d.GetUID()
+	gid, _ := d.GetGID()
+	info := FilePosixInformationInfo{
+		EndOfFile:      SizeFromVfs(&d.Attributes),
+		AllocationSize: DiskSizeFromVfs(&d.Attributes),
+		FileAttributes: PermissionsFromVfs(&d.Attributes, d.Name),
+		Inode:          d.GetInodeNumber(),
+		Device:         uint32(device),
+		NumberOfLinks:  d.GetLinkCount(),
+		ReparseTag:     reparseTagFromVfs(&d.Attributes),
+		PosixMode:      posixModeFromVfs(&d.Attributes),
+		OwnerSID:       SIDFromUid(uid),
+		GroupSID:       SIDFromGid(gid),
+		FileName:       d.Name,
+	}
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	return info
+}
+
+func newFilePosixDirectoryInformationInfo(d vfs.DirInfo) FilePosixDirectoryInformationInfo {
+	return FilePosixDirectoryInformationInfo{
+		FileIndex: 0,
+		Info:      newFilePosixInformationInfo(d),
+		FileName:  d.Name,
+	}
+}
+
+func (t *fileTree) newFileIdBothDirectoryInformationInfo2(d vfs.DirInfo, parent *Open) FileIdBothDirectoryInformationInfo2 {
+	info := FileIdBothDirectoryInformationInfo2{
+		FileIndex: 0,
+		MaxAccess: MaxAccessFromVfs(&d.Attributes),
+		FileName:  d.Name,
+		FileId:    d.GetInodeNumber(),
+		UnixMode:  UnixModeFromVfs(&d.Attributes),
+	}
+
+	info.CreationTime = *BirthTimeFromVfs(&d.Attributes)
+	info.LastAccessTime = *AccessTimeFromVfs(&d.Attributes)
+	info.LastWriteTime = *ModifiedTimeFromVfs(&d.Attributes)
+	info.ChangeTime = *ChangeTimeFromVfs(&d.Attributes)
+	info.EndOfFile = SizeFromVfs(&d.Attributes)
+	info.AllocationSize = DiskSizeFromVfs(&d.Attributes)
+	info.FileAttributes = PermissionsFromVfs(&d.Attributes, d.Name)
+
+	if info.FileAttributes&FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		info.MaxAccess = IO_REPARSE_TAG_SYMLINK
+	}
+	if parent != nil && t.conn.serverCtx.xattrs {
+		if d.Name != ".." && d.Name != "." {
+			entryPath := d.Name
+			if parent.pathName != "" && parent.pathName != "/" {
+				entryPath = path.Join(parent.pathName, d.Name)
+			}
+			var (
+				h   vfs.VfsHandle
+				err error
+			)
+			if d.GetFileType() == vfs.FileTypeDirectory {
+				h, err = t.fs.OpenDir(entryPath)
+			} else if d.GetFileType() == vfs.FileTypeRegularFile {
+				h, err = t.fs.Open(entryPath, 0, 0)
+			}
+			if err == nil && h != 0 {
+				var finderInfo [60]byte
+				if n, err := t.fs.Getxattr(h, "AFP_AfpInfo", finderInfo[:]); err == nil && n >= len(info.CompressedFinderInfo) {
+					copy(info.CompressedFinderInfo[:], finderInfo[16:])
+				}
+				t.fs.Close(h)
+			}
+		}
+	}
+
+	return info
+}
+
+func newFileNamesInformationInfo(d vfs.DirInfo) FileNamesInformationInfo {
+	info := FileNamesInformationInfo{
+		FileName: d.Name,
+	}
+	return info
+}
+
+func (t *fileTree) makeItem(class uint8, d vfs.DirInfo, parent *Open) Encoder {
+	switch class {
+	case FileBothDirectoryInformation:
+		return newFileBothDirectoryInformationInfo(d)
+	case FileNamesInformation:
+		return newFileNamesInformationInfo(d)
+	case FileIdBothDirectoryInformation:
+		if t.aaplExtensions {
+			return t.newFileIdBothDirectoryInformationInfo2(d, parent)
+		}
+		return newFileIdBothDirectoryInformationInfo(d)
+	case FileDirectoryInformation:
+		return newFileDirectoryInformationInfo(d)
+	case FileFullDirectoryInformation:
+		return newFileFullDirectoryInformationInfo(d)
+	case FileIdFullDirectoryInformation:
+		return newFileIdFullDirectoryInformationInfo(d)
+	case FileIdAllExtdBothDirectoryInformation:
+		return newFileIdAllExtdBothDirectoryInformationInfo(d)
+	case FilePosixInformation:
+		return newFilePosixDirectoryInformationInfo(d)
+	default:
+		log.Warningf("bad info class %d", class)
+	}
+	return nil
+}
+
+const queryDirectoryReadBatchSize = 128
+
+func appendDirectoryInfo(out *FileInformationInfoResponse, item Encoder, maxSize int) bool {
+	if item.Size() > maxSize || out.Size()+item.Size() > maxSize {
+		return false
+	}
+
+	out.Items = append(out.Items, item)
+	return true
+}
+
+func (t *fileTree) appendDirectoryEntries(out *FileInformationInfoResponse, entries []vfs.DirInfo, pattern string, class uint8, open *Open, maxSize int, single bool) (stopped bool, full bool) {
+	for i, d := range entries {
+		if !MatchWildcard(d.Name, pattern) {
+			continue
+		}
+
+		info := t.makeItem(class, d, open)
+		if !appendDirectoryInfo(out, info, maxSize) {
+			open.queryDirectoryPending = append(open.queryDirectoryPending, entries[i:]...)
+			return true, true
+		}
+
+		if single || out.Size() >= maxSize {
+			open.queryDirectoryPending = append(open.queryDirectoryPending, entries[i+1:]...)
+			return true, false
+		}
+	}
+
+	return false, false
+}
+
+func queryDirectoryAppendStatus(out *FileInformationInfoResponse, full bool) (uint32, bool) {
+	if len(out.Items) != 0 {
+		return 0, true
+	}
+	if full {
+		return uint32(STATUS_BUFFER_TOO_SMALL), true
+	}
+	return 0, false
+}
+
+func (t *fileTree) queryDirectoryWildcard(out *FileInformationInfoResponse, open *Open, handle vfs.VfsHandle, pattern string, class uint8, flags uint8, maxOutputSize int, readDirFlags int) uint32 {
+	maxReadEntries := queryDirectoryReadBatchSize
+	single := flags&RETURN_SINGLE_ENTRY != 0
+	if single {
+		maxReadEntries = 1
+	}
+
+	if len(open.queryDirectoryPending) > 0 {
+		pending := open.queryDirectoryPending
+		open.queryDirectoryPending = nil
+		_, full := t.appendDirectoryEntries(out, pending, pattern, class, open, maxOutputSize, single)
+		if status, done := queryDirectoryAppendStatus(out, full); done {
+			return status
+		}
+	}
+
+	for {
+		dir, err := t.fs.ReadDir(handle, readDirFlags, maxReadEntries)
+		readDirFlags = vfs.ReadDirContinue
+		if err != nil {
+			if len(out.Items) != 0 {
+				return 0
+			}
+			if err == io.EOF {
+				return uint32(STATUS_NO_MORE_FILES)
+			}
+			log.Errorf("queryDirectory: err %v", err)
+			return uint32(STATUS_ACCESS_DENIED)
+		}
+		if len(dir) == 0 {
+			if len(out.Items) != 0 {
+				return 0
+			}
+			return uint32(STATUS_NO_MORE_FILES)
+		}
+
+		stopped, full := t.appendDirectoryEntries(out, dir, pattern, class, open, maxOutputSize, single)
+		if status, done := queryDirectoryAppendStatus(out, full); done {
+			return status
+		}
+		if stopped {
+			return uint32(STATUS_NO_SUCH_FILE)
+		}
+	}
+}
+
+func (t *fileTree) queryDirectory(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("QueryDirectory")
+
+	c := t.session.conn
+
+	res, _ := accept(SMB2_QUERY_DIRECTORY, pkt)
+	r := QueryDirectoryRequestDecoder(res)
+
+	switch r.FileInfoClass() {
+	case FileIdBothDirectoryInformation, FileFullDirectoryInformation, FileNamesInformation,
+		FileDirectoryInformation, FileIdFullDirectoryInformation, FileBothDirectoryInformation,
+		FileIdAllExtdBothDirectoryInformation, FilePosixInformation:
+		break
+	default:
+		log.Errorf("wrong info class %d", r.FileInfoClass())
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_PARAMETER))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	log.Debugf("search patter: %s", r.FileName())
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("queryDirectory: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	out := &FileInformationInfoResponse{}
+	maxOutputSize := int(r.OutputBufferLength())
+	Status := uint32(0)
+	if ctx != nil && ctx.lastStatus != 0 {
+		Status = ctx.lastStatus
+	}
+
+	open := t.conn.serverCtx.getOpen(fileId.HandleId())
+	if open == nil {
+		log.Errorf("queryDirectory: open not found: %d", fileId.HandleId())
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	readDirFlags := vfs.ReadDirContinue
+	if r.Flags()&(RESTART_SCANS|REOPEN) != 0 {
+		readDirFlags = vfs.ReadDirRestart
+		open.queryDirectoryPending = nil
+		open.queryDirectorySingleName = ""
+		open.queryDirectorySingleDone = false
+	}
+
+	name := r.FileName()
+	if maxOutputSize <= 0 {
+		Status = uint32(STATUS_BUFFER_TOO_SMALL)
+	}
+	if Status == 0 {
+		Status = uint32(STATUS_NO_SUCH_FILE)
+
+		if !ContainsWildcard(name) {
+			if open.queryDirectorySingleDone && open.queryDirectorySingleName == name {
+				Status = uint32(STATUS_NO_MORE_FILES)
+			} else if attrs, err := t.fs.Lookup(vfs.VfsHandle(fileId.HandleId()), name); err == nil {
+				log.Debugf("lookup %s success", name)
+				d := vfs.DirInfo{Name: name, Attributes: *attrs}
+				info := t.makeItem(r.FileInfoClass(), d, open)
+				if appendDirectoryInfo(out, info, maxOutputSize) {
+					Status = 0
+					open.queryDirectorySingleName = name
+					open.queryDirectorySingleDone = true
+				} else {
+					Status = uint32(STATUS_BUFFER_TOO_SMALL)
+				}
+			}
+		} else {
+			Status = t.queryDirectoryWildcard(out, open, vfs.VfsHandle(fileId.HandleId()), name, r.FileInfoClass(), r.Flags(), maxOutputSize, readDirFlags)
+		}
+	} else {
+		out = nil
+	}
+
+	var rsp Packet
+	if Status != 0 {
+		rsp = new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, Status)
+	} else {
+		rsp = &QueryDirectoryResponse{Output: out}
+		PrepareResponse(rsp.Header(), pkt, Status)
+	}
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) changeNotify(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("ChangeNotify")
+
+	c := t.session.conn
+
+	res, _ := accept(SMB2_CHANGE_NOTIFY, pkt)
+	r := ChangeNotifyRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+	if IsInvalidFileId(fileId) {
+		log.Debugf("ChangeNotify: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	open := t.conn.serverCtx.getOpen(fileId.HandleId())
+	if open == nil {
+		log.Errorf("ChangeNotify: open not found")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	log.Debugf("ChangeNotify: file %s, h: %d", open.pathName, fileId.HandleId())
+
+	/*ch := make(chan *vfs.NotifyEvent)
+	t.fs.RegisterNotify(vfs.VfsHandle(fileId.HandleId()), ch)
+	go func(ctx *compoundContext, ch chan *vfs.NotifyEvent, isDir bool, pkt []byte) {
+		ev := <-ch
+		if ev != nil {
+			log.Errorf("notification received: %v, %v", isDir, ev)
+			if isDir {
+				rsp := new(ChangeNotifyResponse)
+				rsp.Output = &FileNotifyInformationInfo{
+					Action:   FILE_ACTION_ADDED,
+					FileName: strings.ReplaceAll(ev.Name, "/", "\\"),
+				}
+				log.Errorf("Sending notification: %s", strings.ReplaceAll(ev.Name, "/", "\\"))
+				PrepareResponse(&rsp.PacketHeader, pkt, 0)
+				rsp.Flags |= SMB2_FLAGS_ASYNC_COMMAND
+				c.sendPacket(rsp, &t.treeConn, ctx)
+			}
+		}
+		t.fs.RemoveNotify(vfs.VfsHandle(fileId.HandleId()))
+		close(ch)
+	}(ctx, ch, open.fileAttributes&FILE_ATTRIBUTE_DIRECTORY != 0, open.notifyReq)*/
+
+	/*rsp := new(ErrorResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+	return c.sendPacket(rsp, &t.treeConn, ctx)*/
+	// Send PENDING now, and complete after 3s if still open
+	asyncId := randint64()
+	pending := new(ErrorResponse)
+	PrepareAsyncResponse(pending.Header(), pkt, asyncId, uint32(STATUS_PENDING))
+	if err := c.sendPacket(pending, &t.treeConn, ctx); err != nil {
+		return err
+	}
+	open.notifyReqAsyncId = asyncId
+	open.notifyReq = pkt
+
+	handleId := fileId.HandleId()
+	go func(ctx *compoundContext, reqPkt []byte, h uint64) {
+		time.Sleep(5 * time.Second)
+		if t.conn.serverCtx.getOpen(h) == nil {
+			// Open was closed; do not send completion
+			return
+		}
+		open.notifyReq = nil
+
+		// Complete the notify with an empty response
+		final := new(ErrorResponse)
+		PrepareAsyncResponse(&final.PacketHeader, pkt, open.notifyReqAsyncId, uint32(STATUS_ACCESS_DENIED))
+		c.sendPacket(final, &t.treeConn, ctx)
+	}(ctx, pkt, handleId)
+
+	return nil
+}
+
+func (t *fileTree) queryInfoFileSystem(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_QUERY_INFO, pkt)
+	r := QueryInfoRequestDecoder(res)
+
+	log.Debugf("queryInfoFileSystem: class %d", r.FileInfoClass())
+
+	s, _ := t.fs.StatFS(0)
+	bs := uint32(512)
+	if b, ok := s.GetBlockSize(); ok {
+		bs = uint32(b)
+	}
+	physicalSectorSize := bs
+	if physicalSectorSize < 512 {
+		physicalSectorSize = 512
+	}
+	au := int64(-1)
+	if val, ok := s.GetAvailableBlocks(); ok {
+		au = int64(val)
+	}
+	ta := int64(-1)
+	if val, ok := s.GetBlocks(); ok {
+		ta = int64(val)
+	}
+
+	var info Encoder
+	switch r.FileInfoClass() {
+	case FileFsVolumeInformation:
+		info = &FileFsVolumeInformationInfo{
+			VolumeLabel: t.path,
+		}
+	case FileFsSizeInformation:
+		info = &FileFsSizeInformationInfo{
+			TotalAllocationUnits:     ta,
+			AvailableAllocationUnits: au,
+			SectorsPerAllocationUnit: bs / 512,
+			BytesPerSector:           512,
+		}
+	case FileFsDeviceInformation:
+		info = &FileFsDeviceInformationInfo{
+			DeviceType: FILE_DEVICE_DISK,
+		}
+	case FileFsAttributeInformation:
+		attrs := FILE_SUPPORTS_OPEN_BY_FILE_ID |
+			FILE_SUPPORTS_OBJECT_IDS |
+			//FILE_CASE_SENSITIVE_SEARCH |
+			FILE_CASE_PRESERVED_NAMES |
+			FILE_PERSISTENT_ACLS |
+			FILE_SUPPORTS_SPARSE_FILES |
+			FILE_UNICODE_ON_DISK |
+			FILE_SUPPORTS_HARD_LINKS |
+			FILE_SUPPORTS_REPARSE_POINTS
+		if t.conn.serverCtx.xattrs {
+			attrs |= FILE_SUPPORTS_EXTENDED_ATTRIBUTES | FILE_NAMED_STREAMS
+		}
+		info = &FileFsAttributeInformationInfo{
+			FileSystemAttributes:       uint32(attrs),
+			MaximumComponentNameLength: 255,
+			FileSystemName:             "APFS",
+		}
+	case FileFsFullSizeInformation:
+		info = &FileFsFullSizeInformationInfo{
+			TotalAllocationUnits:           ta,
+			CallerAvailableAllocationUnits: au,
+			ActualAvailableAllocationUnits: au,
+			SectorsPerAllocationUnit:       bs / 512,
+			BytesPerSector:                 512,
+		}
+	case FileFsSectorSizeInformation:
+		info = &FileFsSectorSizeInformationInfo{
+			LogicalBytesPerSector:                                 512,
+			PhysicalBytesPerSectorForAtomicity:                    physicalSectorSize,
+			PhysicalBytesPerSectorForPerformance:                  physicalSectorSize,
+			FileSystemEffectivePhysicalBytesPerSectorForAtomicity: physicalSectorSize,
+			Flags: SSINFO_FLAGS_ALIGNED_DEVICE |
+				SSINFO_FLAGS_PARTITION_ALIGNED_ON_DEVICE |
+				SSINFO_FLAGS_NO_SEEK_PENALTY,
+		}
+	case FileFsObjectIdInformation:
+		fileId := r.FileId().Decode()
+		if ctx != nil && ctx.fileId != nil {
+			fileId = ctx.fileId
+		}
+		attrRoot, _ := t.fs.GetAttr(0)
+		id := &FileObjectId1{
+			ObjectId:      FileId{Persistent: fileId.Persistent},
+			BirthObjectId: FileId{Persistent: fileId.Persistent},
+		}
+		le.PutUint64(id.BirthVolumeId.Persistent[:], attrRoot.GetInodeNumber())
+		info = id
+	case FilePosixInformation:
+		rootAttr, _ := t.fs.GetAttr(0)
+		fsInfo := &FileFsPosixInformationInfo{
+			OptimalTransferSize: bs,
+			BlockSize:           bs,
+			FsIdentifier:        rootAttr.GetInodeNumber(),
+		}
+		if ta >= 0 {
+			fsInfo.TotalBlocks = uint64(ta)
+		}
+		if au >= 0 {
+			fsInfo.BlocksAvailable = uint64(au)
+			fsInfo.UserBlocksAvailable = uint64(au)
+		}
+		if files, ok := s.GetFiles(); ok {
+			fsInfo.TotalFileNodes = files
+		}
+		if ffree, ok := s.GetFreeFiles(); ok {
+			fsInfo.FreeFileNodes = ffree
+		}
+		info = fsInfo
+	default:
+		log.Errorf("queryInfoFileSystem: unsupported type %d", r.FileInfoClass())
+		return &InvalidRequestError{"unsupported query class"}
+	}
+
+	rsp := new(QueryInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	rsp.Output = info
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) queryInfoFile(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_QUERY_INFO, pkt)
+	r := QueryInfoRequestDecoder(res)
+
+	log.Debugf("queryInfoFile: class %d", r.FileInfoClass())
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("queryInfoFile: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	open := t.conn.serverCtx.getOpen(fileId.HandleId())
+	if open == nil {
+		log.Errorf("queryInfoFile: open not found: %d", fileId.HandleId())
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	name := open.pathName
+	a, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("queryInfoFile: GetAttr() failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	isDir := uint8(0)
+	if a.GetFileType() == vfs.FileTypeDirectory {
+		isDir = 1
+	}
+
+	deletePending := byte(0)
+	if t.conn.serverCtx.isDeletePending(open.durableFileId) {
+		deletePending = 1
+	}
+
+	var info Encoder
+	switch r.FileInfoClass() {
+	case FileBasicInformation:
+		info = &FileBasicInformationInfo{
+			CreationTime:   *BirthTimeFromVfs(a),
+			LastAccessTime: *AccessTimeFromVfs(a),
+			LastWriteTime:  *ModifiedTimeFromVfs(a),
+			ChangeTime:     *ChangeTimeFromVfs(a),
+			FileAttributes: PermissionsFromVfs(a, open.pathName),
+		}
+	case FileAccessInformation:
+		info = &FileAccessInformationInfo{
+			AccessFlags: MaxAccessFromVfs(a),
+		}
+	case FileNameInformation:
+		info = &FileAlternateNameInformationInfo{
+			FileName: strings.ReplaceAll(name, "/", "\\"),
+		}
+	case FileAllInformation:
+		info = &FileAllInformationInfo{
+			BasicInformation: FileBasicInformationInfo{
+				CreationTime:   *BirthTimeFromVfs(a),
+				LastAccessTime: *AccessTimeFromVfs(a),
+				LastWriteTime:  *ModifiedTimeFromVfs(a),
+				ChangeTime:     *ChangeTimeFromVfs(a),
+				FileAttributes: PermissionsFromVfs(a, open.pathName),
+			},
+			StandardInformation: FileStandardInformationInfo{
+				EndOfFile:      int64(SizeFromVfs(a)),
+				AllocationSize: int64(DiskSizeFromVfs(a)),
+				NumberOfLinks:  1,
+				DeletePending:  deletePending,
+				Directory:      isDir,
+			},
+			Internal: FileInternalInformationInfo{
+				IndexNumber: int64(a.GetInodeNumber()),
+			},
+			EaInformation: FileEaInformationInfo{},
+			AccessInformation: FileAccessInformationInfo{
+				AccessFlags: MaxAccessFromVfs(a),
+			},
+			PositionInformation: FilePositionInformationInfo{},
+			ModeInformation: FileModeInformationInfo{
+				Mode: FILE_SYNCHRONOUS_IO_ALERT,
+			},
+			AlignmentInformation: FileAlignmentInformationInfo{},
+			NameInformation: FileAlternateNameInformationInfo{
+				FileName: strings.ReplaceAll(name, "/", "\\"),
+			},
+		}
+	case FileStandardInformation:
+		info = &FileStandardInformationInfo{
+			EndOfFile:      int64(SizeFromVfs(a)),
+			AllocationSize: int64(DiskSizeFromVfs(a)),
+			NumberOfLinks:  1,
+			DeletePending:  deletePending,
+			Directory:      isDir,
+		}
+	case FileEaInformation:
+		info = &FileEaInformationInfo{}
+	case FileFullEaInformation:
+		info = FileFullEaInformationInfoItems{}
+	case FilePositionInformation:
+		info = &FilePositionInformationInfo{}
+	case FileModeInformation:
+		info = &FileModeInformationInfo{
+			Mode: FILE_SYNCHRONOUS_IO_ALERT,
+		}
+	case FileAlignmentInformation:
+		info = &FileAlignmentInformationInfo{}
+	case FileStreamInformation:
+		xattrs, err := t.fs.Listxattr(vfs.VfsHandle(fileId.HandleId()))
+		items := FileStreamInformationInfoItems{}
+		if isDir == 0 {
+			items = append(items, FileStreamInformationInfo{
+				NextEntryOffset:      0,
+				StreamSize:           SizeFromVfs(a),
+				StreamAllocationSize: DiskSizeFromVfs(a),
+				StreamName:           "::$DATA",
+			})
+		}
+
+		log.Debugf("queryInfoFile: xattr count %d", len(xattrs))
+		if err == nil && t.conn.serverCtx.xattrs {
+			for _, ea := range xattrs {
+				l, err := t.fs.Getxattr(vfs.VfsHandle(fileId.HandleId()), ea, nil)
+				if err == nil {
+					item := FileStreamInformationInfo{
+						StreamSize:           uint64(l),
+						StreamAllocationSize: uint64(l),
+						StreamName:           fmt.Sprintf(":%s:$DATA", ea),
+					}
+					items = append(items, item)
+				}
+			}
+		}
+		info = items
+	case FileNetworkOpenInformation:
+		if !open.isEa {
+			info = &FileNetworkOpenInformationInfo{
+				CreationTime:   *BirthTimeFromVfs(a),
+				LastAccessTime: *AccessTimeFromVfs(a),
+				LastWriteTime:  *ModifiedTimeFromVfs(a),
+				ChangeTime:     *ChangeTimeFromVfs(a),
+				AllocationSize: int64(DiskSizeFromVfs(a)),
+				EndOfFile:      int64(SizeFromVfs(a)),
+				FileAttributes: PermissionsFromVfs(a, open.pathName),
+			}
+		} else {
+			len, _ := t.fs.Getxattr(vfs.VfsHandle(fileId.HandleId()), open.eaKey, nil)
+			info = &FileNetworkOpenInformationInfo{
+				CreationTime:   *BirthTimeFromVfs(a),
+				LastAccessTime: *AccessTimeFromVfs(a),
+				LastWriteTime:  *ModifiedTimeFromVfs(a),
+				ChangeTime:     *ChangeTimeFromVfs(a),
+				AllocationSize: int64(len),
+				EndOfFile:      int64(len),
+				FileAttributes: 0,
+			}
+		}
+	case FileCompressionInformation:
+		info = &FileCompressionInformationInfo{
+			CompressedFileSize: int64(DiskSizeFromVfs(a)),
+		}
+	case FileNormalizedNameInformation:
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	case FileAttributeTagInformation:
+		info = &FileAttributeTagInformationInfo{
+			FileAttributes: PermissionsFromVfs(a, open.pathName),
+		}
+	case FileInternalInformation:
+		info = &FileInternalInformationInfo{
+			int64(a.GetInodeNumber()),
+		}
+	case FileIdInformation:
+		fileId := FileId{}
+		fileId.SetNodeId(a.GetInodeNumber())
+
+		rootAttr, err := t.fs.GetAttr(0)
+		if err != nil {
+			log.Errorf("queryInfoFile: root GetAttr() failed")
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		info = &FileIdInformationInfo{
+			VolumeSerialNumber: rootAttr.GetInodeNumber(),
+			FileId:             fileId,
+		}
+	case FilePosixInformation:
+		info = newFilePosixInformationInfo(vfs.DirInfo{Name: name, Attributes: *a})
+	default:
+		log.Errorf("queryInfoFile: unsupported type %d", r.FileInfoClass())
+		return &InvalidRequestError{"unsupported query class"}
+	}
+
+	rsp := new(QueryInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	rsp.Output = info
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) queryInfoSec(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_QUERY_INFO, pkt)
+	r := QueryInfoRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("queryInfoSec: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("queryInfoSec: GetAttr() failed")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	sd := SecurityDescriptor{}
+	if r.AdditionalInformation()&OWNER_SECURITY_INFORMATION != 0 {
+		uid, _ := attrs.GetUID()
+		sd.OwnerSid = SIDFromUid(uid)
+	}
+	if r.AdditionalInformation()&GROUP_SECUIRTY_INFORMATION != 0 {
+		gid, _ := attrs.GetGID()
+		sd.GroupSid = SIDFromGid(gid)
+	}
+	if r.AdditionalInformation()&DACL_SECUIRTY_INFORMATION != 0 {
+		uid, _ := attrs.GetUID()
+		gid, _ := attrs.GetGID()
+		mode, _ := attrs.GetUnixMode()
+		switch attrs.GetFileType() {
+		case vfs.FileTypeDirectory:
+			mode |= syscall.S_IFDIR
+		case vfs.FileTypeSymlink:
+			mode |= syscall.S_IFLNK
+		default:
+			mode |= syscall.S_IFREG
+		}
+		sd.Dacl = &ACL{
+			ACE{ //OWner
+				Sid:  SIDFromUid(uid),
+				Type: ACCESS_ALLOWED_ACE_TYPE,
+				Mask: UnixModeToAceMask(uint8((mode & 0700) >> 6)),
+			},
+			ACE{ // Group
+				Sid:  SIDFromGid(gid),
+				Type: ACCESS_ALLOWED_ACE_TYPE,
+				Mask: UnixModeToAceMask(uint8((mode & 0070) >> 3)),
+			},
+			ACE{ // Everyone
+				Sid:  &SID{IdentifierAuthority: WORLD_SID_AUTHORITY, SubAuthority: []uint32{0}},
+				Type: ACCESS_ALLOWED_ACE_TYPE,
+				Mask: UnixModeToAceMask(uint8(mode & 0007)),
+			},
+			ACE{ // Mode
+				Sid:  SIDFromMode(mode),
+				Type: ACCESS_DENIED_ACE_TYPE,
+				Mask: 0,
+			},
+		}
+	}
+
+	rsp := new(QueryInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	rsp.Output = &sd
+
+	//rsp := new(ErrorResponse)
+	//PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) queryInfo(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("QueryInfo")
+
+	c := t.session.conn
+
+	res, err := accept(SMB2_QUERY_INFO, pkt)
+	if err != nil {
+		return err
+	}
+
+	r := QueryInfoRequestDecoder(res)
+	if r.IsInvalid() {
+		return &InvalidRequestError{"broken quety info format"}
+	}
+
+	log.Debugf("query info type: %d", r.InfoType())
+	switch r.InfoType() {
+	case SMB2_0_INFO_FILE:
+		return t.queryInfoFile(ctx, pkt)
+	case SMB2_0_INFO_FILESYSTEM:
+		return t.queryInfoFileSystem(ctx, pkt)
+	case SMB2_0_INFO_SECURITY:
+		return t.queryInfoSec(ctx, pkt)
+	case SMB2_0_INFO_QUOTA:
+		log.Errorf("SMB2_0_INFO_QUOTA unsupported")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	return nil
+}
+
+func (t *fileTree) setBasicInfo(ctx *compoundContext, fileId *FileId, open *Open, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	info := FileBasicInformationInfoDecoder(r.Buffer())
+
+	a := new(vfs.Attributes)
+	if fileAttrs := info.FileAttributes(); fileAttrs != 0 {
+		if oldAttrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId())); err == nil {
+			if mode, ok := oldAttrs.GetUnixMode(); ok {
+				a.SetUnixMode(unixModeWithFileAttributes(mode, fileAttrs))
+			}
+		}
+	}
+
+	ns := info.LastAccessTime().Nanoseconds()
+	if ns != 0 {
+		seconds := ns / 1e9
+		nanoseconds := ns % 1e9
+		a.SetAccessTime(time.Unix(seconds, nanoseconds))
+	}
+	ns = info.LastWriteTime().Nanoseconds()
+	if ns != 0 {
+		seconds := ns / 1e9
+		nanoseconds := ns % 1e9
+		a.SetLastDataModificationTime(time.Unix(seconds, nanoseconds))
+	}
+	ns = info.ChangeTime().Nanoseconds()
+	if ns != 0 {
+		seconds := ns / 1e9
+		nanoseconds := ns % 1e9
+		a.SetLastStatusChangeTime(time.Unix(seconds, nanoseconds))
+	}
+	ns = info.CreationTime().Nanoseconds()
+	if ns != 0 {
+		seconds := ns / 1e9
+		nanoseconds := ns % 1e9
+		a.SetBirthTime(time.Unix(seconds, nanoseconds))
+	}
+
+	if !open.isEa {
+		if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil && !c.serverCtx.ignoreSetAttrErr {
+			log.Errorf("SetAttr failed: %v", err)
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func unixModeWithFileAttributes(mode uint32, fileAttrs uint32) uint32 {
+	if fileAttrs&FILE_ATTRIBUTE_READONLY != 0 {
+		return mode &^ 0222
+	}
+	return mode | 0200
+}
+
+func (t *fileTree) setEndOfFileInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	info := FileEndOfFileInformationDecoder(r.Buffer())
+	if info.EndOfFile() < 0 {
+		return t.sendError(ctx, pkt, syscall.EINVAL)
+	}
+	if err := t.fs.Truncate(vfs.VfsHandle(fileId.HandleId()), uint64(info.EndOfFile())); err != nil {
+		return t.sendError(ctx, pkt, err)
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) setEndOfFileInfoEa(ctx *compoundContext, fileId *FileId, eaKey string, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	info := FileEndOfFileInformationDecoder(r.Buffer())
+
+	if err := t.resizeXattr(vfs.VfsHandle(fileId.HandleId()), eaKey, info.EndOfFile()); err != nil {
+		return t.sendError(ctx, pkt, err)
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func dispositionDeletePending(pkt []byte) bool {
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	buf := r.Buffer()
+	return len(buf) > 0 && FileDispositionInformationInfoDecoder(buf).DeletePending() != 0
+}
+
+func (t *fileTree) setDispositionInfo(ctx *compoundContext, fileId *FileId, open *Open, pkt []byte) error {
+	c := t.session.conn
+
+	if !dispositionDeletePending(pkt) {
+		t.conn.serverCtx.setDeletePending(open.durableFileId, false)
+		rsp := new(SetInfoResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if open.grantedAccess&DELETE == 0 {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	if status := t.applyDeleteDisposition(fileId, open); status != 0 {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, status)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) applyDeleteDisposition(fileId *FileId, open *Open) uint32 {
+	attrs, err := t.fs.GetAttr(vfs.VfsHandle(fileId.HandleId()))
+	if err != nil {
+		log.Errorf("Delete failed to get attrs: %v", err)
+		return uint32(STATUS_ACCESS_DENIED)
+	}
+
+	if attrs.GetFileType() == vfs.FileTypeDirectory {
+		if dir, err := t.fs.ReadDir(vfs.VfsHandle(fileId.HandleId()), vfs.ReadDirContinue, 1000); err == nil {
+			isEmpty := true
+			for _, d := range dir {
+				if d.Name != "." && d.Name != ".." {
+					isEmpty = false
+					break
+				}
+			}
+			if !isEmpty {
+				log.Debugf("Delete failed: directory not empty: %v", err)
+				return uint32(STATUS_DIRECTORY_NOT_EMPTY)
+			}
+		}
+	}
+
+	if open.posixSemantics {
+		if err := t.applyPosixDelete(fileId, open); err != nil {
+			status := STATUS_ACCESS_DENIED
+			if os.IsNotExist(err) {
+				status = STATUS_OBJECT_NAME_NOT_FOUND
+			}
+			log.Errorf("POSIX delete failed: %v", err)
+			return uint32(status)
+		}
+	} else {
+		t.conn.serverCtx.setDeletePending(open.durableFileId, true)
+	}
+	return 0
+}
+
+func (t *fileTree) applyPosixDelete(fileId *FileId, open *Open) error {
+	if err := t.fs.Unlink(vfs.VfsHandle(fileId.HandleId())); err != nil {
+		return err
+	}
+	t.conn.serverCtx.setDeletePending(open.durableFileId, false)
+	return nil
+}
+
+func (t *fileTree) applyPosixDeleteOnClose(fileId *FileId, open *Open) error {
+	if open == nil || !open.deleteOnClose || !open.posixSemantics {
+		return nil
+	}
+	if err := t.applyPosixDelete(fileId, open); err != nil {
+		return err
+	}
+	open.deleteOnClose = false
+	return nil
+}
+
+func (t *fileTree) setDispositionInfoEa(ctx *compoundContext, fileId *FileId, eaKey string, pkt []byte) error {
+	c := t.session.conn
+
+	if dispositionDeletePending(pkt) {
+		if err := t.removeXattr(vfs.VfsHandle(fileId.HandleId()), eaKey); err != nil {
+			log.Errorf("removexattr failed: %v", err)
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_FOUND))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) setRename(ctx *compoundContext, fileId *FileId, pkt []byte) error {
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	info := FileRenameInformationInfoDecoder(r.Buffer())
+
+	log.Debugf("setRename %s, root %d", info.FileName(), info.RootDirectory())
+	to := strings.ReplaceAll(info.FileName(), "\\", "/")
+	if err := t.fs.Rename(vfs.VfsHandle(fileId.HandleId()), to, int(info.ReplaceIfExists())); err != nil {
+		log.Errorf("rename failed: %v", err)
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+	if open := t.conn.serverCtx.getOpen(fileId.HandleId()); open != nil {
+		open.pathName = to
+		open.fileName = path.Base(to)
+	}
+
+	rsp := new(SetInfoResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) setSecInfo(ctx *compoundContext, fileId *FileId, pkt []byte) error {
+	log.Debugf("setSecInfo")
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+	sd := SecurityDescriptorDecoder(r.Buffer())
+	daclBuf := sd.Dacl()
+	if daclBuf == nil {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	dacl := AclDecoder(daclBuf)
+	aceBuf := dacl.Aces()
+	foundNfsSid := false
+	for i := 0; i < int(dacl.AceCount()); i++ {
+		ace := AceDecoder(aceBuf)
+		sidBuf := ace.Sid()
+		sid := SidDecoder(sidBuf)
+		if sid.SubAuthorityCount() == 3 && sid.SubAuthority()[0] == 88 && sid.SubAuthority()[1] == 3 {
+			// NFS Mode Sid
+			foundNfsSid = true
+			mode := sid.SubAuthority()[2]
+
+			a := &vfs.Attributes{}
+			a.SetUnixMode(mode | 0600) // Owner can always read/write
+			if _, err := t.fs.SetAttr(vfs.VfsHandle(fileId.HandleId()), a); err != nil {
+				log.Errorf("SetAttr failed: %v", err)
+				rsp := new(ErrorResponse)
+				PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_ACCESS_DENIED))
+				return c.sendPacket(rsp, &t.treeConn, ctx)
+			}
+			break
+		}
+
+		aceBuf = aceBuf[ace.Size():]
+	}
+
+	if !foundNfsSid {
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	rsp := &SetInfoResponse{}
+	PrepareResponse(&rsp.PacketHeader, pkt, 0)
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) setInfo(ctx *compoundContext, pkt []byte) error {
+	log.Debugf("SetInfo")
+	c := t.session.conn
+
+	res, _ := accept(SMB2_SET_INFO, pkt)
+	r := SetInfoRequestDecoder(res)
+
+	fileId := r.FileId().Decode()
+	if ctx != nil && ctx.fileId != nil {
+		fileId = ctx.fileId
+	}
+
+	if IsInvalidFileId(fileId) {
+		log.Errorf("SetInfo: invalid fileid")
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	open := t.conn.serverCtx.getOpen(fileId.HandleId())
+	if open == nil {
+		log.Errorf("delete: no open")
+		rsp := new(ErrorResponse)
+		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_INVALID_HANDLE))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+
+	log.Debugf("SetInfo: %d class", r.FileInfoClass())
+
+	switch r.InfoType() {
+	case SMB2_0_INFO_SECURITY:
+		return t.setSecInfo(ctx, fileId, pkt)
+	}
+
+	status := uint32(0)
+	switch r.FileInfoClass() {
+	case FileBasicInformation:
+		return t.setBasicInfo(ctx, fileId, open, pkt)
+	case FileEndOfFileInformation:
+		if open.isEa {
+			return t.setEndOfFileInfoEa(ctx, fileId, open.eaKey, pkt)
+		}
+		return t.setEndOfFileInfo(ctx, fileId, pkt)
+	case FileDispositionInformation:
+		if open.isEa {
+			return t.setDispositionInfoEa(ctx, fileId, open.eaKey, pkt)
+		}
+		return t.setDispositionInfo(ctx, fileId, open, pkt)
+	case FileRenameInformation:
+		if !open.isEa {
+			return t.setRename(ctx, fileId, pkt)
+		}
+		status = uint32(STATUS_NOT_SUPPORTED)
+	case FileAllocationInformation:
+		rsp := &SetInfoResponse{}
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	default:
+		status = uint32(STATUS_NOT_SUPPORTED)
+		log.Errorf("unsupported class %d in SetInfo", r.FileInfoClass())
+	}
+
+	rsp := new(ErrorResponse)
+	PrepareResponse(&rsp.PacketHeader, pkt, status)
+
+	return c.sendPacket(rsp, &t.treeConn, ctx)
+}
+
+func (t *fileTree) oplockBreak(ctx *compoundContext, pkt []byte) error {
+	c := t.session.conn
+
+	res, err := accept(SMB2_OPLOCK_BREAK, pkt)
+	if err != nil {
+		return err
+	}
+
+	switch le.Uint16(res[:2]) {
+	case SMB2_OPLOCK_BREAK_ACK_SIZE:
+		r := OplockBreakAcknowledgmentDecoder(res)
+		if r.IsInvalid() {
+			return &InvalidRequestError{"broken oplock break ack format"}
+		}
+
+		fileID := r.FileId().Decode()
+		open := t.conn.serverCtx.getOpen(fileID.HandleId())
+		if open == nil || open.durableFileId != fileID.NodeId() {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_FILE_CLOSED))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		if open.oplockState != LOCKSTATE_BREAKING {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_INVALID_DEVICE_STATE))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		open.oplockLevel = r.OplockLevel()
+		if open.oplockLevel == SMB2_OPLOCK_LEVEL_NONE {
+			open.oplockState = LOCKSTATE_NONE
+		} else {
+			open.oplockState = LOCKSTATE_HELD
+		}
+
+		rsp := &OplockBreakResponse{
+			OplockLevel: open.oplockLevel,
+			FileId:      fileID,
+		}
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	case SMB2_LEASE_BREAK_ACK_SIZE:
+		r := LeaseBreakAcknowledgmentDecoder(res)
+		if r.IsInvalid() {
+			return &InvalidRequestError{"broken lease break ack format"}
+		}
+
+		var open *Open
+		t.conn.serverCtx.lock.Lock()
+		for _, candidate := range t.conn.serverCtx.opens {
+			if candidate.lease != nil && candidate.lease.LeaseKey == r.LeaseKey() {
+				open = candidate
+				break
+			}
+		}
+		t.conn.serverCtx.lock.Unlock()
+		if open == nil || open.lease == nil {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_OBJECT_NAME_NOT_FOUND))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+		if !open.lease.Breaking {
+			rsp := new(ErrorResponse)
+			PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_UNSUCCESSFUL))
+			return c.sendPacket(rsp, &t.treeConn, ctx)
+		}
+
+		open.lease.LeaseState = r.LeaseState()
+		open.lease.Breaking = false
+		open.oplockState = LOCKSTATE_HELD
+		if open.lease.LeaseState == SMB2_LEASE_NONE {
+			open.oplockLevel = SMB2_OPLOCK_LEVEL_NONE
+			open.oplockState = LOCKSTATE_NONE
+		}
+
+		rsp := &LeaseBreakResponse{
+			LeaseKey:   open.lease.LeaseKey,
+			LeaseState: open.lease.LeaseState,
+		}
+		PrepareResponse(&rsp.PacketHeader, pkt, 0)
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	default:
+		rsp := new(ErrorResponse)
+		PrepareResponse(&rsp.PacketHeader, pkt, uint32(STATUS_NOT_SUPPORTED))
+		return c.sendPacket(rsp, &t.treeConn, ctx)
+	}
+}
