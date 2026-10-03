@@ -40,6 +40,7 @@ type StorageConfig struct {
 	StateDir  string    `yaml:"state_dir"`
 	CacheDir  string    `yaml:"cache_dir"`
 	CacheSize *ByteSize `yaml:"cache_size"`
+	Capacity  ByteSize  `yaml:"capacity"`
 	// When omitted, an existing dataset keeps its stored compression. A set
 	// value must match it.
 	Compression *string `yaml:"compression"`
@@ -213,6 +214,9 @@ func (c *Config) validate() error {
 	}
 	if c.Storage.CacheSize != nil && *c.Storage.CacheSize < 0 {
 		return errors.New("storage.cache_size must be nonnegative")
+	}
+	if c.Storage.Capacity < 0 {
+		return errors.New("storage.capacity must be nonnegative")
 	}
 	if c.S3.Bucket == "" || strings.ContainsAny(c.S3.Bucket, "/\\\x00") {
 		return errors.New("s3.bucket is required and must be a bucket name")

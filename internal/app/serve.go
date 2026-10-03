@@ -192,6 +192,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	// credentials come from the current configuration.
 	format.Storage = "s3"
 	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
+	// Capacity comes from the current configuration, including on recovery.
+	// An omitted setting clears any stored limit.
+	format.Capacity = uint64(c.Storage.Capacity)
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
 		return errors.New("configured encryption mode differs from the existing dataset")
 	}
