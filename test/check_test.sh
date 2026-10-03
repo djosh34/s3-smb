@@ -4,7 +4,8 @@ set -Eeuo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/repo/scripts" "$fixture/repo/test/minio" "$fixture/bin" "$fixture/logs"
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/test/minio" "$fixture/bin" "$fixture/logs" \
+  "$fixture/repo/.github/workflows"
 for directory in .git internal/juicefs internal/thirdparty internal/smb-old; do
   mkdir -p "$fixture/repo/$directory"
   touch "$fixture/repo/$directory/ignored.go"
@@ -12,8 +13,23 @@ done
 touch "$fixture/repo/our file.go"
 cp "$root/scripts/check.sh" "$fixture/repo/scripts/check.sh"
 printf 'FROM scratch\n' > "$fixture/repo/test/Dockerfile"
-printf 'echo script-tests >> "$CHECK_TEST_COMMANDS"\n' > "$fixture/repo/test/check_test.sh"
-printf 'echo pin-tests >> "$CHECK_TEST_COMMANDS"\n' > "$fixture/repo/test/minio/publish_test.sh"
+cat > "$fixture/repo/test/check_test.sh" <<'SCRIPT'
+echo script-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
+cat > "$fixture/repo/test/minio/publish_test.sh" <<'SCRIPT'
+echo pin-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
+cat > "$fixture/repo/test/lint_tools_test.sh" <<'SCRIPT'
+echo tool-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
+cat > "$fixture/repo/test/lint_config_test.sh" <<'SCRIPT'
+echo config-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
+cat > "$fixture/repo/scripts/lint-tools.sh" <<'SCRIPT'
+printf '%s\n' "$CHECK_TEST_TOOLS"
+SCRIPT
+touch "$fixture/repo/.github/workflows/check.yml" "$fixture/repo/.github/workflows/other.yaml"
+export CHECK_TEST_TOOLS="$fixture/bin"
 
 cat > "$fixture/bin/stub" <<'STUB'
 #!/usr/bin/env bash
@@ -40,7 +56,9 @@ case "$command $*" in
 esac
 STUB
 chmod +x "$fixture/bin/stub"
-for command in go gofmt docker sleep python3; do ln -s stub "$fixture/bin/$command"; done
+for command in go gofmt docker sleep python3 golangci-lint shellcheck actionlint; do
+  ln -s stub "$fixture/bin/$command"
+done
 export PATH="$fixture/bin:$PATH"
 export CHECK_TEST_COMMANDS="$fixture/commands"
 export S3_SMB_TEST_LOGS="$fixture/logs"
@@ -66,12 +84,23 @@ fails() { [[ $result != 0 ]] || fail 'expected failure'; }
 export S3_SMB_CHECK_MODE=gate
 run_check
 succeeds
+contains 'golangci-lint [pr] config verify'
+contains 'golangci-lint [pr] run ./...'
+contains 'golangci-lint [pr] run --build-tags smbnext ./...'
+contains 'shellcheck [pr] '
+contains './scripts/check.sh'
+contains './test/minio/publish_test.sh'
+contains "actionlint [pr] -shellcheck $fixture/bin/shellcheck -pyflakes "
+contains '.github/workflows/check.yml'
+contains '.github/workflows/other.yaml'
 contains 'go [pr] mod tidy -diff'
 contains 'go [pr] vet ./...'
 contains 'go [pr] vet -tags smbnext ./...'
 contains 'gofmt [pr] -l ./our file.go'
 absent 'ignored.go'
 contains 'script-tests'
+contains 'tool-tests'
+contains 'config-tests'
 contains 'pin-tests'
 contains "python3 [pr] -m unittest discover -s test/macos -p test_*.py"
 contains 'go [pr] test -count=1 ./...'
@@ -121,7 +150,9 @@ contains 'docker [gate] start -a'
 unset CHECK_TEST_TARGETS
 
 # Failures stop later stages. Seed and exploration failures request artifacts.
-for command in 'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
+for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
+  'golangci-lint run --build-tags smbnext ./...' \
+  'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
   'python3 -m unittest discover -s test/macos -p test_*.py' \
   'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
@@ -137,6 +168,14 @@ for command in 'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
   esac
 done
 unset CHECK_TEST_FAIL
+for prefix in 'shellcheck ' 'actionlint '; do
+  export CHECK_TEST_FAIL_PREFIX=$prefix
+  run_check
+  fails
+  absent 'go [pr] mod tidy'
+  absent 'docker [pr] network create'
+done
+unset CHECK_TEST_FAIL_PREFIX
 export CHECK_TEST_UNFORMATTED=$'./bad.go\n'
 run_check
 fails
@@ -176,7 +215,11 @@ unset CHECK_TEST_CONTAINER_EXIT
 # Match the cleanup command using the generated ID from a mocked network create.
 # The stub cannot know that ID in advance, so fail every rm through a wrapper.
 mv "$fixture/bin/docker" "$fixture/bin/docker-stub"
-printf '#!/usr/bin/env bash\nif [[ $1 == rm ]]; then exit 17; fi\nexec "$(dirname "$0")/docker-stub" "$@"\n' > "$fixture/bin/docker"
+cat > "$fixture/bin/docker" <<'SCRIPT'
+#!/usr/bin/env bash
+if [[ $1 == rm ]]; then exit 17; fi
+exec "$(dirname "$0")/docker-stub" "$@"
+SCRIPT
 chmod +x "$fixture/bin/docker"
 run_check
 fails

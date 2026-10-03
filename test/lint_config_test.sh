@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+# Check scope, suppression rules and formatting in a separate throwaway module.
+set -Eeuo pipefail
+root=$(cd "$(dirname "$0")/.." && pwd)
+tools=$1
+fixture=$(mktemp -d)
+trap 'rm -rf "$fixture"' EXIT
+cp "$root/.golangci.yml" "$fixture/.golangci.yml"
+printf 'module example.com/lintfixture\n\ngo 1.26.3\n' > "$fixture/go.mod"
+cd "$fixture"
+fail() { echo "Lint config test failed: $*" >&2; exit 1; }
+lint_passes() {
+  if ! "$tools/golangci-lint" run ./... > "$fixture/output" 2>&1; then
+    while IFS= read -r line; do printf '%s\n' "$line" >&2; done < "$fixture/output"
+    fail 'expected lint to pass'
+  fi
+}
+lint_fails() {
+  if "$tools/golangci-lint" run ./... > "$fixture/output" 2>&1; then
+    fail 'expected lint to fail'
+  fi
+  for finding in "$@"; do
+    grep -F "$finding" "$fixture/output" >/dev/null || fail "missing $finding"
+  done
+}
+# Every excluded package has deliberate errors. New subpackages must not inherit
+# the temporary exclusions. Frozen and vendored trees stay excluded recursively.
+for directory in internal/app internal/backup internal/config internal/logging \
+  internal/storage test/e2e test/macos/fixture internal/juicefs/probe \
+  internal/thirdparty/probe internal/smb-old/probe; do
+  mkdir -p "$directory"
+  cat > "$directory/probe.go" <<'GO'
+package probe
+import "os"
+//nolint
+func broken() { os.Chdir("."); panic("excluded") }
+GO
+done
+cat > main.go <<'GO'
+package main
+func main() { panic("excluded root") }
+GO
+cat > packaging_test.go <<'GO'
+package main
+//nolint
+func brokenRootTest() { panic("excluded root test") }
+GO
+lint_passes
+
+mkdir -p internal/smb
+cat > internal/smb/probe.go <<'GO'
+// Package smb tests the lint configuration.
+package smb
+import "os"
+// Probe exercises error and panic checks.
+func Probe() {
+	os.Chdir(".")
+	panic("new package")
+}
+//nolint
+func marker() {}
+GO
+lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
+# Both build selections enforce the same config.
+if "$tools/golangci-lint" run --build-tags smbnext ./... > "$fixture/tagged" 2>&1; then
+  fail 'tagged lint accepted invalid code'
+fi
+for finding in errcheck forbidigo nolintlint; do
+  grep -F "($finding)" "$fixture/tagged" >/dev/null || fail "tagged lint missed $finding"
+done
+mv internal/smb internal/app/newpackage
+lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
+rm -rf internal/app/newpackage
+
+mkdir -p internal/smb cmd/probe
+cat > internal/smb/print_test.go <<'GO'
+package smb
+
+import (
+	output "fmt"
+	"testing"
+)
+
+func TestPrint(t *testing.T) {
+	if _, err := output.Println("allowed in tests"); err != nil {
+		t.Fatal(err)
+	}
+}
+GO
+cat > cmd/probe/main.go <<'GO'
+package main
+
+import "os"
+
+func main() {
+	os.Exit(0)
+}
+GO
+lint_passes
+cat > internal/smb/main.go <<'GO'
+package smb
+
+import "os"
+
+// Exit must not be allowed just because the file is named main.go.
+func Exit() {
+	os.Exit(0)
+}
+GO
+lint_fails '(forbidigo)'
+rm internal/smb/main.go
+
+cat > internal/smb/errors.go <<'GO'
+package smb
+
+import "os"
+
+// Ignore tests the required suppression syntax.
+func Ignore() {
+	//nolint:errcheck,gosec // The fixture deliberately ignores this error.
+	os.Chdir(".")
+}
+GO
+lint_passes
+# A named suppression without a reason must still fail.
+cat > internal/smb/errors.go <<'GO'
+package smb
+
+import "os"
+
+// Ignore tests the required suppression syntax.
+func Ignore() {
+	//nolint:errcheck,gosec
+	os.Chdir(".")
+}
+GO
+lint_fails '(nolintlint)'
+# Formatters are part of run, not a command that silently rewrites source.
+printf 'package smb\n\nfunc formatted() {\n\n}\n' > internal/smb/format.go
+lint_fails '(gofumpt)'
+echo 'Lint config tests passed'

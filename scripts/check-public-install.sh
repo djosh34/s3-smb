@@ -11,10 +11,10 @@ work=$(mktemp -d)
 trap 'chmod -R u+w "$work"; rm -rf "$work"' EXIT HUP INT TERM
 mkdir -p "$work/empty" "$work/bin"
 cd "$work/empty"
-export GOENV=off GOWORK=off GOFLAGS= CGO_ENABLED=1 GOMAXPROCS=2
+export GOENV=off GOWORK=off GOFLAGS='' CGO_ENABLED=1 GOMAXPROCS=2
 export GOPATH="$work/gopath" GOMODCACHE="$work/modules" GOCACHE="$work/build"
 export GOBIN="$work/bin" GOPROXY=https://proxy.golang.org,direct GOSUMDB=sum.golang.org
-export GOPRIVATE= GONOPROXY= GONOSUMDB=
+export GOPRIVATE='' GONOPROXY='' GONOSUMDB=''
 go version
 go install -p 2 "github.com/djosh34/s3-smb@$version"
 "$work/bin/s3-smb" help
