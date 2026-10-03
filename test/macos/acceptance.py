@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Full native backup on Mac A; created-tree restore on fresh Mac B."""
+"""Time Machine backup, recovery on a second Mac, and the failed-backup scenarios."""
 import datetime
 import json
 import os
 from pathlib import Path
 import plistlib
 import re
+import shlex
+import shutil
 import signal
 import subprocess
 import sys
 import time
 import traceback
+import urllib.error
 import urllib.request
 
-from artifacts import INVENTORY, entries, checksum
 from manifest import manifest, compare
-from native import Commands, Daemon, utc, verify_tmutil_verb, progress, tm_status_numbers
+from native import Commands, Daemon, utc, tm_status_numbers
 
 WORK = Path(os.environ['MAC_WORK']).resolve()
 EVIDENCE = Path(os.environ['MAC_ARTIFACTS']).resolve()
@@ -27,16 +29,36 @@ TRANSFER = Path(os.environ.get('MAC_TRANSFER', str(WORK / 'transfer'))).resolve(
 # its NetFS path rejects local 139/445 by default (unlike mount_smbfs).
 SMB_PORT = 1445
 SMB_SERVER = f'127.0.0.1:{SMB_PORT}'
+PROOF = HOME / 's3-smb-acceptance-proof'
+# Every directory next to the tree and next to its ancestors, as printed by the
+# discover run. The ancestors /System/Volumes/Data, Users and runner stay in the
+# backup, and so do loose files next to the tree.
+DATA = '/System/Volumes/Data'
+EXCLUSIONS = [
+    f'{DATA}/.Spotlight-V100', f'{DATA}/.TemporaryItems', f'{DATA}/.fseventsd',
+    f'{DATA}/Applications', f'{DATA}/Library', f'{DATA}/MobileSoftwareUpdate',
+    f'{DATA}/Previous Content', f'{DATA}/System', f'{DATA}/Volumes',
+    f'{DATA}/cores', f'{DATA}/mnt', f'{DATA}/opt', f'{DATA}/private',
+    f'{DATA}/sw', f'{DATA}/usr',
+    '/Users/Shared',
+    '/Users/runner/.Azure', '/Users/runner/.Trash', '/Users/runner/.android',
+    '/Users/runner/.azure-devops', '/Users/runner/.cache', '/Users/runner/.cargo',
+    '/Users/runner/.config', '/Users/runner/.dotnet', '/Users/runner/.gradle',
+    '/Users/runner/.homebrew', '/Users/runner/.local', '/Users/runner/.net',
+    '/Users/runner/.npm', '/Users/runner/.rustup', '/Users/runner/.ssh',
+    '/Users/runner/.vcpkg', '/Users/runner/.yarn', '/Users/runner/Desktop',
+    '/Users/runner/Documents', '/Users/runner/Downloads', '/Users/runner/Library',
+    '/Users/runner/Movies', '/Users/runner/actionarchivecache',
+    '/Users/runner/actions-runner', '/Users/runner/bootstrap',
+    '/Users/runner/go', '/Users/runner/hostedtoolcache',
+    '/Users/runner/image-generation', '/Users/runner/work',
+]
 
 
 class Acceptance:
     def __init__(self):
-        self.scenario = os.environ.get('MAC_SCENARIO', 'named-empty')
-        if self.scenario not in ('named-empty', 'password-control'):
-            raise RuntimeError('MAC_SCENARIO must be named-empty or password-control')
-        # Public synthetic loopback fixture only. The control is not evidence
-        # that Apple's Time Machine accepts the separately tested empty route.
-        self.password = 'synthetic-tm-control' if self.scenario == 'password-control' else ''
+        # Public synthetic loopback fixture only.
+        self.password = 'synthetic-tm-control'
         self.cmd = Commands(EVIDENCE)
         self.daemon = None
         self.services = []
@@ -47,48 +69,20 @@ class Acceptance:
         self.fixture = BIN / 'fixture'
         self.serial = 0
         self.destination = None
-        self.task_bytes = {}
-        self.task_usage_time = None
+        self.interval = '5m'
 
     def event(self, event, **fields):
-        # Carry the last coarse task-only observation with its actual timestamp.
-        # Missing observations remain unknown; no source inventory is collected.
-        fields = {**self.task_bytes, **fields}
-        if self.task_usage_time is not None:
-            fields['task_usage_time'] = self.task_usage_time
-        fields.setdefault('scenario', self.scenario)
         with (EVIDENCE / 'acceptance.jsonl').open('a') as f:
             f.write(json.dumps(dict(time=utc(), event=event, **fields), sort_keys=True) + '\n')
-        progress(EVIDENCE, event, scenario=self.scenario, tm_percent=fields.get('tm_percent'),
-                 tm_bytes=fields.get('tm_bytes'), tm_total_bytes=fields.get('tm_total_bytes'),
-                 task_store_bytes=fields.get('task_store_bytes'), task_daemon_bytes=fields.get('task_daemon_bytes'),
-                 task_evidence_bytes=fields.get('task_evidence_bytes'), task_usage_time=fields.get('task_usage_time'))
         print(event, fields, flush=True)
 
     def save(self, name, data):
         with (EVIDENCE / name).open('x') as f:
             json.dump(data, f, indent=2, sort_keys=True)
 
-    def control(self):
-        with urllib.request.urlopen('http://127.0.0.1:19002/state', timeout=15) as response:
-            state = json.load(response)
-        if not state['evidence_ok']:
-            raise RuntimeError('fixture evidence writer failed')
-        return state
-
     def platform(self):
         if sys.platform != 'darwin' or os.geteuid() != 0:
             raise RuntimeError('native Darwin administrative execution required')
-        manual, _ = self.cmd.run(['/bin/sh', '-c', 'MANPAGER=cat MANWIDTH=160 man tmutil | col -b'])
-        required = {
-            'setdestination': ['-p'], 'destinationinfo': ['-X'],
-            'startbackup': ['--block', '--destination'], 'stopbackup': [],
-            'listbackups': ['-d', '-m'], 'latestbackup': ['-d', '-m'],
-            'restore': ['-v'], 'isexcluded': [], 'addexclusion': ['-p'],
-        }
-        for verb, options in required.items():
-            _, code = self.cmd.run(['/usr/bin/tmutil', 'help', verb], diagnostic=True)
-            verify_tmutil_verb(manual, verb, options, code)
         self.status()
         self.cmd.run(['/sbin/mount'])
         _, code = self.cmd.run(['/bin/launchctl', 'print', 'system/com.apple.backupd'], diagnostic=True)
@@ -96,14 +90,38 @@ class Acceptance:
             self.cmd.run(['/bin/launchctl', 'enable', 'system/com.apple.backupd'])
             self.cmd.run(['/bin/launchctl', 'bootstrap', 'system', '/System/Library/LaunchDaemons/com.apple.backupd.plist'])
         self.cmd.run(['/bin/launchctl', 'print', 'system/com.apple.backupd'])
-        # CI control/credential paths are excluded narrowly by run.sh. Never
-        # exclude ordinary checkout, SDK, build, or user data to shorten backup.
         paths = (WORK, EVIDENCE, TRANSFER)
         self.save('test-exclusions.json', [dict(path=str(p), reason='task infrastructure; prevent recursive backup') for p in paths])
         for path in paths:
             self.cmd.run(['/usr/bin/tmutil', 'addexclusion', '-p', path])
+        if os.environ['MAC_PHASE'] != 'recover':
+            self.apply_exclusions()
         self.cmd.run(['/bin/df', '-k'])
         self.event('platform-ready')
+
+    def apply_exclusions(self, diagnostic=False):
+        for path in EXCLUSIONS:
+            if not os.path.lexists(path):
+                print('exclusion-absent', shlex.quote(path), flush=True)
+                continue
+            _, code = self.cmd.run(['/usr/bin/tmutil', 'addexclusion', '-p', path], diagnostic=diagnostic)
+            print('exclusion-added', shlex.quote(path), f'exit={code}', flush=True)
+
+    def isexcluded(self, path):
+        text, _ = self.cmd.run(['/usr/bin/tmutil', 'isexcluded', path])
+        print(text.strip(), flush=True)
+        return text
+
+    def check_exclusions(self):
+        wrong = []
+        for path in (PROOF, PROOF / 'nested/message.txt', PROOF / 'empty'):
+            if not self.isexcluded(path).startswith('[Included]'):
+                wrong.append(str(path))
+        for path in (WORK / 'objects', '/Users/runner/Library'):
+            if not self.isexcluded(path).startswith('[Excluded]'):
+                wrong.append(str(path))
+        if wrong:
+            raise RuntimeError(f'wrong Time Machine exclusion state: {wrong}')
 
     def service(self, argv, name):
         log = open(EVIDENCE / (name + '.log'), 'xb', buffering=0)
@@ -113,7 +131,7 @@ class Acceptance:
 
     def start_services(self, fresh):
         import socket
-        for port in (SMB_PORT, 19000, 19001, 19002, 19003):
+        for port in (SMB_PORT, 19000, 19003):
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', port))
         # Public synthetic values only: this isolated loopback fixture has no
@@ -136,29 +154,21 @@ class Acceptance:
                 time.sleep(.2)
         if fresh:
             self.cmd.run([self.fixture, 'bucket-create', '--endpoint', 'http://127.0.0.1:19000', '--bucket', 'time-machine'])
-            output, _ = self.cmd.run([self.fixture, 'bucket-list', '--endpoint', 'http://127.0.0.1:19000', '--bucket', 'time-machine'])
-            data = json.loads(output)
-            self.save('initial-empty-bucket.json', data)
-            if data['object_count'] != 0:
+            if self.objects(''):
                 raise RuntimeError('initial bucket is not empty')
-        self.service([self.fixture, 'serve', '--upstream', 'http://127.0.0.1:19000',
-                      '--listen', '127.0.0.1:19001', '--control', '127.0.0.1:19002',
-                      '--events', EVIDENCE / 's3-events.jsonl'], 'proxy')
-        deadline = time.monotonic() + 30
-        while True:
-            try:
-                self.control()
-                break
-            except (OSError, urllib.error.URLError):
-                if time.monotonic() >= deadline:
-                    raise RuntimeError('fixture readiness deadline exceeded')
-                time.sleep(.2)
+
+    def objects(self, prefix):
+        output, _ = self.cmd.run([self.fixture, 'bucket-list', '--endpoint', 'http://127.0.0.1:19000',
+                                  '--bucket', 'time-machine', '--prefix', prefix], timeout=300)
+        return {o['key']: o['size'] for o in json.loads(output)['objects']}
 
     def start_daemon(self, phase):
         self.serial += 1
-        self.local.mkdir(mode=0o700, exist_ok=False)
         config = self.local / 'config.yaml'
-        config.write_text(f'''smb:
+        # A restart keeps the directory and the config of the killed process.
+        if phase != 'restart':
+            self.local.mkdir(mode=0o700)
+            config.write_text(f'''smb:
   listen: {SMB_SERVER}
   share: TimeMachine
   username: timemachine
@@ -168,7 +178,7 @@ storage:
   cache_dir: "{self.local / 'cache'}"
   cache_size: 0
 s3:
-  endpoint: http://127.0.0.1:19001
+  endpoint: http://127.0.0.1:19000
   bucket: time-machine
   region: us-east-1
   path_style: true
@@ -180,6 +190,8 @@ encryption:
   enabled: true
   passphrase:
     value: synthetic-mac-acceptance-passphrase
+backup:
+  interval: {self.interval}
 logging:
   format: json
   level: info
@@ -187,7 +199,7 @@ logging:
         self.daemon = Daemon(BIN / 's3-smb', config,
                              EVIDENCE / f'application-{self.serial}-{phase}.log', phase)
         self.daemon.ready()
-        self.event('application-ready', phase=phase, pid=self.daemon.pid)
+        self.event('application-ready', phase=phase, pid=self.daemon.pid, recovered_from=self.daemon.point)
 
     def mount_share(self):
         self.share.mkdir(exist_ok=True)
@@ -196,13 +208,8 @@ logging:
         self.cmd.run(['/sbin/mount'])
 
     def configure_destination(self):
-        if self.scenario == 'password-control':
-            # Explicit independently labelled positive control, not a fallback
-            # after failed empty-password authentication in this run.
-            output, _ = self.cmd.run(['/usr/bin/tmutil', 'setdestination',
-                                     f'smb://timemachine:{self.password}@{SMB_SERVER}/TimeMachine'])
-        else:
-            output = self.cmd.set_destination_empty_password(f'smb://timemachine@{SMB_SERVER}/TimeMachine')
+        output, _ = self.cmd.run(['/usr/bin/tmutil', 'setdestination',
+                                 f'smb://timemachine:{self.password}@{SMB_SERVER}/TimeMachine'])
         if 'The backup destination could not be set.' in output:
             raise RuntimeError('tmutil reported the backup destination could not be set despite exit 0')
         text, _ = self.cmd.run(['/usr/bin/tmutil', 'destinationinfo', '-X'])
@@ -212,24 +219,23 @@ logging:
         if len(destinations) != 1 or not isinstance(destinations[0].get('ID'), str) or not destinations[0]['ID']:
             raise RuntimeError('tmutil did not configure exactly one Time Machine destination with an ID')
         self.destination = destinations[0]['ID']
-        if self.scenario == 'password-control':
-            # tmutil authenticated interactively, but backupd's later mount had
-            # no usable persisted credential. Inspect only this synthetic
-            # account's attributes, then store it via the standard security CLI.
-            # No password readback, broad -A ACL, keychain unlock or partition edit.
-            keychain = '/Library/Keychains/System.keychain'
-            self.cmd.run(['/usr/bin/security', 'find-internet-password', '-s', '127.0.0.1',
-                          '-a', 'timemachine', keychain], diagnostic=True)
-            attributes = ['-s', '127.0.0.1', '-a', 'timemachine', '-P', str(SMB_PORT),
-                          '-r', 'smb ', '-p', 'TimeMachine']
-            self.cmd.run(['/usr/bin/security', 'add-internet-password', '-U', *attributes,
-                          '-T', '/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent',
-                          '-T', '/System/Library/CoreServices/TimeMachine/backupd',
-                          '-w', self.password, keychain])
-            self.cmd.run(['/usr/bin/security', 'find-internet-password', *attributes, keychain])
+        # tmutil authenticated interactively, but backupd's later mount had
+        # no usable persisted credential. Inspect only this synthetic
+        # account's attributes, then store it via the standard security CLI.
+        # No password readback, broad -A ACL, keychain unlock or partition edit.
+        keychain = '/Library/Keychains/System.keychain'
+        self.cmd.run(['/usr/bin/security', 'find-internet-password', '-s', '127.0.0.1',
+                      '-a', 'timemachine', keychain], diagnostic=True)
+        attributes = ['-s', '127.0.0.1', '-a', 'timemachine', '-P', str(SMB_PORT),
+                      '-r', 'smb ', '-p', 'TimeMachine']
+        self.cmd.run(['/usr/bin/security', 'add-internet-password', '-U', *attributes,
+                      '-T', '/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent',
+                      '-T', '/System/Library/CoreServices/TimeMachine/backupd',
+                      '-w', self.password, keychain])
+        self.cmd.run(['/usr/bin/security', 'find-internet-password', *attributes, keychain])
 
     def create_tree(self):
-        proof = HOME / 's3-smb-acceptance-proof'
+        proof = PROOF
         proof.mkdir(mode=0o700)
         (proof / 'nested/deeper').mkdir(parents=True)
         (proof / 'empty').mkdir()
@@ -237,41 +243,10 @@ logging:
         (proof / 'original.bin').write_bytes(os.urandom(4_000_000))
         (proof / 'nested/message.txt').write_text('independent baseline contents\n')
         (proof / 'nested/deeper/zero-length').touch()
-        text, _ = self.cmd.run(['/usr/bin/tmutil', 'isexcluded', proof])
-        if not text.startswith('[Included]'):
-            raise RuntimeError('created tree excluded from normal backup')
+        (TRANSFER / 'reference').mkdir()
         manifest(proof, TRANSFER / 'reference/tree.jsonl')
         self.event('created-tree-reference-saved', path=str(proof))
         return proof
-
-    def observe_task_usage(self):
-        self.task_bytes = {}
-        paths = {str(WORK / 'objects'): 'task_store_bytes', str(self.local): 'task_daemon_bytes',
-                 str(EVIDENCE): 'task_evidence_bytes'}
-        output, code = self.cmd.run(['/usr/bin/du', '-sk', *paths], timeout=30, diagnostic=True)
-        if code == 0:
-            for line in output.splitlines():
-                size, separator, path = line.partition('\t')
-                if separator and size.isdigit() and path in paths:
-                    self.task_bytes[paths[path]] = int(size) * 1024
-        self.task_usage_time = utc()
-        self.event('task-usage-observed', exit=code)
-
-    def confirm_backup_checkpoint(self):
-        self.event('before-first-backup')
-        checkpoint = json.loads((EVIDENCE / 'progress.json').read_text())['time']
-        deadline = time.monotonic() + 180
-        while True:
-            try:
-                uploaded = json.loads((WORK / 'progress-uploaded.json').read_text())
-            except FileNotFoundError:
-                uploaded = {}
-            if uploaded.get('time') == checkpoint:
-                return
-            if time.monotonic() >= deadline:
-                raise RuntimeError('durable before-first-backup checkpoint was not uploaded within 180 seconds')
-            self.daemon.pump()
-            time.sleep(.2)
 
     def start_backup(self, label):
         if self.backup:
@@ -279,6 +254,7 @@ logging:
         log = open(EVIDENCE / (label + '-startbackup.log'), 'xb', buffering=0)
         argv = ['/usr/bin/tmutil', 'startbackup', '--block', '--destination', self.destination]
         self.backup = (subprocess.Popen(argv, stdout=log, stderr=subprocess.STDOUT), log)
+        self.backup_started = time.monotonic()
         self.event('time-machine-start', label=label, argv=argv)
 
     def status(self):
@@ -291,19 +267,18 @@ logging:
         process, log = self.backup
         deadline = time.monotonic() + 5400
         next_observation = time.monotonic()
-        next_usage = deadline - 5400 + 300
         while process.poll() is None:
             self.daemon.pump()
             now = time.monotonic()
             if now >= deadline:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')
-            if now >= next_usage:
-                self.observe_task_usage()
-                next_usage = now + 300
             if now >= next_observation:
                 status, code = self.cmd.run(['/usr/bin/tmutil', 'status'], diagnostic=True)
+                free = shutil.disk_usage(WORK).free
                 self.event('time-machine-progress', label=label, native_status=status.strip(), exit=code,
-                           **(tm_status_numbers(status) if code == 0 else {}))
+                           free_bytes=free, **(tm_status_numbers(status) if code == 0 else {}))
+                if free < 20 * 2**30:
+                    raise RuntimeError('free space below 20 GiB')
                 next_observation = now + 60
             time.sleep(1)
         log.close()
@@ -311,23 +286,36 @@ logging:
         if process.returncode or self.status():
             raise RuntimeError(f'Time Machine did not complete cleanly: {process.returncode}')
         completed = utc()
-        self.event('time-machine-command-completed', label=label, completed=completed)
+        # The application has closed Time Machine's connection with this message
+        # during some backups. Count it in every run.
+        short_headers = sum(path.read_bytes().count(b'short client packet header')
+                            for path in EVIDENCE.glob('application-*.log'))
+        self.event('time-machine-command-completed', label=label, completed=completed,
+                   seconds=round(time.monotonic() - self.backup_started), short_headers=short_headers)
         return completed
 
-    def metadata_point(self, after):
+    def metadata_point(self, after, label):
+        """Wait for a metadata backup taken after the given time and return its receipt."""
         threshold = datetime.datetime.fromisoformat(after)
-        deadline = time.monotonic() + 3900  # Native default hourly schedule.
+        deadline = time.monotonic() + 900  # The harness config backs up every 5 minutes.
         receipt_path = self.local / 'state/backup-receipt.json'
         next_observation = time.monotonic()
         while time.monotonic() < deadline:
             self.daemon.pump()
             if receipt_path.exists():
                 receipt = json.loads(receipt_path.read_text())
-                snapshot = datetime.datetime.fromisoformat(receipt['Snapshot'].replace('Z', '+00:00'))
+                # Go writes up to nine fraction digits and drops trailing zeros.
+                whole, _, fraction = receipt['Snapshot'].rstrip('Z').partition('.')
+                snapshot = datetime.datetime.strptime(whole, '%Y-%m-%dT%H:%M:%S').replace(
+                    microsecond=int(fraction.ljust(6, '0')[:6]), tzinfo=datetime.timezone.utc)
                 if snapshot > threshold:
-                    self.save('baseline-receipt.json', receipt)
-                    self.event('native-point-after-completion', receipt=receipt)
-                    return
+                    self.save(label + '-receipt.json', receipt)
+                    # The application writes the receipt when the upload has ended.
+                    written = datetime.datetime.fromtimestamp(receipt_path.stat().st_mtime, datetime.timezone.utc)
+                    self.event('native-point-after-completion', label=label, receipt=receipt,
+                               object_bytes=self.objects('s3-smb/meta/')['s3-smb/' + receipt['Key']],
+                               seconds=round((written - snapshot).total_seconds(), 1))
+                    return receipt
             if time.monotonic() >= next_observation:
                 self.event('waiting-for-native-point', after=after)
                 next_observation = time.monotonic() + 60
@@ -344,38 +332,79 @@ logging:
                 entries = [e['dev-entry'] for e in image.get('system-entities', []) if 'dev-entry' in e]
                 if entries and entries[0] not in devices:
                     devices.append(entries[0])
-        for device in reversed(devices):
-            self.cmd.run(['/usr/bin/hdiutil', 'detach', device], timeout=120)
-        self.attachments.clear()
+        # tmutil mounts each backup it lists as an APFS snapshot of the image
+        # volume. The image cannot be detached while one is mounted.
         mounts, _ = self.cmd.run(['/sbin/mount'])
         for line in mounts.splitlines():
-            if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line:
-                mountpoint = line.split(' on ', 1)[1].split(' (', 1)[0]
-                self.cmd.run(['/sbin/umount', mountpoint], timeout=120)
+            if line.startswith('com.apple.TimeMachine.') and ' on /Volumes/.timemachine/' in line:
+                self.cmd.run(['/sbin/umount', line.split(' on ', 1)[1].split(' (', 1)[0]], timeout=120, diagnostic=True)
+        for device in reversed(devices):
+            _, code = self.cmd.run(['/usr/bin/hdiutil', 'detach', device], timeout=120, diagnostic=True)
+            # startbackup can return while backupd is still ejecting its image.
+            deadline = time.monotonic() + 60
+            while code:
+                info, _ = self.cmd.run(['/usr/bin/hdiutil', 'info', '-plist'])
+                if device not in [e.get('dev-entry') for i in plistlib.loads(info.encode()).get('images', [])
+                                  for e in i.get('system-entities', [])]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'cannot detach {device}')
+                time.sleep(5)
+                _, code = self.cmd.run(['/usr/bin/hdiutil', 'detach', '-force', device], timeout=120, diagnostic=True)
+        self.attachments.clear()
+        # backupd can still be ejecting its mount after a completed backup.
+        deadline = time.monotonic() + 60
+        while True:
+            mounts, _ = self.cmd.run(['/sbin/mount'])
+            mountpoints = [line.split(' on ', 1)[1].split(' (', 1)[0] for line in mounts.splitlines()
+                           if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line]
+            if not mountpoints:
+                return
+            late = time.monotonic() >= deadline
+            for mountpoint in mountpoints:
+                _, code = self.cmd.run(['/sbin/umount', mountpoint], timeout=120, diagnostic=True)
+                if code and late:
+                    self.cmd.run(['/sbin/umount', '-f', mountpoint], timeout=120)
+            if late:
+                break
+            time.sleep(5)
         remaining, _ = self.cmd.run(['/sbin/mount'])
         if any('(smbfs' in line and f'{SMB_SERVER}/TimeMachine' in line for line in remaining.splitlines()):
             raise RuntimeError('task SMB mount remains')
 
-    def remote_backup(self, label, identifier=None, inherit=False):
+    def attach(self, bundle, *flags):
+        text, code = self.cmd.run(['/usr/bin/hdiutil', 'attach', *flags, '-nobrowse', '-plist', bundle],
+                                  timeout=300, diagnostic=True)
+        entities = plistlib.loads(text.encode())['system-entities'] if code == 0 else []
+        return ([e['dev-entry'] for e in entities if 'dev-entry' in e],
+                [Path(e['mount-point']) for e in entities if 'mount-point' in e])
+
+    def remote_backup(self, label, identifier=None):
         bundles = sorted(self.share.glob('*.sparsebundle'))
         if len(bundles) != 1:
             raise RuntimeError(f'expected one real Time Machine sparsebundle, got {bundles}')
-        if inherit:
-            # Documented machine identity reassignment on fresh Mac B; no old
-            # daemon authority or machine-local Time Machine state is copied.
-            self.cmd.run(['/usr/bin/tmutil', 'inheritbackup', bundles[0]], timeout=300)
-        text, _ = self.cmd.run(['/usr/bin/hdiutil', 'attach', '-readonly', '-nobrowse', '-plist', bundles[0]], timeout=300)
-        entities = plistlib.loads(text.encode())['system-entities']
-        devices = [e['dev-entry'] for e in entities if 'dev-entry' in e]
+        devices, volumes = self.attach(bundles[0], '-readonly')
+        if len(volumes) != 1:
+            # An interrupted backup leaves the volume in the image unclean, and a
+            # read-only attach cannot replay it. Attach it writable once.
+            for device in devices[:1]:
+                self.cmd.run(['/usr/bin/hdiutil', 'detach', '-force', device], timeout=120)
+            devices, _ = self.attach(bundles[0])
+            self.cmd.run(['/usr/bin/hdiutil', 'detach', devices[0]], timeout=300)
+            devices, volumes = self.attach(bundles[0], '-readonly')
         self.attachments.append(devices[0])
-        volumes = [Path(e['mount-point']) for e in entities if 'mount-point' in e]
         if len(volumes) != 1:
             raise RuntimeError('unknown Time Machine image volume layout')
         volume = volumes[0]
-        output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, '-m'], timeout=120)
-        backups = [Path(line) for line in output.splitlines() if line.startswith('/')]
+        # backupd answers only after Spotlight has indexed the volume. That took 90 seconds.
+        # The second Mac did not make this backup, so ask without -m when -m lists nothing.
+        for flags in (['-m'], []):
+            output, _ = self.cmd.run(['/usr/bin/tmutil', 'listbackups', '-d', volume, *flags], timeout=600)
+            backups = [Path(line) for line in output.splitlines() if line.startswith('/')]
+            if backups:
+                break
         if identifier is None:
-            latest, _ = self.cmd.run(['/usr/bin/tmutil', 'latestbackup', '-d', volume, '-m'], timeout=120)
+            latest, _ = self.cmd.run(['/usr/bin/tmutil', 'latestbackup', '-d', volume, '-m'], timeout=600)
             selected = Path(latest.strip())
             if selected not in backups:
                 raise RuntimeError('latest backup absent from completed remote backup list')
@@ -384,17 +413,6 @@ logging:
             if len(matches) != 1:
                 raise RuntimeError('completed baseline not present exactly once after recovery')
             selected = matches[0]
-        # Retain native device-to-network-image provenance, not a local snapshot.
-        info = []
-        for path in (selected, volume, Path('/System/Volumes/Data')):
-            text, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', path])
-            info.append(plistlib.loads(text.encode()))
-        selected_disk, image_disk, source_disk = info
-        parent = image_disk.get('ParentWholeDisk')
-        if not parent or selected_disk.get('ParentWholeDisk') != parent or source_disk.get('ParentWholeDisk') == parent:
-            raise RuntimeError('selected backup does not belong to remote attached image device')
-        if not selected_disk.get('ReadOnlyVolume'):
-            raise RuntimeError('selected backup is not read-only')
         self.cmd.run(['/usr/bin/hdiutil', 'info', '-plist'])
         self.cmd.run(['/sbin/mount'])
         self.save(label + '-remote-selection.json', dict(image=str(bundles[0]), device=devices[0],
@@ -403,32 +421,28 @@ logging:
             raise RuntimeError('not a completed remote backup directory')
         return selected
 
-    def restore_tree(self, recovery):
-        selected = self.remote_backup('normal', recovery['baseline'], inherit=True)
-        relative = Path(recovery['source_relative'])
-        if relative.is_absolute() or '..' in relative.parts:
-            raise RuntimeError('invalid created-tree source path')
-        # Inspect volume-root names only, never scan unrelated backed-up trees.
-        roots = [path for path in selected.iterdir() if path.name in
-                 (recovery['source_volume_name'], 'Data', 'Macintosh HD - Data') and path.is_dir()]
-        if len(roots) != 1:
-            raise RuntimeError('cannot identify backed-up Data volume')
-        source = roots[0] / relative
-        if not source.is_dir() or source.is_symlink():
-            raise RuntimeError('created tree missing from recovered backup')
-        restore = WORK / 'restore'
-        if restore.exists():
+    def tree_in_backup(self, selected, relative):
+        # A backup has one folder per source volume. Take the one that holds the tree.
+        volumes = sorted(selected.iterdir())
+        found = [path / relative for path in volumes
+                 if (path / relative).is_dir() and not (path / relative).is_symlink()]
+        if len(found) != 1:
+            raise RuntimeError(f'created tree is not in exactly one volume of the backup: {[p.name for p in volumes]}')
+        return found[0]
+
+    def restore_tree(self, selected, reference, output_dir):
+        source = self.tree_in_backup(selected, PROOF.relative_to('/'))
+        if output_dir.exists():
             raise RuntimeError('restore output must be absent')
         self.event('native-created-tree-restore-start', source=str(source))
         # Reference contains hashes only; no reference file bytes can be copied.
-        self.cmd.run(['/usr/bin/tmutil', 'restore', '-v', source, restore], timeout=600, capture=False)
-        counts = manifest(restore, EVIDENCE / 'restored-tree.jsonl')
-        compare(TRANSFER / 'reference/tree.jsonl', EVIDENCE / 'restored-tree.jsonl', EVIDENCE / 'tree-differences.jsonl')
-        self.event('native-created-tree-restore-verified', baseline=recovery['baseline'], **counts)
+        self.cmd.run(['/usr/bin/tmutil', 'restore', '-v', source, output_dir], timeout=1800, capture=False)
+        counts = manifest(output_dir, EVIDENCE / f'{output_dir.name}.jsonl')
+        compare(reference, EVIDENCE / f'{output_dir.name}.jsonl', EVIDENCE / f'{output_dir.name}-differences.jsonl')
+        self.event('native-created-tree-restore-verified', backup=selected.name, **counts)
+        return counts
 
     def backup_phase(self):
-        for directory in ('store', 'reference'):
-            (TRANSFER / directory).mkdir(parents=True, exist_ok=True)
         if (WORK / 'objects').exists() or self.local.exists():
             raise RuntimeError('backup requires fresh object store and daemon state')
         self.platform()
@@ -439,73 +453,222 @@ logging:
             raise RuntimeError('initial application share not empty')
         self.configure_destination()
         proof = self.create_tree()
-        self.observe_task_usage()
-        self.confirm_backup_checkpoint()
+        self.check_exclusions()
         self.start_backup('baseline')
         completed = self.complete_backup('baseline')
         # Detach backupd's image before attaching a read-only view.
         self.detach_clients()
         self.mount_share()
         selected = self.remote_backup('baseline')
-        text, _ = self.cmd.run(['/usr/sbin/diskutil', 'info', '-plist', '/System/Volumes/Data'])
-        recovery = dict(scenario=self.scenario, baseline=selected.name, source_relative=str(proof.relative_to('/')),
-                        source_volume_name=plistlib.loads(text.encode())['VolumeName'])
+        self.tree_in_backup(selected, proof.relative_to('/'))
+        recovery = dict(baseline=selected.name)
         self.detach_clients()
-        self.metadata_point(completed)
+        self.metadata_point(completed, 'baseline')
         # Export is deliberately deferred until execute() has cleanly stopped
         # application and both services. Failed cleanup can never ship a store.
         return recovery
 
-    def prepare_received_store(self):
-        root = TRANSFER / 'store'
-        entries(root)  # Reject links/special files before reading or making paths.
-        records = json.loads((root / INVENTORY).read_text())['entries']
-        expected = {}
-        for row in records:
-            name = row['path']
-            path = Path(name)
-            if (not path.parts or path.is_absolute() or '..' in path.parts or str(path) != name or
-                    (path.parts[0] != 'objects' and name not in ('recovery.json', 'store-stopped.json')) or
-                    type(row['directory']) is not bool or name in expected):
-                raise RuntimeError('unexpected stopped-store inventory path or type')
-            expected[name] = row
-        for name, directory in (('objects', True), ('recovery.json', False), ('store-stopped.json', False)):
-            if name not in expected or expected[name]['directory'] is not directory:
-                raise RuntimeError('incomplete stopped-store inventory')
-        # The official artifact SDK omits empty directories. Restore only the
-        # directories already recorded by the existing source handoff inventory.
-        for name, row in expected.items():
-            if row['directory']:
-                (root / name).mkdir(parents=True, exist_ok=True)
-        actual = {str(path.relative_to(root)): path for path in entries(root)}
-        if set(actual) != set(expected) | {INVENTORY}:
-            raise RuntimeError('stopped-store inventory differs from received payload')
-        for name, row in expected.items():
-            path = actual[name]
-            if path.is_dir() != row['directory']:
-                raise RuntimeError('stopped-store entry type changed')
-            if not row['directory'] and (path.stat().st_size != row['bytes'] or checksum(path) != row['sha256']):
-                raise RuntimeError('stopped-store file bytes changed')
+    def wait_copying(self):
+        """Start the later backup and return tmutil's status once it has copied bytes."""
+        self.start_backup('interrupted')
+        deadline = time.monotonic() + 1800
+        while time.monotonic() < deadline:
+            self.daemon.pump()
+            if self.backup[0].poll() is not None:
+                raise RuntimeError('Time Machine ended before Copying was seen')
+            text, _ = self.cmd.run(['/usr/bin/tmutil', 'status'])
+            if re.search(r'BackupPhase\s*=\s*Copying', text) and tm_status_numbers(text).get('tm_bytes', 0) > 0:
+                self.event('time-machine-copying', native_status=text.strip())
+                return text.strip()
+            time.sleep(2)
+        raise RuntimeError('Time Machine did not reach Copying in 30 minutes')
+
+    def stop_backup_client(self):
+        process, log = self.backup
+        self.cmd.run(['/usr/bin/tmutil', 'stopbackup'], timeout=60, diagnostic=True)
+        # backupd can take minutes to give up on a server that is gone.
+        try:
+            process.wait(timeout=180)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        log.close()
+        self.backup = None
+        deadline = time.monotonic() + 180
+        while self.status() and time.monotonic() < deadline:
+            time.sleep(5)
+        self.detach_clients()
+
+    def cold_recover(self):
+        """Delete the application's database, cache and config, then recover from S3."""
+        if not self.daemon.reaped:
+            self.daemon.stop()
+        shutil.rmtree(self.local)
+        self.start_daemon('recover')
+
+    def server_kill_restart(self, p1):
+        at_kill = self.wait_copying()
+        self.daemon.stop(abrupt=True)
+        self.stop_backup_client()
+        self.start_daemon('restart')
+        return at_kill
+
+    def server_kill_cold(self, p1):
+        at_kill = self.wait_copying()
+        self.daemon.stop(abrupt=True)
+        self.stop_backup_client()
+        self.cold_recover()
+        if self.daemon.point != p1['Key']:
+            raise RuntimeError(f'recovered from {self.daemon.point}, expected {p1["Key"]} from before the later backup')
+        return at_kill
+
+    def server_kill_cold_midpoint(self, p1):
+        self.wait_copying()
+        p2 = self.metadata_point(utc(), 'midpoint')
+        at_kill, _ = self.cmd.run(['/usr/bin/tmutil', 'status'])
+        if not re.search(r'BackupPhase\s*=\s*Copying', at_kill):
+            raise RuntimeError('Time Machine stopped copying before the metadata backup landed')
+        self.daemon.stop(abrupt=True)
+        self.stop_backup_client()
+        self.cold_recover()
+        if self.daemon.point < p2['Key']:
+            raise RuntimeError(f'recovered from {self.daemon.point}, expected {p2["Key"]} or later')
+        return at_kill.strip()
+
+    def client_abort_cold(self, p1):
+        at_kill = self.wait_copying()
+        aborted = utc()
+        self.cmd.run(['/usr/bin/tmutil', 'stopbackup'], timeout=60, diagnostic=True)
+        self.cmd.run(['/usr/bin/pkill', '-9', '-x', 'backupd'], diagnostic=True)
+        mounts, _ = self.cmd.run(['/sbin/mount'])
+        for line in mounts.splitlines():
+            if '(smbfs' in line and f'{SMB_SERVER}/TimeMachine on ' in line:
+                self.cmd.run(['/sbin/umount', '-f', line.split(' on ', 1)[1].split(' (', 1)[0]], timeout=120, diagnostic=True)
+        self.stop_backup_client()
+        after = self.metadata_point(aborted, 'after-abort')
+        self.cold_recover()
+        if self.daemon.point < after['Key']:
+            raise RuntimeError(f'recovered from {self.daemon.point}, expected {after["Key"]} or later')
+        return at_kill
+
+    def machine_loss(self, p1):
+        at_kill = self.wait_copying()
+        self.daemon.stop(abrupt=True)
+        self.stop_backup_client()
+        return at_kill
+
+    def scenario_phase(self, name):
+        middle = {'server-kill-restart': self.server_kill_restart, 'server-kill-cold': self.server_kill_cold,
+                  'server-kill-cold-midpoint': self.server_kill_cold_midpoint,
+                  'client-abort-cold': self.client_abort_cold, 'machine-loss': self.machine_loss}[name]
+        # A metadata backup must land while Time Machine is still copying.
+        midpoint = name == 'server-kill-cold-midpoint'
+        if midpoint:
+            self.interval = '1m'
+        self.platform()
+        self.start_services(fresh=True)
+        self.start_daemon('initialize')
+        self.mount_share()
+        self.configure_destination()
+        proof = self.create_tree()
+        self.check_exclusions()
+        self.start_backup('baseline')
+        self.complete_backup('baseline')
+        self.detach_clients()
+        self.mount_share()
+        baseline = self.remote_backup('baseline').name
+        self.detach_clients()
+        with (proof / 'later.bin').open('wb') as later:
+            for _ in range(64 if midpoint else 16):
+                later.write(os.urandom(64 * 2**20))
+        (proof / 'nested/message.txt').write_text('changed after the baseline\n')
+        manifest(proof, EVIDENCE / 'updated-tree.jsonl')
+        # Take the metadata backup last, so that the kill comes before the next one.
+        p1 = self.metadata_point(utc(), 'baseline')
+        chunks = [len(self.objects('s3-smb/chunks/'))]
+        result = dict(scenario=name, baseline=baseline, metadata_backup=p1['Key'], at_kill=middle(p1))
+        if name == 'machine-loss':
+            # The second Mac recovers and restores. execute() exports the store.
+            return result
+        chunks.append(len(self.objects('s3-smb/chunks/')))
+        self.mount_share()
+        result['baseline_restore'] = self.restore_tree(
+            self.remote_backup('baseline-recovered', baseline), TRANSFER / 'reference/tree.jsonl', WORK / 'restore-baseline')
+        self.detach_clients()
+        # Time Machine may need a second start after an interrupted backup.
+        for label in ('resumed', 'resumed-retry'):
+            self.start_backup(label)
+            try:
+                self.complete_backup(label)
+            except RuntimeError as error:
+                self.event('resumed-backup-failed', label=label, error=str(error))
+            self.detach_clients()
+            self.mount_share()
+            latest = self.remote_backup(label)
+            if latest.name != baseline:
+                break
+            self.detach_clients()
+        else:
+            raise RuntimeError('no backup completed after recovery')
+        result['resumed_restore'] = self.restore_tree(latest, EVIDENCE / 'updated-tree.jsonl', WORK / 'restore-resumed')
+        self.detach_clients()
+        chunks.append(len(self.objects('s3-smb/chunks/')))
+        return dict(result, resumed=latest.name, recovered_from=self.daemon.point, chunk_objects=chunks)
+
+    def discover_phase(self):
+        if sys.platform != 'darwin' or os.geteuid() != 0:
+            raise RuntimeError('native Darwin administrative execution required')
+        found = []
+        for parent, kept in ((DATA, 'Users'), ('/Users', HOME.name), (str(HOME), PROOF.name)):
+            with os.scandir(parent) as entries:
+                for entry in sorted(entries, key=lambda e: e.name):
+                    if entry.name == kept or not entry.is_dir(follow_symlinks=False) or os.path.ismount(entry.path):
+                        continue
+                    if '\r' in entry.name or '\n' in entry.name:
+                        print('discover-skipped', repr(entry.path), flush=True)
+                        continue
+                    found.append(entry.path)
+        print('discover-directories')
+        for path in found:
+            print(shlex.quote(path))
+        print('EXCLUSIONS = [')
+        for path in found:
+            print(f'    {path!r},')
+        print(']')
+        print('discover-not-in-list', sorted(set(found) - set(EXCLUSIONS)))
+        print('discover-list-only', sorted(set(EXCLUSIONS) - set(found)))
+        print('discover-image', os.environ.get('MAC_IMAGE'), flush=True)
+        for argv in (['/usr/bin/sw_vers'], ['/sbin/mount']):
+            text, _ = self.cmd.run(argv)
+            print(text, flush=True)
+        self.create_tree()
+        (WORK / 'objects').mkdir()
+        self.apply_exclusions(diagnostic=True)
+        for name in ('Applications', 'Library', 'opt'):
+            self.isexcluded(f'/{name}')
+            self.isexcluded(f'{DATA}/{name}')
+        self.check_exclusions()
+        return {}
 
     def recover_phase(self):
         if self.local.exists() or self.local.is_symlink() or (WORK / 'objects').exists() or (WORK / 'objects').is_symlink():
             raise RuntimeError('recovery requires fresh daemon state and no existing store')
-        self.prepare_received_store()
-        marker = json.loads((TRANSFER / 'store/store-stopped.json').read_text())
-        if marker.get('clean_shutdown') is not True:
-            raise RuntimeError('store was not cleanly stopped')
-        recovery = json.loads((TRANSFER / 'store/recovery.json').read_text())
-        if recovery.get('scenario') != self.scenario:
-            raise RuntimeError('recovery scenario does not match the backup; refusing mixed authentication evidence')
+        recovery = json.loads((TRANSFER / 'reference/recovery.json').read_text())
         self.platform()
-        (TRANSFER / 'store/objects').rename(WORK / 'objects')
+        tar = TRANSFER / 'store.tar'
+        self.cmd.run(['/usr/bin/tar', '-C', WORK, '-xf', tar], timeout=1800)
+        tar.unlink()
         self.event('fresh-store-received')
         self.start_services(fresh=False)
         self.start_daemon('recover')
+        # After a lost machine the newest metadata backup is the one from before the failed backup.
+        if recovery.get('metadata_backup', self.daemon.point) != self.daemon.point:
+            raise RuntimeError(f'recovered from {self.daemon.point}, expected {recovery["metadata_backup"]}')
         self.mount_share()
-        self.restore_tree(recovery)
+        self.restore_tree(self.remote_backup('baseline', recovery['baseline']),
+                          TRANSFER / 'reference/tree.jsonl', WORK / 'restore-baseline')
         self.detach_clients()
-        return recovery
+        return dict(recovery, recovered_from=self.daemon.point)
 
     def run(self):
         phase = os.environ['MAC_PHASE']
@@ -513,18 +676,19 @@ logging:
             return self.backup_phase()
         if phase == 'recover':
             return self.recover_phase()
-        raise RuntimeError('MAC_PHASE must be backup or recover; crash is not a normal-stage prerequisite')
+        if phase == 'discover':
+            return self.discover_phase()
+        if phase == 'scenario':
+            return self.scenario_phase(os.environ['MAC_SCENARIO'])
+        raise RuntimeError('MAC_PHASE must be discover, backup, recover or scenario')
 
     def export_store(self, recovery):
         if self.backup or self.attachments or not self.daemon or not self.daemon.reaped or any(p.poll() is None for p, _ in self.services):
             raise RuntimeError('cannot export active storage')
-        source, target = WORK / 'objects', TRANSFER / 'store/objects'
-        if source.is_symlink() or not source.is_dir() or target.exists() or target.is_symlink():
-            raise RuntimeError('stopped-store export requires real source and absent target')
-        self.event('stopped-store-export-start')
-        source.rename(target)  # Same filesystem; deliberately no copy fallback.
-        (TRANSFER / 'store/recovery.json').write_text(json.dumps(recovery, indent=2) + '\n')
-        (TRANSFER / 'store/store-stopped.json').write_text(json.dumps(dict(clean_shutdown=True, time=utc())) + '\n')
+        output, _ = self.cmd.run(['/usr/bin/du', '-sk', WORK / 'objects'], timeout=600)
+        self.event('stopped-store-export-start', store_kilobytes=int(output.split()[0]))
+        self.cmd.run(['/usr/bin/tar', '-C', WORK, '-cf', TRANSFER / 'store.tar', 'objects'], timeout=1800)
+        (TRANSFER / 'reference/recovery.json').write_text(json.dumps(recovery, indent=2) + '\n')
         self.event('stopped-store-export-complete')
 
     def finish(self):
@@ -572,7 +736,7 @@ logging:
         for argv in (['/usr/bin/tmutil', 'status'], ['/sbin/mount'],
                      ['/usr/bin/hdiutil', 'info', '-plist'], ['/bin/df', '-k'],
                      ['/usr/bin/log', 'show', '--style', 'json', '--last', '6h', '--info', '--debug',
-                      '--predicate', 'process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb"']):
+                      '--predicate', 'process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb" OR senderImagePath CONTAINS "smbfs"']):
             try:
                 self.cmd.run(argv, timeout=90, diagnostic=True, capture=False)
             except Exception as error:
@@ -593,7 +757,7 @@ logging:
                 self.finish()
             except BaseException:
                 failures.append(traceback.format_exc())
-        if not failures and os.environ.get('MAC_PHASE') == 'backup':
+        if not failures and (os.environ['MAC_PHASE'] == 'backup' or os.environ.get('MAC_SCENARIO') == 'machine-loss'):
             try:
                 self.export_store(result)
             except BaseException:

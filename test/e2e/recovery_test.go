@@ -37,6 +37,7 @@ type fixture struct {
 	password, secret             string
 	cacheSize                    string
 	compression                  string // Empty means omitted, including fresh-local recovery.
+	interval                     string // Metadata backup interval. Empty means 2s.
 	readonly, failStart          bool
 	store                        *s3.Client
 	generation                   int
@@ -99,6 +100,10 @@ func (f *fixture) config() string {
 	if f.compression != "" {
 		compression = fmt.Sprintf("  compression: %q\n", f.compression)
 	}
+	interval := f.interval
+	if interval == "" {
+		interval = "2s"
+	}
 	if !f.encrypted {
 		key = "{command: [/does-not-exist/encryption-disabled-must-not-execute]}"
 	}
@@ -123,12 +128,12 @@ encryption:
   enabled: %t
   passphrase: %s
 backup:
-  interval: 2s
+  interval: %s
   trash_days: 14
 logging:
   format: json
   level: info
-`, f.addr, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key)
+`, f.addr, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()

@@ -1,2 +1,0 @@
-Usage: tmutil setdestination [-a]  mount_point
-       tmutil setdestination [-ap] afp://user[:pass]@host/share

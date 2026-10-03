@@ -8,9 +8,7 @@ import os
 from pathlib import Path
 import pty
 import re
-import select
 import signal
-import shutil
 import subprocess
 import time
 import threading
@@ -32,60 +30,6 @@ def tm_status_numbers(text):
     return result
 
 
-def progress(evidence, event, *, command=None, exit_code=None, scenario=None,
-             tm_percent=None, tm_bytes=None, tm_total_bytes=None,
-             task_store_bytes=None, task_daemon_bytes=None, task_evidence_bytes=None, task_usage_time=None):
-    """Tiny credential-free snapshot for the workflow's durable progress upload."""
-    evidence = Path(evidence)
-    free = shutil.disk_usage(evidence).free
-    record = dict(time=utc(), event=event, free_bytes=free,
-                  low_free_space=free < 2_000_000_000)  # Diagnostic only, never a gate.
-    if command is not None:
-        record['command'] = Path(command).name  # Never argv or command output.
-    if exit_code is not None:
-        record['exit'] = exit_code
-    if scenario is not None:
-        record['scenario'] = scenario
-    for key, value in (('tm_percent', tm_percent), ('tm_bytes', tm_bytes), ('tm_total_bytes', tm_total_bytes),
-                       ('task_store_bytes', task_store_bytes), ('task_daemon_bytes', task_daemon_bytes),
-                       ('task_evidence_bytes', task_evidence_bytes)):
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and value >= 0:
-            record[key] = value
-    if task_usage_time is not None:
-        record['task_usage_time'] = task_usage_time
-    temporary = evidence / 'progress.json.tmp'
-    temporary.write_text(json.dumps(record, sort_keys=True) + '\n')
-    # EVIDENCE remains runner-private; the ordinary artifact uploader
-    # can read this one safe root-written snapshot, not other private logs.
-    temporary.chmod(0o644)
-    temporary.replace(evidence / 'progress.json')
-
-
-def verify_tmutil_verb(manual, verb, required_options, help_code):
-    """Brief help is evidence, not an exhaustive capability/option listing.
-
-    The delivered manual supplies each verb's contract. Real operations remain
-    the acceptance gate; documentation alone never proves SMB compatibility.
-    """
-    if help_code not in (0, 1):
-        raise RuntimeError(f'cannot collect installed tmutil help for {verb}: {help_code}')
-    section = re.search(rf'(?ms)^ {{5}}{re.escape(verb)}\b.*?(?=^ {{5}}[a-z][a-z0-9]*\b|^[A-Z][A-Z ]*$|\Z)', manual)
-    if not section:
-        raise RuntimeError(f'installed tmutil manual does not document {verb}')
-    text = section.group()
-    # Native usage often groups short options, e.g. [-pv]. Do not require a
-    # particular synopsis spelling or infer absence from terse per-verb help.
-    options = set(re.findall(r'(?<![\w-])--[a-z][a-z-]*', text))
-    for group in re.findall(r'(?<![\w-])-(?!-)([A-Za-z]+)\b', text):
-        options.update('-' + letter for letter in group)
-    if not set(required_options) <= options:
-        raise RuntimeError(f'installed tmutil manual does not establish {verb} {required_options}')
-    if verb == 'setdestination' and not (
-            re.search(r'\bSMB\b', text, re.IGNORECASE) and
-            re.search(r'(?:protocol|smb)://user\[:pass\]@host/share', text, re.IGNORECASE)):
-        raise RuntimeError('installed tmutil manual does not establish the SMB destination URL form')
-
-
 class Commands:
     def __init__(self, evidence):
         self.evidence = Path(evidence)
@@ -96,7 +40,6 @@ class Commands:
         name = f'{self.seq:04d}-{Path(argv[0]).name}'
         start = utc()
         path = self.evidence / (name + '.log')
-        progress(self.evidence, 'native-command-start', command=argv[0])
         print(f'native-command-start {name} {start}', flush=True)
         with path.open('xb') as log:
             try:
@@ -109,64 +52,10 @@ class Commands:
         with (self.evidence / 'commands.jsonl').open('a') as f:
             f.write(json.dumps(dict(argv=[str(x) for x in argv], start=start, end=utc(),
                                    exit=code, diagnostic=diagnostic, output=name + '.log')) + '\n')
-        progress(self.evidence, 'native-command-exit', command=argv[0], exit_code=code)
         print(f'native-command-exit {name} code={code} {utc()}', flush=True)
         if code and not diagnostic:
             raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
-
-    def set_destination_empty_password(self, url, timeout=120):
-        """One documented tmutil -p attempt, answering its real prompt empty."""
-        self.seq += 1
-        name = f'{self.seq:04d}-tmutil-password'
-        path = self.evidence / (name + '.log')
-        argv = ['/usr/bin/tmutil', 'setdestination', '-p', url]
-        start = utc()
-        answered, reaped, eof = False, False, False
-        code = None
-        buffer = b''
-        with path.open('xb', buffering=0) as log:
-            pid, fd = pty.fork()
-            if pid == 0:
-                os.execv(argv[0], argv)
-            deadline = time.monotonic() + timeout
-            try:
-                while not (reaped and eof):
-                    if time.monotonic() >= deadline:
-                        code = 124
-                        break
-                    if not eof and select.select([fd], [], [], .05)[0]:
-                        try:
-                            data = os.read(fd, 65536)
-                        except OSError as error:
-                            if error.errno != 5:  # Linux PTY EOF; Darwin returns empty.
-                                raise
-                            data = b''
-                        eof = not data
-                        if data:
-                            log.write(data)
-                            buffer = (buffer + data)[-4096:]
-                            if not answered and re.search(rb'(?i)password[^\r\n]*:\s*$', buffer):
-                                os.write(fd, b'\n')
-                                answered = True
-                    if not reaped:
-                        child, status = os.waitpid(pid, os.WNOHANG)
-                        if child:
-                            reaped = True
-                            code = os.waitstatus_to_exitcode(status)
-                    if eof and not reaped:
-                        time.sleep(.05)
-            finally:
-                if not reaped:
-                    os.kill(pid, signal.SIGKILL)
-                    os.waitpid(pid, 0)
-                os.close(fd)
-                with (self.evidence / 'commands.jsonl').open('a') as out:
-                    out.write(json.dumps(dict(argv=argv, pid=pid, start=start, end=utc(), exit=code,
-                                             empty_password_answered=answered, output=name + '.log')) + '\n')
-        if code != 0 or not answered:
-            raise RuntimeError(f'tmutil -p empty-password attempt failed ({code}, answered={answered}); see {name}.log')
-        return path.read_text()
 
 
 class Daemon:
@@ -179,6 +68,7 @@ class Daemon:
         self.buffer = b''
         self.phase = phase
         self.confirmed = False
+        self.point = None  # The metadata backup the application offered to recover from.
         self.reaped = False
         self.exit_status = None
         self.reader_error = None
@@ -205,6 +95,8 @@ class Daemon:
                     expected = b'Initialize a genuinely empty S3 dataset?' if self.phase == 'initialize' else b'Recover metadata from '
                     if self.phase == 'restart' or expected not in self.buffer:
                         raise RuntimeError('unexpected application confirmation; refusing automatic answer')
+                    match = re.search(rb'Recover metadata from (\S+)', self.buffer)
+                    self.point = match and match[1].decode()
                     os.write(self.fd, b'yes\n')
                     self.confirmed = True
         except BaseException as e:
