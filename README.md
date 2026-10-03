@@ -6,3 +6,4 @@ Findings gathered on 2026-10-03 while charting the plan map. Each file is one re
 - research-smb.md: the SMB protocol issues.
 - research-storage-tests.md: storage, recovery, tests, CI and harness issues.
 - research-code-quality.md: code-quality baseline of the repository.
+- research-panics.md: panics, Fatal and Exit calls in JuiceFS, the SMB library and our code, and whether a recover boundary helps.
