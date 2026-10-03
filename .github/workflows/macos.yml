@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       binary:
-        description: Unmodified public rc.7 baseline
+        description: Unmodified public rc.7 or rc.7 with transport-only observations
         type: choice
         required: true
         default: baseline
-        options: [baseline]
+        options: [baseline, instrumented]
 permissions:
   contents: read
 jobs:
@@ -45,7 +45,16 @@ jobs:
           sudo python3 test/macos/publish_diagnostic.py "$MAC_ARTIFACTS" "$MAC_PUBLIC"
           sudo chown -R "$(id -u):$(id -g)" "$MAC_PUBLIC"
           chmod -R u+rwX "$MAC_PUBLIC"
-      - name: Upload metadata only
+      - name: Retain authenticated encrypted capture and private logs
+        if: always() && inputs.binary == 'instrumented'
+        run: |
+          if sudo test -f "$MAC_WORK/private-traffic.pcap"; then
+            crypto="$(brew --prefix openssl@3)/bin/openssl"
+            sudo env "CAPTURE_OPENSSL=$crypto" bash test/macos/encrypt_capture.sh \
+              "$MAC_WORK/private-traffic.pcap" "$MAC_PUBLIC" test/macos/capture-recipient.pem "$MAC_ARTIFACTS"
+            sudo chown -R "$(id -u):$(id -g)" "$MAC_PUBLIC"
+          fi
+      - name: Upload metadata and ciphertext only
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:

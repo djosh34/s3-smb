@@ -1,0 +1,141 @@
+// Branch-only observational overlay for the rc.7 transport; not a product fix.
+package smb2
+
+import (
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"io"
+	"net"
+	"os"
+	"sync"
+	"sync/atomic"
+	"time"
+)
+
+var be = binary.BigEndian
+
+const maxDirectTCPSize = 0xffffff
+
+type transport interface {
+	Write(p []byte) (n int, err error)
+	ReadSize() (size int, err error)
+	Read(p []byte) (n int, err error)
+	Close() error
+}
+
+type directTCP struct {
+	sb       [4]byte
+	rb       [4]byte
+	conn     net.Conn
+	rx, tx   uint64
+	previous int
+	id       uint64
+}
+
+var diagnosticConnections atomic.Uint64
+
+var diagnosticLog struct {
+	once sync.Once
+	mu   sync.Mutex
+	file *os.File
+}
+
+func (t *directTCP) record(event string, offset uint64, header [4]byte, requested, actual int, failed bool) {
+	diagnosticLog.once.Do(func() {
+		if path := os.Getenv("DIAGNOSTIC_FRAMES"); path != "" {
+			diagnosticLog.file, _ = os.OpenFile(path, os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
+		}
+	})
+	if diagnosticLog.file == nil {
+		return
+	}
+	// No SMB bodies, auth material, signatures or body hashes are logged.
+	previous := -1
+	if event == "read-header" || event == "read-payload" {
+		previous = t.previous
+	}
+	fields := struct {
+		Tag        string `json:"tag"`
+		Connection uint64 `json:"connection"`
+		Time       string `json:"time"`
+		Local      string `json:"local"`
+		Remote     string `json:"remote"`
+		Event      string `json:"event"`
+		Offset     uint64 `json:"offset"`
+		Header     string `json:"header"`
+		Previous   int    `json:"previous_declared_length"`
+		Requested  int    `json:"requested"`
+		Actual     int    `json:"actual"`
+		Failed     bool   `json:"failed"`
+	}{"DEBUG-64-transport", t.id, time.Now().UTC().Format(time.RFC3339Nano),
+		t.conn.LocalAddr().String(), t.conn.RemoteAddr().String(), event, offset,
+		hex.EncodeToString(header[:]), previous, requested, actual, failed}
+	data, err := json.Marshal(fields)
+	if err != nil {
+		return
+	}
+	diagnosticLog.mu.Lock()
+	_, _ = diagnosticLog.file.Write(append(data, '\n'))
+	diagnosticLog.mu.Unlock()
+}
+
+func direct(tcpConn net.Conn) transport {
+	return &directTCP{conn: tcpConn, previous: -1, id: diagnosticConnections.Add(1)}
+}
+
+func (t *directTCP) Write(p []byte) (n int, err error) {
+	if len(p) > maxDirectTCPSize {
+		return -1, errors.New("max transport size exceeds")
+	}
+	bs := t.sb[:]
+	be.PutUint32(bs, uint32(len(p)))
+	header := t.sb
+	offset := t.tx
+	written, err := t.conn.Write(bs)
+	t.tx += uint64(written)
+	t.record("write-header", offset, header, 4, written, err != nil)
+	// Deliberately preserve rc.7's handling of short nil-error writes.
+	if err != nil {
+		return -1, err
+	}
+	offset = t.tx
+	n, err = t.conn.Write(p)
+	t.tx += uint64(n)
+	t.record("write-payload", offset, header, len(p), n, err != nil)
+	if err != nil {
+		return -1, err
+	}
+	return n + 4, nil
+}
+
+func (t *directTCP) ReadSize() (size int, err error) {
+	bs := t.rb[:]
+	offset := t.rx
+	n, err := io.ReadFull(t.conn, bs)
+	t.rx += uint64(n)
+	t.record("read-header", offset, t.rb, 4, n, err != nil)
+	if err != nil {
+		return -1, err
+	}
+	if bs[0] != 0 {
+		return -1, errors.New("invalid transport format")
+	}
+	size = int(be.Uint32(bs))
+	t.previous = size
+	return size, nil
+}
+
+func (t *directTCP) Read(p []byte) (n int, err error) {
+	offset := t.rx
+	n, err = io.ReadFull(t.conn, p)
+	t.rx += uint64(n)
+	t.record("read-payload", offset, t.rb, len(p), n, err != nil)
+	if err != nil {
+		return -1, err
+	}
+	return n, err
+}
+
+func (t *directTCP) Close() error { return t.conn.Close() }

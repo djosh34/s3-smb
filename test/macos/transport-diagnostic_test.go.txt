@@ -1,0 +1,97 @@
+package smb2
+
+import (
+	"bytes"
+	"io"
+	"net"
+	"testing"
+	"time"
+)
+
+type fixtureConn struct {
+	*bytes.Reader
+	writes      [][]byte
+	calls       int
+	shortHeader bool
+}
+
+func (c *fixtureConn) Write(p []byte) (int, error) {
+	c.calls++
+	n := len(p)
+	if c.shortHeader && c.calls == 1 {
+		n = 2
+	}
+	c.writes = append(c.writes, append([]byte(nil), p[:n]...))
+	return n, nil
+}
+func (c *fixtureConn) Close() error { return nil }
+func (c *fixtureConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 1445}
+}
+func (c *fixtureConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 55555}
+}
+func (c *fixtureConn) SetDeadline(time.Time) error      { return nil }
+func (c *fixtureConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *fixtureConn) SetWriteDeadline(time.Time) error { return nil }
+
+func TestDiagnosticPreservesShortHeaderWriteBehavior(t *testing.T) {
+	c := &fixtureConn{Reader: bytes.NewReader(nil), shortHeader: true}
+	x := direct(c).(*directTCP)
+	n, err := x.Write([]byte{1, 2, 3, 4})
+	if n != 8 || err != nil || x.tx != 6 || c.calls != 2 {
+		t.Fatalf("original behavior changed: n=%d err=%v actual=%d calls=%d", n, err, x.tx, c.calls)
+	}
+}
+
+func TestDiagnosticReadOffsetsAndErrors(t *testing.T) {
+	c := &fixtureConn{Reader: bytes.NewReader([]byte{0, 0, 0, 4, 0xfe, 'S', 'M', 'B', 0, 0, 0, 0, 0x85, 0, 0, 0})}
+	x := direct(c).(*directTCP)
+	size, err := x.ReadSize()
+	if size != 4 || err != nil || x.rx != 4 {
+		t.Fatal(size, err, x.rx)
+	}
+	p := make([]byte, 4)
+	n, err := x.Read(p)
+	if n != 4 || err != nil || x.rx != 8 {
+		t.Fatal(n, err, x.rx)
+	}
+	size, err = x.ReadSize()
+	if size != 0 || err != nil || x.rx != 12 {
+		t.Fatal(size, err, x.rx)
+	}
+	size, err = x.ReadSize()
+	if size != -1 || err == nil || err.Error() != "invalid transport format" || x.rx != 16 {
+		t.Fatal(size, err, x.rx)
+	}
+}
+
+func TestDiagnosticPartialRead(t *testing.T) {
+	c := &fixtureConn{Reader: bytes.NewReader([]byte{0, 0})}
+	x := direct(c).(*directTCP)
+	size, err := x.ReadSize()
+	if size != -1 || err != io.ErrUnexpectedEOF || x.rx != 2 {
+		t.Fatal(size, err, x.rx)
+	}
+}
+
+func TestDiagnosticSplitReads(t *testing.T) {
+	a, b := net.Pipe()
+	defer a.Close()
+	go func() {
+		defer b.Close()
+		for _, v := range []byte{0, 0, 0, 4, 0xfe, 'S', 'M', 'B'} {
+			_, _ = b.Write([]byte{v})
+		}
+	}()
+	x := direct(a).(*directTCP)
+	size, err := x.ReadSize()
+	if size != 4 || err != nil {
+		t.Fatal(size, err)
+	}
+	p := make([]byte, size)
+	n, err := x.Read(p)
+	if n != 4 || err != nil || x.rx != 8 {
+		t.Fatal(n, err, x.rx)
+	}
+}
