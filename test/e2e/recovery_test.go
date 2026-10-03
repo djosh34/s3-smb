@@ -36,6 +36,7 @@ type fixture struct {
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
+	storageCapacity              string // Empty means no volume limit.
 	compression                  string // Empty means omitted, including fresh-local recovery.
 	interval                     string // Metadata backup interval. Empty means 2s.
 	readonly, failStart          bool
@@ -96,9 +97,12 @@ func (f *fixture) config() string {
 	if capacity == "" {
 		capacity = "0 MB"
 	}
-	compression := ""
+	storageSettings := ""
 	if f.compression != "" {
-		compression = fmt.Sprintf("  compression: %q\n", f.compression)
+		storageSettings = fmt.Sprintf("  compression: %q\n", f.compression)
+	}
+	if f.storageCapacity != "" {
+		storageSettings += fmt.Sprintf("  capacity: %q\n", f.storageCapacity)
 	}
 	interval := f.interval
 	if interval == "" {
@@ -133,7 +137,7 @@ backup:
 logging:
   format: json
   level: info
-`, f.addr, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
+`, f.addr, f.password, f.readonly, storageSettings, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()
