@@ -17,6 +17,10 @@ const (
 	SecuritySigningRequired     uint16 = 0x0002
 	AdvertisedSecurityMode             = SecuritySigningEnabled | SecuritySigningRequired
 	EncryptionRequiredByDefault        = true
+	SessionEncryptData          uint16 = 0x0004
+	ShareTypeDisk               uint8  = 0x01
+	AdvertisedShareCapabilities uint32 = 0
+	AdvertisedShareFlags        uint32 = 0
 )
 
 // Exact NEGOTIATE capability masks at each feature stage. No DFS, multichannel,

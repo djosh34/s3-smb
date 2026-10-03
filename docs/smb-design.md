@@ -77,7 +77,10 @@ Do not sign separately. Verify the tag before decoding plaintext. Never reuse a
 nonce. Each session owns its protector; reconnect derives fresh keys and nonce state.
 
 On a transport drop, durable opens detach but retain handles, buffered data,
-sharing, deletion intent, locks and leases. Non-durable opens close normally.
+sharing, deletion intent, locks and leases. Cancel old request contexts and detach
+immediately so reconnect does not wait on S3. Defer storage close until active
+request references drain. Non-durable opens close normally. Late old requests
+cannot publish grants or replies on the new binding.
 DH2C checks both FileId halves, CreateGuid, client GUID, user, share and lease key,
 then rebinds to the new session/tree with a fresh volatile ID. Accept
 PreviousSessionId, reconnect negotiation with the old algorithm alone, and AAPL

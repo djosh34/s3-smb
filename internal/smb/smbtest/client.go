@@ -2,8 +2,9 @@
 // It must not emulate storage semantics or use fake filesystems to prove data
 // coherence. It can send exact invalid bytes without weakening production codecs.
 //
-// M1 provides NewClient(conn net.Conn, codec wire.Codec) Client. It takes ownership
-// of conn. M2 adds Start(ctx context.Context, options server.Options) (Fixture,
+// M1 provides NewClient(conn net.Conn, codec wire.Codec) (Client, error). It
+// rejects nil inputs and takes ownership of conn on success. M2 adds
+// Start(ctx context.Context, options server.Options) (Fixture,
 // error), listening on 127.0.0.1:0 with the supplied real adapter. Each test owns
 // its JuiceFS runtime and must close the fixture before closing that runtime.
 // No testing.T is hidden in constructors; every I/O and cleanup error is returned.

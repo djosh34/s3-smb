@@ -3,8 +3,8 @@
 // Time is injected. Methods are atomic and safe for concurrent callers; storage
 // I/O and break delivery occur after they return, never under a table lock.
 //
-// M1 provides New(now func() time.Time) Table. The constructor allocates empty
-// indexes. M5 completes lease transitions and durable operations on this interface.
+// M1 provides New(now func() time.Time) (Table, error). It rejects a nil clock
+// and allocates empty indexes. M5 completes lease and durable operations here.
 package state
 
 import (
@@ -47,30 +47,32 @@ const (
 // ShareMode uses the same bits as Rights. New rights must be allowed by every
 // existing share mode AND existing rights must be allowed by the new share mode.
 // Check and reservation occur before any create disposition can destroy bytes.
+// Base-file delete access also checks deny-delete opens on every named stream.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;
-// CreateGUID is also indexed by (client, user, share) to detect duplicate CREATE.
+// Nonzero CreateGUID is also indexed by (client, user, share) for duplicate CREATE.
 // Its handle, ranges, deletion intent and lease survive detachment. Only an
 // explicitly closed, expired or shutdown open releases them. Logoff closes its
 // opens, unlike a transport drop. This table is never persisted across restart.
 type Open struct {
-	DurableDeadline time.Time
-	Handle          smb.Handle
-	User            string
-	Share           string
-	Directory       DirectoryCursor
-	ID              FileID
-	Object          smb.ObjectKey
-	Binding         Binding
-	ClientGUID      GUID
-	CreateGUID      GUID
-	LeaseKey        GUID
-	DurableTimeout  time.Duration
-	Access          Rights
-	Sharing         ShareMode
-	DeleteOnClose   bool
-	Durable         bool
+	DurableDeadline  time.Time
+	Handle           smb.Handle
+	User             string
+	Share            string
+	Directory        DirectoryCursor
+	ID               FileID
+	Object           smb.ObjectKey
+	Binding          Binding
+	ClientGUID       GUID
+	CreateGUID       GUID
+	CreateParameters [32]byte
+	LeaseKey         GUID
+	DurableTimeout   time.Duration
+	Access           Rights
+	Sharing          ShareMode
+	DeleteOnClose    bool
+	Durable          bool
 }
 
 // DirectoryCursor belongs to one SMB open. Empty continuation patterns reuse
@@ -126,15 +128,18 @@ type ObjectRecord struct {
 // Object.Inode must be nonzero. For a new file the server holds its parent guard,
 // creates an identity, then reserves it before releasing that guard. For an
 // existing file Reserve precedes truncate/supersede or any other mutation.
+// CreateParameters is the server's SHA-256 of canonical CREATE parameters,
+// including name, disposition, options and requested contexts, for replay checks.
 type OpenRequest struct {
-	User       string
-	Share      string
-	Object     smb.ObjectKey
-	Binding    Binding
-	ClientGUID GUID
-	CreateGUID GUID
-	Access     Rights
-	Sharing    ShareMode
+	User             string
+	Share            string
+	Object           smb.ObjectKey
+	Binding          Binding
+	ClientGUID       GUID
+	CreateGUID       GUID
+	CreateParameters [32]byte
+	Access           Rights
+	Sharing          ShareMode
 }
 
 // Reservation is an opaque token. It participates in share checks until Commit
@@ -157,7 +162,9 @@ type Grant struct {
 // the open and ranges. The server closes Handle and, if Remove is true, calls
 // identity-checked Remove after resolving the current name under a parent guard.
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
-// blocks new opens through the guard until deletion finishes.
+// blocks new opens through the guard until deletion finishes, and drains active
+// request references before closing Handle. A transport drop cannot close a
+// storage reference still in use by an async request.
 type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
@@ -196,6 +203,10 @@ type Break struct {
 type Table interface {
 	// Reserve atomically checks both directions of sharing and delete-pending.
 	Reserve(request OpenRequest) (Reservation, smb.Status)
+	// Replay returns an already committed CREATE only when all request identity
+	// fields and CreateParameters match. The server calls it only with REPLAY
+	// set, reuses the same open ID and grant, and does not repeat storage mutation.
+	Replay(request OpenRequest) (Open, smb.Status)
 	// Commit converts a reservation into an open with a fresh FileID.
 	Commit(reservation Reservation, grant Grant) (Open, smb.Status)
 	// Abort releases a failed CREATE reservation, including its share rights.
@@ -232,7 +243,8 @@ type Table interface {
 	BreakLeases(object smb.ObjectKey, requester GUID, target uint32) []Break
 	// AckBreak verifies binding, key and epoch before reducing lease state.
 	AckBreak(binding Binding, key GUID, epoch uint16, leaseState uint32) smb.Status
-	// ExpireBreaks applies the break target on timeout and returns affected opens
-	// to close if their H protection was lost. Uses the injected clock.
+	// ExpireBreaks applies the target on timeout and closes detached opens whose
+	// H protection was lost. Attached opens remain usable but lose durability
+	// when H is lost. Uses the injected clock.
 	ExpireBreaks() []CloseAction
 }
