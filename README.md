@@ -9,6 +9,7 @@ backups in S3 without a NAS. It runs in the foreground as one process.
 
 ```sh
 go install github.com/djosh34/s3-smb@latest
+export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
 You need Go 1.26.3 and a C compiler (on a Mac, the Xcode command line tools).
@@ -51,10 +52,14 @@ other than this machine, because you need them to recover. Every setting is in
 `tmutil setdestination` needs root, and the terminal needs Full Disk Access in
 System Settings, Privacy & Security. These are the steps the end-to-end test
 runs on a Mac, with s3-smb on the same Mac and the config above. Replace
-`PASSWORD` with the SMB password. Percent-encode it in the URLs if it holds
-characters such as `@`, `:` or `/`.
+`PASSWORD` with the SMB password. In the two URLs, percent-encode characters
+such as `@`, `:` or `/`. After `-w`, give the password as it is. The first line
+keeps s3-smb's state and cache directories, by default `~/.local/share/s3-smb`
+and `~/.cache/s3-smb` (see [configuration](docs/configuration.md)), out of the
+backup.
 
 ```sh
+sudo tmutil addexclusion -p ~/.local/share/s3-smb ~/.cache/s3-smb
 mkdir -p ~/TimeMachineShare
 mount_smbfs -N '//timemachine:PASSWORD@127.0.0.1:1445/TimeMachine' ~/TimeMachineShare
 sudo tmutil setdestination 'smb://timemachine:PASSWORD@127.0.0.1:1445/TimeMachine'
@@ -62,7 +67,7 @@ sudo security add-internet-password -U -s 127.0.0.1 -a timemachine -P 1445 \
   -r 'smb ' -p TimeMachine \
   -T /System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent \
   -T /System/Library/CoreServices/TimeMachine/backupd \
-  -w PASSWORD /Library/Keychains/System.keychain
+  -w 'PASSWORD' /Library/Keychains/System.keychain
 tmutil startbackup --block
 ```
 

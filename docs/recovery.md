@@ -37,9 +37,12 @@ AES-256-GCM and scrypt with N=131072, r=8 and p=1, so unlocking it takes about
 recreate the key, so the encrypted data is lost only when every copy is gone:
 the key object, `format.json` and any copy you keep yourself.
 
-s3-smb takes a metadata backup every `backup.interval` (default one hour), and
-at startup unless the last one is younger than that. It keeps every backup from the last 2 days, one per day for
-2 weeks, one per week for 2 months and one per month for 2 years.
+s3-smb takes a metadata backup every `backup.interval` (default one hour) and
+at startup. On a normal restart it skips the startup backup if the receipt in
+the state directory names a backup younger than `backup.interval` and that
+object in S3 still has the recorded SHA-256. After a recovery it always takes a
+new one. It keeps every backup from the last 2 days, one per day for 2 weeks,
+one per week for 2 months and one per month for 2 years.
 
 ## What to keep outside the machine
 
