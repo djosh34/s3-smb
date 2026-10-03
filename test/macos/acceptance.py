@@ -33,6 +33,11 @@ PROOF = HOME / 's3-smb-acceptance-proof'
 # Every directory next to the tree and next to its ancestors, as printed by the
 # discover run. The ancestors /System/Volumes/Data, Users and runner stay in the
 # backup, and so do loose files next to the tree.
+# tmutil addexclusion -p excludes whatever is at that path, even after it is
+# deleted and recreated. Without -p the exclusion follows the item when it moves
+# and copies keep it. -v excludes a whole volume. An excluded directory excludes
+# everything under it, and removing a child's own exclusion does not include
+# that child again.
 DATA = '/System/Volumes/Data'
 EXCLUSIONS = [
     f'{DATA}/.Spotlight-V100', f'{DATA}/.TemporaryItems', f'{DATA}/.fseventsd',
@@ -85,6 +90,7 @@ class Acceptance:
             raise RuntimeError('native Darwin administrative execution required')
         self.status()
         self.cmd.run(['/sbin/mount'])
+        # The hosted runner image runs tmutil disable and unloads backupd.
         _, code = self.cmd.run(['/bin/launchctl', 'print', 'system/com.apple.backupd'], diagnostic=True)
         if code:
             self.cmd.run(['/bin/launchctl', 'enable', 'system/com.apple.backupd'])

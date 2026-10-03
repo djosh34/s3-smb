@@ -1,8 +1,8 @@
-# Mac acceptance fixture
+# Mac test fixture
 
-A small command for the MinIO bucket that `test/macos/acceptance.py` uses. It
-reads the MinIO credentials from `MINIO_ROOT_USER` and `MINIO_ROOT_PASSWORD` and
-accepts only a loopback endpoint.
+A small command that creates and lists the MinIO bucket for the Time Machine test
+in `test/macos`. It reads the MinIO credentials from `MINIO_ROOT_USER` and
+`MINIO_ROOT_PASSWORD` and accepts only a loopback endpoint.
 
 ```sh
 go build -o fixture ./test/macos/fixture

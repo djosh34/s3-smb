@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// fixture creates and lists the MinIO bucket of the Mac acceptance test.
+// fixture creates and lists the MinIO bucket of the Mac Time Machine test.
 package main
 
 import (

@@ -1,72 +1,123 @@
 # s3-smb
 
-A foreground SMB server backed by S3 through embedded JuiceFS and local SQLite metadata. No FUSE mount, separate metadata server, or complete local data replica is required.
+s3-smb is an SMB server that stores its files in an S3 bucket. It embeds JuiceFS
+and keeps the filesystem metadata in a local SQLite database, which it backs up
+to the same bucket every hour. It is meant for a Mac user who wants Time Machine
+backups in S3 without a NAS. It runs in the foreground as one process.
 
-**Development status:** implementation is underway; release acceptance is not complete. Do not use this development version for irreplaceable backups. In particular, real hosted-Mac Time Machine full backup and crash recovery remain required before a compatibility claim.
-
-## Install and run
-
-The release installation interface is:
-
-```sh
-go install github.com/djosh34/s3-smb@<version>
-s3-smb version
-s3-smb serve -c /path/to/config.yaml
-```
-
-A published, validated release version will replace `<version>` in release notes. Go 1.26.3 and a normal C compiler/platform SDK are required. SQLite and compression CGo dependencies use bundled portable source; no separately installed third-party native libraries are required. Public versioned installation is a release gate, not established by a local checkout build.
-
-Start with the [complete YAML example and settings reference](docs/configuration.md). The default config path is `$XDG_CONFIG_HOME/s3-smb/config.yaml`, otherwise `$HOME/.config/s3-smb/config.yaml`, on Linux and macOS. `-c` and `--log-format text|json` work before or after `serve`.
-
-`serve` stays in the foreground. There is no separate `init`, daemonization, service installer, backup scheduler, or custom file browser. Help and version do not initialize storage or resolve credentials.
-
-### First use
-
-Use a dedicated, existing S3 bucket and independently save the configuration details and recovery secrets. Run from a controlling terminal: the application asks before initializing a genuinely empty dataset or recovering existing remote metadata. Unknown objects, missing markers or a missing local database are not proof of an empty dataset. Normal restarts do not require a terminal.
-
-The default share is `TimeMachine`, listening on `127.0.0.1:445`. Access it using your SMB client and configured named account. Do not infer Time Machine compatibility from the share name or from a successful file copy. Binding the configured address may require platform-specific privileges; the application does not silently widen the address or change ports.
-
-## Storage and access
-
-- One SMB share and one account. The SMB account needs a nonempty password.
-- Wider binding such as `0.0.0.0:445` is explicit. Optional read-only serving is available.
-- Native JuiceFS data caching. Public sizes are decimal: **1 MB = 1,000,000 bytes; 1 GB = 1,000,000,000 bytes**. Omitted capacity retains the native default; explicit `cache_size: 0` disables retained disk/RAM block caches, not SQLite, temporary staging or working I/O buffers.
-- Independent S3 access-key and secret-key sources: literal value, file, or direct command argv. Resolve once at startup, with no implicit shell, fallback or automatic renewal. Helpers run with the daemon's privileges; trust the config.
-- Custom S3 endpoints, explicit path-style or virtual-host-style addressing, verified HTTPS, private CA roots and mutual TLS. Local certificate replacement takes effect after restart. Intentional HTTP must be configured explicitly.
-- Application encryption defaults on. Data and entire remote metadata exports use the native encryption key; its passphrase-protected copy is retained in S3. Fresh-install recovery needs S3 access, connection details and the passphrase, not an independently retained PEM file.
-- Explicit `encryption.enabled: false` opts out for both data and remote metadata. Anyone with sufficient S3 read access can then read them. TLS, SMB access policy and metadata protection still apply. Dataset encryption mode cannot silently change.
-- Local SQLite/WAL, caches and temporary export staging remain plaintext. New state/secret files are created privately; unusual existing permissions/ownership produce warnings rather than rejection when files remain readable.
-
-## Recovery and protection
-
-Read [the recovery procedure and operating boundaries](docs/recovery.md) before storing important data.
-
-The default is an hourly native metadata export and 14-day native trash retention, both configurable. These metadata backups describe the outer filesystem; they are not Time Machine backups. Losing local state can lose changes after the selected successful metadata point.
-
-A scheduled backup that fails after bounded retries stops writable service. A metadata import alone does not prove all referenced file objects exist. Verify recovered contents, and use Apple's actual restore tools for a Time Machine dataset.
-
-**Only one writable metadata authority may use a dataset.** The local lock cannot fence a different host with a different SQLite database. Stop the old writer before recovery. External S3 lifecycle deletion can destroy keys, data or recovery points despite application retention.
-
-## Development and evidence
+## Install
 
 ```sh
-go vet ./... && go test ./...
-scripts/test-linux.sh
+go install github.com/djosh34/s3-smb@latest
 ```
 
-The first line runs the fast tests. The script builds the application and a pinned MinIO in Docker, then runs every test with the race detector, including the tests that use real SMB and S3. GitHub runs both on every pull request. See [testing](docs/testing.md), [logging](docs/logging.md) and [vendored source](docs/vendored.md).
+You need Go 1.26.3 and a C compiler (on a Mac, the Xcode command line tools).
+SQLite and the compression libraries are built from bundled source.
 
-The final [hosted-Mac gate](docs/macos-acceptance.md) uses a normal full-Mac Time Machine backup, then transfers the stopped MinIO store to a second fresh Mac for application recovery and Apple's native restore. Verification covers only deliberately created files and folders, including nested and empty directories, against an independent reference. Normal recovery must pass before later crash/resume acceptance. No fixture-only backup, generic copy, local-snapshot restore or metadata import substitutes for it. Harness-only iterations reuse the qualified application version and record harness/application revisions separately.
+## Quick start
 
-### Project references
+Use an existing, empty bucket. Save this as `~/.config/s3-smb/config.yaml`:
 
-- [Approved implementation contract](docs/implementation-plan.md) and [delivery backlog #18](https://github.com/djosh34/s3-smb/issues/18).
-- [Domain terminology](CONTEXT.md), [decision map](https://github.com/djosh34/s3-smb/issues/1), and [scope clarification](https://github.com/djosh34/s3-smb/issues/33).
-- [Plan approval](https://github.com/djosh34/s3-smb/issues/29), [four-reviewer audit](docs/reviews/plan-audit.md), and [all original review comments](docs/reviews/reviewer-comments.md).
-- [Hosted-Mac prerequisites](docs/research/github-macos-time-machine.md), with their original evidence limits.
+```yaml
+smb:
+  listen: "127.0.0.1:1445"
+  username: timemachine
+  password: "choose-a-password"
+s3:
+  bucket: my-time-machine-bucket
+  region: eu-west-1
+  access_key: {file: ./access-key}
+  secret_key: {file: ./secret-key}
+encryption:
+  passphrase: {file: ./passphrase}
+storage:
+  compression: zstd
+```
 
-The user released the prior execution hold on 2026-09-29. Authorization and source inspection are not completed acceptance evidence.
+Put the S3 keys and an encryption passphrase in those three files, next to the
+config. Then run, in a terminal:
 
-## License and source
+```sh
+s3-smb serve
+```
 
-Original code is **AGPL-3.0-only**. Bundled upstream code retains its original licenses and attribution; see [LICENSE](LICENSE), [NOTICE](NOTICE) and [vendored source](docs/vendored.md). Corresponding source and build material are public at [github.com/djosh34/s3-smb](https://github.com/djosh34/s3-smb); use the tag/commit matching the distributed version. Redistributors of modifications must provide their own corresponding source, not merely link to this unmodified repository.
+On the first start s3-smb asks `Initialize a genuinely empty S3 dataset?`. Type
+`yes`. Later starts do not ask. Keep the passphrase and the S3 details somewhere
+other than this machine, because you need them to recover. Every setting is in
+[configuration](docs/configuration.md).
+
+## Time Machine setup
+
+These are the steps the end-to-end test runs on a Mac, with s3-smb on the same
+Mac and the config above. Replace `PASSWORD` with the SMB password. Percent-encode
+it in the URLs if it holds characters such as `@`, `:` or `/`.
+
+```sh
+mkdir -p ~/TimeMachineShare
+mount_smbfs -N '//timemachine:PASSWORD@127.0.0.1:1445/TimeMachine' ~/TimeMachineShare
+sudo tmutil setdestination 'smb://timemachine:PASSWORD@127.0.0.1:1445/TimeMachine'
+sudo security add-internet-password -U -s 127.0.0.1 -a timemachine -P 1445 \
+  -r 'smb ' -p TimeMachine \
+  -T /System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent \
+  -T /System/Library/CoreServices/TimeMachine/backupd \
+  -w PASSWORD /Library/Keychains/System.keychain
+tmutil startbackup --block
+```
+
+- Use a port other than 445. `tmutil setdestination` fails with exit code 65 for
+  an SMB server on `127.0.0.1:445`, also with Apple's own SMB server. Binding
+  port 445 also needs root on macOS.
+- The SMB account needs a password. s3-smb does not accept an empty one.
+- `backupd` mounts the share on its own and needs the password in the System
+  keychain. Without that item the backup fails with
+  `BACKUP_FAILED_AUTHENTICATION_ERROR (29)`.
+- s3-smb must be running whenever Time Machine backs up.
+
+Tested on macOS 15.7.9 (24G830) on Intel, on GitHub's `macos-15` runner image
+20260824.0482.1, with s3-smb v0.1.0-rc.8 and MinIO as the S3 server. The test
+also restored the backup on a second Mac that had only the bucket.
+
+## What is stored and how recovery works
+
+The bucket holds the file data in blocks, a metadata backup every hour and,
+when encryption is on, the encryption key protected by your passphrase. Data and
+metadata backups are encrypted by default. The local SQLite database and cache
+are not.
+
+If the machine running s3-smb is lost, install s3-smb on a new one with the same
+config and an empty state directory. s3-smb finds the newest metadata backup in
+the bucket and asks before it recovers from it. Changes after that backup are
+lost. Then restore your files with Time Machine as usual. The steps and the
+bucket layout are in [recovery](docs/recovery.md).
+
+## Limits
+
+- One running s3-smb per bucket. The state lock only stops a second process on
+  the same machine. Stop the old one before you recover on another machine.
+- s3-smb listens on `127.0.0.1:445` unless you set `smb.listen`. It never
+  widens the address on its own. Ports below 1024 need root.
+- Time Machine needs a nonempty SMB password stored in the System keychain.
+- The bucket grows faster than the bytes Time Machine reports. JuiceFS keeps
+  replaced blocks for `backup.trash_days` (default 14) and compaction uploads
+  data again, with unwritten gaps filled with zeros. The share reports at most
+  1 TiB free, so Time Machine uses 268.4 MB bands and a small first backup takes
+  about 1.3 to 1.8 GB. `storage.compression: zstd` shrinks the zeros.
+- The S3 provider must support `PutObject` with `If-None-Match: *`.
+- s3-smb runs in the foreground. There is no daemon mode or service installer.
+- The tests kill the application and the Time Machine client during a backup.
+  Power loss and lost S3 objects are not tested.
+
+## Development
+
+`go vet ./... && go test ./...` runs the fast tests. `scripts/test-linux.sh`
+runs every test against MinIO in Docker. [Development](docs/development.md)
+describes the code, the tests and the Time Machine workflow.
+[Vendored source](docs/vendored.md) lists the patches to JuiceFS and the SMB
+server.
+
+## Licence
+
+s3-smb's own code is AGPL-3.0-only. The vendored code keeps its upstream licence.
+See [LICENSE](LICENSE), [NOTICE](NOTICE) and [vendored source](docs/vendored.md).
+The source of every version is at https://github.com/djosh34/s3-smb under its
+tag. If you distribute a modified version, publish its source.

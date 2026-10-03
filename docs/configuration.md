@@ -1,23 +1,19 @@
 # Configuration
 
-`serve` reads one YAML file. Select it with `s3-smb -c /path/config.yaml serve`
-or `s3-smb serve -c /path/config.yaml`. Without `-c`, the path is
+`serve` reads one YAML file. Pass it with `s3-smb -c /path/config.yaml serve` or
+`s3-smb serve -c /path/config.yaml`. Without `-c`, the path is
 `$XDG_CONFIG_HOME/s3-smb/config.yaml`, or `$HOME/.config/s3-smb/config.yaml`
-when the XDG variable is unset. This rule also applies on macOS. A missing file
-is an error; there is no configuration wizard. Help/version do not load secrets,
-contact S3, or initialize state. CLI handling belongs to the serve command.
+when that variable is unset. The same rule applies on macOS. A missing file is an
+error. `help` and `version` do not read the file.
 
-The file must contain one mapping/document, with no unknown or duplicate fields,
-null values, YAML aliases, or merge keys. The file size limit is 1,048,576 bytes.
-There is no environment-variable, tilde, or shell interpolation. Relative file
-and directory paths are relative to the YAML file's directory. Nonempty XDG
-variables must be absolute paths.
+The file holds one YAML mapping. Unknown or duplicate fields, null values, aliases
+and merge keys are errors. The file may be at most 1,048,576 bytes. Nothing is
+expanded: no environment variables, no `~`, no shell. Relative paths are relative
+to the directory of the YAML file.
 
-## Sample YAML
+## Sample
 
-Create the configuration and secret files privately (for example, set
-`umask 077` before creating them). Replace the example connection details and
-provide the referenced files before starting:
+Create the config and secret files after `umask 077`, so only you can read them.
 
 ```yaml
 smb:
@@ -31,6 +27,7 @@ storage:
   state_dir: ./state
   cache_dir: ./cache
   cache_size: "10 GB"
+  compression: zstd
 
 s3:
   bucket: your-existing-bucket
@@ -41,13 +38,6 @@ s3:
     file: ./secrets/access-key
   secret_key:
     file: ./secrets/secret-key
-  # Optional static session token; no automatic refresh:
-  # session_token: "your-token"
-  # Optional process-only extra CA and paired mTLS credentials:
-  # tls:
-  #   ca_file: ./certs/ca.pem
-  #   client_cert_file: ./certs/client.pem
-  #   client_key_file: ./secrets/client.key
 
 encryption:
   enabled: true
@@ -63,197 +53,127 @@ logging:
   level: info
 ```
 
-## Defaults and capacities
+## Defaults
 
-| Setting | Default / requirement |
+| Setting | Default or requirement |
 | --- | --- |
-| `smb.listen` | `127.0.0.1:445`; explicit other addresses/ports allowed |
+| `smb.listen` | `127.0.0.1:445` |
 | `smb.share` | `TimeMachine` |
-| `smb.username` | Required nonempty named account |
-| `smb.password` | Required nonempty string |
+| `smb.username` | Required |
+| `smb.password` | Required, nonempty |
 | `smb.read_only` | `false` |
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
-| `storage.cache_size` | Omitted: native 107,374,182,400 bytes = 107.3741824 GB |
-| `s3.bucket` | Required existing bucket name |
-| `s3.region` | `us-east-1` when omitted/empty; set the bucket's actual region explicitly |
-| `s3.endpoint` | Omitted/empty: AWS S3 endpoint for the selected region; explicit endpoint is an HTTP(S) origin |
-| `s3.path_style` | Omitted: native selection; `true` forces path-style, `false` virtual-host-style |
-| `s3.access_key`, `s3.secret_key` | Each independently requires exactly one source |
-| `s3.session_token` | Empty/omitted; optional static string |
-| `s3.tls` | Verified HTTPS using system roots; optional extra CA and client certificate/key |
-| `encryption.enabled` | `true`; passphrase source required when enabled |
-| `backup.interval` | `1h`, a positive Go duration (`30m`, `2h`, etc.) |
-| `backup.trash_days` | `14`, a nonnegative integer applied to the native volume format |
-| `logging.format` | `text`; also `json` |
-| `logging.level` | `info`; also `debug`, `warn`, `error` |
+| `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
+| `storage.compression` | `none` for a new dataset; the stored value for an existing one |
+| `s3.bucket` | Required, must exist |
+| `s3.region` | `us-east-1`. Set the bucket's real region. |
+| `s3.endpoint` | AWS S3 for the region; otherwise an `http://` or `https://` origin |
+| `s3.path_style` | Chosen by JuiceFS; `true` forces path style, `false` virtual-host style |
+| `s3.access_key`, `s3.secret_key` | Required, one source each |
+| `s3.session_token` | Empty |
+| `s3.tls` | System CA roots |
+| `encryption.enabled` | `true`; then `encryption.passphrase` is required |
+| `backup.interval` | `1h`, any positive Go duration such as `30m` |
+| `backup.trash_days` | `14`, at most 106751 |
+| `logging.format` | `text`, or `json` |
+| `logging.level` | `info`, or `debug`, `warn`, `error` |
 
-Public capacities use decimal units: B, KB, MB, GB, TB; for example **1 MB =
-1,000,000 bytes**. An integer without a suffix means bytes. Fractional values
-are allowed (`"0.5 MB"`); fractional bytes round upward, so a positive capacity
-never turns into zero. Negative sizes, binary suffixes, scientific notation, and
-values above 9,223,372,036,854,775,807 bytes are errors. Quote sizes for clarity.
+## Sizes
 
-Explicit `cache_size: 0` disables native retained disk and RAM block caches;
-omission keeps the same native default **bytes**, not a newly rounded 100 GB
-value. Ordinary I/O buffers/readahead, local SQLite/WAL and backup staging still
-need memory/disk. A positive cache does not imply the entire remote dataset must
-fit locally. Native I/O buffering defaults remain 314,572,800 bytes (314.5728 MB).
+Sizes use decimal units B, KB, MB, GB and TB. 1 MB is 1,000,000 bytes. A number
+without a unit is bytes. Fractions such as `"0.5 MB"` are allowed and round up to
+whole bytes. Negative sizes, binary units such as `MiB`, scientific notation and
+values above 9,223,372,036,854,775,807 bytes are errors. Quote sizes.
 
-Writable protection requires positive trash retention and this strict bound:
+`cache_size: 0` turns off the disk and memory block caches. s3-smb still needs
+memory for I/O buffers (300 MiB by default) and disk for the SQLite database and
+metadata backup staging. The cache does not need to hold the whole dataset.
+
+## Compression
+
+`storage.compression` is `none` or `zstd`. It applies to a new dataset and
+compresses each data block before encryption. For an existing dataset, leave it
+out and s3-smb uses the value stored in the bucket, including `lz4` from older
+JuiceFS formats. A value that differs from the stored one stops startup. There is
+no way to convert an existing dataset.
+
+## Retention
+
+A writable server needs `trash_days` of at least 1 and
 
 ```text
 2 * backup.interval < backup.trash_days * 24h
 ```
 
-Native cleanup's existing two-hour slack covers its UTC-hour trash-bucket
-rounding, so this bound is already conservative. The application does not
-subtract another hour or add a grace period or retention policy.
+One metadata backup, with its retries, may take as long as `backup.interval`. If
+it has not finished by then, the writer stops. With `trash_days: 1` the interval
+must be shorter than 12 hours. Read-only serving does not check these bounds and
+accepts `trash_days: 0`. [Recovery](recovery.md#why-retention-matters) explains
+why the bound exists.
 
-One metadata backup, with its retries, may take as long as `backup.interval`.
-A backup that has not finished by then fails and the daemon stops. For
-`trash_days: 1` the interval must be shorter than 12 hours. Startup checks this
-bound. `trash_days: 0` is unsafe for writable serving.
+## Credentials
 
-Writable protection also limits `trash_days` to **106751** to avoid overflow in
-native cleanup's `time.Duration(24*days+2) * time.Hour` calculation. This maximum
-is derived as `floor((MaxInt64/time.Hour - 2) / 24)`, not an arbitrary policy cap.
-Native cleanup slack is unchanged. Read-only serving does not construct writable
-protection and is exempt from these bounds, including permitting zero trash days.
-
-An old metadata backup does not guarantee its data remains available. Do not use
-external S3 lifecycle deletion rules that destroy current data, recovery points,
-or encryption bootstrap keys.
-
-## Data compression (pending product change)
-
-This selected opt-in feature is **not available in qualified v0.1.0-rc.6**. A new
-immutable release remains pending product qualification; do not use the setting
-with rc6 or infer Time Machine completion or sufficient capacity from its addition.
-
-The optional setting is `storage.compression: zstd` or
-`storage.compression: none`. These are the only explicit values. Omission on a
-new dataset keeps the existing `none` default; `zstd` selects JuiceFS's existing
-lossless chunk compression before application encryption. There is no compression
-level, custom codec, migration or capacity guarantee.
-
-For an existing dataset, including fresh-install recovery, omit the setting to
-use the codec recorded in its native format. This also preserves existing native
-`lz4` formats, although `lz4` is not a selectable new-dataset value. An explicit
-`none` or `zstd` must match the stored format or startup fails without changing
-it. The setting is not a conversion command. Cold recovery does not require the
-old YAML or a separately remembered codec. Metadata backups retain their existing
-gzip encoding; cache, retention and encryption defaults are unchanged.
-
-## Credentials and helpers
-
-Select one of these mappings separately for each S3 key, and for the encryption
-passphrase when enabled:
+Each S3 key, and the passphrase when encryption is on, takes exactly one source:
 
 ```yaml
 access_key: {value: "literal-access-key"}
 secret_key: {file: ./secrets/secret-key}
-# Alternative direct argv (not an implicit shell):
 # secret_key: {command: ["/usr/local/bin/my-secret-helper", "s3-secret"]}
 ```
 
-All nine access-key/secret-key source combinations are supported. A selected
-source failing is an error, with no fallback to other sources, environment
-credentials, or a metadata export. Values resolve once at startup; replacing a
-file or renewing helper output takes effect after restart. Session tokens are
-static too: temporary credentials must remain valid for the daemon's lifetime.
+s3-smb reads each source once at startup. Restart it to pick up a changed file
+or a renewed token. A failed source is an error. There is no fallback to another
+source or to environment credentials. A session token is a fixed string and must
+stay valid while s3-smb runs.
 
-A file/helper value loses **at most one** final LF or CRLF; the same rule applies
-to literal source values. Other whitespace is preserved. Required S3 keys and
-passphrases must be nonempty and contain no NUL. SMB passwords are literal
-strings, not credential sources, and are not newline-trimmed.
+One trailing LF or CRLF is removed from a value. Other whitespace stays. S3 keys
+and the passphrase must be nonempty and contain no NUL byte. The SMB password is
+a plain string in the YAML and is not trimmed. An empty, null or missing SMB
+password fails to load.
 
-Helpers execute direct argv with empty stdin, the YAML directory as their working
-directory, inherited environment, and the daemon's privileges. Executables with
-a slash in their relative path resolve relative to that directory; bare names
-use ordinary executable PATH lookup. Arguments are not rewritten. There is no
-implicit shell, but a user explicitly selecting a shell still runs that program:
-this is **not a sandbox**. Trust the YAML and helper programs. Helpers have a
-10-second deadline, at most 65,536 bytes each of stdout and stderr, and process-
-group termination on cancellation. Secret files/literal values are also limited
-to 65,536 bytes. Helper output/argv and underlying error details are never printed.
+A `command` runs the program directly, without a shell, in the YAML file's
+directory, with s3-smb's environment and privileges and an empty stdin. A path
+with a slash is relative to the YAML file. A bare name is looked up in `PATH`.
+It must finish within 10 seconds and print at most 65,536 bytes. Secret files and
+literal values have the same limit. s3-smb never logs the output or the
+arguments. It is not a sandbox, so only use programs you trust.
 
-Existing readable secret/config files with modes other than 0400/0600 or a
-different owner emit warnings, not rejection. Existing state/cache directories
-warn unless mode 0700 and owned by the effective user. Nothing automatically
-chmods or chowns them. Missing/unreadable/nonregular files, invalid credentials,
-and failed helpers still fail. Warnings identify the setting, not secret paths
-or contents, in either text or JSON logs. Public CA/client certificate files do
-not trigger secret-file warnings; the mTLS private key does. The config loader
-itself creates no files. State/staging owners create new files privately.
+s3-smb warns, but still starts, when a secret or config file is not mode 0400 or
+0600 or has another owner, and when the state or cache directory is not mode 0700
+or has another owner. It never changes permissions, and creates new files private.
 
-## TLS and transport authority
+## S3 endpoint and TLS
 
-Custom endpoints must be explicit `https://host[:port]` or intentional
-`http://host[:port]` origins, without embedded credentials, query or path. HTTPS
-uses verified certificates and hostname checks, with TLS 1.2 as the minimum;
-there is no skip-verification option or silent HTTP downgrade. HTTP is useful
-for deliberately local MinIO fixtures, but sends traffic without TLS. TLS file
-settings with an explicit HTTP endpoint are an error.
+`s3.endpoint` is `https://host[:port]` or `http://host[:port]`, without
+credentials, path or query. HTTPS always verifies the certificate and host name
+and needs TLS 1.2 or later. There is no option to skip verification. Use `http://`
+only for a local test server. TLS files with an `http://` endpoint are an error.
 
-`ca_file` appends PEM CA certificates to a copy of the system trust pool used by
-the process's S3 TLS client. It does not modify OS trust. `client_cert_file` and
-`client_key_file` must be paired and valid. Public TLS files and the client key
-are bounded to 1,048,576 bytes each. Replacing local certificate/key files takes
-effect on restart. A server certificate renewed under a trusted CA normally
-needs no S3 credential change.
+`ca_file` adds PEM CA certificates to a copy of the system roots, for s3-smb only.
+`client_cert_file` and `client_key_file` must be set together. Each TLS file may
+be at most 1,048,576 bytes. Changed files take effect after a restart. For
+virtual-host style, DNS and the certificate must cover `bucket.endpoint-host`.
 
-Use an existing bucket. The S3 endpoint must support ordinary listing, reads,
-writes and deletes, plus conditional `PutObject` with `If-None-Match: *` for
-non-overwriting key/identity/metadata publication. A provider that rejects this
-operation fails safely; the application does not fall back to an overwriting PUT.
+The bucket must exist. The provider must support list, get, put and delete, and
+`PutObject` with `If-None-Match: *`. s3-smb uses that header so that a key,
+identity or metadata backup is never overwritten. A provider that rejects it
+makes startup fail.
 
-Current validated YAML and its startup credential/TLS snapshot control the S3
-destination and transport. Imported metadata must never redirect it or install
-old credentials/TLS settings. For forced virtual-host-style addressing, arrange
-DNS and certificates for `bucket.endpoint-host`, including in test fixtures.
+## Encryption
 
-## SMB password and encryption opt-out
+Encryption is on by default. `encryption.enabled: false` turns it off for data
+and metadata backups. Anyone who can read the bucket can then read your files,
+and s3-smb logs a warning at startup. In this mode s3-smb does not read the
+passphrase source. The setting is fixed when the dataset is created, and a
+different value stops startup. Encryption covers what is in S3. The local SQLite
+database, the cache and backup staging files are not encrypted.
 
-The SMB account needs a nonempty password. A config with `password: ""`, a null
-password or no password fails to load. The application never widens its loopback
-bind automatically.
+## Logging
 
-To opt out of application encryption for both objects and remote metadata:
-
-```yaml
-encryption:
-  enabled: false
-```
-
-Disabled mode never resolves even an otherwise configured passphrase source.
-Anyone with sufficient S3 read access can then read data and metadata; startup
-warns about this. TLS, authentication, metadata protection and local permissions
-remain applicable. Encryption mode belongs to the dataset and cannot silently
-change on restart/recovery. Enabled encryption protects remote data/metadata,
-not native local SQLite/WAL, caches or plaintext backup staging. Recovery still
-needs valid S3 access and the remote protected key, plus the passphrase when
-application encryption is enabled.
-
-## API and tests
-
-`config.Load(path)` performs strict parsing/defaults/validation only.
-`(*Config).Resolve(ctx, logger)` loads a startup snapshot, with native
-`*tls.Config` and resolved credential strings. `Storage.CacheSize == nil` means
-native default; nonnil zero remains zero. `S3.PathStyle` is likewise a pointer
-that distinguishes omitted from explicitly false. CLI logging overrides must be
-configured before loading YAML so config errors can also use JSON.
-
-Run the isolated configuration tests with:
-
-```sh
-GOMAXPROCS=2 go test -p 2 ./internal/config
-```
-
-These tests include real subprocess helpers and local verified/mutual TLS HTTP
-handshakes. `scripts/test-linux.sh` runs them again in Docker, together with the
-transport test in `internal/storage` that uses real MinIO.
-
-Neither suite substitutes for SMB authentication, CLI placement/side-effects,
-remote encryption/recovery, or final Time Machine gates. Native addressing and
-TLS/mTLS acceptance have their separate shared transport suite.
+Logs go to stderr. `logging.format` is `text` or `json`, one JSON object per line.
+`--log-format text|json` on the command line overrides it and also applies to
+errors in the config file. Prompts go to the terminal (`/dev/tty`), never to the
+log. s3-smb removes registered secrets (S3 keys, the SMB password, the passphrase,
+the session token and the encryption key) from log lines. It never logs SQL
+arguments, xattr values or S3 request bodies.
