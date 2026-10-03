@@ -6,7 +6,7 @@ cd "$(dirname "$0")/../.."
 repo=$PWD
 : "${MAC_ARTIFACTS:?absolute evidence directory required}"
 : "${MAC_WORK:?absolute task-owned work directory required}"
-: "${PUBLIC_VERSION:?immutable published version required}"
+: "${MAC_SERVER:?default or smbnext server build required}"
 : "${MAC_PHASE:?discover, backup, recover or scenario required}"
 : "${MAC_TRANSFER:?absolute transfer directory required}"
 # acceptance.py stops itself this many minutes after the start, so that its

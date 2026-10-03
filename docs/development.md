@@ -94,11 +94,25 @@ GitHub runs both commands on every pull request and on `main`.
 `.github/workflows/macos.yml` runs only when dispatched by hand:
 
 ```sh
-gh workflow run macos.yml -f public_version=vX.Y.Z
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance -f server=default
 ```
 
-It installs that version from the Go proxy on `macos-15-intel` runners and runs
-MinIO on each Mac. One Mac backs up a small test directory with Time Machine,
+Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
+MinIO locally. `server=default` builds without tags; `server=smbnext` builds with
+`-tags smbnext`. The same selection applies to every job in the run.
+`test/macos/run.sh` passes `MAC_SERVER` to `test/macos/build.sh`. The evidence
+includes `application-revision`, `harness-revision`, `build-tags` (an empty line
+for the default build), `application-build.log` and `native-build.txt` from
+`go version -m` on the built binary. The harness does not install a released
+version from the Go proxy.
+
+Run the harness unit tests locally with:
+
+```sh
+python3 -m unittest discover -s test/macos -p 'test_*.py'
+```
+
+One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
 recovers the dataset, restores the directory with `tmutil restore` and compares
 it. Five more Macs each interrupt a second backup. Four of them then restart or
@@ -106,8 +120,13 @@ recover s3-smb and restore the first backup. In the machine-loss scenario the
 Mac exports the stopped store, and a further fresh Mac recovers it and restores
 the first backup. The scenarios kill the application or the Time Machine client.
 They do not cut power and do not remove objects from S3. The `discover` mode
-lists the directories to exclude. Last passing run:
-https://github.com/djosh34/s3-smb/actions/runs/37098439018
+builds the selected server and lists the directories to exclude without running
+a backup:
+
+```sh
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=default
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=smbnext
+```
 
 ## Releasing
 
@@ -115,7 +134,8 @@ https://github.com/djosh34/s3-smb/actions/runs/37098439018
 2. Tag the commit as a release candidate, `vX.Y.Z-rc.N`, and push the tag.
 3. Run `scripts/check-public-install.sh vX.Y.Z-rc.N` on Linux and on a Mac. It
    installs the version from the Go proxy with empty caches.
-4. Run the Time Machine workflow with `public_version=vX.Y.Z-rc.N`.
+4. Run the Time Machine workflow with `--ref vX.Y.Z-rc.N -f server=default`.
+   It builds the tagged code; the public proxy install is checked separately.
 5. If it passes, tag the same commit `vX.Y.Z`.
 
 Never move or reuse a tag. The Go checksum database keeps the first hash.
