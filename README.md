@@ -79,8 +79,9 @@ tmutil startbackup --block
 - s3-smb must be running whenever Time Machine backs up.
 
 Tested on macOS 15.7.9 (24G830) on Intel, on GitHub's `macos-15` runner image
-20260824.0482.1, with s3-smb v0.1.0-rc.8 and MinIO as the S3 server. The test
-also restored the backup on a second Mac that had only the bucket.
+20260824.0482.1, with s3-smb v0.1.0 and MinIO as the S3 server. The run
+installed v0.1.0-rc.9, which is the same commit. The test also restored the
+backup on a second Mac that had only the bucket.
 
 ## What is stored and how recovery works
 

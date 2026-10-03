@@ -107,7 +107,7 @@ Mac exports the stopped store, and a further fresh Mac recovers it and restores
 the first backup. The scenarios kill the application or the Time Machine client.
 They do not cut power and do not remove objects from S3. The `discover` mode
 lists the directories to exclude. Last passing run:
-https://github.com/djosh34/s3-smb/actions/runs/37087397586
+https://github.com/djosh34/s3-smb/actions/runs/37098439018
 
 ## Releasing
 
