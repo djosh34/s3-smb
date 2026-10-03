@@ -340,8 +340,17 @@ logging:
                 self.cmd.run(['/sbin/umount', line.split(' on ', 1)[1].split(' (', 1)[0]], timeout=120, diagnostic=True)
         for device in reversed(devices):
             _, code = self.cmd.run(['/usr/bin/hdiutil', 'detach', device], timeout=120, diagnostic=True)
-            if code:
-                self.cmd.run(['/usr/bin/hdiutil', 'detach', '-force', device], timeout=120)
+            # startbackup can return while backupd is still ejecting its image.
+            deadline = time.monotonic() + 60
+            while code:
+                info, _ = self.cmd.run(['/usr/bin/hdiutil', 'info', '-plist'])
+                if device not in [e.get('dev-entry') for i in plistlib.loads(info.encode()).get('images', [])
+                                  for e in i.get('system-entities', [])]:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError(f'cannot detach {device}')
+                time.sleep(5)
+                _, code = self.cmd.run(['/usr/bin/hdiutil', 'detach', '-force', device], timeout=120, diagnostic=True)
         self.attachments.clear()
         # backupd can still be ejecting its mount after a completed backup.
         deadline = time.monotonic() + 60
