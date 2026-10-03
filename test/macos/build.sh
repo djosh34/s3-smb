@@ -40,7 +40,7 @@ mkdir "$install_root/empty" "$install_root/bin"
 ) 2>&1 | tee "$MAC_ARTIFACTS/public-install.log"
 cp "$install_root/bin/s3-smb" "$MAC_BIN/s3-smb"
 go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
-# Same immutable MinIO source as test/Dockerfile. Native SDK, no Docker/latest.
+# Same immutable MinIO source as test/minio/commit. Native SDK, no Docker/latest.
 minio_revision=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
 minio_src=$(mktemp -d "$MAC_WORK/minio-source.XXXXXX")
 git -C "$minio_src" init
