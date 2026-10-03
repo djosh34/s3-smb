@@ -68,7 +68,7 @@ func newMetadata(t *testing.T) (meta.Meta, *meta.Format) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Shutdown() })
-	f := &meta.Format{Name: "fixture", UUID: "6f4f1a3b-5370-4383-b974-5d1bd26191b4", Storage: "s3", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096}
+	f := &meta.Format{Name: "fixture", UUID: "6f4f1a3b-5370-4383-b974-5d1bd26191b4", Storage: "s3", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096, Compression: "none"}
 	if err = m.Init(f, false); err != nil {
 		t.Fatal(err)
 	}

@@ -67,13 +67,20 @@ one per week for 2 months and one per month for 2 years.
    `Recover metadata from <backup> (<time>)? ... Continue? [yes/no]`.
 4. Answer `yes` only if the old writer has stopped. Changes made after that backup
    are lost.
-5. s3-smb loads the backup into a new database, takes a new metadata backup and
-   starts serving.
+5. s3-smb loads the backup into a staged database, deletes this volume's cache
+   directory, then renames the database into place. It takes a new metadata
+   backup and starts serving.
 6. Mount the share and check your files. For Time Machine, restore a few files
    with `tmutil restore` or the Time Machine app and compare them.
 
-A successful import does not prove that every data object it points at exists.
-A missing object shows up as a read error on that file.
+You may keep `storage.cache_dir` when recovering. Recovery deletes only the
+volume UUID directory under that root. Other files and directories stay as they
+are. If the process stops before the database rename, the next start asks for
+recovery again.
+
+Recovery can leave unreferenced data objects in S3 from writes made after the
+selected backup. A successful import does not prove that every data object it
+points at exists. A missing object shows up as a read error on that file.
 
 If recovery fails, do not delete objects, generate a new key, change the
 encryption setting or format the bucket to get past the error. s3-smb never falls
