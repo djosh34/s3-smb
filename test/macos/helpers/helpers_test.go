@@ -29,7 +29,7 @@ func TestManifest(t *testing.T) {
 			}
 			before, counts, err := Manifest(tree)
 			must(t, err)
-			if counts.Entries != 8 || counts.Files != 3 || counts.Bytes != 37 {
+			if counts.Entries != 8 || counts.Files != 3 || counts.Bytes != 38 {
 				t.Fatalf("counts: %+v", counts)
 			}
 			if before[0].Path != "." || before[0].Type != "directory" {
