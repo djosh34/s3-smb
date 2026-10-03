@@ -5,6 +5,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/repo/scripts" "$fixture/repo/test" "$fixture/bin" "$fixture/logs"
+for directory in .git internal/juicefs internal/thirdparty internal/smb2 internal/smbfs internal/smb-old; do
+  mkdir -p "$fixture/repo/$directory"
+  touch "$fixture/repo/$directory/ignored.go"
+done
+touch "$fixture/repo/our file.go"
 cp "$root/scripts/check.sh" "$fixture/repo/scripts/check.sh"
 printf 'FROM scratch\n' > "$fixture/repo/test/Dockerfile"
 printf 'echo script-tests >> "$CHECK_TEST_COMMANDS"\n' > "$fixture/repo/test/check_test.sh"
@@ -16,10 +21,13 @@ command=${0##*/}
 command=${command%-stub}
 printf '%s [%s] %s\n' "$command" "$S3_SMB_CHECK_MODE" "$*" >> "$CHECK_TEST_COMMANDS"
 if [[ ${CHECK_TEST_FAIL:-} == "$command $*" ]]; then exit 17; fi
+if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFIX"* ]]; then exit 17; fi
 case "$command $*" in
+  'go test -race -shuffle=on -count=1 -timeout=30m ./...')
+    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
-    if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\n'; fi
+    if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
     printf 'ok example/one 0.01s\n' ;;
   "go test -list ^Fuzz example/two")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzOther\n'; fi
@@ -35,7 +43,7 @@ export PATH="$fixture/bin:$PATH"
 export CHECK_TEST_COMMANDS="$fixture/commands"
 export S3_SMB_TEST_LOGS="$fixture/logs"
 export GITHUB_OUTPUT="$fixture/github-output"
-unset CHECK_TEST_FAIL CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT
+unset CHECK_TEST_FAIL CHECK_TEST_FAIL_PREFIX CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT
 
 fail() { echo "check.sh test failed: $*" >&2; exit 1; }
 contains() { grep -F -- "$1" "$CHECK_TEST_COMMANDS" >/dev/null || fail "missing command: $1"; }
@@ -59,7 +67,8 @@ succeeds
 contains 'go [pr] mod tidy -diff'
 contains 'go [pr] vet ./...'
 contains 'go [pr] vet -tags smbnext ./...'
-contains 'gofmt [pr] -l'
+contains 'gofmt [pr] -l ./our file.go'
+absent 'ignored.go'
 contains 'script-tests'
 contains 'go [pr] test -count=1 ./...'
 contains 'go [pr] test -race -shuffle=on -count=1 ./...'
@@ -93,8 +102,10 @@ contains 'go [gate] test -count=1 ./...'
 contains 'go [gate] test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'
 contains 'go [gate] test -run ^$ -fuzz ^FuzzSecond$ -fuzztime 1m -parallel 2 example/one'
 contains 'go [gate] test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 2 example/two'
+contains 'go [gate] test -run ^$ -fuzz ^Fuzz$ -fuzztime 1m -parallel 2 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^Fuzz日本$ -fuzztime 1m -parallel 2 example/one'
 contains '-e S3_SMB_CHECK_MODE=gate'
-[[ $(grep -c -- ' -fuzz ' "$CHECK_TEST_COMMANDS") == 3 ]] || fail 'wrong fuzz target count'
+[[ $(grep -c -- ' -fuzz ' "$CHECK_TEST_COMMANDS") == 5 ]] || fail 'wrong fuzz target count'
 export CHECK_TEST_TARGETS=no
 run_check --gate
 succeeds
@@ -124,6 +135,19 @@ fails
 absent 'go [pr] test '
 grep -F './bad.go' "$fixture/output" >/dev/null || fail 'missing gofmt diagnostic'
 unset CHECK_TEST_UNFORMATTED
+
+# Docker failures clean up only the resources that were created.
+for prefix in 'docker build' 'docker network create' 'docker create' 'docker start -a'; do
+  export CHECK_TEST_FAIL_PREFIX=$prefix
+  run_check
+  fails
+  if [[ $prefix == 'docker create' || $prefix == 'docker start -a' ]]; then
+    contains 'docker [pr] network rm'
+  else
+    absent 'docker [pr] network rm'
+  fi
+done
+unset CHECK_TEST_FAIL_PREFIX
 
 # Container exit codes and cleanup errors fail the check.
 export CHECK_TEST_CONTAINER_EXIT=17
@@ -161,4 +185,27 @@ wait "$second"
 first_id=$(grep 'network create' "$fixture/first" | awk '{print $5}')
 second_id=$(grep 'network create' "$fixture/second" | awk '{print $5}')
 [[ -n $first_id && -n $second_id && $first_id != "$second_id" ]] || fail 'parallel names collide'
+# The internal Docker step builds a normal daemon and race-tests every package.
+: > "$CHECK_TEST_COMMANDS"
+export S3_SMB_CHECK_MODE=gate S3_SMB_E2E_ENDPOINT=http://minio:9000
+export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
+touch "$fixture/logs/daemon.log"
+chmod 600 "$fixture/logs/daemon.log"
+export CHECK_TEST_SOURCE="$fixture/repo"
+run_internal() {
+  bash -c 'cd() { builtin cd "$CHECK_TEST_SOURCE"; }; source "$1"' \
+    _ "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1
+}
+run_internal
+contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
+[[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
+export CHECK_TEST_FAIL='go build -buildvcs=false -o /tmp/s3-smb .'
+if run_internal; then fail 'internal build failure ignored'; fi
+unset CHECK_TEST_FAIL
+for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
+  if env -u "$variable" bash "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1; then
+    fail "internal step accepted missing $variable"
+  fi
+done
 echo 'check.sh tests passed'

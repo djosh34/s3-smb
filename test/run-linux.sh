@@ -5,7 +5,15 @@ set -Eeuo pipefail
 : "${S3_SMB_E2E_ENDPOINT:?Run scripts/check.sh}"
 : "${S3_SMB_TEST_ARTIFACTS:?Run scripts/check.sh}"
 # The tests run as root. Let the calling user read the daemon logs.
-trap 'chmod -R a+rX "$S3_SMB_TEST_ARTIFACTS"' EXIT
+readable_logs() {
+  status=$?
+  if ! chmod -R a+rX "$S3_SMB_TEST_ARTIFACTS"; then
+    echo 'Could not make daemon logs readable' >&2
+    status=1
+  fi
+  exit "$status"
+}
+trap readable_logs EXIT
 cd /src
 go build -buildvcs=false -o /tmp/s3-smb .
 export S3_SMB_E2E_BINARY=/tmp/s3-smb

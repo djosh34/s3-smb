@@ -56,7 +56,11 @@ echo '== Lint =='
 go mod tidy -diff
 go vet ./...
 go vet -tags smbnext ./...
-find . -type f -name '*.go' -not -path './.git/*' -print0 > "$work/go-files"
+# Vendored code and the frozen SMB server are not ours to format.
+find . -type d \( -path './.git' -o -path './internal/juicefs' \
+  -o -path './internal/thirdparty' -o -path './internal/smb2' \
+  -o -path './internal/smbfs' -o -path './internal/smb-old' \) -prune \
+  -o -type f -name '*.go' -print0 > "$work/go-files"
 xargs -0 gofmt -l < "$work/go-files" > "$work/unformatted"
 if [[ -s $work/unformatted ]]; then
   echo 'Run gofmt on these files:' >&2
@@ -84,7 +88,7 @@ if [[ $S3_SMB_CHECK_MODE == gate ]]; then
     go test -list '^Fuzz' "$package" > "$work/targets"
     while IFS= read -r target; do
       # go test also prints package summaries. Only target names belong here.
-      if [[ $target =~ ^Fuzz[[:alnum:]_]+$ ]]; then
+      if [[ $target == Fuzz* && $target != *[[:space:]]* ]]; then
         echo "Fuzzing $package/$target"
         if ! go test -run '^$' -fuzz "^${target}$" -fuzztime 1m -parallel 2 "$package"; then
           fuzz_failure

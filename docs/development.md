@@ -67,7 +67,10 @@ scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 
 Both modes need Linux, Bash, Docker, Go 1.26.3 and a C compiler. They check
 `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and gofmt, then
-run unit tests and `go test -race -shuffle=on`. The lint stage in
+run unit tests and `go test -race -shuffle=on`. The gofmt check skips vendored
+code (`internal/juicefs`, `internal/thirdparty`) and the frozen SMB server
+(`internal/smb2`, `internal/smbfs`, or `internal/smb-old` after the move).
+The lint stage in
 `scripts/check.sh` is where additional linters belong.
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
