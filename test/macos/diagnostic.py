@@ -13,6 +13,7 @@ import time
 
 from acceptance import Acceptance, WORK, EVIDENCE, PROOF
 from framing_capture import audit_pcap
+from compare_framing import compare_frames
 from native import utc
 
 
@@ -102,6 +103,8 @@ class Diagnostic(Acceptance):
                 raw = WORK / 'private-traffic.pcap'
                 if raw.exists():
                     audit_pcap(raw, EVIDENCE / 'framing')
+                if os.environ.get('DIAGNOSTIC_BINARY') == 'instrumented':
+                    compare_frames(EVIDENCE)
                 summary_path = EVIDENCE / 'framing/capture-summary.json'
                 summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
                 drops = re.search(r'(\d+) packets dropped by kernel', (EVIDENCE / 'tcpdump-stderr.log').read_text())

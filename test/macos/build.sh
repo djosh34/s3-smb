@@ -5,7 +5,7 @@ set -euo pipefail
 umask 077
 [[ "$(uname -s)" = Darwin ]]
 [[ "$PUBLIC_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
-[[ "${DIAGNOSTIC_BINARY:-baseline}" = baseline ]]
+[[ "${DIAGNOSTIC_BINARY:-baseline}" = baseline || "$DIAGNOSTIC_BINARY" = instrumented ]]
 git rev-parse HEAD > "$MAC_ARTIFACTS/harness-revision"
 git rev-parse 'v0.1.0-rc.7^{}' > "$MAC_ARTIFACTS/application-source-revision"
 git rev-parse v0.1.0-rc.7 > "$MAC_ARTIFACTS/application-tag-object"
@@ -24,6 +24,21 @@ mkdir "$MAC_BIN"
 # A fresh install from the public Go proxy, not a build of this checkout.
 install_root=$(mktemp -d "$MAC_WORK/public-install.XXXXXX")
 mkdir "$install_root/empty" "$install_root/bin"
+if [[ "${DIAGNOSTIC_BINARY:-baseline}" = instrumented ]]; then
+  source_revision=e6e05f032935690617b0338ca369d13d0306a948
+  instrument_src="$MAC_WORK/rc7-instrumented-source"
+  mkdir "$instrument_src"
+  git archive "$source_revision" | tar -x -C "$instrument_src"
+  cp test/macos/transport-diagnostic.go.txt "$instrument_src/internal/smb2/server/transport.go"
+  cp test/macos/transport-diagnostic_test.go.txt "$instrument_src/internal/smb2/server/transport_diagnostic_test.go"
+  shasum -a 256 test/macos/transport-diagnostic.go.txt > "$MAC_ARTIFACTS/transport-overlay-sha256.txt"
+  printf '%s\n' 'rc.7 source plus transport-only observational overlay; original short-write behavior preserved' > "$MAC_ARTIFACTS/application-variant.txt"
+  (
+    cd "$instrument_src"
+    go test -race -p 3 ./internal/smb2/server -run '^TestDiagnostic' -count=1
+    go build -p 3 -o "$MAC_BIN/s3-smb" .
+  ) > "$MAC_ARTIFACTS/instrumented-build.log" 2>&1
+else
 (
   cd "$install_root/empty"
   export GOENV=off GOPATH="$install_root/gopath" GOMODCACHE="$install_root/modules"
@@ -42,6 +57,8 @@ mkdir "$install_root/empty" "$install_root/bin"
   go version -m "$GOBIN/s3-smb"
 ) 2>&1 | tee "$MAC_ARTIFACTS/public-install.log"
 cp "$install_root/bin/s3-smb" "$MAC_BIN/s3-smb"
+printf '%s\n' 'unmodified public rc.7 baseline' > "$MAC_ARTIFACTS/application-variant.txt"
+fi
 go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
 shasum -a 256 "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/application-sha256.txt"
 # Same immutable MinIO source as test/Dockerfile. Native SDK, no Docker/latest.

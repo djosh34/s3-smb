@@ -39,7 +39,7 @@ sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_SCENARIO=${MAC_SCENARIO:-}" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_IMAGE=${ImageOS:-unknown} ${ImageVersion:-unknown}" \
   PYTHONDONTWRITEBYTECODE=1 \
-  "DIAGNOSTIC_FRAMES=$MAC_ARTIFACTS/application-frames.jsonl" \
+  "DIAGNOSTIC_FRAMES=$MAC_ARTIFACTS/application-frames.jsonl" "DIAGNOSTIC_BINARY=${DIAGNOSTIC_BINARY:-baseline}" \
   python3 "$repo/test/macos/diagnostic.py"
 # acceptance.py runs as root. The artifact upload runs as the runner user.
 sudo -n chown -R "$(id -u):$(id -g)" "$MAC_TRANSFER"
