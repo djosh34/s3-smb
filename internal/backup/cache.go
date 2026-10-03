@@ -32,7 +32,7 @@ func WipeVolumeCache(cacheRoot, volumeUUID, stateDir string) error {
 		return fmt.Errorf("resolve state directory: %w", err)
 	}
 	path := filepath.Join(root, volumeUUID)
-	if withinDirectory(path, state) || withinDirectory(state, path) {
+	if withinDirectory(state, path) {
 		return errors.New("volume cache overlaps the state directory; refusing to delete it")
 	}
 	// RemoveAll unlinks symlinks inside this directory without following them.

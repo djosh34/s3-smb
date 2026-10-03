@@ -148,13 +148,6 @@ func TestRecoveryCacheKillHelper(t *testing.T) {
 		t.Fatal(err)
 	}
 	cacheFileRoundTrip(t, m, blob, &format, cache, "old", []byte("OLDOLD"))
-	deadline := time.Now().Add(5 * time.Second)
-	for !hasCachedBlock(t, cache) {
-		if time.Now().After(deadline) {
-			t.Fatal("old file never reached the disk cache")
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
 	if err := m.Shutdown(); err != nil {
 		t.Fatal(err)
 	}
@@ -244,6 +237,45 @@ func cacheFileRoundTrip(t *testing.T, m meta.Meta, blob object.ObjectStorage, fo
 	}
 	if readErr != nil || n != len(data) || !bytes.Equal(got, data) {
 		t.Fatalf("read: got %q, want %q: %v", got, data, readErr)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !hasCachedBlock(t, cache) {
+		if time.Now().After(deadline) {
+			t.Fatal("file never reached the disk cache")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestRecoveryValidationFailureKeepsCache(t *testing.T) {
+	m, format := newMetadata(t)
+	blob := newStore(t)
+	mgr := newManager(t, m, blob, t.TempDir(), time.Now, time.Second)
+	receipt, err := mgr.Backup(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, state := t.TempDir(), t.TempDir()
+	volume := filepath.Join(root, format.UUID)
+	if err := os.Mkdir(volume, 0700); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(volume, "keep")
+	if err := os.WriteFile(keep, []byte("old cache"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	current := *format
+	current.Name = "wrong-volume"
+	db := filepath.Join(state, "metadata.db")
+	if _, err := Recover(context.Background(), blob, receipt.Key, db, root, &current); err == nil {
+		t.Fatal("accepted mismatched metadata")
+	}
+	got, err := os.ReadFile(keep)
+	if err != nil || string(got) != "old cache" {
+		t.Fatalf("cache changed before metadata validation: %q, %v", got, err)
+	}
+	if _, err := os.Lstat(db); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("database exists after validation failure: %v", err)
 	}
 }
 

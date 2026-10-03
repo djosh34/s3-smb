@@ -73,7 +73,7 @@ func TestWipeVolumeCacheRejectsUnsafePaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, cache := range []string{root, alias} {
-		for _, stateDir := range []string{volume, state, root} {
+		for _, stateDir := range []string{volume, state} {
 			if err := WipeVolumeCache(cache, cacheTestUUID, stateDir); err == nil {
 				t.Fatalf("accepted cache %s overlapping state %s", cache, stateDir)
 			}
@@ -81,6 +81,28 @@ func TestWipeVolumeCacheRejectsUnsafePaths(t *testing.T) {
 	}
 	if _, err := os.Stat(state); err != nil {
 		t.Fatalf("state directory was touched: %v", err)
+	}
+}
+
+func TestWipeVolumeCacheInsideState(t *testing.T) {
+	state := t.TempDir()
+	volume := filepath.Join(state, cacheTestUUID)
+	if err := os.Mkdir(volume, 0700); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(state, "keep")
+	if err := os.WriteFile(keep, []byte("state file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := WipeVolumeCache(state, cacheTestUUID, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(volume); !os.IsNotExist(err) {
+		t.Fatalf("volume cache remains: %v", err)
+	}
+	got, err := os.ReadFile(keep)
+	if err != nil || string(got) != "state file" {
+		t.Fatalf("state file changed: %q, %v", got, err)
 	}
 }
 
