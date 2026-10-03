@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: AGPL-3.0-only
-"""Private pcap -> PUBLIC NUMERIC METADATA ONLY. Never exports stream/payload bytes.
+"""Private pcap -> private framing observations, never full payload/stream dumps.
 
-Usage: framing_capture.py INPUT.pcap OUTPUT_DIRECTORY
-Direct TCP header4/magic4 are fixed framing identifiers, not payload dumps.
-Absolute directional offsets begin at SYN+1. Read/WRITE metadata and SHA256 of
-non-auth frames permit on-runner comparison without retaining auth payloads.
+Usage: framing_capture.py INPUT.pcap PRIVATE_OUTPUT_DIRECTORY
+Suspect header4 bytes remain private: publish_diagnostic.py removes them before
+upload. Absolute directional offsets begin at SYN+1. Numeric READ/WRITE metadata
+permits partial structural analysis; no payload digests are emitted.
 A complete TCP framing audit is NOT a complete SMB semantic correctness proof.
 """
 import collections
@@ -227,14 +227,12 @@ class Stream:
             return fields
         parts, errors = [], []
         at = 0
-        has_auth = False
         while True:
             if at + 64 > len(frame) or frame[at:at + 4] != b'\xfeSMB':
                 errors.append('invalid-compound-header')
                 break
             header = frame[at:at + 64]
             command, flags, nxt = u16(header, 12), u32(header, 16), u32(header, 20)
-            has_auth = has_auth or command in (0, 1)
             length = nxt if nxt else len(frame) - at
             part = dict(offset=at, length=length, structure_size=u16(header, 4), command=command,
                         credit_charge=u16(header, 6), credits=u16(header, 14), flags=flags,
