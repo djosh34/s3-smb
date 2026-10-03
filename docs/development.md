@@ -69,9 +69,8 @@ Both modes need Linux, Bash, Docker, Go 1.26.3, a C compiler and Python 3.
 They check `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and
 gofmt, then run the Mac harness Python unit tests, Go unit tests and
 `go test -race -shuffle=on`. Python tests do not write bytecode into the tree.
-The gofmt check skips vendored
-code (`internal/juicefs`, `internal/thirdparty`) and the frozen SMB server
-(`internal/smb2`, `internal/smbfs`, or `internal/smb-old` after the move).
+The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
+and the frozen SMB server (`internal/smb-old`).
 The lint stage in `scripts/check.sh` is where additional linters belong.
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in

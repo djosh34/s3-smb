@@ -5,7 +5,7 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/repo/scripts" "$fixture/repo/test" "$fixture/bin" "$fixture/logs"
-for directory in .git internal/juicefs internal/thirdparty internal/smb2 internal/smbfs internal/smb-old; do
+for directory in .git internal/juicefs internal/thirdparty internal/smb-old; do
   mkdir -p "$fixture/repo/$directory"
   touch "$fixture/repo/$directory/ignored.go"
 done

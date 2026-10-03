@@ -59,8 +59,7 @@ go vet ./...
 go vet -tags smbnext ./...
 # Vendored code and the frozen SMB server are not ours to format.
 find . -type d \( -path './.git' -o -path './internal/juicefs' \
-  -o -path './internal/thirdparty' -o -path './internal/smb2' \
-  -o -path './internal/smbfs' -o -path './internal/smb-old' \) -prune \
+  -o -path './internal/thirdparty' -o -path './internal/smb-old' \) -prune \
   -o -type f -name '*.go' -print0 > "$work/go-files"
 xargs -0 gofmt -l < "$work/go-files" > "$work/unformatted"
 if [[ -s $work/unformatted ]]; then
