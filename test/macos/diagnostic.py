@@ -28,7 +28,7 @@ class Diagnostic(Acceptance):
 
     def start_capture(self):
         self.capture_log = (EVIDENCE / 'tcpdump-stderr.log').open('xb', buffering=0)
-        argv = ['/usr/sbin/tcpdump', '-i', 'lo0', '-nn', '-s', '0', '-B', '131072', '-U',
+        argv = ['/usr/sbin/tcpdump', '-i', 'lo0', '-nn', '-s', '0', '-B', '262144',
                 '-w', str(WORK / 'private-traffic.pcap'), 'tcp port 1445']
         self.save('capture-command.json', dict(argv=argv, started=utc(),
                   raw_policy='private scratch only; never uploaded', export='numeric metadata only'))
@@ -103,16 +103,20 @@ class Diagnostic(Acceptance):
                 raw = WORK / 'private-traffic.pcap'
                 if raw.exists():
                     audit_pcap(raw, EVIDENCE / 'framing')
+                comparison = None
                 if os.environ.get('DIAGNOSTIC_BINARY') == 'instrumented':
-                    compare_frames(EVIDENCE)
+                    comparison = compare_frames(EVIDENCE)
                 summary_path = EVIDENCE / 'framing/capture-summary.json'
                 summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
                 drops = re.search(r'(\d+) packets dropped by kernel', (EVIDENCE / 'tcpdump-stderr.log').read_text())
+                observer_available = comparison is None or bool(comparison.get('available') and
+                    comparison.get('counts', {}).get('application_header_events', 0))
                 valid = bool(was_alive and code == 0 and not self.capture_health and drops and int(drops[1]) == 0
-                             and summary.get('observed_prefix_contiguous') and joined)
+                             and summary.get('observed_prefix_contiguous') and joined and observer_available)
                 self.save('measurement.json', dict(time=utc(), observed_prefix_valid=valid,
                           complete_connection_capture=summary.get('complete_reassembly', False),
                           tcpdump_exit=code, kernel_drops=int(drops[1]) if drops else None,
+                          observer_available=observer_available,
                           caveat='TCP framing only, not a proof of SMB semantic correctness; raw scratch is ephemeral'))
                 if not valid:
                     raise RuntimeError('measurement incomplete; workload result is separate from capture validity')
