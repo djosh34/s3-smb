@@ -40,8 +40,16 @@ finish() {
     printf 'tcpdump_exit=%s\n' "$?" >> "$out/result.txt"
   fi
   if [[ -s "$work/control.pcap" ]]; then
-    python3 "$repo/test/macos/framing_capture.py" "$work/control.pcap" "$out/framing" >"$out/parser.log" 2>&1
+    # Keep every byte-bearing parser output private too. Metadata only avoids
+    # treating a marker scan as a proof that unparsed tails contain no secrets.
+    python3 "$repo/test/macos/framing_capture.py" "$work/control.pcap" "$work/framing-private" >"$work/parser-private.log" 2>&1
     printf 'parser_exit=%s\n' "$?" >> "$out/result.txt"
+    mkdir -p "$out/framing"
+    for metadata in frames.jsonl capture-summary.json; do
+      if [[ -f "$work/framing-private/$metadata" ]]; then
+        cp "$work/framing-private/$metadata" "$out/framing/$metadata"
+      fi
+    done
     /usr/bin/shasum -a 256 "$work/control.pcap" | /usr/bin/awk '{print $1}' > "$out/raw-capture-sha256.txt"
     /usr/bin/stat -f '%z' "$work/control.pcap" > "$out/raw-capture-bytes.txt"
   fi
