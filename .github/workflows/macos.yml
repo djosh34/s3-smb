@@ -1,266 +1,33 @@
-name: Time Machine end-to-end
-# Backup and restore on two Macs, five failed-backup scenarios, or exclusion discovery.
+name: Independent Apple SMB workload control
 on:
   workflow_dispatch:
-    inputs:
-      public_version:
-        description: Released application version to install from the public Go proxy
-        required: true
-        default: v0.1.0
-        type: string
-      mode:
-        description: What to run
-        required: true
-        default: acceptance
-        type: choice
-        options:
-          - discover
-          - acceptance
-          - scenarios
-      scenarios:
-        description: Failed-backup scenarios to run, as a JSON list
-        required: true
-        default: '["server-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss"]'
-        type: string
 permissions:
   contents: read
-env:
-  PUBLIC_VERSION: ${{ inputs.public_version }}
 jobs:
-  discover:
-    name: exclusion discovery
-    if: inputs.mode == 'discover'
+  apple-smb-control:
     runs-on: macos-15-intel
-    timeout-minutes: 30
-    env:
-      MAC_PHASE: discover
+    timeout-minutes: 35
     steps:
-      - name: Set task paths
-        run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - name: List directories and check the exclusion list
-        run: bash test/macos/run.sh
-      - name: Make evidence readable by the uploader
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload discovery evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-discover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
-          if-no-files-found: error
-          retention-days: 14
-          include-hidden-files: true
-  backup:
-    name: backup
-    if: inputs.mode == 'acceptance'
-    runs-on: macos-15-intel
-    timeout-minutes: 150
-    env:
-      MAC_PHASE: backup
-    steps:
-      - name: Set task paths
+      - name: Apple smbd only, bounded sustained WRITE control
         run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - name: Time Machine backup
-        run: bash test/macos/run.sh
-      - name: Upload the reference manifest
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-reference-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/reference
-          if-no-files-found: error
-          retention-days: 1
-          include-hidden-files: true
-      - name: Upload the stopped MinIO store
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-store-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/store.tar
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-      - name: Make evidence readable by the uploader
+          sudo -n env "PATH=$PATH" PYTHONDONTWRITEBYTECODE=1 \
+            python3 test/macos/smb_control.py \
+            --work "$RUNNER_TEMP/apple-control-private" \
+            --public "$RUNNER_TEMP/apple-control-public"
+      - name: Make only public metadata readable
         if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload backup evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-backup-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
-          if-no-files-found: error
-          retention-days: 14
-          include-hidden-files: true
-  recover:
-    name: recovery on a fresh Mac
-    needs: backup
-    runs-on: macos-15-intel
-    timeout-minutes: 90
-    env:
-      MAC_PHASE: recover
-    steps:
-      - name: Set task paths
         run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: mac-reference-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/reference
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: mac-store-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}
-      - name: Recovery and restore
-        run: bash test/macos/run.sh
-      - name: Make evidence readable by the uploader
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload recovery evidence
+          if [[ -d "$RUNNER_TEMP/apple-control-public" ]]; then
+            sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/apple-control-public"
+          fi
+      - name: Upload metadata only, never private scratch
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-recover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          name: apple-control-${{ github.sha }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/apple-control-public
           if-no-files-found: error
           retention-days: 14
-          include-hidden-files: true
-  scenario:
-    name: ${{ matrix.scenario }}
-    if: inputs.mode == 'acceptance' || inputs.mode == 'scenarios'
-    runs-on: macos-15-intel
-    timeout-minutes: 120
-    strategy:
-      fail-fast: false
-      matrix:
-        scenario: ${{ fromJSON(inputs.scenarios) }}
-    env:
-      MAC_PHASE: scenario
-      MAC_SCENARIO: ${{ matrix.scenario }}
-    steps:
-      - name: Set task paths
-        run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - name: Failed backup and recovery
-        run: bash test/macos/run.sh
-      - name: Upload the reference manifest
-        if: matrix.scenario == 'machine-loss'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-loss-reference-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/reference
-          if-no-files-found: error
-          retention-days: 1
-          include-hidden-files: true
-      - name: Upload the stopped MinIO store
-        if: matrix.scenario == 'machine-loss'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-loss-store-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/store.tar
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-      - name: Make evidence readable by the uploader
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
-          if-no-files-found: error
-          retention-days: 14
-          include-hidden-files: true
-  machine-loss-recover:
-    name: machine-loss on a fresh Mac
-    # The matrix has other scenarios that may fail. Only the store upload matters here.
-    needs: scenario
-    if: ${{ !cancelled() && inputs.mode != 'discover' && contains(inputs.scenarios, 'machine-loss') }}
-    runs-on: macos-15-intel
-    timeout-minutes: 90
-    env:
-      MAC_PHASE: recover
-    steps:
-      - name: Set task paths
-        run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: mac-loss-reference-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}/reference
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
-        with:
-          name: mac-loss-store-${{ github.run_attempt }}
-          path: ${{ env.MAC_TRANSFER }}
-      - name: Recovery and restore
-        run: bash test/macos/run.sh
-      - name: Make evidence readable by the uploader
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-machine-loss-recover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
-          if-no-files-found: error
-          retention-days: 14
-          include-hidden-files: true
