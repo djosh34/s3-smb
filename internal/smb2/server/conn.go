@@ -112,6 +112,7 @@ type conn struct {
 	werr  chan error
 
 	m           sync.Mutex
+	sendMu      sync.Mutex
 	ioWG        sync.WaitGroup
 	lockWG      sync.WaitGroup
 	transportWG sync.WaitGroup
@@ -554,6 +555,11 @@ func (conn *conn) sendPacket(req Packet, tc *treeConn, compCtx *compoundContext)
 	}
 	conn.m.Unlock()
 
+	// The sender's completion channel is shared. Keep one enqueue/wait pair
+	// outstanding so concurrent response producers cannot consume each other's
+	// result. Do not hold m across socket I/O: the receiver needs it on exit.
+	conn.sendMu.Lock()
+	defer conn.sendMu.Unlock()
 	ctx := conn.ctx
 	select {
 	case conn.write <- pkt:
