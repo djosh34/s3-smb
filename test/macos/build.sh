@@ -4,12 +4,28 @@
 set -euo pipefail
 umask 077
 [[ "$(uname -s)" = Darwin ]]
-[[ "$PUBLIC_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+[[ "$PUBLIC_VERSION" = v0.1.0-rc.7 ]]
+[[ "$(git rev-parse 'v0.1.0-rc.7^{}')" = e6e05f032935690617b0338ca369d13d0306a948 ]]
 git rev-parse HEAD > "$MAC_ARTIFACTS/harness-revision"
+git rev-parse 'v0.1.0-rc.7^{}' > "$MAC_ARTIFACTS/application-source-revision"
+git rev-parse v0.1.0-rc.7 > "$MAC_ARTIFACTS/application-tag-object"
 printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
 {
   date -u; sw_vers; uname -a; go version; xcodebuild -version; xcrun --show-sdk-path
   printf 'ImageOS=%s ImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+  for key in CFBundleVersion CFBundleShortVersionString; do
+    printf 'smbfs %s=' "$key"
+    /usr/bin/plutil -extract "$key" raw -o - /System/Library/Extensions/smbfs.kext/Contents/Info.plist || true
+    echo
+  done
+  if [[ -f /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs ]]; then
+    shasum -a 256 /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs
+  fi
+  printf 'capture_buffer_requested_bytes=8388608\ncapture_packet_flush=false\n'
+  printf 'capture_effective_descriptor_buffer_bytes=see capture/ready.json BIOCGBLEN\n'
+  for key in debug.bpf_bufsize debug.bpf_maxbufsize net.bpf.bufsize net.bpf.maxbufsize; do
+    /usr/sbin/sysctl "$key" || true
+  done
   df -k; diskutil list; diskutil apfs list
 } > "$MAC_ARTIFACTS/platform.txt" 2>&1
 [[ "$(go env GOVERSION)" = go1.26.3 ]]
@@ -39,7 +55,12 @@ mkdir "$install_root/empty" "$install_root/bin"
   go version -m "$GOBIN/s3-smb"
 ) 2>&1 | tee "$MAC_ARTIFACTS/public-install.log"
 cp "$install_root/bin/s3-smb" "$MAC_BIN/s3-smb"
+printf '%s\n' 'unmodified public rc.7 baseline; no transport observer' > "$MAC_ARTIFACTS/application-variant.txt"
+# Separate passive BPF observer; never linked into or substituted for s3-smb.
+clang -O2 -Wall -Wextra -Werror test/macos/passive_capture.c -lpcap -o "$MAC_BIN/passive-capture" \
+  > "$MAC_ARTIFACTS/capture-build.log" 2>&1
 go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
+shasum -a 256 "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/application-sha256.txt"
 # Same immutable MinIO source as test/Dockerfile. Native SDK, no Docker/latest.
 minio_revision=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
 minio_src=$(mktemp -d "$MAC_WORK/minio-source.XXXXXX")
