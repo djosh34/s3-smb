@@ -3,11 +3,12 @@
 set -Eeuo pipefail
 
 export S3_SMB_CHECK_MODE=pr
-if (( $# > 1 )) || [[ ${1:-} != '' && ${1:-} != --gate ]]; then
+if (( $# == 1 )) && [[ $1 == --gate ]]; then
+  export S3_SMB_CHECK_MODE=gate
+elif (( $# != 0 )); then
   echo 'Usage: scripts/check.sh [--gate]' >&2
   exit 2
 fi
-if [[ ${1:-} == --gate ]]; then export S3_SMB_CHECK_MODE=gate; fi
 export GOMAXPROCS=${GOMAXPROCS:-2}
 export GOFLAGS=${GOFLAGS:--p=2}
 root=$(cd "$(dirname "$0")/.." && pwd)

@@ -148,6 +148,14 @@ for prefix in 'docker build' 'docker network create' 'docker create' 'docker sta
   fi
 done
 unset CHECK_TEST_FAIL_PREFIX
+export CHECK_TEST_FAIL_PREFIX='docker exec'
+run_check
+fails
+contains 'docker [pr] logs '
+contains 'docker [pr] rm -f'
+absent 'docker [pr] start -a'
+[[ $(grep -c 'docker \[pr\] exec' "$CHECK_TEST_COMMANDS") == 60 ]] || fail 'wrong readiness retry count'
+unset CHECK_TEST_FAIL_PREFIX
 
 # Container exit codes and cleanup errors fail the check.
 export CHECK_TEST_CONTAINER_EXIT=17
@@ -167,7 +175,7 @@ rm "$fixture/bin/docker"
 mv "$fixture/bin/docker-stub" "$fixture/bin/docker"
 
 # Invalid arguments cannot skip checks or enable other modes.
-for argument in --help --pr nonsense; do
+for argument in --help --pr nonsense ''; do
   run_check "$argument"
   [[ $result == 2 ]] || fail 'invalid argument accepted'
   [[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid argument ran commands'
@@ -203,6 +211,9 @@ contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
 export CHECK_TEST_FAIL='go build -buildvcs=false -o /tmp/s3-smb .'
 if run_internal; then fail 'internal build failure ignored'; fi
 unset CHECK_TEST_FAIL
+export S3_SMB_TEST_ARTIFACTS="$fixture/missing-logs"
+if run_internal; then fail 'log permission failure ignored'; fi
+export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
 for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
   if env -u "$variable" bash "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1; then
     fail "internal step accepted missing $variable"

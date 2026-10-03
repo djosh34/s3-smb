@@ -1,6 +1,6 @@
 FROM golang:1.26.3-bookworm@sha256:386d475a660466863d9f8c766fec64d7fdad3edac2c6a05020c09534d71edb4b AS build
 ARG MINIO_COMMIT
-ENV GOMAXPROCS=2 GOTOOLCHAIN=local CGO_ENABLED=0
+ENV GOMAXPROCS=2 GOTOOLCHAIN=local CGO_ENABLED=1
 RUN test -n "$MINIO_COMMIT" \
     && git init /minio && cd /minio \
     && git remote add origin https://github.com/minio/minio.git \
