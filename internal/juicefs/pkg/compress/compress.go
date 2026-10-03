@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+// Modified for s3-smb, 2026. See docs/vendored.md.
+
 package compress
 
 import (
@@ -92,7 +94,9 @@ func (n ZStandard) Compress(dst, src []byte) (int, error) {
 
 // Decompress using Zstd
 func (n ZStandard) Decompress(dst, src []byte) (int, error) {
-	d, err := zstd.Decompress(dst, src)
+	// zstd uses all of cap(dst) as scratch space. A destination can be a
+	// window into a larger read buffer whose neighboring bytes must survive.
+	d, err := zstd.Decompress(dst[:len(dst):len(dst)], src)
 	if err != nil {
 		return 0, err
 	}
