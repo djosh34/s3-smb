@@ -24,13 +24,18 @@ All objects are under the prefix `s3-smb/`:
 - `s3-smb/format.json`: volume identity and data layout, without credentials.
 - `s3-smb/keys/<volume UUID>.pem`: the encryption key, protected by your
   passphrase. Only in encrypted mode.
-- `s3-smb/juicefs_uuid` and `s3-smb/chunks/...`: file data, in JuiceFS's layout.
+- `s3-smb/juicefs_uuid`: the volume UUID, which startup checks.
+- `s3-smb/chunks/...`: file data, in JuiceFS's layout.
 - `s3-smb/meta/dump-YYYY-MM-DD-HHMMSS.json.gz`: metadata backups.
 
 The key file is an encrypted PKCS8 private key in PEM form. It uses PBES2 with
 AES-256-GCM and scrypt with N=131072, r=8 and p=1, so unlocking it takes about
-134 MB of memory. If the key object is lost, the passphrase cannot recreate it and
-the encrypted data is gone. You may keep your own copy of it.
+134 MB of memory. `s3-smb/format.json` holds the same protected key in its
+`EncryptKey` field. If the key object is missing, startup stops with
+`read protected volume key` and s3-smb does not create a new key. Write the
+`EncryptKey` value back to the key object to continue. The passphrase cannot
+recreate the key, so the encrypted data is lost only when every copy is gone:
+the key object, `format.json` and any copy you keep yourself.
 
 s3-smb takes a metadata backup every `backup.interval` (default one hour), and
 at startup unless the last one is younger than that. It keeps every backup from the last 2 days, one per day for
@@ -41,12 +46,14 @@ at startup unless the last one is younger than that. It keeps every backup from 
 - The bucket name, region, endpoint and addressing setting.
 - Working S3 credentials for that bucket.
 - The encryption passphrase, if encryption is on.
-- Any CA certificate or client certificate you need to reach the endpoint.
+- Any CA certificate, client certificate and client private key
+  (`client_key_file`) you need to reach the endpoint.
 
 ## Recover on a new machine
 
 1. Stop the old writer. If it still runs on another machine, the two will damage
-   the dataset. The local lock only stops a second process on the same machine.
+   the dataset. Only one s3-smb may write a bucket, on any machine. The local
+   lock only stops a second process with the same `storage.state_dir`.
 2. Install the same s3-smb version and write a config with the saved details and
    an empty `storage.state_dir`. Leave `storage.compression` out, so s3-smb uses
    the setting stored in the bucket. Read secrets from a file or a literal value.

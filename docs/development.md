@@ -2,8 +2,7 @@
 
 ## Layout
 
-- `main.go` calls `internal/app`.
-- `internal/app`: command line, terminal prompt, state lock, startup and shutdown.
+- `internal/app`: command line, prompt, state lock, startup, shutdown.
 - `internal/config`: YAML loading, validation, secret sources and TLS files.
 - `internal/storage`: S3 connection, volume identity, encryption key, JuiceFS setup.
 - `internal/backup`: scheduled metadata backups, delete protection, recovery.
@@ -18,8 +17,10 @@
 
 1. Take an exclusive lock on `state_dir/state.lock`. A second process with the
    same state directory exits.
-2. Connect to S3 and list the bucket. A failed or incomplete listing stops
-   startup. It never counts as an empty bucket.
+2. Connect to S3 and list one object. If the listing returns an object, the
+   bucket is not empty, even if the listing was truncated. Only a complete,
+   empty listing counts as an empty bucket. A failed listing, or a truncated one
+   that returned nothing, stops startup.
 3. Decide what to do. An empty bucket with no local database asks to initialize.
    A bucket with data and no local database asks to recover from the newest
    metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
@@ -50,11 +51,12 @@ process ends. A watchdog ends the process if shutdown takes more than 30 seconds
 
 ## Delete protection
 
-JuiceFS deletes data blocks when the trash expires, when it compacts files and
-when it removes old metadata backups. s3-smb allows these deletes only while the
-newest successful metadata backup started less than two backup intervals ago.
-Every delete transaction and every S3 delete checks this, so a stopped backup
-schedule stops all deletes.
+JuiceFS deletes data blocks once deleted files and blocks replaced by compaction
+have been in the trash for `backup.trash_days`. Separately, s3-smb removes old
+metadata backup objects by the rotation in [recovery](recovery.md); that never
+deletes data blocks. Both run only while the newest successful metadata backup
+started less than two backup intervals ago. Every delete transaction and every
+S3 delete checks this, so a stopped backup schedule stops all deletes.
 
 ## Tests
 
@@ -99,8 +101,10 @@ It installs that version from the Go proxy on `macos-15-intel` runners and runs
 MinIO on each Mac. One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
 recovers the dataset, restores the directory with `tmutil restore` and compares
-it. Five more Macs each interrupt a second backup, restart or recover s3-smb and
-restore the first backup. They kill the application or the Time Machine client.
+it. Five more Macs each interrupt a second backup. Four of them then restart or
+recover s3-smb and restore the first backup. In the machine-loss scenario the
+Mac exports the stopped store, and a further fresh Mac recovers it and restores
+the first backup. The scenarios kill the application or the Time Machine client.
 They do not cut power and do not remove objects from S3. The `discover` mode
 lists the directories to exclude. Last passing run:
 https://github.com/djosh34/s3-smb/actions/runs/37087397586
@@ -108,10 +112,11 @@ https://github.com/djosh34/s3-smb/actions/runs/37087397586
 ## Releasing
 
 1. Make sure both test workflows pass on `main`.
-2. Tag the commit `vX.Y.Z` and push the tag.
-3. Run `scripts/check-public-install.sh vX.Y.Z` on Linux and on a Mac. It
+2. Tag the commit as a release candidate, `vX.Y.Z-rc.N`, and push the tag.
+3. Run `scripts/check-public-install.sh vX.Y.Z-rc.N` on Linux and on a Mac. It
    installs the version from the Go proxy with empty caches.
-4. Run the Time Machine workflow with `public_version=vX.Y.Z`.
+4. Run the Time Machine workflow with `public_version=vX.Y.Z-rc.N`.
+5. If it passes, tag the same commit `vX.Y.Z`.
 
 Never move or reuse a tag. The Go checksum database keeps the first hash.
 

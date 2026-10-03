@@ -48,9 +48,11 @@ other than this machine, because you need them to recover. Every setting is in
 
 ## Time Machine setup
 
-These are the steps the end-to-end test runs on a Mac, with s3-smb on the same
-Mac and the config above. Replace `PASSWORD` with the SMB password. Percent-encode
-it in the URLs if it holds characters such as `@`, `:` or `/`.
+`tmutil setdestination` needs root, and the terminal needs Full Disk Access in
+System Settings, Privacy & Security. These are the steps the end-to-end test
+runs on a Mac, with s3-smb on the same Mac and the config above. Replace
+`PASSWORD` with the SMB password. Percent-encode it in the URLs if it holds
+characters such as `@`, `:` or `/`.
 
 ```sh
 mkdir -p ~/TimeMachineShare
@@ -65,8 +67,7 @@ tmutil startbackup --block
 ```
 
 - Use a port other than 445. `tmutil setdestination` fails with exit code 65 for
-  an SMB server on `127.0.0.1:445`, also with Apple's own SMB server. Binding
-  port 445 also needs root on macOS.
+  an SMB server on `127.0.0.1:445`, also with Apple's own SMB server.
 - The SMB account needs a password. s3-smb does not accept an empty one.
 - `backupd` mounts the share on its own and needs the password in the System
   keychain. Without that item the backup fails with
@@ -92,10 +93,11 @@ bucket layout are in [recovery](docs/recovery.md).
 
 ## Limits
 
-- One running s3-smb per bucket. The state lock only stops a second process on
-  the same machine. Stop the old one before you recover on another machine.
+- Only one s3-smb may write a bucket, on any machine. Stop every other one
+  first. The state lock only stops a second process with the same
+  `storage.state_dir`.
 - s3-smb listens on `127.0.0.1:445` unless you set `smb.listen`. It never
-  widens the address on its own. Ports below 1024 need root.
+  widens the address on its own.
 - Time Machine needs a nonempty SMB password stored in the System keychain.
 - The bucket grows faster than the bytes Time Machine reports. JuiceFS keeps
   replaced blocks for `backup.trash_days` (default 14) and compaction uploads
@@ -104,8 +106,9 @@ bucket layout are in [recovery](docs/recovery.md).
   about 1.3 to 1.8 GB. `storage.compression: zstd` shrinks the zeros.
 - The S3 provider must support `PutObject` with `If-None-Match: *`.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
-- The tests kill the application and the Time Machine client during a backup.
-  Power loss and lost S3 objects are not tested.
+- The Time Machine tests kill the application and the Time Machine client
+  during a backup. They do not cover power loss or lost S3 objects. A Linux test
+  deletes data objects and checks that reading the file fails over SMB.
 
 ## Development
 
