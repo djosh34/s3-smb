@@ -9,3 +9,4 @@ Findings gathered on 2026-10-03 while charting the plan map. Each file is one re
 - research-panics.md: panics, Fatal and Exit calls in JuiceFS, the SMB library and our code, and whether a recover boundary helps.
 - research-macos-client.md: what the macOS 15 SMB client and Time Machine send and need, from Apple's SMBClient source, Samba and MS-SMB2.
 - research-smb-rewrite.md: inventory of internal/smb2, the boundary for a new server, size, milestones, smbtorture and cifs results, switch-over.
+- research-storage-engine.md: what JuiceFS gives s3-smb, Time Machine's write pattern, a small storage engine design, gains and losses.
