@@ -7,3 +7,4 @@ Findings gathered on 2026-10-03 while charting the plan map. Each file is one re
 - research-storage-tests.md: storage, recovery, tests, CI and harness issues.
 - research-code-quality.md: code-quality baseline of the repository.
 - research-panics.md: panics, Fatal and Exit calls in JuiceFS, the SMB library and our code, and whether a recover boundary helps.
+- research-macos-client.md: what the macOS 15 SMB client and Time Machine send and need, from Apple's SMBClient source, Samba and MS-SMB2.
