@@ -69,7 +69,6 @@ class Acceptance:
         self.fixture = BIN / 'fixture'
         self.serial = 0
         self.destination = None
-        self.capture = None
         self.interval = '5m'
 
     def event(self, event, **fields):
@@ -135,13 +134,6 @@ class Acceptance:
         for port in (SMB_PORT, 19000, 19003):
             with socket.socket() as sock:
                 sock.bind(('127.0.0.1', port))
-        # The application closed Time Machine's connection twice on a frame
-        # shorter than four bytes. Keep the last 300 MB of SMB traffic, so that
-        # the frames before it can be read afterwards.
-        self.capture = subprocess.Popen(
-            ['/usr/sbin/tcpdump', '-i', 'lo0', '-s', '0', '-B', '131072', '-C', '150', '-W', '2', '-Z', 'root',
-             '-w', str(EVIDENCE / 'smb.pcap'), f'tcp port {SMB_PORT}'],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         # Public synthetic values only: this isolated loopback fixture has no
         # real account. These same documented inputs are reconstructed on B.
         os.environ['MINIO_ROOT_USER'] = 'mac-acceptance'
@@ -729,9 +721,6 @@ logging:
             attempt('application stop', self.daemon.stop)
             outcomes.append(dict(process='application', pid=self.daemon.pid,
                                  reaped=self.daemon.reaped, status=self.daemon.exit_status))
-        if self.capture:
-            attempt('capture stop', self.capture.terminate)
-            attempt('capture reap', lambda: self.capture.wait(timeout=30))
         for process, log in reversed(self.services):
             attempt('service reap', lambda p=process: reap(p, str(p.args[0]), service=True))
             attempt('service log close', log.close)
