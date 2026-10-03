@@ -754,7 +754,7 @@ func (t *fileTree) readImpl(ctx *compoundContext, pkt []byte, fileId *FileId, op
 	}
 	if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), false) {
 		rsp := new(ErrorResponse)
-		PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+		PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_FILE_LOCK_CONFLICT))
 		return c.sendPacket(rsp, &t.treeConn, ctx)
 	}
 
@@ -857,7 +857,7 @@ func (t *fileTree) writeImpl(ctx *compoundContext, pkt []byte, fileId *FileId, o
 	} else {
 		if c.serverCtx.ioConflictsWithByteRangeLock(open, r.Offset(), uint64(r.Length()), true) {
 			rsp := new(ErrorResponse)
-			PrepareResponse(rsp.Header(), pkt, uint32(STATUS_FILE_LOCK_CONFLICT))
+			PrepareAsyncResponse(rsp.Header(), pkt, asyncId, uint32(STATUS_FILE_LOCK_CONFLICT))
 			return c.sendPacket(rsp, &t.treeConn, ctx)
 		}
 		log.Debugf("Write: %d offset %d", r.Length(), r.Offset())

@@ -1,3 +1,5 @@
+// Modified for s3-smb, 2026. See docs/vendored.md.
+
 package smb2
 
 import (
@@ -8,6 +10,7 @@ import (
 	"strings"
 	"unicode/utf16"
 
+	"github.com/djosh34/s3-smb/internal/smb2/internal/erref"
 	"github.com/djosh34/s3-smb/internal/smb2/vfs"
 )
 
@@ -190,6 +193,9 @@ func PrepareResponse(rsp *PacketHeader, req []byte, status uint32) {
 	p := PacketCodec(req)
 	rsp.Command = p.Command()
 	rsp.CreditRequestResponse = p.CreditRequest()
+	if p.Command() == SMB2_NEGOTIATE && rsp.CreditRequestResponse == 0 {
+		rsp.CreditRequestResponse = 1
+	}
 	rsp.MessageId = p.MessageId()
 	rsp.Flags = 1 | (p.Flags() & SMB2_FLAGS_PRIORITY_MASK)
 	rsp.Status = status
@@ -198,7 +204,10 @@ func PrepareResponse(rsp *PacketHeader, req []byte, status uint32) {
 func PrepareAsyncResponse(rsp *PacketHeader, req []byte, asyncId uint64, status uint32) {
 	p := PacketCodec(req)
 	rsp.Command = p.Command()
-	if status != 0 {
+	// Synchronous replies grant normally; asynchronous replies grant only once,
+	// in STATUS_PENDING, never in the final success or error response.
+	rsp.CreditRequestResponse = 0
+	if asyncId == 0 || status == uint32(erref.STATUS_PENDING) {
 		rsp.CreditRequestResponse = p.CreditRequest()
 	}
 	rsp.MessageId = p.MessageId()

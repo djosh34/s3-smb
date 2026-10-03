@@ -49,6 +49,8 @@ Deleted: `pkg/sync`, `pkg/fs/http.go`.
 | `server/conn.go` | An SMB1 packet reaches the SMB2 upgrade handler only as the first request on a connection and only as a well-formed negotiate. Anything else disconnects. macOS opens with this packet. | `server/negotiate_wire_test.go` |
 | `server/server.go` | SPNEGO and NTLM state is per connection. Upstream shared one authenticator. Work without an authenticated session is rejected. Logoff and tree disconnect close their handles. A listener error stops the server. Shutdown waits for workers. | `server/auth_wire_test.go`, `cleanup_test.go`, `session_gate_test.go`, `capabilities_test.go` |
 | `server/file_tree.go` | FLUSH, CLOSE, WRITE, truncate and xattr errors are returned as SMB statuses. Write-through is honoured. Resource-fork and AFP-info streams support ranged reads and writes. Handles are checked against their session and tree. Xattr values and the list of xattr names are not logged. | `server/durability_test.go`, `error_wire_test.go`, `xattr_*_test.go`, `lock_wire_test.go` |
+| `internal/smb2/util.go` | Asynchronous responses grant credits only in the interim reply; synchronous replies retain their grants. SMB2 negotiation grants at least one credit. | `internal/smb2/credit_response_test.go`, `server/credit_response_test.go` |
+| `server/file_tree.go` | READ and WRITE lock-conflict replies preserve the asynchronous identifier and do not grant credits a second time. | `server/credit_response_test.go` |
 | `server/log.go` | The default logger writes to the application logger. | `server/redaction_test.go` |
 | `internal/erref/erref.go` | `go:generate` line removed with its generator. | none |
 
