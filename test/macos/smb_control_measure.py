@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 
 
-def measure(private, state, target_bytes, minimum_seconds, write_size):
+def measure(private, state, target_bytes, minimum_seconds):
     private = Path(private)
     summary_file = private / 'framing/capture-summary.json'
     summary = json.loads(summary_file.read_text()) if summary_file.exists() else {}
@@ -50,22 +50,30 @@ def measure(private, state, target_bytes, minimum_seconds, write_size):
         and drops == 0 and state.get('health_ok') and state.get('parser_exit') == 0
         and summary.get('observed_prefix_contiguous'))
     complete = bool(measurement_valid and summary.get('complete_reassembly'))
-    exposure = bool(wire_bytes == target_bytes and span >= minimum_seconds
-        and sizes.get(write_size, 0) * write_size >= .9 * target_bytes
+    expected_fractions = {262144: 2/3, 1048576: 1/3}
+    fractions = {size: sizes.get(size, 0) * size / max(1, wire_bytes) for size in expected_fractions}
+    size_mix = (sum(fractions.values()) >= .9 and
+                all(abs(fractions[size] - share) <= .1 for size, share in expected_fractions.items()))
+    exposure = bool(wire_bytes == target_bytes and span >= minimum_seconds and size_mix
         and not protocols['encrypted'] and not protocols['compressed'])
     clean = bool(complete and exposure and state.get('workload_ok') and state.get('unmount_ok')
         and not summary.get('invalid_frames') and not summary.get('unknown_protocol')
-        and not summary.get('frames_with_validation_errors') and not mismatched and not resets)
+        and not summary.get('frames_with_validation_errors') and not mismatched and not resets
+        and not (responses.keys() - requests.keys()))
     return dict(clean_control=clean, observed_prefix_valid=measurement_valid,
         complete_connection_capture=complete, exposure_target_met=exposure,
         tcpdump_exit=state.get('tcpdump_exit'), kernel_drops=drops,
         workload_ok=bool(state.get('workload_ok')), unmount_ok=bool(state.get('unmount_ok')),
         wire_write_bytes=wire_bytes, wire_write_span_seconds=span,
-        wire_write_sizes=dict(sorted(sizes.items())), wire_write_signed_counts=dict(signed),
+        wire_write_sizes=dict(sorted(sizes.items())), wire_write_size_byte_fractions=fractions,
+        wire_write_signed_counts=dict(signed),
         write_requests_without_matching_success_count=mismatched,
         unmatched_write_responses=len(responses.keys() - requests.keys()),
         resets_during_workload=resets, protocols=dict(protocols),
-        target=dict(bytes=target_bytes, minimum_seconds=minimum_seconds, write_size=write_size,
-                    minimum_bytes_fraction_at_write_size=.9),
+        target=dict(bytes=target_bytes, minimum_seconds=minimum_seconds,
+                    write_size_byte_fractions=expected_fractions, fraction_tolerance=.1,
+                    minimum_bytes_fraction_at_target_sizes=.9,
+                    source='approximate large-WRITE mix from uncertain nonfailing rc7 ring alignment; '
+                           'not a recovered historical failing workload'),
         caveat='Exposure target, not proven historical workload equivalence. Plain writes, not Time Machine; '
                'semantic checks partial; no causal inference from one clean control; raw capture ephemeral.')

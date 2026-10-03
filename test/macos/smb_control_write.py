@@ -4,6 +4,10 @@
 
 Write 24 GiB over four file handles for at least six minutes. Reuse four 1 GiB
 files so full packet capture, not sparsebundle allocation, dominates disk use.
+Application calls repeat eight 256 KiB writes then one 1 MiB write (2:1 byte
+ratio). This approximates large-WRITE sizes in an uncertain, nonfailing rc.7
+comparison-ring alignment, not proved sizes from the historical failing stream.
+Actual kernel SMB WRITE sizes must be measured separately.
 No payload, credentials, or SMB session material is printed.
 """
 import argparse
@@ -47,12 +51,14 @@ def run(root, total_mib=24576, seconds=384, workers=4, slot_mib=1024):
                     out.seek(0)
                     expected = hashlib.sha256()
                 payload = zero if (count // slot_mib) % 2 == 0 else block
-                view = memoryview(payload)
-                while view:
-                    written = out.write(view)
-                    if not written:
-                        raise IOError('zero-length write')
-                    view = view[written:]
+                size = 2**20 if count % 3 == 2 else 256 * 1024
+                for start in range(0, len(payload), size):
+                    view = memoryview(payload)[start:start + size]
+                    while view:
+                        written = out.write(view)
+                        if not written:
+                            raise IOError('zero-length write')
+                        view = view[written:]
                 expected.update(payload)
                 if (count + 1) % 64 == 0 or count + 1 == amount:
                     before = time.monotonic()
@@ -76,7 +82,7 @@ def run(root, total_mib=24576, seconds=384, workers=4, slot_mib=1024):
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(writer, range(workers)))
     event(event='control-write-complete', total_mib=total_mib, workers=workers,
-          minimum_seconds=seconds, files=results)
+          minimum_seconds=seconds, application_write_pattern=[262144] * 8 + [1048576], files=results)
     return results
 
 

@@ -117,7 +117,7 @@ class Control:
             smbd_sha256=digest('/usr/sbin/smbd'),
             smbfs_binary_sha256=None, transport='IPv4 loopback port 445; no PF/proxy',
             fixture=dict(mib=self.args.mib, seconds=self.args.seconds, workers=4, slot_mib=1024,
-                         application_write_bytes=2**20))
+                         application_write_pattern=[262144] * 8 + [1048576]))
         kext = Path('/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs')
         if kext.exists():
             provenance['smbfs_binary_sha256'] = digest(kext)
@@ -191,7 +191,7 @@ class Control:
         except Exception:
             self.state['parser_exit'] = -1
         verdict = measure(self.private, self.state, self.args.mib * 2**20,
-                          self.args.seconds - 5, 2**20)
+                          self.args.seconds - 5)
         save(self.private, 'measurement.json', verdict)
         save(self.private, 'control-state.json', self.state)
         self.log.close()

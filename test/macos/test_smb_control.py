@@ -23,22 +23,22 @@ class MeasurementTest(unittest.TestCase):
                           health_ok=True, workload_ok=True, unmount_ok=True, write_start=0, write_end=20)
         (self.root / 'tcpdump-stderr.log').write_text('20 packets captured\n0 packets dropped by kernel\n')
         self.rows = []
-        for i in range(8):
+        for i, size in enumerate([262144] * 8 + [1048576]):
             self.rows.extend([
                 dict(event='frame', connection='conn1', direction='c2s', protocol='SMB2', timestamp=i,
-                     parts=[dict(command=9, message_id=i, flags=8, data_length=2**20)]),
+                     parts=[dict(command=9, message_id=i, flags=8, data_length=size)]),
                 dict(event='frame', connection='conn1', direction='s2c', protocol='SMB2', timestamp=i+.1,
-                     parts=[dict(command=9, message_id=i, flags=9, status_or_channel=0, write_count=2**20)])])
+                     parts=[dict(command=9, message_id=i, flags=9, status_or_channel=0, write_count=size)])])
 
     def result(self):
         (self.root / 'framing/capture-summary.json').write_text(json.dumps(self.summary))
         (self.root / 'framing/frames.jsonl').write_text(''.join(json.dumps(row) + '\n' for row in self.rows))
-        return measure(self.root, self.state, 8 * 2**20, 6, 2**20)
+        return measure(self.root, self.state, 3 * 2**20, 6)
 
     def test_success_is_separate_from_historical_equivalence(self):
         result = self.result()
         self.assertTrue(result['clean_control'])
-        self.assertEqual(result['wire_write_sizes'], {2**20: 8})
+        self.assertEqual(result['wire_write_sizes'], {262144: 8, 1048576: 1})
         self.assertIn('not proven historical', result['caveat'])
 
     def test_empty_or_syn_only_is_not_workload(self):
@@ -84,6 +84,14 @@ class MeasurementTest(unittest.TestCase):
         self.assertFalse(self.result()['exposure_target_met'])
         self.rows = json.loads(original)
         self.rows[0]['protocol'] = 'encrypted'
+        self.assertFalse(self.result()['exposure_target_met'])
+
+    def test_wrong_write_mix_fails_even_when_total_bytes_and_duration_match(self):
+        # Keep exactly 3 MiB and the same timestamps, but swap 256 KiB/1 MiB sizes.
+        for i in range(8):
+            self.rows[2*i]['parts'][0]['data_length'] = 0
+        self.rows[0]['parts'][0]['data_length'] = 2 * 2**20
+        self.assertEqual(self.result()['wire_write_bytes'], 3 * 2**20)
         self.assertFalse(self.result()['exposure_target_met'])
 
     def test_reset_during_workload_prevents_clean_result(self):
