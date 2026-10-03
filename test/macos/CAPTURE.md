@@ -47,14 +47,15 @@ libpcap buffer plus4MiB stdio; kernel BPF buffers are additional. Wall time is
 bounded by400-second Python alarm,420-second capture bound,10-second stop wait,
 180-second offline audit, and25-minute job deadline. No deletion/rotation of raw.
 
-The exact reviewed `encrypt_capture.sh` and public recipient certificate are
-reused. Only public certificate reaches runner. All stdout/stderr remains private;
+The reviewed logs-only-capable `encrypt_capture.sh` from8c45e68 and original
+public recipient certificate are reused. Only public certificate reaches runner. All stdout/stderr remains private;
 only numeric allowlists, validated executable/revision/OS provenance and ciphertext
 are uploaded. A success marker is emitted only after the encryption helper exits
 successfully. Retention happens before offline analysis. If no raw file exists
-(early build/activation failure), that helper cannot retain logs: no all-outcome
-retention is claimed. Offline checker logs created later are not in the earlier
-envelope; only its validated numeric result is public. Raw/auth data is never a
+(early build/activation failure), logs alone are encrypted with
+`raw_capture_present=false`; no empty/fake pcap is created. Offline checker logs
+created later are not in the earlier envelope; only its validated numeric result
+is public. Raw/auth data is never a
 fallback artifact. Remote encrypted retention is7 days; local downloads and any
 expansion require a separate size-based resource admission. No local private key
 is needed to run this calibration.

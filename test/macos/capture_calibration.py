@@ -150,7 +150,8 @@ def run(root):
 
 
 def retention_preflight(root):
-    raw = (root/'private-traffic.pcap').stat().st_size
+    raw_path = root/'private-traffic.pcap'
+    raw = raw_path.stat().st_size if raw_path.is_file() else 0
     logs = 0
     files = 0
     for directory, dirs, names in os.walk(root/'evidence', followlinks=False):

@@ -141,6 +141,11 @@ class Publication(unittest.TestCase):
         (self.root/'private-traffic.pcap').write_bytes(b'fixture')
         with patch.object(calibration.shutil, 'disk_usage', return_value=SimpleNamespace(free=20*1024**3)):
             self.assertTrue(calibration.retention_preflight(self.root))
+    def test_logs_only_retention_reservation(self):
+        with patch.object(calibration.shutil, 'disk_usage', return_value=SimpleNamespace(free=20*1024**3)):
+            self.assertTrue(calibration.retention_preflight(self.root))
+        value = json.loads((self.root/'evidence/retention-budget.json').read_text())
+        self.assertEqual(value['raw_bytes'], 0)
     def test_retention_low_space(self):
         (self.root/'private-traffic.pcap').write_bytes(b'fixture')
         with patch.object(calibration.shutil, 'disk_usage', return_value=SimpleNamespace(free=4*1024**3)):
