@@ -5,7 +5,8 @@ import plistlib
 import tempfile
 import unittest
 
-from apple_tm_measure import BAND_BYTES, GIB, PREFLIGHT, budget_admitted, capacity, geometry, initial_result
+from apple_tm_measure import (BAND_BYTES, GIB, PREFLIGHT, BACKING_CAP, RAW_CAP, CIPHER_CAP,
+                              RESERVE, CAPTURE_BUFFER, budget_admitted, capacity, geometry, initial_result)
 
 
 class GeometryTests(unittest.TestCase):
@@ -81,6 +82,12 @@ class GeometryTests(unittest.TestCase):
         g = geometry(self.root)
         self.assertEqual(g['parse'], 'invalid')
         self.assertFalse(g['target_band_geometry'])
+
+    def test_exact_admitted_budget_and_buffer_request(self):
+        self.assertEqual(BACKING_CAP + RAW_CAP + GIB + CIPHER_CAP + RESERVE, 95 * GIB)
+        self.assertEqual(PREFLIGHT, 96 * GIB)
+        self.assertEqual(CIPHER_CAP + RESERVE, 46 * GIB)
+        self.assertEqual(CAPTURE_BUFFER, 32 << 20)
 
     def test_budget_is_physical_not_virtual(self):
         self.assertTrue(budget_admitted(PREFLIGHT))

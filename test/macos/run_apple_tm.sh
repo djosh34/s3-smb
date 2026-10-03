@@ -21,7 +21,8 @@ if cc -O2 -Wall -Wextra -Werror test/macos/passive_capture.c -lpcap -o "$MAC_WOR
   sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "LC_ALL=C" "TERM=dumb" \
     "MAC_WORK=$MAC_WORK" "MAC_ARTIFACTS=$MAC_ARTIFACTS" "APPLE_PUBLIC=$APPLE_PUBLIC" \
     "MAC_BIN=$MAC_BIN" "MAC_TRANSFER=$MAC_TRANSFER" "MAC_RUNNER_HOME=$MAC_RUNNER_HOME" \
-    "MAC_PHASE=$MAC_PHASE" PYTHONDONTWRITEBYTECODE=1 \
+    "MAC_PHASE=$MAC_PHASE" "APPLE_HARNESS_SHA=$(git rev-parse HEAD)" \
+    "APPLE_RUNNER_IMAGE_VERSION=${ImageVersion:-}" PYTHONDONTWRITEBYTECODE=1 \
     python3 "$repo/test/macos/apple_tm.py"
   status=$?
   set -e
@@ -38,13 +39,14 @@ raw = w / 'capture.pcap'
 raw_bytes = raw.stat().st_size if raw.exists() else 0
 log_bytes = sum(p.stat().st_size for p in logs.rglob('*') if p.is_file())
 # Compression is not assumed; preserve20GiB beyond peak ciphertext allocation.
-assert raw_bytes <= 32 * 2**30 and log_bytes <= 2**30
+assert raw_bytes <= 24 * 2**30 and log_bytes <= 2**30
 assert shutil.disk_usage(w).free >= raw_bytes + log_bytes + 21 * 2**30
 PY
 budget=$?
 retention=1
-if [[ $budget -eq 0 ]]; then
-  sudo -n /usr/bin/env "PATH=$PATH" bash test/macos/encrypt_capture.sh \
+openssl_path="$(brew --prefix openssl@3)/bin/openssl"
+if [[ $budget -eq 0 && -x "$openssl_path" ]]; then
+  sudo -n /usr/bin/env "PATH=$PATH" "CAPTURE_OPENSSL=$openssl_path" bash test/macos/encrypt_capture.sh \
     "$MAC_WORK/capture.pcap" "$APPLE_PUBLIC" test/macos/capture-recipient.pem "$MAC_ARTIFACTS" \
     >/dev/null 2>&1
   retention=$?

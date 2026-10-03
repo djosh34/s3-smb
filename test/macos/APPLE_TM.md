@@ -33,16 +33,17 @@ only that size is insufficient to establish equal formatting exposure.
 
 ## Physical resource bounds
 
-After tooling, require at least 120 GiB actual free storage. Plan: backing32GiB,
-raw32GiB, ciphertext at most33GiB including private logs capped1GiB, reserve20GiB.
-Outer creation has a five-minute bound and a physical allocation guard. Backup
-has a fifteen-minute bound; capture max20minutes, raw32GiB and free floor53GiB.
+After tooling, require at least 96 GiB actual free storage. Plan: backing24GiB,
+raw24GiB, private logs1GiB, ciphertext26GiB (including tar/codec allowance), reserve20GiB:
+95GiB total,1GiB admission slack. Outer creation has a five-minute bound and a
+physical allocation guard. Backup has a fifteen-minute bound; capture max20minutes,
+raw24GiB and free floor46GiB.
 Check backing allocation/log size/free space every5s. These are safety aborts,
 never intentional pressure. Do not shrink guards to make admission pass.
 
 Before encryption check fresh actual free space for raw+logs+21GiB. Preserve all
 originals; no storage deletion. Local downloads require separate resource admission;
-32GiB raw/cipher upper bounds do not fit current local available storage.
+24GiB raw/26GiB cipher upper bounds do not fit current local available storage.
 
 ## Observation and retention
 
@@ -52,7 +53,7 @@ cadence as rc7. Public metadata contains integers/booleans/fixed labels only.
 Actual WRITE sizes/concurrency/signing/receive windows require authenticated
 independent capture analysis; no values invented from band size or `statvfs`.
 
-Passive helper starts before the first SMB mount, requests256MiB and reports the
+Passive helper starts before the first SMB mount, requests32MiB and reports the
 actual BPF buffer before readiness. Stop after ordinary backup/SMB teardown,
 SIGINT drain then wait<=10s. Full snaplen/both directions; no Python raw parsing
 on the Mac. Helper capture health does not prove stream completeness. The first
@@ -61,7 +62,9 @@ trial is explicitly unmatched until actual outputs are reviewed.
 Freeze separate command exit, new-completed selection, tree presence, capability,
 cleanup, sampler, capture health, client log parse/enum and authenticated retention
 outcomes. No restore/hash/recovery claim. Native logs are queried only for this
-single attempt, with2s wall-clock margin; known clock adjustments remain explicit.
+single attempt, with2s wall-clock margin on normal completion. On any guard/abort,
+freeze the end wall/monotonic boundary before cleanup, mark harness_aborted, and
+use no end margin. Known clock adjustments remain explicit.
 
 Reviewed public-certificate-only CMS AES-GCM retention runs **before any offline
 analysis**, including logs-only retention for early setup failures. Private directory

@@ -5,6 +5,7 @@
 All stdout/stderr and native outputs go to authenticated private retention.
 Only fixed-field observations are written to APPLE_PUBLIC. No offline raw parser.
 """
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -18,7 +19,7 @@ import time
 import traceback
 
 from acceptance import Acceptance, WORK, EVIDENCE, TRANSFER, PROOF, SMB_PORT
-from apple_tm_measure import BACKING_CAP, RAW_CAP, RESERVE, budget_admitted, capacity, geometry, initial_result
+from apple_tm_measure import BACKING_CAP, RAW_CAP, RESERVE, CIPHER_CAP, CAPTURE_BUFFER, budget_admitted, capacity, geometry, initial_result
 from client_outcome import status_observations, collect
 
 PUBLIC = Path(os.environ['APPLE_PUBLIC'])
@@ -51,15 +52,42 @@ class AppleTimeMachine(Acceptance):
         with (EVIDENCE / 'events.jsonl').open('a') as f:
             f.write(json.dumps(dict(event=event, monotonic_ns=time.monotonic_ns(), **fields)) + '\n')
 
+    def provenance(self):
+        def command_value(argv, pattern):
+            text, code = self.cmd.run(argv, timeout=30, diagnostic=True)
+            value = text.strip()
+            return value if code == 0 and re.fullmatch(pattern, value) else None
+        def digest(path):
+            h = hashlib.sha256()
+            with Path(path).open('rb') as f:
+                for chunk in iter(lambda: f.read(1 << 20), b''):
+                    h.update(chunk)
+            return h.hexdigest()
+        sha = os.environ.get('APPLE_HARNESS_SHA', '')
+        image = os.environ.get('APPLE_RUNNER_IMAGE_VERSION', '')
+        save('provenance.json', dict(
+            os_version=command_value(['/usr/bin/sw_vers', '-productVersion'], r'[0-9.]+'),
+            os_build=command_value(['/usr/bin/sw_vers', '-buildVersion'], r'[0-9A-Za-z.]+'),
+            architecture=command_value(['/usr/bin/uname', '-m'], r'x86_64|arm64'),
+            harness_sha=sha if re.fullmatch(r'[0-9a-f]{40}', sha) else None,
+            runner_image_version=image if re.fullmatch(r'[0-9.]+', image) else None,
+            capture_binary_sha256=digest(WORK / 'passive-capture'),
+            smbd_binary_sha256=digest('/usr/sbin/smbd'),
+            direct_smb_port=SMB_PORT, requested_capture_buffer_bytes=CAPTURE_BUFFER))
+
     def capability(self):
+        self.result['capability_step'] = 'physical-preflight'
         self.result['physical_before'] = capacity(WORK)
-        if not budget_admitted(shutil.disk_usage(WORK).free):
+        self.result['physical_budget_admitted'] = budget_admitted(shutil.disk_usage(WORK).free)
+        if not self.result['physical_budget_admitted']:
             raise RuntimeError('physical budget not admitted')
+        self.result['capability_step'] = 'installed-smbd-help'
         help_text, code = self.cmd.run(['/usr/sbin/smbd', '-help'], diagnostic=True)
         self.result['smbd_ports_documented'] = bool(re.search(r'(?<!\w)-ports\b', help_text))
         self.result['smbd_help_exit'] = code
         if not self.result['smbd_ports_documented']:
             raise RuntimeError('installed smbd does not document ports; no topology fallback')
+        self.result['capability_step'] = 'installed-provenance'
         for command in (['/usr/bin/man', 'smbd'], ['/usr/bin/man', 'hdiutil'],
                         ['/usr/bin/hdiutil', 'create', '-help'], ['/usr/bin/sw_vers'],
                         ['/usr/bin/uname', '-srm'], ['/sbin/route', '-n', 'get', '127.0.0.1'],
@@ -71,7 +99,9 @@ class AppleTimeMachine(Acceptance):
             s.bind(('127.0.0.1', SMB_PORT))
         self.backing_mount.mkdir(mode=0o711)
         # Only outer server storage is created. backupd owns inner image creation.
+        self.result['capability_step'] = 'outer-image-create'
         self.create_backing()
+        self.result['capability_step'] = 'outer-image-attach'
         text, _ = self.cmd.run(['/usr/bin/hdiutil', 'attach', '-owners', 'on', '-nobrowse',
                                 '-mountpoint', self.backing_mount, '-plist', self.outer], timeout=120)
         import plistlib
@@ -84,6 +114,7 @@ class AppleTimeMachine(Acceptance):
         self.result['local_backing_before'] = capacity(self.backing_mount)
         self.budget_check()
         self.cmd.run(['/usr/bin/tmutil', 'addexclusion', '-v', self.backing_mount])
+        self.result['capability_step'] = 'owned-server-account'
         self.cmd.run(['/usr/sbin/sysadminctl', '-addUser', 'timemachine', '-password', self.password])
         # Standard SMB credential provisioning for this disposable server account.
         # No client, signing, kernel, firewall, or system authentication policy edit.
@@ -92,10 +123,12 @@ class AppleTimeMachine(Acceptance):
         self.cmd.run(['/usr/bin/tmutil', 'addexclusion', '-p', '/Users/timemachine'])
         self.directory.mkdir(mode=0o700)
         self.cmd.run(['/usr/sbin/chown', 'timemachine', self.directory])
+        self.result['capability_step'] = 'owned-share'
         self.cmd.run(['/usr/sbin/sharing', '-a', self.directory, '-n', 'TimeMachine',
                       '-S', 'TimeMachine', '-s', '001', '-g', '000'])
         self.share_created = True
         self.cmd.run(['/usr/bin/dscl', '.', '-create', '/SharePoints/TimeMachine', 'timeMachineBackup', '1'])
+        self.result['capability_step'] = 'direct-smbd-listener'
         self.server = self.service(['/usr/sbin/smbd', '-ports', str(SMB_PORT)], 'apple-smbd')
         deadline = time.monotonic() + 15
         while True:
@@ -108,6 +141,7 @@ class AppleTimeMachine(Acceptance):
                 if time.monotonic() >= deadline:
                     raise RuntimeError('direct Apple SMB listener unavailable')
                 time.sleep(.2)
+        self.result['capability_step'] = 'complete'
         self.result['capability_stage'] = 'pass'
 
     def create_backing(self):
@@ -145,16 +179,17 @@ class AppleTimeMachine(Acceptance):
         raw_bytes = RAW.stat().st_size if RAW.exists() else 0
         # Leave enough room to retain an incompressible capture plus private logs.
         logs_bytes = sum(p.stat().st_size for p in EVIDENCE.rglob('*') if p.is_file())
-        if allocated > BACKING_CAP or logs_bytes > 1 << 30 or free < RESERVE + RAW_CAP + (1 << 30):
+        if allocated > BACKING_CAP or logs_bytes > 1 << 30 or free < RESERVE + CIPHER_CAP:
             self.result['resource_guard_hit'] = True
+            self.result['workload_stop_reason'] = 'harness-storage-guard'
             raise RuntimeError('physical storage safety guard')
         return dict(backing_allocated_bytes=allocated, physical_free_bytes=free, raw_bytes=raw_bytes)
 
     def start_capture(self):
         META.mkdir(mode=0o700)
         self.capture = self.service([WORK / 'passive-capture', 'capture', 'lo0', 'smb',
-                                    str(256 << 20), RAW, META, str(RAW_CAP), '1200',
-                                    str(RESERVE + RAW_CAP + (1 << 30))], 'capture')
+                                    str(CAPTURE_BUFFER), RAW, META, str(RAW_CAP), '1200',
+                                    str(RESERVE + CIPHER_CAP)], 'capture')
         deadline = time.monotonic() + 15
         while not (META / 'ready.json').exists():
             if self.capture.poll() is not None or time.monotonic() >= deadline:
@@ -193,14 +228,18 @@ class AppleTimeMachine(Acceptance):
         self.start_backup('ordinary')
         process, log = self.backup
         self.sampler.set_pids(backup_client=process.pid)
-        self.result.update(start_monotonic_ns=time.monotonic_ns(), command_timeout=False)
+        self.result.update(start_monotonic_ns=time.monotonic_ns(), command_timeout=False,
+                           workload_stop_reason='in-progress')
         deadline = time.monotonic() + 900
         next_sample = next_budget = 0
         while process.poll() is None:
             if self.server.poll() is not None or self.capture.poll() is not None:
+                self.result['workload_stop_reason'] = ('server-process-exit' if self.server.poll() is not None
+                                                       else 'harness-capture-exit')
                 raise RuntimeError('owned observation/server exited during workload')
             if time.monotonic() >= deadline:
                 self.result['command_timeout'] = True
+                self.result['workload_stop_reason'] = 'harness-deadline'
                 raise RuntimeError('ordinary backup exceeded fifteen minute bound')
             if time.monotonic() >= next_sample:
                 self.observe('progress')
@@ -210,7 +249,8 @@ class AppleTimeMachine(Acceptance):
                 next_budget = time.monotonic() + 5
             time.sleep(.5)
         self.end_wall = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time() + 2))
-        self.result.update(command_exit=process.returncode, end_monotonic_ns=time.monotonic_ns(),
+        self.result.update(workload_stop_reason='normal-command-completion',
+                           command_exit=process.returncode, end_monotonic_ns=time.monotonic_ns(),
                            elapsed_ms=round((time.monotonic() - self.backup_started) * 1000))
         log.close()
         self.backup = None
@@ -221,7 +261,7 @@ class AppleTimeMachine(Acceptance):
             raise RuntimeError('backup command did not complete cleanly')
         self.detach_clients()
         self.stop_capture()
-        save('sampler-stop.json', self.sampler.stop())
+        self.stop_sampler()
         # Selection is separate from command success. No writable attach fallback.
         self.mount_share()
         selected = self.remote_backup('ordinary')
@@ -257,6 +297,24 @@ class AppleTimeMachine(Acceptance):
         # Capture health never proves continuous stream coverage or correct SMB.
         self.result['measurement_stage'] = 'unknown'
 
+    def stop_sampler(self):
+        if self.sampler is None:
+            return
+        health = self.sampler.stop()  # Includes join, final flush/close errors.
+        coverage = {role: 0 for role in ('server', 'capture', 'backup_client', 'sampler')}
+        with (PUBLIC / 'resources.jsonl').open() as f:
+            for line in f:
+                row = json.loads(line)
+                if row.get('kind') == 'sample':
+                    for role in coverage:
+                        coverage[role] += row['processes'][role]['status'] == 'ok'
+        health['role_samples'] = coverage
+        health['darwin_ps_observed'] = coverage['sampler'] > 0
+        health['sampler_health_valid'] = (health['samples'] > 0 and all(coverage.values())
+                                          and not health['observation_errors'] and not health['write_errors'])
+        save('sampler-stop.json', health)
+        self.result['sampler_health_valid'] = health['sampler_health_valid']
+
     def cleanup(self):
         failed = False
         def attempt(action):
@@ -272,7 +330,8 @@ class AppleTimeMachine(Acceptance):
             attempt(self.detach_clients)
         attempt(self.stop_capture)
         if self.sampler:
-            attempt(lambda: save('sampler-stop.json', self.sampler.stop()))
+            self.sampler.set_pids(backup_client=None)
+            attempt(self.stop_sampler)
         if self.start_wall:
             end = self.end_wall or time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
             def logs():
@@ -304,6 +363,7 @@ class AppleTimeMachine(Acceptance):
 
     def execute_trial(self):
         try:
+            self.provenance()
             self.platform()
             if self.status():
                 raise RuntimeError('unowned backup already active')
@@ -312,6 +372,13 @@ class AppleTimeMachine(Acceptance):
             self.start_capture()
             self.ordinary_backup()
         except BaseException:
+            # Freeze the workload boundary before stopbackup/detach/observer cleanup.
+            if self.start_wall and self.end_wall is None:
+                self.end_wall = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime())
+                self.result['end_monotonic_ns'] = time.monotonic_ns()
+                self.result['harness_aborted'] = self.backup is not None and self.backup[0].poll() is None
+                if self.result['workload_stop_reason'] == 'in-progress':
+                    self.result['workload_stop_reason'] = 'harness-error'
             traceback.print_exc()
             if self.result['capability_stage'] != 'pass':
                 self.result['capability_stage'] = 'fail'

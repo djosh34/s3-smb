@@ -8,10 +8,12 @@ from xml.parsers.expat import ExpatError
 
 GIB = 1 << 30
 BAND_BYTES = 8 * GIB
-BACKING_CAP = 32 * GIB
-RAW_CAP = 32 * GIB
+BACKING_CAP = 24 * GIB
+RAW_CAP = 24 * GIB
 RESERVE = 20 * GIB
-PREFLIGHT = 120 * GIB
+CIPHER_CAP = 26 * GIB
+PREFLIGHT = 96 * GIB
+CAPTURE_BUFFER = 32 << 20
 
 
 def capacity(path):
@@ -66,7 +68,7 @@ def geometry(directory):
 
 def budget_admitted(free_bytes):
     # Ciphertext may be as large as raw; compression is not a capacity promise.
-    return free_bytes >= PREFLIGHT and free_bytes >= BACKING_CAP + 2 * RAW_CAP + RESERVE
+    return free_bytes >= PREFLIGHT and free_bytes >= BACKING_CAP + RAW_CAP + GIB + CIPHER_CAP + RESERVE
 
 
 def initial_result():
@@ -74,6 +76,7 @@ def initial_result():
                 capability_stage='not-run', run_stage='not-run', cleanup_stage='not-run',
                 retention_stage='not-run', measurement_stage='not-run',
                 command_exit=None, command_timeout=None, elapsed_ms=None,
+                harness_aborted=False, workload_stop_reason='not-started',
                 selection_check='not-run', created_tree='not-run', restore='not-run',
                 recovery='not-run', short_header_count=None, invalid_transport_count=None,
                 server_log_scope='not-applicable', capture_health_valid=False,
@@ -81,4 +84,5 @@ def initial_result():
                 protocol_match='unknown', source_fixture_seed=64,
                 thin_provisioned=True, outer_virtual_bytes=1 << 50,
                 physical_backing_cap_bytes=BACKING_CAP, capture_cap_bytes=RAW_CAP,
-                physical_reserve_bytes=RESERVE, resource_guard_hit=False)
+                physical_reserve_bytes=RESERVE, ciphertext_allowance_bytes=CIPHER_CAP,
+                physical_preflight_bytes=PREFLIGHT, resource_guard_hit=False)
