@@ -20,12 +20,15 @@ class DiagnosticTest(unittest.TestCase):
 
     def configured(self, root):
         obj = diagnostic.Diagnostic()
-        for name in ('platform', 'start_capture', 'start_services', 'start_daemon',
+        for name in ('budget_preflight', 'platform', 'start_capture', 'start_resources', 'start_services', 'start_daemon',
                      'mount_share', 'configure_destination', 'check_exclusions',
                      'detach_clients', 'tree_in_backup', 'sample_geometry'):
             setattr(obj, name, Mock())
         obj.create_tree = Mock(return_value=Path('/synthetic-proof'))
-        process = Mock()
+        obj.resources = Mock()
+        obj.services = [(Mock(pid=111), None)]
+        obj.daemon = Mock(pid=222)
+        process = Mock(pid=333)
         process.poll.return_value = 0
         obj.start_backup = lambda label: setattr(obj, 'backup', (process, None))
         obj.complete_backup = Mock()
@@ -84,11 +87,23 @@ class DiagnosticTest(unittest.TestCase):
             self.assertFalse(measurement['semantic_correctness_proven'])
             self.assertFalse((Path(root) / 'framing').exists())
 
+    def test_low_space_is_preflight_not_workload_failure(self):
+        with tempfile.TemporaryDirectory() as root, patch.object(diagnostic, 'EVIDENCE', Path(root)), \
+                patch.object(diagnostic.shutil, 'disk_usage', return_value=Mock(free=100 * 2**30)):
+            obj = diagnostic.Diagnostic()
+            with self.assertRaises(RuntimeError):
+                obj.budget_preflight()
+            budget = json.loads((Path(root) / 'budget-preflight.json').read_text())
+            self.assertFalse(budget['admitted'])
+            self.assertFalse(obj.outcome['run_stage_completed'])
+            self.assertFalse(obj.outcome['tm_command_completed'])
+
     def test_event_does_not_print_native_status(self):
         with tempfile.TemporaryDirectory() as root, patch.object(diagnostic, 'EVIDENCE', Path(root)), \
                 patch('builtins.print') as output:
             obj = diagnostic.Diagnostic()
             obj.sample_geometry = Mock()
+            obj.sample_store_usage = Mock()
             obj.event('time-machine-progress', native_status='PRIVATE-SENTINEL')
             output.assert_called_once_with('time-machine-progress', flush=True)
 

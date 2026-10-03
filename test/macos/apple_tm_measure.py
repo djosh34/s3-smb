@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import plistlib
 import stat
+from xml.parsers.expat import ExpatError
 
 GIB = 1 << 30
 BAND_BYTES = 8 * GIB
@@ -57,7 +58,7 @@ def geometry(directory):
         result.update(parse='ok', band_files=count, band_logical_bytes=logical,
                       band_allocated_bytes=allocated, largest_band_bytes=largest,
                       bands_over_4gib=large, target_band_geometry=result['band_size_bytes'] == BAND_BYTES)
-    except (OSError, ValueError, TypeError, AttributeError, plistlib.InvalidFileException):
+    except (OSError, ValueError, TypeError, AttributeError, ExpatError, plistlib.InvalidFileException):
         result['parse'] = 'invalid'
         result['target_band_geometry'] = False
     return result

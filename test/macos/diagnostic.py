@@ -5,11 +5,13 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
 import time
 
 from client_outcome import collect, status_observations
+from resource_sampler import NumericResourceSampler
 from acceptance import Acceptance, WORK, EVIDENCE, BIN
 from native import utc
 
@@ -22,11 +24,14 @@ class Diagnostic(Acceptance):
         self.capture_ready = None
         self.attempt_start_wall = None
         self.attempt_end_wall = None
+        self.resources = NumericResourceSampler(EVIDENCE / 'resources.jsonl', WORK)
+        self.resource_start_status = 'not-run'
+        self.budget_initial_free = None
         self.outcome = dict(attempt=1, parent_attempt=None, workload='time-machine', lifecycle='fresh',
                             start_monotonic_ns=None, end_monotonic_ns=None,
                             run_stage_completed=False, tm_command_completed=False,
                             tm_command_exit=None, completed_backup_selected=False,
-                            selection_writable_replay_attempted=False,
+                            selection_writable_replay_attempted=False, resource_guard_hit=False,
                             tree_directory_present=False, restore_performed=False,
                             content_hash_verified=False, stage='not_started')
 
@@ -43,6 +48,45 @@ class Diagnostic(Acceptance):
                 f.write(json.dumps(dict(monotonic_ns=time.monotonic_ns(), wall_ns=time.time_ns(),
                                         command_exit=fields.get('exit'), **status)) + '\n')
             self.sample_geometry('progress')
+            self.sample_store_usage()
+
+    def budget_preflight(self):
+        free = shutil.disk_usage(WORK).free
+        self.budget_initial_free = free
+        self.save('budget-preflight.json', dict(time=utc(), free_bytes=free,
+                  required_free_bytes=128 * 2**30, raw_cap_bytes=32 * 2**30,
+                  ciphertext_budget_bytes=34 * 2**30, noncapture_growth_budget_bytes=40 * 2**30,
+                  minimum_live_free_bytes=54 * 2**30, retained_reserve_bytes=20 * 2**30,
+                  compression_assumed=False, admitted=free >= 128 * 2**30))
+        if free < 128 * 2**30:
+            raise RuntimeError('runner physical budget not admitted; no Time Machine work started')
+
+    def check_workload_resources(self):
+        if self.budget_initial_free is None:
+            return
+        free = shutil.disk_usage(WORK).free
+        raw = WORK / 'private-traffic.pcap'
+        allocated = raw.stat().st_blocks * 512 if raw.exists() else 0
+        other_growth = max(0, self.budget_initial_free - free - allocated)
+        if free < 54 * 2**30 or other_growth > 40 * 2**30:
+            self.outcome['resource_guard_hit'] = True
+            self.event('resource-budget-stop', free_bytes=free,
+                       noncapture_growth_estimate_bytes=other_growth)
+            raise RuntimeError('physical resource budget reached; not a product failure')
+
+    def sample_store_usage(self):
+        output, code = self.cmd.run(['/usr/bin/du', '-sk', WORK / 'objects'],
+                                    timeout=5, diagnostic=True)
+        value = None
+        if code == 0 and output.split() and output.split()[0].isdigit():
+            value = int(output.split()[0]) * 1024
+        with (EVIDENCE / 'store-samples.jsonl').open('a') as f:
+            f.write(json.dumps(dict(monotonic_ns=time.monotonic_ns(), command_exit=code,
+                                   allocated_bytes=value)) + '\n')
+        if value is not None and value > 40 * 2**30:
+            self.outcome['resource_guard_hit'] = True
+            self.event('resource-budget-stop', store_allocated_bytes=value)
+            raise RuntimeError('physical store budget reached; not a product failure')
 
     def sample_geometry(self, stage):
         output, code = self.cmd.run([sys.executable, Path(__file__).with_name('sample_geometry.py'),
@@ -55,6 +99,26 @@ class Diagnostic(Acceptance):
                 result['parse_error'] = True
         with (EVIDENCE / 'geometry-samples.jsonl').open('a') as f:
             f.write(json.dumps(result) + '\n')
+
+    def start_resources(self):
+        try:
+            self.resources.set_pids(capture=self.capture.pid)
+            self.resources.start()
+            self.resource_start_status = 'ok'
+        except Exception:
+            self.resource_start_status = 'failed'
+
+    def stop_resources(self):
+        result = dict(start_status=self.resource_start_status, stop_status='not-run',
+                      scope='setup_and_run_stage_not_cleanup', health=None,
+                      coverage_requires_positive_samples_and_role_statuses=True)
+        try:
+            result['health'] = self.resources.stop()
+            result['stop_status'] = 'ok'
+        except Exception:
+            result['stop_status'] = 'failed'
+            result['health'] = self.resources.summary()
+        self.save('resource-health.json', result)
 
     def collect_client_outcome(self):
         # Small attempt-window backupd-only query. The inherited broad private
@@ -81,7 +145,7 @@ class Diagnostic(Acceptance):
         self.capture_log = (EVIDENCE / 'capture-private.log').open('xb', buffering=0)
         argv = [str(BIN / 'passive-capture'), 'capture', 'lo0', '1445', str(8 * 2**20),
                 str(WORK / 'private-traffic.pcap'), str(meta), str(32 * 2**30),
-                '1800', str(20 * 2**30)]
+                '1800', str(54 * 2**30)]
         self.save('capture-command.json', dict(argv=argv, started=utc(),
                   raw_policy='authenticated encrypted retention only; no plaintext upload',
                   offline_analysis='deferred until encrypted retention and resource admission'))
@@ -106,20 +170,26 @@ class Diagnostic(Acceptance):
     def run(self):
         try:
             self.outcome['stage'] = 'setup'
+            self.budget_preflight()
             self.platform()
             self.start_capture()
+            self.start_resources()
             self.start_services(fresh=True)
+            self.resources.set_pids(object_store=self.services[-1][0].pid)
             self.start_daemon('initialize')
+            self.resources.set_pids(server=self.daemon.pid)
             self.mount_share()
             self.configure_destination()
             self.sample_geometry('before')
             proof = self.create_tree()
             self.check_exclusions()
+            self.check_workload_resources()
             self.outcome['stage'] = 'time_machine'
             self.attempt_start_wall = time.time()
             self.outcome['start_monotonic_ns'] = time.monotonic_ns()
             self.start_backup('baseline')
             process = self.backup[0]
+            self.resources.set_pids(backup_client=process.pid)
             try:
                 self.complete_backup('baseline')
                 self.outcome['tm_command_completed'] = True
@@ -127,6 +197,8 @@ class Diagnostic(Acceptance):
                 self.attempt_end_wall = time.time()
                 self.outcome['end_monotonic_ns'] = time.monotonic_ns()
                 self.outcome['tm_command_exit'] = process.poll()
+                if process.poll() is not None:
+                    self.resources.set_pids(backup_client=None)
                 self.sample_geometry('after_command')
             self.outcome['stage'] = 'backup_selection'
             self.detach_clients()
@@ -146,6 +218,8 @@ class Diagnostic(Acceptance):
             self.save('workload-outcome.json', dict(time=utc(), **self.outcome))
 
     def finish(self):
+        # Stop/join before inherited teardown reaps PIDs and before packaging.
+        self.stop_resources()
         cleanup_ok = False
         try:
             super().finish()  # Joins application PTY reader before counting.

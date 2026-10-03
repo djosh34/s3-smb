@@ -20,7 +20,8 @@ def publish(private, public):
                  'application-variant.txt', 'minio-revision', 'capture-command.json',
                  'framing-error-counts.json', 'measurement.json', 'platform.txt',
                  'workload-outcome.json', 'cleanup-outcome.json', 'client-outcome.json',
-                 'status-samples.jsonl', 'geometry-samples.jsonl'):
+                 'status-samples.jsonl', 'geometry-samples.jsonl', 'resources.jsonl', 'resource-health.json',
+                 'budget-preflight.json', 'store-samples.jsonl'):
         path = private / name
         if path.is_file():
             shutil.copyfile(path, public / name)
@@ -40,9 +41,10 @@ def publish(private, public):
     if path.exists():
         allowed_events = {'capture-ready', 'application-ready', 'created-tree-reference-saved',
                           'time-machine-start', 'time-machine-progress', 'time-machine-command-completed',
-                          'acceptance-passed', 'acceptance-failed'}
+                          'acceptance-passed', 'acceptance-failed', 'resource-budget-stop'}
         allowed_fields = {'time', 'event', 'label', 'pid', 'seconds', 'short_headers', 'completed',
-                          'free_bytes', 'tm_percent', 'tm_bytes', 'tm_total_bytes', 'store_kilobytes'}
+                          'free_bytes', 'tm_percent', 'tm_bytes', 'tm_total_bytes', 'store_kilobytes',
+                          'noncapture_growth_estimate_bytes', 'store_allocated_bytes'}
         with path.open() as source, (public / 'events.jsonl').open('w') as target:
             for line in source:
                 row = json.loads(line)

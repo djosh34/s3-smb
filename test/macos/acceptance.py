@@ -270,12 +270,16 @@ logging:
             raise RuntimeError('unknown installed tmutil status format')
         return bool(re.search(r'Running\s*=\s*1\s*;', text))
 
+    def check_workload_resources(self):
+        """Diagnostic subclasses may stop ordinary work before budget exhaustion."""
+
     def complete_backup(self, label):
         process, log = self.backup
         deadline = time.monotonic() + 5400
         next_observation = time.monotonic()
         while process.poll() is None:
             self.daemon.pump()
+            self.check_workload_resources()
             now = time.monotonic()
             if now >= deadline:
                 raise RuntimeError('full Time Machine backup exceeded 90 minute stage budget')

@@ -49,6 +49,8 @@ jobs:
         if: always()
         run: |
           sudo mkdir -p "$MAC_PUBLIC"
+          sudo python3 test/macos/retention_space.py "$MAC_WORK/private-traffic.pcap" \
+            "$MAC_ARTIFACTS" "$MAC_PUBLIC" 21474836480
           crypto="$(brew --prefix openssl@3)/bin/openssl"
           sudo env "CAPTURE_OPENSSL=$crypto" bash test/macos/encrypt_capture.sh \
             "$MAC_WORK/private-traffic.pcap" "$MAC_PUBLIC" test/macos/capture-recipient.pem "$MAC_ARTIFACTS"

@@ -75,6 +75,13 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(g['parse'], 'invalid')
         self.assertNotIn('PRIVATE', json.dumps(g))
 
+    def test_partial_xml_observation_is_unavailable_not_workload_error(self):
+        p = self.bundle()
+        (p / 'Info.plist').write_bytes(b'<?xml version="1.0"?><plist><dict><key>band-size</key>')
+        g = geometry(self.root)
+        self.assertEqual(g['parse'], 'invalid')
+        self.assertFalse(g['target_band_geometry'])
+
     def test_budget_is_physical_not_virtual(self):
         self.assertTrue(budget_admitted(PREFLIGHT))
         self.assertFalse(budget_admitted(PREFLIGHT - 1))
