@@ -50,6 +50,7 @@ Deleted: `pkg/sync`, `pkg/fs/http.go`.
 | `server/server.go` | SPNEGO and NTLM state is per connection. Upstream shared one authenticator. Work without an authenticated session is rejected. Logoff and tree disconnect close their handles. A listener error stops the server. Shutdown waits for workers. | `server/auth_wire_test.go`, `cleanup_test.go`, `session_gate_test.go`, `capabilities_test.go` |
 | `server/file_tree.go` | FLUSH, CLOSE, WRITE, truncate and xattr errors are returned as SMB statuses. Write-through is honoured. Resource-fork and AFP-info streams support ranged reads and writes. Handles are checked against their session and tree. Xattr values and the list of xattr names are not logged. | `server/durability_test.go`, `error_wire_test.go`, `xattr_*_test.go`, `lock_wire_test.go` |
 | `server/request_validation.go` | Related operations retain a validated existing FileId. | `server/compound_context_test.go` |
+| `server/file_tree.go` | Delayed notification completions do not reuse an already-sent compound response. | `server/compound_notify_test.go` |
 | `server/log.go` | The default logger writes to the application logger. | `server/redaction_test.go` |
 | `internal/erref/erref.go` | `go:generate` line removed with its generator. | none |
 

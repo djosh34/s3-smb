@@ -1721,7 +1721,7 @@ func (t *fileTree) changeNotify(ctx *compoundContext, pkt []byte) error {
 	open.notifyReq = pkt
 
 	handleId := fileId.HandleId()
-	go func(ctx *compoundContext, reqPkt []byte, h uint64) {
+	go func(reqPkt []byte, h uint64) {
 		time.Sleep(5 * time.Second)
 		if t.conn.serverCtx.getOpen(h) == nil {
 			// Open was closed; do not send completion
@@ -1731,9 +1731,10 @@ func (t *fileTree) changeNotify(ctx *compoundContext, pkt []byte) error {
 
 		// Complete the notify with an empty response
 		final := new(ErrorResponse)
-		PrepareAsyncResponse(&final.PacketHeader, pkt, open.notifyReqAsyncId, uint32(STATUS_ACCESS_DENIED))
-		c.sendPacket(final, &t.treeConn, ctx)
-	}(ctx, pkt, handleId)
+		PrepareAsyncResponse(&final.PacketHeader, reqPkt, open.notifyReqAsyncId, uint32(STATUS_ACCESS_DENIED))
+		// The interim compound was already sent; its responses must not be replayed.
+		c.sendPacket(final, &t.treeConn, nil)
+	}(pkt, handleId)
 
 	return nil
 }
