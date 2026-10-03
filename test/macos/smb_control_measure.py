@@ -16,7 +16,8 @@ def measure(private, state, target_bytes, minimum_seconds):
     drops = re.findall(r'(\d+) packets dropped by kernel', text)
     drops = int(drops[-1]) if drops else None
     sizes, protocols, signed = collections.Counter(), collections.Counter(), collections.Counter()
-    requests, responses = {}, {}
+    requests, responses, outstanding = {}, {}, {}
+    peak_requests = peak_bytes = 0
     first = last = None
     resets = 0
     path = private / 'framing/frames.jsonl'
@@ -37,12 +38,17 @@ def measure(private, state, target_bytes, minimum_seconds):
                     if row['direction'] == 'c2s' and not part['flags'] & 1 and 'data_length' in part:
                         sizes[part['data_length']] += 1
                         requests[key] = part['data_length']
+                        if key not in responses:
+                            outstanding[key] = part['data_length']
+                            peak_requests = max(peak_requests, len(outstanding))
+                            peak_bytes = max(peak_bytes, sum(outstanding.values()))
                         signed[bool(part['flags'] & 8)] += 1
                         first = min(first, row['timestamp']) if first is not None else row['timestamp']
                         last = max(last, row['timestamp']) if last is not None else row['timestamp']
                     elif row['direction'] == 's2c' and part['flags'] & 1:
                         if part['status_or_channel'] != 0x103:  # STATUS_PENDING is not final.
                             responses[key] = (part['status_or_channel'], part.get('write_count'))
+                            outstanding.pop(key, None)
     wire_bytes = sum(size * count for size, count in sizes.items())
     span = last - first if first is not None else 0
     mismatched = sum(responses.get(key) != (0, size) for key, size in requests.items())
@@ -67,6 +73,9 @@ def measure(private, state, target_bytes, minimum_seconds):
         wire_write_bytes=wire_bytes, wire_write_span_seconds=span,
         wire_write_sizes=dict(sorted(sizes.items())), wire_write_size_byte_fractions=fractions,
         wire_write_signed_counts=dict(signed),
+        observed_peak_outstanding_requests=peak_requests, observed_peak_outstanding_bytes=peak_bytes,
+        concurrency_caveat='Parsed request completion to parsed final response; global across handles; '
+                           'not same-handle concurrency; reassembly ordering can undercount.',
         write_requests_without_matching_success_count=mismatched,
         unmatched_write_responses=len(responses.keys() - requests.keys()),
         resets_during_workload=resets, protocols=dict(protocols),

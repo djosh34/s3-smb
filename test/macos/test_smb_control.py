@@ -41,6 +41,13 @@ class MeasurementTest(unittest.TestCase):
         self.assertEqual(result['wire_write_sizes'], {262144: 8, 1048576: 1})
         self.assertIn('not proven historical', result['caveat'])
 
+    def test_observed_request_to_final_concurrency_is_counted(self):
+        self.rows = self.rows[::2] + self.rows[1::2]
+        result = self.result()
+        self.assertEqual(result['observed_peak_outstanding_requests'], 9)
+        self.assertEqual(result['observed_peak_outstanding_bytes'], 3 * 2**20)
+        self.assertEqual(result['write_requests_without_matching_success_count'], 0)
+
     def test_empty_or_syn_only_is_not_workload(self):
         self.rows = []
         self.assertFalse(self.result()['clean_control'])
