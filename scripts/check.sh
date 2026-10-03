@@ -71,6 +71,7 @@ fi
 bash test/check_test.sh
 
 echo '== Unit tests and fuzz seed replay =='
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/macos -p 'test_*.py'
 if ! go test -count=1 ./...; then
   fuzz_failure
   exit 1

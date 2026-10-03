@@ -65,13 +65,14 @@ scripts/check.sh         # PR checks, including fuzz seed replay
 scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 ```
 
-Both modes need Linux, Bash, Docker, Go 1.26.3 and a C compiler. They check
-`go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and gofmt, then
-run unit tests and `go test -race -shuffle=on`. The gofmt check skips vendored
+Both modes need Linux, Bash, Docker, Go 1.26.3, a C compiler and Python 3.
+They check `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and
+gofmt, then run the Mac harness Python unit tests, Go unit tests and
+`go test -race -shuffle=on`. Python tests do not write bytecode into the tree.
+The gofmt check skips vendored
 code (`internal/juicefs`, `internal/thirdparty`) and the frozen SMB server
 (`internal/smb2`, `internal/smbfs`, or `internal/smb-old` after the move).
-The lint stage in
-`scripts/check.sh` is where additional linters belong.
+The lint stage in `scripts/check.sh` is where additional linters belong.
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
 `testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
@@ -126,12 +127,6 @@ includes `application-revision`, `harness-revision`, `build-tags` (an empty line
 for the default build), `application-build.log` and `native-build.txt` from
 `go version -m` on the built binary. The harness does not install a released
 version from the Go proxy.
-
-Run the harness unit tests locally with:
-
-```sh
-python3 -m unittest discover -s test/macos -p 'test_*.py'
-```
 
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
