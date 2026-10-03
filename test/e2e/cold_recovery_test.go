@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/backup"
+	smb "github.com/hirochachacha/go-smb2"
 )
 
 func (f *fixture) receipt() backup.Receipt {
@@ -48,19 +49,7 @@ func TestColdRecoveryAfterInterruptedWrites(t *testing.T) {
 		before := f.receipt()
 		s, closeShare = f.share()
 		writeFile(t, s, "after-backup.bin", later)
-		old, err := s.OpenFile("baseline-large.bin", os.O_RDWR, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err = old.WriteAt(later[:300_000], 200_000); err != nil {
-			t.Fatal(err)
-		}
-		if err = old.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		if err = old.Close(); err != nil {
-			t.Fatal(err)
-		}
+		overwrite(t, s, "baseline-large.bin", later[:300_000])
 		sigkill(t, d)
 		closeShare()
 		if at := f.receipt(); at.Key != before.Key {
@@ -79,24 +68,33 @@ func TestColdRecoveryAfterInterruptedWrites(t *testing.T) {
 		closeShare()
 		f.protectedAfter(time.Now())
 		s, closeShare = f.share()
+		// The next metadata backup holds this overwrite, so a recovery from the
+		// one before it fails the hash check.
+		files["baseline-large.bin"] = overwrite(t, s, "baseline-large.bin", later[:300_000])
 		file, err := s.Create("unfinished.bin")
 		if err != nil {
 			t.Fatal(err)
 		}
 		// The writer runs until the kill closes its connection.
 		first, stopped := make(chan error, 1), make(chan struct{})
+		var writeErr error
 		go func() {
 			defer close(stopped)
-			_, err := file.Write(later)
-			first <- err
-			for err == nil {
-				_, err = file.Write(later)
+			_, writeErr = file.Write(later)
+			first <- writeErr
+			for writeErr == nil {
+				_, writeErr = file.Write(later)
 			}
 		}()
 		if err = <-first; err != nil {
 			t.Fatal(err)
 		}
 		f.protectedAfter(time.Now())
+		select {
+		case <-stopped:
+			t.Fatalf("the large write ended before the metadata backup landed: %v", writeErr)
+		default:
+		}
 		sigkill(t, d)
 		<-stopped
 		closeShare()
@@ -124,4 +122,29 @@ func recoverTwice(t *testing.T, f *fixture, files map[string][]byte) {
 	verifyFiles(t, s, files)
 	closeShare()
 	d.stop()
+}
+
+// overwrite writes data at offset 200,000 of an existing file, syncs it and
+// returns the new contents.
+func overwrite(t *testing.T, share *smb.Share, name string, data []byte) []byte {
+	t.Helper()
+	contents, err := share.ReadFile(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(contents[200_000:], data)
+	file, err := share.OpenFile(name, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.WriteAt(data, 200_000); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return contents
 }
