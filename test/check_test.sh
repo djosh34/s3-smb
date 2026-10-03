@@ -19,6 +19,12 @@ SCRIPT
 cat > "$fixture/repo/test/minio/publish_test.sh" <<'SCRIPT'
 echo pin-tests >> "$CHECK_TEST_COMMANDS"
 SCRIPT
+cat > "$fixture/repo/test/lint_tools_test.sh" <<'SCRIPT'
+echo tool-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
+cat > "$fixture/repo/test/lint_config_test.sh" <<'SCRIPT'
+echo config-tests >> "$CHECK_TEST_COMMANDS"
+SCRIPT
 cat > "$fixture/repo/scripts/lint-tools.sh" <<'SCRIPT'
 printf '%s\n' "$CHECK_TEST_TOOLS"
 SCRIPT
@@ -93,6 +99,8 @@ contains 'go [pr] vet -tags smbnext ./...'
 contains 'gofmt [pr] -l ./our file.go'
 absent 'ignored.go'
 contains 'script-tests'
+contains 'tool-tests'
+contains 'config-tests'
 contains 'pin-tests'
 contains "python3 [pr] -m unittest discover -s test/macos -p test_*.py"
 contains 'go [pr] test -count=1 ./...'

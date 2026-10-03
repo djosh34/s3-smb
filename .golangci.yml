@@ -64,10 +64,10 @@ linters:
     rules:
       - path: '_test\.go$'
         linters: [forbidigo]
-        text: 'fmt\.Print'
-      - path: '(^|/)main\.go$'
+        text: 'forbidden by pattern .*fmt'
+      - path: '^(cmd/[^/]+/)?main\.go$'
         linters: [forbidigo]
-        text: 'os\.Exit'
+        text: 'forbidden by pattern .*os'
     paths: &old-code
       - '^internal/juicefs/'
       - '^internal/thirdparty/'

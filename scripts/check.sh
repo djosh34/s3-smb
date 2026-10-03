@@ -75,6 +75,8 @@ if [[ -s $work/unformatted ]]; then
   exit 1
 fi
 bash test/check_test.sh
+bash test/lint_tools_test.sh
+bash test/lint_config_test.sh "$tools"
 bash test/minio/publish_test.sh
 
 echo '== Unit tests and fuzz seed replay =='

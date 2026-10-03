@@ -92,7 +92,12 @@ Lint still loads dependencies; findings from excluded paths are not reported.
 Fix lint findings rather than suppressing them. If a suppression is needed,
 use `//nolint:<linter> // <reason>`. nolintlint requires the name and reason.
 Reviewers check each suppression. Panic, recover and fatal logging are banned;
-`fmt.Print*` is allowed in tests, and `os.Exit` is allowed in `main.go` only.
+`fmt.Print*` is allowed in tests. `os.Exit` is allowed only in the root
+`main.go` or a command entry point at `cmd/<command>/main.go`.
+
+The lint tests create temporary modules to check the exclusions, new-package
+findings, both build selections, formatting and suppression syntax. Installer
+tests use mock downloads to check both CPU architectures, cache reuse and errors.
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
 `testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
