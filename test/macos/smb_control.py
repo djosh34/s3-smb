@@ -121,6 +121,14 @@ class Control:
         kext = Path('/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs')
         if kext.exists():
             provenance['smbfs_binary_sha256'] = digest(kext)
+        limits = {}
+        for key in ('debug.bpf_bufsize', 'debug.bpf_maxbufsize'):
+            result = subprocess.run(['/usr/sbin/sysctl', '-n', key], capture_output=True, text=True, timeout=10)
+            value = result.stdout.strip()
+            limits[key] = int(value) if result.returncode == 0 and value.isdecimal() else None
+        provenance['capture'] = dict(requested_buffer_kib=131072, bpf_sysctl_limits=limits,
+            actual_descriptor_buffer_bytes=None, packet_flush=False, stop='SIGINT then wait for flush',
+            note='Requested buffer is not measured descriptor allocation; sysctl limits are read-only.')
         save(self.private, 'control-provenance.json', provenance)
         password = secrets.token_hex(16)
         self.stage = 'apple-server-setup'
@@ -135,7 +143,7 @@ class Control:
         self.stage = 'capture-start'
         self.capture_log = (self.private / 'tcpdump-stderr.log').open('wb')
         self.capture = subprocess.Popen(['/usr/sbin/tcpdump', '-i', 'lo0', '-nn', '-s', '0', '-B', '131072',
-            '-U', '-w', str(self.raw), 'ip and tcp and host 127.0.0.1 and port 445'],
+            '-w', str(self.raw), 'ip and tcp and host 127.0.0.1 and port 445'],
             stdout=subprocess.DEVNULL, stderr=self.capture_log)
         end = time.monotonic() + 15
         while b'listening on lo0' not in (self.private / 'tcpdump-stderr.log').read_bytes():
