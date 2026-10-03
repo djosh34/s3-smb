@@ -4,7 +4,7 @@ set -Eeuo pipefail
 root=$(cd "$(dirname "$0")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/repo/scripts" "$fixture/repo/test" "$fixture/bin" "$fixture/logs"
+mkdir -p "$fixture/repo/scripts" "$fixture/repo/test/minio" "$fixture/bin" "$fixture/logs"
 for directory in .git internal/juicefs internal/thirdparty internal/smb-old; do
   mkdir -p "$fixture/repo/$directory"
   touch "$fixture/repo/$directory/ignored.go"
@@ -13,6 +13,7 @@ touch "$fixture/repo/our file.go"
 cp "$root/scripts/check.sh" "$fixture/repo/scripts/check.sh"
 printf 'FROM scratch\n' > "$fixture/repo/test/Dockerfile"
 printf 'echo script-tests >> "$CHECK_TEST_COMMANDS"\n' > "$fixture/repo/test/check_test.sh"
+printf 'echo pin-tests >> "$CHECK_TEST_COMMANDS"\n' > "$fixture/repo/test/minio/publish_test.sh"
 
 cat > "$fixture/bin/stub" <<'STUB'
 #!/usr/bin/env bash
@@ -71,6 +72,7 @@ contains 'go [pr] vet -tags smbnext ./...'
 contains 'gofmt [pr] -l ./our file.go'
 absent 'ignored.go'
 contains 'script-tests'
+contains 'pin-tests'
 contains "python3 [pr] -m unittest discover -s test/macos -p test_*.py"
 contains 'go [pr] test -count=1 ./...'
 absent 'go [pr] test -race '

@@ -65,6 +65,7 @@ if [[ -s $work/unformatted ]]; then
   exit 1
 fi
 bash test/check_test.sh
+bash test/minio/publish_test.sh
 
 echo '== Unit tests and fuzz seed replay =='
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/macos -p 'test_*.py'

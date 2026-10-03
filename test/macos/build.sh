@@ -27,8 +27,12 @@ go build -p 3 -tags "$build_tags" -o "$MAC_BIN/s3-smb" . 2>&1 | tee "$MAC_ARTIFA
 "$MAC_BIN/s3-smb" help
 "$MAC_BIN/s3-smb" version
 go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
-# Same immutable MinIO source as test/minio/commit. Native SDK, no Docker/latest.
-minio_revision=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
+# Read the same MinIO pin as Linux and the image publisher. Build natively.
+minio_release=$(awk -F= '$1 == "ARG MINIO_RELEASE" {print $2}' test/Dockerfile)
+minio_revision=$(awk -F= '$1 == "ARG MINIO_COMMIT" {print $2}' test/Dockerfile)
+[[ "$minio_release" =~ ^RELEASE\.[0-9TZ-]+$ ]]
+[[ "$minio_revision" =~ ^[0-9a-f]{40}$ ]]
+printf '%s\n' "$minio_release" > "$MAC_ARTIFACTS/minio-release"
 minio_src=$(mktemp -d "$MAC_WORK/minio-source.XXXXXX")
 git -C "$minio_src" init
 git -C "$minio_src" remote add origin https://github.com/minio/minio.git

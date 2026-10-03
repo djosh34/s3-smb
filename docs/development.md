@@ -67,8 +67,9 @@ scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 
 Both modes need Linux, Bash, Docker, Go 1.26.3, a C compiler and Python 3.
 They check `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and
-gofmt, then run the Mac harness Python unit tests, Go unit tests and
-`go test -race -shuffle=on`. Python tests do not write bytecode into the tree.
+gofmt, then run the Mac harness Python unit tests and Go unit tests. The Docker
+step runs `go test -race -shuffle=on` once over every package with MinIO
+available. Python tests do not write bytecode into the tree.
 The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
 and the frozen SMB server (`internal/smb-old`).
 The lint stage in `scripts/check.sh` is where additional linters belong.
@@ -86,13 +87,18 @@ detector and runs the tests with `-race -shuffle=on`. The source is mounted
 read-only. Each run has its own containers and network, with no lock. MinIO
 data goes away with the containers.
 
-`test/Dockerfile` copies MinIO from the public image
-`ghcr.io/djosh34/minio:RELEASE.2025-04-22T22-12-26Z` and installs
-`samba-testsuite` and `smbclient`. The local test image is tagged with the SHA-256
-hash of `test/Dockerfile` and reused while that file is unchanged. It is not
-published. `test/minio/Dockerfile` builds MinIO from the source commit in
-`test/minio/commit`. The `Publish MinIO` workflow publishes AMD64 and ARM64
-images when that pin changes on `main`, or when dispatched by hand.
+`test/Dockerfile` holds the MinIO release and source commit as ARGs, and copies
+MinIO from `ghcr.io/djosh34/minio` by release tag and image digest. It also
+installs `samba-testsuite` and `smbclient`. The local test image is tagged with
+the SHA-256 hash of `test/Dockerfile` and reused while that file is unchanged.
+It is not published.
+
+The Mac build and `Publish MinIO` workflow read the same pin from
+`test/Dockerfile`. `test/minio/Dockerfile` builds that source commit. The
+workflow publishes AMD64 and ARM64 images when the commit changes on `main`,
+or when dispatched by hand. It never overwrites an existing release tag.
+For a MinIO bump, publish the new release and update the image digest in
+`test/Dockerfile` in the same PR that changes the pin.
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file and
