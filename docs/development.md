@@ -89,6 +89,30 @@ volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
 GitHub runs both commands on every pull request and on `main`.
 
+An optional sustained-write test uses four file handles on one signed SMB
+connection, alternating zero and periodic-pattern files, and reads back every
+byte. This example writes 8 GiB over at least five minutes:
+
+```sh
+S3_SMB_LOAD_MIB=2048 S3_SMB_LOAD_DURATION=300s \
+  scripts/test-linux.sh -v ./test/e2e -run '^TestSignedLargeWriteLoad$'
+```
+
+The size is MiB per writer, a multiple of 8 from 8 to 4096. Set
+`S3_SMB_LOAD_TAIL=521` to also exercise partial final storage blocks (up to
+4096 extra bytes per file). Duration defaults to unpaced and is limited to ten
+minutes. The test defaults to zstd compression,
+encryption at rest and no disk cache; `S3_SMB_LOAD_COMPRESSION` and
+`S3_SMB_LOAD_CACHE` can override those settings. Uncompressed runs need enough
+object-store disk space for the whole workload. The artifact directory contains
+`load-summary.json`: transferred bytes, durations, frame/WRITE-size counts,
+signing flags, readback results and separate application framing-error counts.
+It records no payloads or authentication material. Frame counters observe the
+client socket's byte stream, not captured TCP packets or server reader offsets.
+This Go client uses at most 1 MiB per WRITE. This is not Time Machine, APFS image
+formatting, a historical replay or a receive-backpressure test. The standard
+script instruments the test process with `-race`, not the application binary.
+
 ## Time Machine end-to-end test
 
 `.github/workflows/macos.yml` runs only when dispatched by hand:

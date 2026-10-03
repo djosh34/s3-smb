@@ -22,4 +22,5 @@ docker run --name "$id-runner" --network "$id" \
   -v "$root:/src:ro" -v "$logs:/artifacts" \
   -v s3-smb-test-gomod:/go/pkg/mod -v s3-smb-test-gobuild:/root/.cache/go-build \
   -e S3_SMB_E2E_ENDPOINT=http://minio:9000 -e S3_SMB_TEST_ARTIFACTS=/artifacts \
+  -e S3_SMB_LOAD_MIB -e S3_SMB_LOAD_DURATION -e S3_SMB_LOAD_COMPRESSION -e S3_SMB_LOAD_CACHE -e S3_SMB_LOAD_TAIL \
   s3-smb-test bash /src/test/run-linux.sh "$@"
