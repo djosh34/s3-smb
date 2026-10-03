@@ -50,11 +50,20 @@ func newFixture(t *testing.T) *fixture {
 }
 func fixtureWithStore(t *testing.T, store *failingStore, dump []byte, readonly ...bool) *fixture {
 	t.Helper()
+	return fixtureWithChunkConfig(t, store, dump, nil, readonly...)
+}
+
+func fixtureWithChunkConfig(t *testing.T, store *failingStore, dump []byte, chunkConfig *chunk.Config, readonly ...bool) *fixture {
+	t.Helper()
 	mc := meta.DefaultConf()
 	mc.NoBGJob = true
 	mc.MaxDeletes = 0
 	m := meta.NewClient("sqlite3://"+filepath.Join(t.TempDir(), "meta.db"), mc)
 	format := &meta.Format{Name: "adapter-test", UUID: "adapter-fixture", Storage: "file", BlockSize: 64, Compression: "none", Capacity: 1 << 30, TrashDays: 14, DirStats: true}
+	if chunkConfig != nil {
+		format.BlockSize = chunkConfig.BlockSize >> 10
+		format.Compression = chunkConfig.Compress
+	}
 	if dump == nil {
 		if e := m.Init(format, true); e != nil {
 			t.Fatal(e)
@@ -76,6 +85,9 @@ func fixtureWithStore(t *testing.T, store *failingStore, dump []byte, readonly .
 		}
 	}
 	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 1, MaxDownload: 1, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
+	if chunkConfig != nil {
+		cc = *chunkConfig
+	}
 	chunks := chunk.NewCachedStore(store, cc, nil)
 	native, e := jfs.NewFileSystem(&jvfs.Config{Meta: mc, Format: *format, Chunk: &cc}, m, chunks, nil)
 	if e != nil {
