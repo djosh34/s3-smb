@@ -5,7 +5,10 @@ set -euo pipefail
 umask 077
 [[ "$(uname -s)" = Darwin ]]
 [[ "$PUBLIC_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]
+[[ "${DIAGNOSTIC_BINARY:-baseline}" = baseline ]]
 git rev-parse HEAD > "$MAC_ARTIFACTS/harness-revision"
+git rev-parse 'v0.1.0-rc.7^{}' > "$MAC_ARTIFACTS/application-source-revision"
+git rev-parse v0.1.0-rc.7 > "$MAC_ARTIFACTS/application-tag-object"
 printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
 {
   date -u; sw_vers; uname -a; go version; xcodebuild -version; xcrun --show-sdk-path
@@ -40,6 +43,7 @@ mkdir "$install_root/empty" "$install_root/bin"
 ) 2>&1 | tee "$MAC_ARTIFACTS/public-install.log"
 cp "$install_root/bin/s3-smb" "$MAC_BIN/s3-smb"
 go version -m "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/native-build.txt"
+shasum -a 256 "$MAC_BIN/s3-smb" > "$MAC_ARTIFACTS/application-sha256.txt"
 # Same immutable MinIO source as test/Dockerfile. Native SDK, no Docker/latest.
 minio_revision=0d7408fc9969caf07de6a8c3a84f9fbb10a6739e
 minio_src=$(mktemp -d "$MAC_WORK/minio-source.XXXXXX")
