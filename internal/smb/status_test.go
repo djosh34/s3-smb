@@ -34,6 +34,8 @@ func TestStatusFromError(t *testing.T) {
 		{"unsupported", smb.ErrNotSupported, smb.StatusNotSupported},
 		{"identity", smb.ErrIdentityChanged, smb.StatusObjectNameNotFound},
 		{"io", smb.ErrIO, smb.StatusIODeviceError},
+		{"joined-backend", errors.Join(smb.ErrIO, errors.New("backend detail")), smb.StatusIODeviceError},
+		{"classified-eof", errors.Join(smb.ErrIO, io.EOF), smb.StatusIODeviceError},
 		{"resources", smb.ErrResources, smb.StatusInsufficientResources},
 		{"cancel", context.Canceled, smb.StatusCancelled},
 		{"deadline", context.DeadlineExceeded, smb.StatusIOTimeout},

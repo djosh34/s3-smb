@@ -3,7 +3,11 @@
 // It must not own SMB opens, directory cursors, share modes, deletion intent,
 // byte locks or leases, and must not call JuiceFS plocks. It never imports server.
 //
-// M1 provides New(options Options) (smb.Storage, error). There are no global
+// M1 provides New(options Options) (smb.Storage, error) and
+// NewMetadataBarrier(metadataPath string) (MetadataBarrier, error). The latter
+// covers the SQLite database and WAL with ordinary fsync or the platform's
+// full-fsync barrier. It owns no persistent file descriptor or metadata connection.
+// Tests may inject a barrier to check ordering and failures. There are no global
 // handle or open registries. Handles carry a JuiceFS reference, immutable object
 // key and access mode. Private per-inode coordination is allowed and must not
 // serialize unrelated inode I/O. New rejects a missing filesystem or barrier.

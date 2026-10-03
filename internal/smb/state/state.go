@@ -4,7 +4,8 @@
 // I/O and break delivery occur after they return, never under a table lock.
 //
 // M1 provides New(now func() time.Time) (Table, error). It rejects a nil clock
-// and allocates empty indexes. M5 completes lease and durable operations here.
+// and allocates empty indexes. M1 implements every pure table transition; M5
+// connects lease breaks and durable transitions to the server's protocol handlers.
 package state
 
 import (
@@ -98,6 +99,7 @@ type Range struct {
 // object. A break only loses rights. Epoch advances per V2 rules; pending grants
 // cannot exceed BreakTo until acknowledged or timed out. H is required for a
 // durable grant. Directory and named-stream opens receive no lease or durability.
+// A client's lease key identifies only one object; reuse on another is rejected.
 type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
@@ -161,6 +163,8 @@ type Grant struct {
 // CloseAction transfers cleanup to the server. The table has already removed
 // the open and ranges. The server closes Handle and, if Remove is true, calls
 // identity-checked Remove after resolving the current name under a parent guard.
+// Object and Name identify the deletion, which may be a pending base deletion
+// triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
 // blocks new opens through the guard until deletion finishes, and drains active
 // request references before closing Handle. A transport drop cannot close a
@@ -240,7 +244,7 @@ type Table interface {
 	CloseAll() []CloseAction
 	// BreakLeases starts required breaks and returns sender work. No conflicting
 	// CREATE is committed until the affected leases lose the conflicting rights.
-	BreakLeases(object smb.ObjectKey, requester GUID, target uint32) []Break
+	BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) []Break
 	// AckBreak verifies binding, key and epoch before reducing lease state.
 	AckBreak(binding Binding, key GUID, epoch uint16, leaseState uint32) smb.Status
 	// ExpireBreaks applies the target on timeout and closes detached opens whose

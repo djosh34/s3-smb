@@ -56,20 +56,22 @@ const (
 
 // Header is the 64-byte SMB2 header. NextCommand is a byte offset, checked before
 // splitting. Credit is CreditRequest for requests and CreditResponse for replies.
-// Async headers have no TreeID. Signing covers the exact encoded member bytes.
+// Async headers have no TreeID. FlagResponse selects Status; requests use
+// ChannelSequence at that offset instead. Signing covers exact member bytes.
 type Header struct {
-	MessageID    uint64
-	SessionID    uint64
-	AsyncID      uint64
-	Signature    [16]byte
-	Status       smb.Status
-	Flags        HeaderFlags
-	NextCommand  uint32
-	ProcessID    uint32
-	TreeID       uint32
-	Command      Command
-	CreditCharge uint16
-	Credit       uint16
+	MessageID       uint64
+	SessionID       uint64
+	AsyncID         uint64
+	Signature       [16]byte
+	Status          smb.Status
+	Flags           HeaderFlags
+	NextCommand     uint32
+	ProcessID       uint32
+	TreeID          uint32
+	Command         Command
+	CreditCharge    uint16
+	Credit          uint16
+	ChannelSequence uint16
 }
 
 // FileID carries the persistent and volatile halves without depending on state.
@@ -111,6 +113,17 @@ type Codec interface {
 	DecodeResponse(message Message) (any, error)
 	// EncodeResponse accepts the corresponding response type or ErrorResponse.
 	EncodeResponse(command Command, response any) ([]byte, error)
+	// DecodeNegotiateContext returns PreauthContext, EncryptionContext or
+	// SigningContext for their known types; unknown types retain raw Data.
+	DecodeNegotiateContext(context NegotiateContext) (any, error)
+	// EncodeNegotiateContext encodes a matching known value, including its Type.
+	EncodeNegotiateContext(value any) (NegotiateContext, error)
+	// DecodeCreateContext decodes known tags into the types in contexts.go;
+	// response distinguishes request and reply layouts with identical lengths.
+	// Unknown tags remain CreateContext values for the handler to ignore/refuse.
+	DecodeCreateContext(context CreateContext, response bool) (any, error)
+	// EncodeCreateContext encodes a matching typed query, reply or reconnect.
+	EncodeCreateContext(value any) (CreateContext, error)
 	// DecodeSMB1Negotiate accepts only an opening SMB1 negotiate offering SMB2.
 	// The server responds with SMB2 wildcard 0x02ff; no other SMB1 command is valid.
 	DecodeSMB1Negotiate(packet []byte) error
@@ -183,19 +196,25 @@ type FlushRequest struct {
 
 // ReadRequest is bounded by MaxReadSize and the verified credit charge.
 type ReadRequest struct {
-	ID           FileID
-	Offset       uint64
-	Length       uint32
-	MinimumCount uint32
-	Flags        uint8
+	ChannelInfo    []byte
+	ID             FileID
+	Offset         uint64
+	Length         uint32
+	MinimumCount   uint32
+	Channel        uint32
+	RemainingBytes uint32
+	Flags          uint8
 }
 
 // WriteRequest owns its data bytes. Flags retains WRITE_THROUGH.
 type WriteRequest struct {
-	Data   []byte
-	ID     FileID
-	Offset uint64
-	Flags  uint32
+	Data           []byte
+	ChannelInfo    []byte
+	ID             FileID
+	Offset         uint64
+	Channel        uint32
+	RemainingBytes uint32
+	Flags          uint32
 }
 
 // LockElement is one validated range with raw SMB lock flags.

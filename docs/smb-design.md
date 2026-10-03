@@ -55,12 +55,14 @@ original MessageId, SessionId, AsyncId and async flag. Never grant twice on erro
 The sender writes each complete frame in order and reports that frame's result to
 its producer. A partial write failure closes the connection and fails queued sends.
 
-Compound async conversion follows MS-SMB2: emit each initial response once with
-correct NextCommand links, then emit final completions separately. Preserve each
-member's inherited session, tree and FileId before detaching it. Do not retain a
-mutable compound buffer in an async task. Related operations wait for their
-prerequisites; unrelated operations need not wait on S3. CANCEL has no response
-and cancels only its identified pending request; byte locks never queue.
+For a related compound, once a member goes async, process every dependent suffix
+member asynchronously too, including CLOSE. Give each its own pending response
+and async ID; do not execute it before its prerequisite finishes. Save inherited
+session, tree and FileId from the preceding operation, including an existing-handle
+operation, not only CREATE. Emit completed prefix replies only once. Final replies
+may be compounded or separate, never appended to an already-sent buffer. Unrelated
+members need not wait on S3. See MS-SMB2 sections 3.3.5.2.7.2 and 3.3.4.2.
+CANCEL has no response and cancels only its identified pending request; locks never queue.
 
 NEGOTIATE grants at least one credit even for a zero request. Login grants at
 least five for reconnect; grow toward 256 without exceeding the configured bound
@@ -71,8 +73,9 @@ compounds cannot consume the last credits without replenishment.
 
 3.1.1 uses SHA-512 preauth, NTLMv2/SPNEGO and session-derived keys. Select only an
 offered algorithm: prefer GMAC over CMAC and AES-256-GCM over AES-128-GCM.
-Plaintext authenticated traffic is signed, including the final SESSION_SETUP.
-For encrypted sessions, AES-GCM encrypts and authenticates the entire payload.
+Plaintext authenticated traffic is signed, including the final SESSION_SETUP;
+interim pending replies follow MS-SMB2's unsigned-interim exception. For encrypted
+sessions, AES-GCM encrypts and authenticates the entire payload, including interims.
 Do not sign separately. Verify the tag before decoding plaintext. Never reuse a
 nonce. Each session owns its protector; reconnect derives fresh keys and nonce state.
 

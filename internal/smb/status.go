@@ -94,7 +94,8 @@ func (kind ErrorKind) Error() string {
 // StatusFromError maps a storage error, including wrappers, to NTSTATUS. Nil is
 // success; unknown errors are internal errors, never success or a disconnect.
 // io.EOF maps to end-of-file only after the handler checks the read byte count.
-// Context errors take precedence over categories in an errors.Join value.
+// Context errors take precedence over categories in an errors.Join value;
+// an explicit storage category takes precedence over a backend EOF cause.
 func StatusFromError(err error) Status {
 	if err == nil {
 		return StatusSuccess
@@ -105,11 +106,11 @@ func StatusFromError(err error) Status {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return StatusIOTimeout
 	}
-	if errors.Is(err, io.EOF) {
-		return StatusEndOfFile
-	}
 	var kind ErrorKind
 	if !errors.As(err, &kind) {
+		if errors.Is(err, io.EOF) {
+			return StatusEndOfFile
+		}
 		return StatusInternalError
 	}
 	switch kind {
