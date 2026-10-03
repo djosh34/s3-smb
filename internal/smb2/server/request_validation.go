@@ -126,5 +126,9 @@ func (t *fileTree) validateRequest(ctx *compoundContext, pkt []byte) NtStatus {
 	if t.lookupOpen(id) == nil {
 		return STATUS_INVALID_HANDLE
 	}
+	if ctx != nil {
+		// Related operations inherit IDs used by a request, not only CREATE results.
+		ctx.fileId = id
+	}
 	return STATUS_SUCCESS
 }

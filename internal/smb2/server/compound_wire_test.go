@@ -17,6 +17,13 @@ import (
 // The independent auth_wire tests exercise the real NTLM handshake.
 func compoundWireFixture(t *testing.T) (transport, *session, *faultFS) {
 	t.Helper()
+	fs := &faultFS{deleteDispositionFS: newDeleteDispositionFS(vfs.FileTypeRegularFile)}
+	tr, signer := compoundWireFixtureFS(t, fs)
+	return tr, signer, fs
+}
+
+func compoundWireFixtureFS(t *testing.T, fs vfs.VFSFileSystem) (transport, *session) {
+	t.Helper()
 	l, e := net.Listen("tcp", "127.0.0.1:0")
 	if e != nil {
 		t.Fatal(e)
@@ -33,12 +40,11 @@ func compoundWireFixture(t *testing.T) (transport, *session, *faultFS) {
 	_ = client.SetDeadline(time.Now().Add(3 * time.Second))
 	ctx, cancel := context.WithCancel(context.Background())
 	d := NewServer(&ServerConfig{}, nil, nil)
-	c := &conn{t: direct(peer), ctx: ctx, cancel: cancel, serverCtx: d, serverState: STATE_SESSION_ACTIVE, requireSigning: true, dialect: SMB210, account: openAccount(16), outstandingRequests: newOutstandingRequests(), rdone: make(chan struct{}, 1), wdone: make(chan struct{}, 1), write: make(chan []byte, 10), werr: make(chan error, 1), sessions: map[uint64]*session{}, treeMapById: map[uint32]treeOps{}}
+	c := &conn{t: direct(peer), ctx: ctx, cancel: cancel, serverCtx: d, serverState: STATE_SESSION_ACTIVE, requireSigning: true, dialect: SMB210, maxTransactSize: serverMaxTransactSize, account: openAccount(16), outstandingRequests: newOutstandingRequests(), rdone: make(chan struct{}, 1), wdone: make(chan struct{}, 1), write: make(chan []byte, 10), werr: make(chan error, 1), sessions: map[uint64]*session{}, treeMapById: map[uint32]treeOps{}}
 	key := []byte("synthetic-signing-fixture-key")
 	s := &session{conn: c, sessionId: 1, signer: hmac.New(sha256.New, key), verifier: hmac.New(sha256.New, key), treeConnTables: map[uint32]*treeConn{}}
 	c.registerSession(s)
 	c.enableSession()
-	fs := &faultFS{deleteDispositionFS: newDeleteDispositionFS(vfs.FileTypeRegularFile)}
 	tree := &fileTree{treeConn: treeConn{session: s, treeId: 1}, fs: fs}
 	c.treeMapById[1] = tree
 	c.transportWG.Add(2)
@@ -63,7 +69,7 @@ func compoundWireFixture(t *testing.T) (transport, *session, *faultFS) {
 		}
 	})
 	signer := &session{signer: hmac.New(sha256.New, key), verifier: hmac.New(sha256.New, key)}
-	return direct(client), signer, fs
+	return direct(client), signer
 }
 func signedRelatedRequests(s *session, requests ...Packet) []byte {
 	var wire []byte
