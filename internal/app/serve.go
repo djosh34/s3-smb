@@ -226,7 +226,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
-		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, format); err != nil {
+		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, c.Storage.CacheDir, format); err != nil {
 			return fmt.Errorf("recover selected metadata: %w", err)
 		}
 		recovered = true

@@ -145,10 +145,17 @@ func CleanupRecoveryStaging(stateDir string) error {
 }
 
 // Recover loads one metadata backup into a new SQLite file in a staging
-// directory and links it to dbPath after the load, the identity check and a
-// clean close. It fails when dbPath exists. It checks metadata only and reads
-// no file data. The JuiceFS load cannot be cancelled through ctx.
-func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format) (*meta.Format, error) {
+// directory, wipes this volume's cache, then renames the database to dbPath.
+// The caller holds the state lock. It fails when dbPath exists. It checks
+// metadata only and reads no file data. The JuiceFS load cannot be cancelled
+// through ctx.
+func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath, cacheRoot string, current *meta.Format) (*meta.Format, error) {
+	return recoverMetadata(ctx, blob, key, dbPath, current, func() error {
+		return WipeVolumeCache(cacheRoot, current.UUID, filepath.Dir(dbPath))
+	})
+}
+
+func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format, beforePublish func() error) (saved *meta.Format, resultErr error) {
 	if current == nil {
 		return nil, errors.New("current validated volume settings required")
 	}
@@ -165,12 +172,12 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err != nil {
 		return nil, err
 	}
-	defer os.RemoveAll(dir)
+	defer func() { resultErr = errors.Join(resultErr, os.RemoveAll(dir)) }()
 	stage, err := os.OpenFile(filepath.Join(dir, "selected.json.gz"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, err
 	}
-	defer stage.Close()
+	defer func() { resultErr = errors.Join(resultErr, stage.Close()) }()
 	remote, err := blob.Get(ctx, key, 0, -1)
 	if err != nil {
 		return nil, err
@@ -182,7 +189,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if _, err = stage.Seek(0, io.SeekStart); err != nil {
 		return nil, err
 	}
-	saved, err := inspectReader(stage)
+	saved, err = inspectReader(stage)
 	if err != nil {
 		return nil, err
 	}
@@ -210,7 +217,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	closed := false
 	defer func() {
 		if !closed {
-			_ = m.Shutdown()
+			resultErr = errors.Join(resultErr, m.Shutdown())
 		}
 	}()
 	if _, err = stage.Seek(0, io.SeekStart); err != nil {
@@ -256,7 +263,7 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	}
 	closed = true
 	// SQLite checkpoints its WAL when the last connection closes. A nonempty
-	// WAL means the main file is incomplete, so do not link it into place.
+	// WAL means the main file is incomplete, so do not move it into place.
 	if st, e := os.Stat(path + "-wal"); e == nil && st.Size() > 0 {
 		return nil, errors.New("recovered SQLite still has an active WAL")
 	} else if e != nil && !os.IsNotExist(e) {
@@ -272,8 +279,15 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	// A hard link is atomic and fails when dbPath already exists.
-	if err = os.Link(path, dbPath); err != nil {
+	// A kill before the rename leaves no database. The next start recovers
+	// again, including another cache wipe.
+	if err = beforePublish(); err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = os.Rename(path, dbPath); err != nil {
 		return nil, err
 	}
 	if err = syncDir(parent); err != nil {
