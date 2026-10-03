@@ -16,6 +16,7 @@ case "$MAC_PHASE" in
   backup) minutes=140 ;;
   recover) minutes=80 ;;
   scenario) minutes=110 ;;
+  diagnostic) minutes=55 ;;
   *) echo "MAC_PHASE must be discover, backup, recover or scenario" >&2; exit 1 ;;
 esac
 [[ "$MAC_PHASE" != scenario || -n "${MAC_SCENARIO:-}" ]]
@@ -38,6 +39,7 @@ sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_WORK=$MAC_WORK" \
   "MAC_BIN=$MAC_BIN" "MAC_PHASE=$MAC_PHASE" "MAC_SCENARIO=${MAC_SCENARIO:-}" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_IMAGE=${ImageOS:-unknown} ${ImageVersion:-unknown}" \
   PYTHONDONTWRITEBYTECODE=1 \
-  python3 "$repo/test/macos/acceptance.py"
+  "DIAGNOSTIC_FRAMES=$MAC_ARTIFACTS/application-frames.jsonl" \
+  python3 "$repo/test/macos/diagnostic.py"
 # acceptance.py runs as root. The artifact upload runs as the runner user.
 sudo -n chown -R "$(id -u):$(id -g)" "$MAC_TRANSFER"

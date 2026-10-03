@@ -18,6 +18,15 @@ def utc():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def safe_argv(argv):
+    result = []
+    hide_next = False
+    for value in map(str, argv):
+        result.append('[REDACTED]' if hide_next else re.sub(r'(//[^:/@]+:)[^@]+@', r'\1[REDACTED]@', value))
+        hide_next = value == '-w'
+    return result
+
+
 def tm_status_numbers(text):
     """Observe only native numeric progress fields; unknown/absent is not a gate."""
     result = {}
@@ -50,11 +59,11 @@ class Commands:
                 code = 124
         output = path.read_bytes() if capture else b''
         with (self.evidence / 'commands.jsonl').open('a') as f:
-            f.write(json.dumps(dict(argv=[str(x) for x in argv], start=start, end=utc(),
+            f.write(json.dumps(dict(argv=safe_argv(argv), start=start, end=utc(),
                                    exit=code, diagnostic=diagnostic, output=name + '.log')) + '\n')
         print(f'native-command-exit {name} code={code} {utc()}', flush=True)
         if code and not diagnostic:
-            raise RuntimeError(f'native command failed ({code}): {argv}; see {name}.log')
+            raise RuntimeError(f'native command failed ({code}): {safe_argv(argv)}; see {name}.log')
         return output.decode('utf-8', errors='strict'), code
 
 
