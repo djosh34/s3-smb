@@ -31,6 +31,9 @@ else
 fi
 mkdir -m 700 "$MAC_WORK" "$MAC_ARTIFACTS"
 export MAC_BIN="$MAC_WORK/bin"
+# No native stdout/stderr (including build/help/exclusion output) reaches Actions.
+# The workflow always retains these task-owned logs as authenticated ciphertext.
+exec > "$MAC_ARTIFACTS/harness-private.log" 2>&1
 /bin/bash "$repo/test/macos/build.sh"
 # sudo is ordinary administration, NOT proof of Full Disk Access. Every native
 # operation must succeed; no TCC/SIP modification is attempted.

@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import plistlib
+import random
 import re
 import shlex
 import shutil
@@ -246,7 +247,7 @@ logging:
         (proof / 'nested/deeper').mkdir(parents=True)
         (proof / 'empty').mkdir()
         (proof / 'nested/empty').mkdir()
-        (proof / 'original.bin').write_bytes(os.urandom(4_000_000))
+        (proof / 'original.bin').write_bytes(random.Random(64).randbytes(4_000_000))
         (proof / 'nested/message.txt').write_text('independent baseline contents\n')
         (proof / 'nested/deeper/zero-length').touch()
         (TRANSFER / 'reference').mkdir()
@@ -391,6 +392,7 @@ logging:
             raise RuntimeError(f'expected one real Time Machine sparsebundle, got {bundles}')
         devices, volumes = self.attach(bundles[0], '-readonly')
         if len(volumes) != 1:
+            self.event('selection-writable-attach-fallback')
             # An interrupted backup leaves the volume in the image unclean, and a
             # read-only attach cannot replay it. Attach it writable once.
             for device in devices[:1]:

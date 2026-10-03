@@ -12,6 +12,8 @@ git rev-parse v0.1.0-rc.7 > "$MAC_ARTIFACTS/application-tag-object"
 printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
 {
   date -u; sw_vers; uname -a; go version; xcodebuild -version; xcrun --show-sdk-path
+  /usr/sbin/sysctl kern.osrelease kern.osversion kern.version kern.uuid hw.machine hw.model hw.ncpu hw.memsize
+  xcrun --show-sdk-version; xcrun --show-sdk-build-version; xcrun clang --version
   printf 'ImageOS=%s ImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
   for key in CFBundleVersion CFBundleShortVersionString; do
     printf 'smbfs %s=' "$key"

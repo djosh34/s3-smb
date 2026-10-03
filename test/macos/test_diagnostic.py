@@ -22,7 +22,7 @@ class DiagnosticTest(unittest.TestCase):
         obj = diagnostic.Diagnostic()
         for name in ('platform', 'start_capture', 'start_services', 'start_daemon',
                      'mount_share', 'configure_destination', 'check_exclusions',
-                     'detach_clients', 'tree_in_backup'):
+                     'detach_clients', 'tree_in_backup', 'sample_geometry'):
             setattr(obj, name, Mock())
         obj.create_tree = Mock(return_value=Path('/synthetic-proof'))
         process = Mock()
@@ -87,7 +87,9 @@ class DiagnosticTest(unittest.TestCase):
     def test_event_does_not_print_native_status(self):
         with tempfile.TemporaryDirectory() as root, patch.object(diagnostic, 'EVIDENCE', Path(root)), \
                 patch('builtins.print') as output:
-            diagnostic.Diagnostic().event('time-machine-progress', native_status='PRIVATE-SENTINEL')
+            obj = diagnostic.Diagnostic()
+            obj.sample_geometry = Mock()
+            obj.event('time-machine-progress', native_status='PRIVATE-SENTINEL')
             output.assert_called_once_with('time-machine-progress', flush=True)
 
 
