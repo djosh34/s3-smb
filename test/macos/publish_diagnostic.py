@@ -14,6 +14,7 @@ def publish(private, public):
     # These producers contain no command credentials, log messages or payloads.
     for name in ('harness-revision', 'application-version', 'application-source-revision',
                  'application-tag-object', 'application-sha256.txt', 'native-build.txt',
+                 'application-variant.txt', 'transport-overlay-sha256.txt', 'application-capture-comparison.json',
                  'minio-revision', 'tcpdump-stderr.log', 'capture-health.jsonl', 'capture-command.json',
                  'capture-stop.json', 'framing-error-counts.json', 'measurement.json', 'platform.txt'):
         path = private / name
