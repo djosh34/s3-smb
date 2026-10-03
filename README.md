@@ -117,8 +117,9 @@ bucket layout are in [recovery](docs/recovery.md).
 
 ## Development
 
-`go vet ./... && go test ./...` runs the fast tests. `scripts/test-linux.sh`
-runs every test against MinIO in Docker. [Development](docs/development.md)
+`scripts/check.sh` runs the same checks locally and in CI, including race tests
+and MinIO integration tests in Docker. Use `scripts/check.sh --gate` for phase
+and release gates, including fuzz exploration. [Development](docs/development.md)
 describes the code, the tests and the Time Machine workflow.
 [Vendored source](docs/vendored.md) lists the patches to JuiceFS and the SMB
 server.

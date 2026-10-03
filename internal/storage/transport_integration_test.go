@@ -50,7 +50,7 @@ const transportSecret = "s3smb-test-secret-only"
 // request. It leaves the signed Host and path unchanged.
 func TestTransportAcceptance(t *testing.T) {
 	if os.Getenv("S3_SMB_E2E_ENDPOINT") == "" {
-		t.Skip("needs MinIO: run scripts/test-linux.sh")
+		t.Skip("needs MinIO: run scripts/check.sh")
 	}
 	upstream, err := url.Parse(os.Getenv("S3_SMB_E2E_ENDPOINT"))
 	if err != nil || upstream.Host == "" || upstream.Scheme != "http" {

@@ -11,6 +11,8 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[2]
 REVISION = '1234567890abcdef1234567890abcdef12345678'
+MINIO_COMMIT = 'b' * 40
+MINIO_RELEASE = 'RELEASE.2099-01-02T03-04-05Z'
 STUB = r'''#!/usr/bin/env python3
 import json
 import os
@@ -47,6 +49,11 @@ class Build(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.base = Path(temp.name)
+        self.repo = self.base / 'repo'
+        (self.repo / 'test').mkdir(parents=True)
+        (self.repo / 'test/Dockerfile').write_text(
+            f'ARG MINIO_RELEASE={MINIO_RELEASE}\nARG MINIO_COMMIT={MINIO_COMMIT}\n'
+        )
         self.commands = self.base / 'commands'
         self.commands.mkdir()
         for command in ('uname', 'git', 'go', 'sw_vers', 'xcodebuild', 'xcrun', 'diskutil'):
@@ -71,7 +78,7 @@ class Build(unittest.TestCase):
     def run_build(self, server, **env):
         return subprocess.run(
             ['/bin/bash', str(REPO / 'test/macos/build.sh')],
-            cwd=REPO, env={**self.env, 'MAC_SERVER': server, **env},
+            cwd=self.repo, env={**self.env, 'MAC_SERVER': server, **env},
             capture_output=True, text=True, check=False,
         )
 
@@ -87,7 +94,7 @@ class Build(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 builds = [c for c in self.calls() if c['command'] == 'go' and c['args'][0] == 'build']
                 application = builds[-3]
-                self.assertEqual(application['cwd'], str(REPO))
+                self.assertEqual(application['cwd'], str(self.repo))
                 self.assertEqual(application['args'], [
                     'build', '-p', '3', '-tags', tags, '-o', self.env['MAC_BIN'] + '/s3-smb', '.',
                 ])
@@ -98,6 +105,10 @@ class Build(unittest.TestCase):
                 self.assertEqual((self.artifacts / 'build-tags').read_text(), tags + '\n')
                 self.assertEqual((self.artifacts / 'native-build.txt').read_text(),
                                  'fake build metadata for ' + self.env['MAC_BIN'] + '/s3-smb\n')
+                self.assertEqual((self.artifacts / 'minio-release').read_text(), MINIO_RELEASE + '\n')
+                self.assertEqual((self.artifacts / 'minio-revision').read_text(), MINIO_COMMIT + '\n')
+                fetches = [c['args'] for c in self.calls() if c['command'] == 'git' and 'fetch' in c['args']]
+                self.assertEqual(fetches[-1][-1], MINIO_COMMIT)
                 self.assertTrue((self.artifacts / 'application-build.log').is_file())
                 self.assertEqual(sorted(p.name for p in self.work.iterdir()),
                                  ['default'] if server == 'default' else ['default', 'smbnext'])
@@ -120,6 +131,12 @@ class Build(unittest.TestCase):
 
     def test_metadata_failure_stops_before_minio(self):
         result = self.run_build('smbnext', FAIL_METADATA='1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c['command'] == 'git' and 'fetch' in c['args'] for c in self.calls()))
+
+    def test_rejects_invalid_minio_pin(self):
+        (self.repo / 'test/Dockerfile').write_text('ARG MINIO_RELEASE=bad\nARG MINIO_COMMIT=bad\n')
+        result = self.run_build('default')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(any(c['command'] == 'git' and 'fetch' in c['args'] for c in self.calls()))
 

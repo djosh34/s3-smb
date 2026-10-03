@@ -25,7 +25,7 @@ import (
 func TestMinIOBootstrapLostResponse(t *testing.T) {
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("needs MinIO: run scripts/test-linux.sh")
+		t.Skip("needs MinIO: run scripts/check.sh")
 	}
 	upstream, err := url.Parse(endpoint)
 	if err != nil || upstream.Scheme != "http" || upstream.Host == "" {

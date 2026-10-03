@@ -61,20 +61,44 @@ S3 delete checks this, so a stopped backup schedule stops all deletes.
 ## Tests
 
 ```sh
-go vet ./... && go test ./...        # fast tests, no Docker
-scripts/test-linux.sh                # every test, with real SMB and MinIO, in Docker
-scripts/test-linux.sh -v ./test/e2e  # arguments go to go test
+scripts/check.sh         # PR checks, including fuzz seed replay
+scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 ```
 
-`go test ./...` needs Go 1.26.3 and a C compiler. Tests that need MinIO skip
-when `S3_SMB_E2E_ENDPOINT` is unset.
+Both modes need Linux, Bash, Docker, Go 1.26.3, a C compiler and Python 3.
+They check `go mod tidy -diff`, `go vet` with and without `-tags smbnext`, and
+gofmt, then run the Mac harness Python unit tests and Go unit tests. The Docker
+step runs `go test -race -shuffle=on` once over every package with MinIO
+available. Python tests do not write bytecode into the tree.
+The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
+and the frozen SMB server (`internal/smb-old`).
+The lint stage in `scripts/check.sh` is where additional linters belong.
 
-`scripts/test-linux.sh` needs Linux, Docker and Bash. It builds `test/Dockerfile`,
-which holds Go 1.26.3 and MinIO built from commit
-`0d7408fc9969caf07de6a8c3a84f9fbb10a6739e`. It starts MinIO on a private Docker
-network, mounts the source read-only, builds the application and runs
-`go test -race` on every package with `S3_SMB_E2E_ENDPOINT` set, so no test
-skips. The MinIO data lives in the container and goes away with it.
+PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
+`testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
+for one minute with two workers. Tests receive `S3_SMB_CHECK_MODE=pr` or `gate`,
+including inside Docker, so they can choose short or full-length outage tests.
+Go saves failing fuzz inputs in the package's `testdata/fuzz` directory. Keep
+those inputs as regression tests.
+
+The Docker step runs every package with MinIO available, including `test/e2e`
+and the storage integration tests. It builds the application without the race
+detector and runs the tests with `-race -shuffle=on`. The source is mounted
+read-only. Each run has its own containers and network, with no lock. MinIO
+data goes away with the containers.
+
+`test/Dockerfile` holds the MinIO release and source commit as ARGs, and copies
+MinIO from `ghcr.io/djosh34/minio` by release tag and image digest. It also
+installs `samba-testsuite` and `smbclient`. The local test image is tagged with
+the SHA-256 hash of `test/Dockerfile` and reused while that file is unchanged.
+It is not published.
+
+The Mac build and `Publish MinIO` workflow read the same pin from
+`test/Dockerfile`. `test/minio/Dockerfile` builds that source commit. The
+workflow publishes AMD64 and ARM64 images when the commit changes on `main`,
+or when dispatched by hand. It never overwrites an existing release tag.
+For a MinIO bump, publish the new release and update the image digest in
+`test/Dockerfile` in the same PR that changes the pin.
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file and
@@ -87,7 +111,10 @@ The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
-GitHub runs both commands on every pull request and on `main`.
+GitHub's `check` job calls `scripts/check.sh` on every pull request and on
+`main`. Dispatch the workflow with `gate=true` for a gate run. The job name
+`check` is fixed because branch protection requires it. Failed runs upload
+daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
 
 ## Time Machine end-to-end test
 
@@ -105,12 +132,6 @@ includes `application-revision`, `harness-revision`, `build-tags` (an empty line
 for the default build), `application-build.log` and `native-build.txt` from
 `go version -m` on the built binary. The harness does not install a released
 version from the Go proxy.
-
-Run the harness unit tests locally with:
-
-```sh
-python3 -m unittest discover -s test/macos -p 'test_*.py'
-```
 
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
@@ -130,7 +151,7 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=smbne
 
 ## Releasing
 
-1. Make sure both test workflows pass on `main`.
+1. Make sure the `check` job passes on `main` and run `scripts/check.sh --gate`.
 2. Tag the commit as a release candidate, `vX.Y.Z-rc.N`, and push the tag.
 3. Run `scripts/check-public-install.sh vX.Y.Z-rc.N` on Linux and on a Mac. It
    installs the version from the Go proxy with empty caches.

@@ -55,10 +55,10 @@ func newFixture(t *testing.T, encrypted bool) *fixture {
 	t.Helper()
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
-		t.Skip("needs MinIO: run scripts/test-linux.sh")
+		t.Skip("needs MinIO: run scripts/check.sh")
 	}
 	if os.Getenv("S3_SMB_E2E_BINARY") == "" {
-		t.Fatal("S3_SMB_E2E_BINARY is not set: run scripts/test-linux.sh")
+		t.Fatal("S3_SMB_E2E_BINARY is not set: run scripts/check.sh")
 	}
 	f := &fixture{t: t, endpoint: endpoint, encrypted: encrypted, password: password, secret: passphrase, bucket: fmt.Sprintf("smb-e2e-%d", time.Now().UnixNano())}
 	f.store = s3.New(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String(endpoint), UsePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("s3smb-test-access", "s3smb-test-secret-only", "")})
