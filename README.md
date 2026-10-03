@@ -54,8 +54,7 @@ System Settings, Privacy & Security. These are the steps the end-to-end test
 runs on a Mac, with s3-smb on the same Mac and the config above. Replace
 `PASSWORD` with the SMB password. In the two URLs, percent-encode characters
 such as `@`, `:` or `/`. After `-w`, give the password as it is. The first line
-keeps s3-smb's state and cache directories, by default `~/.local/share/s3-smb`
-and `~/.cache/s3-smb` (see [configuration](docs/configuration.md)), out of the
+keeps s3-smb's default `storage.state_dir` and `storage.cache_dir` out of the
 backup.
 
 ```sh
