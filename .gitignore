@@ -1,14 +1,5 @@
-# Test products and local runtime state (fixture inputs remain checked in).
-/artifacts/
-/.test-artifacts/
-/.test-runtime/
-/.cache/
-/bin/
-/dist/
 /s3-smb
 *.test
-*.prof
-/coverage.out
 /test/**/artifacts/
 /test/**/state/
 /test/**/cache/

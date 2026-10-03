@@ -1,8 +1,5 @@
-name: Mac acceptance
-# discover lists the directories to exclude from the backup. acceptance runs a
-# Time Machine backup on one Mac and restores it on a second, fresh Mac. It also
-# runs five failed-backup scenarios, each on its own Mac. scenarios runs only
-# those.
+name: Time Machine end-to-end
+# Backup and restore on two Macs, five failed-backup scenarios, or exclusion discovery.
 on:
   workflow_dispatch:
     inputs:

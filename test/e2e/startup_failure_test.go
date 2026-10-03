@@ -272,7 +272,7 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						// Valid authenticated PKCS#8, same passphrase, different native key.
+						// Valid encrypted PKCS8 key, same passphrase, different volume key.
 						startupPut(f, keys[0], data)
 					}
 				}

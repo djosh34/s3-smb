@@ -1,56 +1,95 @@
-# Recovery and operating boundaries
+# Recovery
 
-Release acceptance is still in progress. Do not use this development version for irreplaceable backups. See the [implementation contract](implementation-plan.md) for the release gates.
+There are two histories in the bucket. Time Machine keeps its own restore points
+inside the sparsebundle it writes to the share. s3-smb keeps metadata backups of
+the filesystem that holds that sparsebundle. To get a Mac's files back after
+losing the machine that runs s3-smb, you first recover the s3-smb filesystem from
+a metadata backup, then restore with Time Machine.
 
-## What must survive a lost machine
+## Terms
 
-Keep the following outside the daemon's local state and cache:
+- Metadata backup: a copy of the filesystem's directory entries, file attributes
+  and the map from files to data blocks. It holds no file data and is not a copy
+  of the SQLite file.
+- Time Machine backup: a backup that Time Machine wrote to the share. s3-smb
+  stores it as ordinary file data.
+- Recovery point: the filesystem as one metadata backup recorded it. It is usable
+  only while the data blocks it points at still exist.
+- Writer: the one running s3-smb process that may change a dataset.
 
-- The S3 bucket, region, endpoint and addressing/TLS configuration, plus the volume identity.
-- Working S3 access credentials. Replacement credentials may be used if they authorize the same dataset.
-- The encryption passphrase, when encryption is enabled.
-- Any private-CA roots or mutual-TLS credentials needed to connect.
+## What is in the bucket
 
-In encrypted mode the bucket also contains a passphrase-protected native private key at `s3-smb/keys/<volume-UUID>.pem`. The passphrase does not reconstruct a missing key. Losing that object and all independent copies makes encrypted data unrecoverable. An independent copy is optional, not a prerequisite for fresh-install recovery.
+All objects are under the prefix `s3-smb/`:
 
-The nonsecret connection/format identity is at `s3-smb/format.json`. Native data, metadata exports and the UUID marker use the `s3-smb/` volume prefix; the key and identity are outside native chunk/backup cleanup. The local active database is `metadata.db` inside `storage.state_dir`.
+- `s3-smb/format.json`: volume identity and data layout, without credentials.
+- `s3-smb/keys/<volume UUID>.pem`: the encryption key, protected by your
+  passphrase. Only in encrypted mode.
+- `s3-smb/juicefs_uuid`: the volume UUID, which startup checks.
+- `s3-smb/chunks/...`: file data, in JuiceFS's layout.
+- `s3-smb/meta/dump-YYYY-MM-DD-HHMMSS.json.gz`: metadata backups.
 
-The daemon's metadata backups contain the filesystem namespace, attributes and block mappings. They are not copies of the live SQLite file and are not Time Machine backups. File objects and the entire remote metadata export are encrypted in encrypted mode. Local SQLite/WAL, caches and temporary export staging remain plaintext with private creation permissions. Use an appropriately trusted local machine.
+The key file is an encrypted PKCS8 private key in PEM form. It uses PBES2 with
+AES-256-GCM and scrypt with N=131072, r=8 and p=1, so unlocking it takes about
+134 MB of memory. `s3-smb/format.json` holds the same protected key in its
+`EncryptKey` field. If the key object is missing, startup stops with
+`read protected volume key` and s3-smb does not create a new key. Write the
+`EncryptKey` value back to the key object to continue. The passphrase cannot
+recreate the key, so the encrypted data is lost only when every copy is gone:
+the key object, `format.json` and any copy you keep yourself.
 
-## Recover without the old local files
+s3-smb takes a metadata backup every `backup.interval` (default one hour) and
+at startup. On a normal restart it skips the startup backup if the receipt in
+the state directory names a backup younger than `backup.interval` and that
+object in S3 still has the recorded SHA-256. After a recovery it always takes a
+new one. It keeps every backup from the last 2 days, one per day for 2 weeks,
+one per week for 2 months and one per month for 2 years.
 
-1. Stop the old writer. Do not start another writer against this dataset while it is still running.
-2. Install the same tested release and recreate the configuration from the independently saved connection details and secrets. Use a new local state directory; the old cache is not required.
-3. Run `s3-smb serve -c /path/to/config.yaml` in a terminal. Missing local metadata must lead to remote inspection, not automatic formatting.
-4. Read the selected metadata recovery point and the warning about losing changes after it. Confirm recovery only if this is the intended dataset and the old writer has stopped.
-5. The application must decrypt/decompress and load that point into a fresh temporary SQLite database, validate it, and establish a new successful metadata backup before writable service begins.
-6. Read and verify the recovered contents through SMB. A successful metadata import does not prove that every referenced data object exists. Missing data must be an explicit read error, not an empty-file success.
-7. Resume writes only after checking the expected files. For a Time Machine dataset, use Apple's Time Machine restore and backup tools as well; listing sparsebundle files over SMB does not prove the inner backup can be restored.
+## What to keep outside the machine
 
-The [pending compression selector](configuration.md#data-compression-pending-product-change) is not available in qualified rc6 and must be qualified/released before use. With that feature, omit `storage.compression` during recovery to use the codec in the surviving native format, including existing `lz4` formats. An explicit `none` or `zstd` is only a matching assertion: a different value fails startup without converting the dataset. No old configuration or separately retained codec setting is needed.
+- The bucket name, region, endpoint and addressing setting.
+- Working S3 credentials for that bucket.
+- The encryption passphrase, if encryption is on.
+- Any CA certificate, client certificate and client private key
+  (`client_key_file`) you need to reach the endpoint.
 
-Do not delete remote objects, reformat the bucket, change encryption/compression mode, or generate a replacement key to get past a recovery error. A corrupt selected backup must fail visibly rather than silently choose an older point. Keep logs and preserve the bucket for diagnosis.
+## Recover on a new machine
 
-Normal restarts with valid local metadata do not require a terminal. New initialization and recovery do: confirmation uses the controlling terminal, not the log stream. A missing terminal is an error when consent is needed.
+1. Stop the old writer. If it still runs on another machine, the two will damage
+   the dataset. Only one s3-smb may write a bucket, on any machine. The local
+   lock only stops a second process with the same `storage.state_dir`.
+2. Install the same s3-smb version and write a config with the saved details and
+   an empty `storage.state_dir`. Leave `storage.compression` out, so s3-smb uses
+   the setting stored in the bucket. Read secrets from a file or a literal value.
+   A secret helper program, such as a password manager command, may not work yet
+   on a fresh machine.
+3. Run `s3-smb serve -c config.yaml` in a terminal. s3-smb finds no local
+   database, reads the newest metadata backup and asks:
+   `Recover metadata from <backup> (<time>)? ... Continue? [yes/no]`.
+4. Answer `yes` only if the old writer has stopped. Changes made after that backup
+   are lost.
+5. s3-smb loads the backup into a new database, takes a new metadata backup and
+   starts serving.
+6. Mount the share and check your files. For Time Machine, restore a few files
+   with `tmutil restore` or the Time Machine app and compare them.
 
-## Protection and retention
+A successful import does not prove that every data object it points at exists.
+A missing object shows up as a read error on that file.
 
-Defaults are an hourly native metadata backup and 14-day native trash retention. A scheduled backup that cannot complete after bounded retries stops writable serving. An operation that is stuck or overdue is not a successful backup. Preserve the previous successful point while investigating.
+If recovery fails, do not delete objects, generate a new key, change the
+encryption setting or format the bucket to get past the error. s3-smb never falls
+back to an older backup on its own. Keep the logs and the bucket as they are.
 
-An old metadata backup does **not** guarantee its referenced blocks are still retained. Do not configure external S3 lifecycle rules to delete live data, protected keys, identity objects or recovery points based only on object age. Bucket lifecycle policies can defeat application retention and make recovery impossible.
+## Why retention matters
 
-The local state lock prevents concurrent use of the same local metadata authority. It is not a distributed lease: another host with a different SQLite database is not fenced. Never run two independent writable metadata authorities for one dataset.
+An old metadata backup may point at data blocks that no longer exist. JuiceFS
+compacts files: it writes blocks A and B again as a new block C and the current
+metadata points at C. A and B go to the trash and are deleted after
+`backup.trash_days` (default 14). A metadata backup from before the compaction
+still points at A and B. Once they are deleted, that backup can no longer restore
+those files.
 
-The required SMB FLUSH/write-through durability is the application's data flush and FULL-mode SQLite synchronization; executed acceptance evidence must establish this before release. It does not synchronously create a new remote metadata backup for every write. Recovery after loss of local state can lose changes since the selected successful export. Process-kill tests are not proof of survival through power loss.
+s3-smb deletes nothing while its newest metadata backup is older than two backup
+intervals. If a scheduled backup fails after three attempts, the writer stops.
 
-## Access and secrets
-
-The default SMB listener is `127.0.0.1:445`. Explicit wider binding is supported but exposes access to other hosts. The SMB account must have a password.
-
-With `encryption.enabled: false`, S3 readers with sufficient access can read data and metadata. TLS, S3 credentials, the configured SMB access policy and metadata protection still apply. Encryption mode is fixed when a dataset is created; changing the YAML is not a conversion procedure.
-
-Permanent S3 credentials and the enabled encryption passphrase are resolved once at startup. Helpers execute direct argv without an implicit shell, with the daemon's privileges; that is not a sandbox. Restart to load changed secrets or TLS files. Readable pre-existing secret/state files with unusual permissions or ownership cause warnings, not automatic refusal. New files are created privately.
-
-## Evidence limits
-
-Linux SMB-to-S3 tests, native source inspection, and a Darwin build are separate evidence. None alone establishes Time Machine compatibility. The release requires the final hosted-Mac full backup, fresh-state recovery, observed crash during a later backup with S3 writes in flight, restore of completed data, resumed backup and another restore. Until those pass, no production Time Machine claim is made.
+Do not add S3 lifecycle rules that delete or expire objects under `s3-smb/`. They
+bypass this protection and can delete data, metadata backups or the key.
