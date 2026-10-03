@@ -13,6 +13,14 @@ printf '%s\n' "$PUBLIC_VERSION" > "$MAC_ARTIFACTS/application-version"
 {
   date -u; sw_vers; uname -a; go version; xcodebuild -version; xcrun --show-sdk-path
   printf 'ImageOS=%s ImageVersion=%s\n' "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+  for key in CFBundleVersion CFBundleShortVersionString; do
+    printf 'smbfs %s=' "$key"
+    /usr/bin/plutil -extract "$key" raw -o - /System/Library/Extensions/smbfs.kext/Contents/Info.plist || true
+    echo
+  done
+  if [[ -f /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs ]]; then
+    shasum -a 256 /System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs
+  fi
   df -k; diskutil list; diskutil apfs list
 } > "$MAC_ARTIFACTS/platform.txt" 2>&1
 [[ "$(go env GOVERSION)" = go1.26.3 ]]
