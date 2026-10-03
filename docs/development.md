@@ -158,6 +158,10 @@ for the default build), `application-build.log` and `native-build.txt` from
 `go version -m` on the built binary. The harness does not install a released
 version from the Go proxy.
 
+The acceptance backup job first runs the SQLite full-fsync pool test on macOS.
+It checks both pragma values on four live connections and four replacements.
+The same test runs in the Linux checks. SQLite uses full fsync only on macOS.
+
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
 recovers the dataset, restores the directory with `tmutil restore` and compares
