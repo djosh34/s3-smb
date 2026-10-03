@@ -21,6 +21,7 @@ All import paths were rewritten to `github.com/djosh34/s3-smb/internal/...`. Eve
 | --- | --- | --- |
 | `pkg/fs/fs.go` | `pread` flushes the inode's writer and refetches the length before the end-of-file check. A second open handle saw a stale length after another handle wrote. | `internal/smbfs/coherence_test.go` |
 | `pkg/chunk/disk_cache.go` | The two cache-full flags are `atomic.Bool`. The free-space monitor raced with cache reads and writes. | `test/e2e` under `-race` |
+| `pkg/chunk/cached_store.go` | Finish compression and slice-header mutation before publishing a page to the cache. With no compression the upload buffer aliases the cached page. | `internal/smbfs/page_pool_lifetime_test.go` under `-race` |
 | `pkg/chunk/disk_cache.go`, `mem_cache.go`, `cached_store.go`, `pkg/meta/quota.go`, `sql.go` | Log lines print decimal units. | `pkg/chunk/logging_s3smb_test.go` |
 | `pkg/meta/config.go` | New `Config.CheckMaintenance` hook. The application uses it to block slice deletion and compaction while a metadata backup still needs the older data. | `pkg/meta/protection_test.go`, `trash_protection_test.go`, `test/e2e/protection_test.go` |
 | `pkg/meta/sql.go`, `base.go` | Transactions that delete, truncate or compact call the hook, through `maintenanceTxn`. So do `compactChunk`, `deleteSlice_` and trash cleanup. | same |
