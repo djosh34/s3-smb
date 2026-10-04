@@ -41,7 +41,7 @@ func TestConnectionBoundsIncompleteSessionExchanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := connection.sessionSetup(wire.Message{Header: wire.Header{Command: wire.SessionSetup}, Body: body})
+	result, err := connection.sessionSetup(t.Context(), wire.Message{Header: wire.Header{Command: wire.SessionSetup}, Body: body})
 	if err != nil || result.status != smb.StatusInsufficientResources || len(connection.sessions) != 64 {
 		t.Fatalf("session limit: %+v %v", result, err)
 	}
@@ -75,7 +75,7 @@ func TestCanceledRequestDoesNotDispatch(t *testing.T) {
 	connection := &connection{server: server}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if result := connection.execute(ctx, echo(t, 1)); result.status != smb.StatusCancelled {
+	if result := connection.execute(ctx, echo(t, 1), compoundState{}); result.status != smb.StatusCancelled {
 		t.Fatal(result)
 	}
 }
