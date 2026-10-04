@@ -28,6 +28,8 @@ func TestDurableContextsFailBeforeNamespaceMutation(t *testing.T) {
 		{name: "short reconnect", contexts: []wire.CreateContext{{Name: "DH2C", Data: []byte{1}}}},
 		{name: "short lease", contexts: []wire.CreateContext{{Name: "RqLs", Data: []byte{1}}, request}},
 		{name: "duplicate request", contexts: []wire.CreateContext{request, request}},
+		{name: "v1 and v2 request", contexts: []wire.CreateContext{{Name: "DHnQ", Data: make([]byte, 16)}, request}},
+		{name: "v1 reconnect and v2 request", contexts: []wire.CreateContext{{Name: "DHnC", Data: make([]byte, 16)}, request}},
 		{name: "duplicate reconnect", contexts: []wire.CreateContext{reconnect, reconnect}},
 		{name: "request and reconnect", contexts: []wire.CreateContext{request, reconnect}},
 		{name: "reconnect and request", contexts: []wire.CreateContext{reconnect, request}},

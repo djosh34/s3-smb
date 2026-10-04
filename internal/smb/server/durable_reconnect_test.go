@@ -89,7 +89,11 @@ func TestDH2CRejectsMismatchedContextsAndIdentities(t *testing.T) {
 			test.modify(&bad)
 			bad.Request.Name = "must-not-be-created"
 			message := durableExchange(ctx, t, client, session, session.NextMessageID+1, bad)
-			if message.Header.Status != smb.StatusObjectNameNotFound {
+			want := smb.StatusObjectNameNotFound
+			if test.name == "persistent flag" {
+				want = smb.StatusInvalidParameter
+			}
+			if message.Header.Status != want {
 				t.Fatalf("mismatched %s = %#x", test.name, message.Header.Status)
 			}
 			resolved, err := server.options.Storage.Lookup(ctx, bad.Request.Name)
@@ -150,7 +154,11 @@ func TestDH2CRejectsOtherUserShareAndClient(t *testing.T) {
 			options.Durable = nil
 			options.Reconnect = &wire.DurableReconnect{ID: wire.FileID(open.ID), CreateGUID: open.CreateGUID}
 			message := durableExchange(ctx, t, client, session, session.NextMessageID, options)
-			if message.Header.Status != smb.StatusObjectNameNotFound {
+			want := smb.StatusObjectNameNotFound
+			if test.name == "user" {
+				want = smb.StatusAccessDenied
+			}
+			if message.Header.Status != want {
 				t.Fatalf("other %s reconnect = %#x", test.name, message.Header.Status)
 			}
 		})
