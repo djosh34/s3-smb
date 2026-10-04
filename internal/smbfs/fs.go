@@ -358,19 +358,20 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 	if uint64(len(dst)) > size-offset {
 		dst = dst[:size-offset]
 	}
-	if h.state.reader == nil {
-		h.state.reader = s.reader.Open(meta.Ino(h.key.Inode), size)
-	}
-	var n int
-	var eno syscall.Errno
-	for {
-		n, eno = h.state.reader.Read(storageContext(ctx), offset, dst)
-		if eno != syscall.EAGAIN || ctx.Err() != nil {
-			break
+	n, err := retryRead(ctx, func() (int, syscall.Errno) {
+		if h.state.reader == nil {
+			h.state.reader = s.reader.Open(meta.Ino(h.key.Inode), size)
 		}
-	}
-	if eno != 0 || ctx.Err() != nil {
-		return n, errors.Join(backendError(eno), ctx.Err())
+		n, eno := h.state.reader.Read(storageContext(ctx), offset, dst)
+		if eno == syscall.EIO {
+			// JuiceFS retains EIO on a failed reader. Replace it before retrying.
+			h.state.reader.Close(storageContext(ctx))
+			h.state.reader = nil
+		}
+		return n, eno
+	}, readRetryWindow)
+	if err != nil {
+		return n, err
 	}
 	if n < requested {
 		return n, io.EOF
