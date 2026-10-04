@@ -2,24 +2,23 @@
 package helpers
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 )
 
-// DropLog contains evidence from one cut's bounded macOS log window.
+// DropLog is what the macOS log shows around one connection cut.
 type DropLog struct {
 	Refused      bool `json:"refused_non_idempotent"`
 	Reconnected  bool `json:"reconnected"`
 	BackupStarts int  `json:"backup_starts"`
 }
 
-// ParseDropLog recognizes the exact reconnect messages in Apple
-// SMBClient-494.120.2/kernel/netsmb/smb_iod.c. Other failures are not refusals.
+// ParseDropLog reads `log show --style json` output. It matches the exact
+// reconnect messages in Apple's SMBClient-494.120.2 kernel/netsmb/smb_iod.c, so
+// other reconnect failures do not count as refusals.
 func ParseDropLog(data []byte) (DropLog, error) {
 	var records []struct {
 		Message string `json:"eventMessage"`
@@ -42,8 +41,9 @@ func ParseDropLog(data []byte) (DropLog, error) {
 	return result, nil
 }
 
-// BandWriteReady waits for two advancing Copying samples, at least 128 MiB
-// copied and at least 512 MiB left in the harness's four-GiB change.
+// BandWriteReady reports whether two tmutil status samples show Copying
+// advancing, with at least 128 MiB copied and at least 512 MiB of the four-GiB
+// change left.
 func BandWriteReady(previous, current string) bool {
 	if !Copying(previous) || !Copying(current) {
 		return false
@@ -53,19 +53,7 @@ func BandWriteReady(previous, current string) bool {
 	return after > before && after >= 128<<20 && after < (4<<30)-(512<<20)
 }
 
-func copiedBytes(text string) float64 {
-	match := bytesPattern.FindStringSubmatch(text)
-	if match == nil {
-		return 0
-	}
-	value, err := strconv.ParseFloat(match[1], 64)
-	if err != nil {
-		return 0
-	}
-	return value
-}
-
-// DropAttempt records the cut, its completion and the client log classification.
+// DropAttempt records one cut, whether the backup completed and its log.
 type DropAttempt struct {
 	CutAt        time.Time `json:"cut_at"`
 	RestoredAt   time.Time `json:"restored_at"`
@@ -75,30 +63,24 @@ type DropAttempt struct {
 	Completed    bool      `json:"completed"`
 }
 
-// DropReport never calls three refusals a passing reconnect test.
+// DropReport is the outcome of the short drop test: passed, failed or not
+// tested.
 type DropReport struct {
 	Status   string        `json:"status"`
 	Attempts []DropAttempt `json:"attempts"`
 }
 
-// RunDropAttempts retries only the client's explicit non-idempotent refusal.
-// Setup, timeout, log and ordinary reconnect errors stop the run at once.
-func RunDropAttempts(ctx context.Context, attempt func(int) (DropAttempt, error)) (DropReport, error) {
+// RunDropAttempts runs up to three attempts. Only the client's explicit
+// non-idempotent refusal leads to another attempt. Three refusals are "not
+// tested", which the harness reports as a failure.
+func RunDropAttempts(attempt func(int) DropAttempt) (DropReport, error) {
 	report := DropReport{Status: "failed"}
 	for number := 1; number <= 3; number++ {
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-		result, err := attempt(number)
+		result := attempt(number)
 		report.Attempts = append(report.Attempts, result)
-		if err != nil {
-			return report, err
-		}
-		if err := ctx.Err(); err != nil {
-			return report, err
-		}
-		if err := CheckShortDrop(result.CutAt, result.RestoredAt); err != nil {
-			return report, err
+		// A slow runner must not turn a long outage into a short drop attempt.
+		if result.RestoredAt.Sub(result.CutAt) > 30*time.Second {
+			return report, errors.New("short drop was not within the 30-second reconnect window")
 		}
 		if result.Log.Refused {
 			continue
@@ -113,18 +95,8 @@ func RunDropAttempts(ctx context.Context, attempt func(int) (DropAttempt, error)
 	return report, nil
 }
 
-// CheckShortDrop prevents a slow runner from counting a long outage as a
-// short reconnect test, including attempts where the client refused reconnect.
-func CheckShortDrop(cut, restored time.Time) error {
-	elapsed := restored.Sub(cut)
-	if cut.IsZero() || elapsed <= 0 || elapsed > 30*time.Second {
-		return errors.New("short drop was not within the 30-second reconnect window")
-	}
-	return nil
-}
-
-// CheckOutage requires a measured outage beyond the Mac reconnect window,
-// a visible failure and no completed backup from the interrupted attempt.
+// CheckOutage requires an outage longer than the Mac reconnect window, a
+// visible command failure and no completed backup from the interrupted attempt.
 func CheckOutage(cut, restored time.Time, commandErr error, latest, baseline string) error {
 	if restored.Sub(cut) <= 30*time.Second {
 		return errors.New("outage did not exceed 30 seconds")

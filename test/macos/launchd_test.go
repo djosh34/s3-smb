@@ -22,7 +22,7 @@ func (h *harness) startLaunchd() int {
 	h.must(err)
 	// Register cleanup ownership before bootstrap, including a partial startup failure.
 	h.launchdPlist = filepath.Join(h.work, "com.s3-smb.plist")
-	h.must(os.WriteFile(h.launchdPlist, data, 0o600)) //nolint:gosec // The plist has a fixed name under the run-owned work directory.
+	h.must(h.workDir.WriteFile("com.s3-smb.plist", data, 0o600))
 	h.run(time.Minute, "/usr/bin/plutil", "-lint", h.launchdPlist)
 	h.run(time.Minute, "/bin/launchctl", "bootstrap", "system", h.launchdPlist)
 	return h.launchdReady(0, 1)
@@ -53,7 +53,7 @@ func (h *harness) launchdReady(previous, starts int) int {
 func (h *harness) launchdLogs() (string, error) {
 	var logs string
 	for _, name := range []string{"launchd-out.log", "launchd-err.log"} {
-		data, err := os.ReadFile(filepath.Join(h.evidence, name)) //nolint:gosec // Both names are fixed launchd logs in the run-owned evidence directory.
+		data, err := h.evidenceDir.ReadFile(name)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -98,7 +98,7 @@ func (h *harness) unloadLaunchd() error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(h.launchdPlist); err != nil {
+	if err := h.workDir.Remove("com.s3-smb.plist"); err != nil {
 		return err
 	}
 	h.launchdPlist = ""

@@ -9,7 +9,8 @@ import (
 	"syscall"
 )
 
-// BackupTree finds the single backed-up volume containing the fixture, without following a replaced fixture symlink.
+// BackupTree returns the test tree in the one backed-up volume that has it. A
+// symlink in place of the tree does not count.
 func BackupTree(backup, relative string) (string, error) {
 	volumes, err := os.ReadDir(backup)
 	if err != nil {

@@ -7,7 +7,8 @@ import (
 	"strings"
 )
 
-// SelectBackup requires the native completed list, never just a successful startbackup exit.
+// SelectBackup picks the backup named identifier, or latest when identifier is
+// empty, from tmutil's list of completed backups. It must be listed exactly once.
 func SelectBackup(backups []string, latest, identifier string) (string, error) {
 	var matches []string
 	for _, path := range backups {

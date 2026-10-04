@@ -5,7 +5,6 @@ package macos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net"
 	"os"
@@ -113,14 +112,11 @@ type receipt struct {
 func (h *harness) metadata(after time.Time, label string) receipt {
 	var point receipt
 	h.must(h.waitFor("metadata point after "+after.Format(time.RFC3339), 15*time.Minute, time.Second, func() (bool, error) {
-		data, err := os.ReadFile(filepath.Join(h.local, "state/backup-receipt.json"))
+		err := readJSON(h.workDir, "daemon/state/backup-receipt.json", &point)
 		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
 		if err != nil {
-			return false, err
-		}
-		if err := json.Unmarshal(data, &point); err != nil {
 			return false, err
 		}
 		return point.Snapshot.After(after), nil
@@ -140,9 +136,9 @@ func (h *harness) mountpoints(text string) []string {
 
 func (h *harness) detach() error {
 	if h.backupDirectory != nil {
-		file := h.backupDirectory
+		root := h.backupDirectory
 		h.backupDirectory = nil
-		if err := file.Close(); err != nil {
+		if err := root.Close(); err != nil {
 			h.t.Error("close held backup", err)
 		}
 	}
@@ -168,7 +164,7 @@ func (h *harness) detach() error {
 		}
 	}
 	if len(devices) == 0 {
-		if err := helpers.UnmountSnapshots(h.ejectCommand); err != nil {
+		if err := h.unmountSnapshots(); err != nil {
 			return err
 		}
 	}
@@ -181,12 +177,43 @@ func (h *harness) detach() error {
 	return h.detachShares()
 }
 
-func (h *harness) ejectCommand(args ...string) (string, error) {
-	return h.try(2*time.Minute, args...)
+// unmountSnapshots unmounts the remote APFS snapshots of Time Machine, which
+// keep their disk image busy.
+func (h *harness) unmountSnapshots() error {
+	mounts, err := h.try(2*time.Minute, "/sbin/mount")
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(mounts, "\n") {
+		if !strings.HasPrefix(line, "com.apple.TimeMachine.") || !strings.Contains(line, " on /Volumes/.timemachine/") {
+			continue
+		}
+		_, tail, _ := strings.Cut(line, " on ")
+		path, _, _ := strings.Cut(tail, " (")
+		if _, err := h.try(2*time.Minute, "/sbin/umount", path); err != nil {
+			if _, err := h.try(2*time.Minute, "/sbin/umount", "-f", path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// eject makes one attempt to detach a disk image, after its snapshots.
+func (h *harness) eject(device string, force bool) error {
+	if err := h.unmountSnapshots(); err != nil {
+		return err
+	}
+	args := []string{"/usr/bin/hdiutil", "detach"}
+	if force {
+		args = append(args, "-force")
+	}
+	_, err := h.try(2*time.Minute, append(args, device)...)
+	return err
 }
 
 func (h *harness) detachDevice(device string) error {
-	if err := helpers.Eject(h.ejectCommand, device, false); err == nil {
+	if err := h.eject(device, false); err == nil {
 		return nil
 	}
 	return h.waitFor("eject "+device, time.Minute, 5*time.Second, func() (bool, error) {
@@ -197,7 +224,7 @@ func (h *harness) detachDevice(device string) error {
 		if !strings.Contains(text, "<string>"+device+"</string>") {
 			return true, nil
 		}
-		err = helpers.Eject(h.ejectCommand, device, true)
+		err = h.eject(device, true)
 		if err != nil {
 			h.t.Log("image still busy", device, err)
 		}
@@ -315,6 +342,9 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	return selected
 }
 
+// holdBackup keeps the selected backup directory open until detach, so normal
+// unmounts see it as busy. macOS can unmount the backup's snapshot before or
+// just after the open. Listing the backups mounts it again.
 func (h *harness) holdBackup(selected, volume string) string {
 	if h.backupDirectory != nil {
 		h.t.Fatal("backup directory already held open")
@@ -325,28 +355,55 @@ func (h *harness) holdBackup(selected, volume string) string {
 	h.ctx = ctx
 	defer func() { cancel(); h.ctx = parent }()
 	h.must(h.waitFor("open selected backup "+selected, time.Minute, time.Second, func() (bool, error) {
-		file, err := helpers.OpenBackup(selected, func() (string, error) {
-			return h.try(time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volume, "-m")
-		}, func() error {
-			select {
-			case <-h.ctx.Done():
-				return h.ctx.Err()
-			case <-time.After(2 * time.Second):
-				return nil
-			}
-		}, func(message string) { h.t.Log(message, selected) })
+		root, err := h.openBackup(selected)
 		if errors.Is(err, os.ErrNotExist) {
-			h.t.Log("selected backup vanished again after remount", selected, err)
-			return false, nil
+			output, listErr := h.try(time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volume, "-m")
+			if listErr != nil {
+				return false, listErr
+			}
+			path, selectErr := helpers.SelectBackup(strings.Split(strings.TrimSpace(output), "\n"), "", filepath.Base(selected))
+			if selectErr != nil {
+				return false, selectErr
+			}
+			root, err = h.openBackup(path)
+			if errors.Is(err, os.ErrNotExist) {
+				h.t.Log("selected backup vanished again after remount", path, err)
+				return false, nil
+			}
 		}
 		if err != nil {
 			return false, err
 		}
-		h.backupDirectory = file
+		h.backupDirectory = root
 		return true, nil
 	}))
 	h.t.Log("selected backup held open until detach", h.backupDirectory.Name())
 	return h.backupDirectory.Name()
+}
+
+// openBackup opens a backup directory, lets pending unmounts settle, then
+// checks the path again. An open directory can survive a forced unmount, but
+// the restore reads the path.
+func (h *harness) openBackup(path string) (*os.Root, error) {
+	root, err := os.OpenRoot(path)
+	if errors.Is(err, os.ErrNotExist) {
+		h.t.Log("selected backup vanished before open; remounting", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	h.pause(2 * time.Second)
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		h.t.Log("selected backup vanished after open; remounting", path)
+	}
+	if err == nil && !info.IsDir() {
+		err = errors.New("selected backup path is no longer a directory")
+	}
+	if err != nil {
+		return nil, errors.Join(err, root.Close())
+	}
+	return root, nil
 }
 
 func (h *harness) backupTree(selected string) string {
@@ -355,7 +412,9 @@ func (h *harness) backupTree(selected string) string {
 	return path
 }
 
-func (h *harness) restore(selected, reference, name string) helpers.Counts {
+// restore restores the test tree from the selected backup and requires it to
+// match the expected manifest.
+func (h *harness) restore(selected string, expected []helpers.Entry, name string) helpers.Counts {
 	source := h.backupTree(selected)
 	if !strings.HasPrefix(source, "/Volumes/") || filepath.Clean(source) == filepath.Clean(h.proof) {
 		h.t.Fatal("restore source is not the mounted backup", source)
@@ -364,12 +423,7 @@ func (h *harness) restore(selected, reference, name string) helpers.Counts {
 	h.must(absent(output))
 	h.t.Log("native-created-tree-restore-start", source)
 	h.run(30*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
-	manifest := filepath.Join(h.evidence, name+".json")
-	counts := h.manifest(output, manifest)
-	expected, err := helpers.ReadManifest(reference)
-	h.must(err)
-	actual, err := helpers.ReadManifest(manifest)
-	h.must(err)
+	actual, counts := h.manifest(output, h.evidenceDir, name+".json")
 	differences, err := helpers.Compare(expected, actual)
 	h.must(err)
 	h.save(name+"-differences.json", differences)
