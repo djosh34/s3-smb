@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +20,7 @@ import (
 func TestChaosConnectionDrops(t *testing.T) {
 	seed := chaos.Seed(t)
 	rng := chaos.Rand(seed, "connection-drops")
-	f := newChaosFixture(t, false)
+	f := newFixture(t, false)
 	f.interval = "1h"
 	f.cacheSize = "8 MB"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -63,8 +64,9 @@ func TestChaosConnectionDrops(t *testing.T) {
 	connect := func() (*smb.Share, func()) {
 		t.Helper()
 		share, closeShare := f.share()
-		t.Cleanup(closeShare)
-		return share.WithContext(ctx), closeShare
+		closeOnce := sync.OnceFunc(closeShare)
+		t.Cleanup(closeOnce)
+		return share.WithContext(ctx), closeOnce
 	}
 	check := func(share *smb.Share) {
 		t.Helper()
@@ -105,18 +107,29 @@ func TestChaosConnectionDrops(t *testing.T) {
 		apply(chaos.Schedule{{Net: &netfault.Fault{CutAfter: cutAfter, CutDirection: direction}}})
 		done := make(chan error, 1)
 		go func() { done <- operation() }()
+		deadline := time.NewTimer(20 * time.Second)
+		defer deadline.Stop()
+		droppedBefore := network.DroppedEvents()
 		var forwarded int64
 		observed := false
 		for !observed {
 			select {
-			case event := <-network.Events():
+			case event, ok := <-network.Events():
+				if !ok {
+					t.Fatal("network proxy stopped before the byte cut")
+				}
 				if event.Direction == direction {
 					forwarded += event.Bytes
 					observed = event.Cut
 				}
+			case <-deadline.C:
+				t.Fatal("no byte-cut event within 20 seconds")
 			case <-ctx.Done():
 				t.Fatalf("waiting for byte cut: %v", ctx.Err())
 			}
+		}
+		if network.DroppedEvents() != droppedBefore {
+			t.Fatal("lost network events during the byte cut")
 		}
 		if forwarded != cutAfter {
 			t.Fatalf("cut after %d forwarded bytes, want %d", forwarded, cutAfter)
@@ -127,6 +140,8 @@ func TestChaosConnectionDrops(t *testing.T) {
 				t.Fatalf("cut operation must fail visibly on the transport: %v", err)
 			}
 			t.Logf("seed=%d direction=%v cut_after=%d operation_error=%v", seed, direction, cutAfter, err)
+		case <-deadline.C:
+			t.Fatal("cut operation did not finish within 20 seconds")
 		case <-ctx.Done():
 			t.Fatalf("cut operation did not finish: %v", ctx.Err())
 		}
