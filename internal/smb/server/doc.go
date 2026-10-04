@@ -2,8 +2,13 @@
 // requests and SMB handlers. It joins wire, auth, crypt, state and smb.Storage.
 // It must not reach into JuiceFS, reparse stream names or keep a second lock table.
 //
-// New validates the supplied modules and identity. The connection core handles
-// negotiation and ECHO; session and file handlers are added in later milestones.
+// New validates the supplied modules and identity. The server handles negotiation,
+// NTLMv2 sessions, disk-share trees, ECHO, signing and GCM encryption. File
+// handlers are registered in handlers.go, one line per command. They resolve
+// request IDs with RequestContext.FileID and report the ID used or created in
+// reply.fileID. Compounds save that ID for the next related member. Handlers run
+// open-table CloseActions through RequestContext.Cleanup. A related command that
+// needs a FileId gets its failed predecessor's status without running its handler.
 // The server never closes the storage runtime. Tests use ServeConn over net.Pipe
 // without a listener or main wiring.
 package server
@@ -56,13 +61,16 @@ type Options struct {
 // detached open, applies pending deletion, and returns all cleanup errors.
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
 type Server struct {
-	shutdownErr  error
-	handlers     map[wire.Command]handler
-	connections  map[*connection]struct{}
-	listeners    map[*ownedListener]struct{}
-	shutdownDone chan struct{}
-	options      Options
-	workers      sync.WaitGroup
-	mu           sync.Mutex
-	stopping     bool
+	shutdownErr   error
+	handlers      map[wire.Command]handler
+	connections   map[*connection]struct{}
+	sessions      map[uint64]*connection
+	listeners     map[*ownedListener]struct{}
+	shutdownDone  chan struct{}
+	options       Options
+	workers       sync.WaitGroup
+	mu            sync.Mutex
+	nextSessionID uint64
+	nextTreeID    uint32
+	stopping      bool
 }
