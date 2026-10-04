@@ -137,6 +137,9 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
+	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
 	resolved, err := request.Storage.Lookup(ctx, create.Name)
 	if err != nil {
 		return reply{}, err
