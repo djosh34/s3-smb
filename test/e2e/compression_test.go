@@ -51,7 +51,7 @@ func TestEncryptedZstdFreshDatasetAndColdRecovery(t *testing.T) {
 	chunks, backups := 0, 0
 	for _, entry := range objects.Contents {
 		key := aws.ToString(entry.Key)
-		if !strings.Contains(key, "/chunks/") && !strings.Contains(key, "/meta/dump-") {
+		if !strings.Contains(key, "/chunks/") && !strings.Contains(key, "/meta/snapshot-") {
 			continue
 		}
 		obj, e := f.store.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: entry.Key})

@@ -204,7 +204,7 @@ func startupProtectedFixture(t *testing.T, encrypted bool) (*fixture, map[string
 	closeShare()
 	f.protectedAfter(time.Now())
 	d.stop()
-	if points := startupKeys(startupRemoteSnapshot(f), "s3-smb/meta/dump-"); len(points) < 2 {
+	if points := startupKeys(startupRemoteSnapshot(f), "s3-smb/meta/snapshot-"); len(points) < 2 {
 		t.Fatal("fixture needs an older valid point plus a newer protected point")
 	}
 	return f, files
@@ -223,7 +223,7 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 			t.Run(mode+"/"+fault, func(t *testing.T) {
 				f, _ := startupProtectedFixture(t, encrypted)
 				objects := startupRemoteSnapshot(f)
-				points := startupKeys(objects, "s3-smb/meta/dump-")
+				points := startupKeys(objects, "s3-smb/meta/snapshot-")
 				if fault == "missing-selected-backup" {
 					f.freshLocal()
 					before := startupLoseSelectedPoint(f, points[len(points)-1])

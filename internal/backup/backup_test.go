@@ -75,7 +75,7 @@ func newMetadata(t *testing.T) (*testMetadata, *meta.Format) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Shutdown() })
-	f := &meta.Format{Name: "fixture", UUID: "fixture-id", Storage: "s3", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096}
+	f := &meta.Format{Name: "fixture", UUID: "1d8a6033-5fdd-4490-af83-bd2b21c9e682", Storage: "s3", Compression: "none", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096}
 	if err = m.Init(f, false); err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			}
 			rawData := readObject(t, raw, r.Key)
 			if encrypted && bytes.HasPrefix(rawData, []byte{0x1f, 0x8b}) {
-				t.Fatal("encrypted export is plaintext gzip")
+				t.Fatal("encrypted snapshot is plaintext gzip")
 			}
 			f2, err := Inspect(context.Background(), s, r.Key)
 			if err != nil {
@@ -196,7 +196,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			if err != nil || got.UUID != current.UUID || got.SecretKey != current.SecretKey {
 				t.Fatalf("persisted current format mismatch: %v", err)
 			}
-			// Native writable load: create a real inode and export another native point.
+			// Create a real inode and take another snapshot after recovery.
 			var ino meta.Ino
 			var attr meta.Attr
 			if st := recovered.Create(meta.Background(), meta.RootInode, "after-recovery", 0644, 0, 0, &ino, &attr); st != 0 {
@@ -376,17 +376,17 @@ func TestBackupTimeoutWaitJoinsWorker(t *testing.T) {
 	go func() { mgr.Wait(); close(joined) }()
 	select {
 	case <-joined:
-		t.Fatal("Wait released resources while export alive")
+		t.Fatal("Wait released resources while backup worker alive")
 	case <-time.After(20 * time.Millisecond):
 	}
 	close(stalled.release)
 	select {
 	case <-joined:
 	case <-time.After(time.Second):
-		t.Fatal("native export did not join")
+		t.Fatal("backup worker did not join")
 	}
 	if s.puts.Load() != 0 {
-		t.Fatal("timed-out export uploaded")
+		t.Fatal("timed-out backup uploaded")
 	}
 }
 func TestInspectCorruptionDoesNotFallback(t *testing.T) {

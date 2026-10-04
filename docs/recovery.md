@@ -8,9 +8,9 @@ a metadata backup, then restore with Time Machine.
 
 ## Terms
 
-- Metadata backup: a copy of the filesystem's directory entries, file attributes
-  and the map from files to data blocks. It holds no file data and is not a copy
-  of the SQLite file.
+- Metadata backup: a consistent snapshot of the SQLite metadata database. It
+  holds directory entries, attributes, allocation counters, the map from files
+  to data blocks, and pending deletions. It holds no file data.
 - Time Machine backup: a backup that Time Machine wrote to the share. s3-smb
   stores it as ordinary file data.
 - Recovery point: the filesystem as one metadata backup recorded it. It is usable
@@ -26,7 +26,8 @@ All objects are under the prefix `s3-smb/`:
   passphrase. Only in encrypted mode.
 - `s3-smb/juicefs_uuid`: the volume UUID, which startup checks.
 - `s3-smb/chunks/...`: file data, in JuiceFS's layout.
-- `s3-smb/meta/dump-YYYY-MM-DD-HHMMSS.json.gz`: metadata backups.
+- `s3-smb/meta/snapshot-YYYY-MM-DD-HHMMSS.db.gz`: compressed SQLite snapshots,
+  encrypted when encryption is on. The gzip header records the database SHA-256.
 
 The key file is an encrypted PKCS8 private key in PEM form. It uses PBES2 with
 AES-256-GCM and scrypt with N=131072, r=8 and p=1, so unlocking it takes about
@@ -67,13 +68,23 @@ one per week for 2 months and one per month for 2 years.
    `Recover metadata from <backup> (<time>)? ... Continue? [yes/no]`.
 4. Answer `yes` only if the old writer has stopped. Changes made after that backup
    are lost.
-5. s3-smb loads the backup into a new database, takes a new metadata backup and
-   starts serving.
+5. s3-smb checks the snapshot's SHA-256, SQLite integrity and volume identity in
+   a staging directory. It uses the current config's bucket, credentials, key
+   and trash days, expires and cleans the old sessions, and checks that no lock
+   or open-file rows remain. It removes only this volume's cache, then renames
+   the staged database into place. A writable start takes a new snapshot before
+   serving. A read-only start does not take a backup.
 6. Mount the share and check your files. For Time Machine, restore a few files
    with `tmutil restore` or the Time Machine app and compare them.
 
-A successful import does not prove that every data object it points at exists.
+A valid snapshot does not prove that every data object it points at exists.
 A missing object shows up as a read error on that file.
+
+Recovery returns the state of the last metadata backup. Changes after it are
+lost and can leave unreferenced objects in S3. There is no garbage-collection
+command for those objects. Slice IDs allocated after the snapshot can be reused,
+so recovery must wipe the volume cache before publishing the database. If the
+process stops between the wipe and rename, the next start runs recovery again.
 
 If recovery fails, do not delete objects, generate a new key, change the
 encryption setting or format the bucket to get past the error. s3-smb never falls

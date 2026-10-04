@@ -430,7 +430,7 @@ func TestRecovery(t *testing.T) {
 			}
 			count := 0
 			for _, obj := range objects.Contents {
-				if strings.Contains(aws.ToString(obj.Key), "meta/dump-") {
+				if strings.Contains(aws.ToString(obj.Key), "meta/snapshot-") {
 					count++
 					o, e := f.store.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: obj.Key})
 					if e != nil {

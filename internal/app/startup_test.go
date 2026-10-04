@@ -2,13 +2,14 @@
 package app
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/backup"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
@@ -16,9 +17,29 @@ import (
 	"github.com/djosh34/s3-smb/internal/storage"
 )
 
-func TestMissingMarkerRequiresValidatedNativeBackup(t *testing.T) {
+type startupStore struct {
+	object.ObjectStorage
+	dir string
+}
+
+func (s startupStore) PutIfAbsent(_ context.Context, key string, r io.Reader) error {
+	path := filepath.Join(s.dir, filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(f, r)
+	return errors.Join(err, f.Close())
+}
+
+func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	ctx := context.Background()
-	blob, err := object.CreateStorage("file", t.TempDir()+string(os.PathSeparator), "", "", "")
+	remote := t.TempDir() + string(os.PathSeparator)
+	raw, err := object.CreateStorage("file", remote, "", "", "")
+	blob := startupStore{raw, remote}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,7 +50,9 @@ func TestMissingMarkerRequiresValidatedNativeBackup(t *testing.T) {
 	if err = verifyRemoteMarker(ctx, blob, format, false); err == nil {
 		t.Fatal("accepted markerless state without a backup")
 	}
-	m, err := storage.OpenMetadata(filepath.Join(t.TempDir(), "metadata.db"), meta.DefaultConf())
+	state := t.TempDir()
+	path := filepath.Join(state, "metadata.db")
+	m, err := storage.OpenMetadata(path, meta.DefaultConf())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -37,21 +60,23 @@ func TestMissingMarkerRequiresValidatedNativeBackup(t *testing.T) {
 	if err = m.Init(format, false); err != nil {
 		t.Fatal(err)
 	}
-	var data bytes.Buffer
-	gz := gzip.NewWriter(&data)
-	if err = m.DumpMeta(gz, 0, 2, false, true, false); err != nil {
+	p, err := backup.NewProtection(time.Hour, time.Minute, 14)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = gz.Close(); err != nil {
+	manager, err := backup.New(m, blob, backup.Options{StateDir: state, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Attempts: 1, Protection: p})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err = blob.Put(ctx, "meta/dump-2026-01-01-000000.json.gz", bytes.NewReader(data.Bytes())); err != nil {
+	r, err := manager.Backup(ctx)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if err = verifyRemoteMarker(ctx, blob, format, false); err != nil {
-		t.Fatalf("valid native backup must supply missing marker identity: %v", err)
+		t.Fatalf("valid snapshot must supply missing marker identity: %v", err)
 	}
-	if err = blob.Put(ctx, "meta/dump-2026-01-02-000000.json.gz", strings.NewReader("corrupt newest point")); err != nil {
+	key := "meta/snapshot-" + r.Snapshot.Add(time.Second).UTC().Format("2006-01-02-150405") + ".db.gz"
+	if err = blob.Put(ctx, key, strings.NewReader("corrupt newest point")); err != nil {
 		t.Fatal(err)
 	}
 	if err = verifyRemoteMarker(ctx, blob, format, false); err == nil {
