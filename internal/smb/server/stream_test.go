@@ -107,6 +107,17 @@ func TestStreamAcceptsPeerClose(t *testing.T) {
 	}
 }
 
+func TestStreamAlreadyClosedPeer(t *testing.T) {
+	local, remote := net.Pipe()
+	if err := remote.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, closed, err := feedStream(local, streamFrame(t, echo(t, 1)), streamBound)
+	if err != nil || !closed {
+		t.Fatalf("already closed peer: closed %v, error %v", closed, err)
+	}
+}
+
 func TestStreamCancelNeedsNoReply(t *testing.T) {
 	body, encodeErr := wire.EncodeCancelRequest(wire.EmptyRequest{})
 	if encodeErr != nil {

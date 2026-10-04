@@ -100,8 +100,12 @@ func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Messag
 // deadline: the server cannot answer bytes it has not received.
 func feedStream(conn net.Conn, stream []byte, bound time.Duration) (replies []wire.Message, closed bool, err error) {
 	defer func() { err = errors.Join(err, conn.Close()) }()
-	if err := conn.SetDeadline(time.Now().Add(bound)); err != nil {
-		return nil, false, err
+	deadlineErr := conn.SetDeadline(time.Now().Add(bound))
+	if streamPeerClosed(deadlineErr) {
+		return nil, true, nil
+	}
+	if deadlineErr != nil {
+		return nil, false, deadlineErr
 	}
 	for len(stream) > 0 {
 		length := len(stream)
