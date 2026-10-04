@@ -227,22 +227,33 @@ func runChaosOutage(t *testing.T, seed uint64, command wire.Command, permanent b
 	if closed := outageExchange(t, ctx, client, message(wire.Close, closedBody)); closed.Header.Status != smb.StatusSuccess {
 		t.Fatalf("CLOSE after recovery: %+v", closed.Header)
 	}
-	share, disconnect := f.share()
-	defer disconnect()
-	share = share.WithContext(ctx)
-	const nextPath = "next-backup-band"
-	ledger.Attempt(nextPath, 0, data)
-	writeFile(t, share, nextPath, data)
-	ledger.Write(nextPath, 0, data)
-	ledger.Flush(nextPath)
-	if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
+	func() {
+		share, disconnect := f.share()
+		defer disconnect()
+		share = share.WithContext(ctx)
+		const nextPath = "next-backup-band"
+		ledger.Attempt(nextPath, 0, data)
+		writeFile(t, share, nextPath, data)
+		ledger.Write(nextPath, 0, data)
+		ledger.Flush(nextPath)
+		if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
+			t.Fatal(err)
+		}
+		if metadata {
+			awaitOutageReceipt(t, ctx, f, baseline, start)
+		}
+	}()
+	t.Logf("operation %d recovered after %s; permanent=%t", command, time.Since(start), permanent)
+	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if metadata {
-		awaitOutageReceipt(t, ctx, f, baseline, start)
-	}
-	t.Logf("operation %d recovered after %s; permanent=%t", command, time.Since(start), permanent)
 	d.stop()
+	startOutageDaemon(t, f)
+	share, disconnect := f.share()
+	defer disconnect()
+	if err := ledger.CheckFlushed(chaosRead(share.WithContext(ctx).ReadFile)); err != nil {
+		t.Fatal("cold verification after recovery:", err)
+	}
 }
 
 func startOutageDaemon(t *testing.T, f *fixture) *daemon {
@@ -282,7 +293,7 @@ func outageClient(t *testing.T, ctx context.Context, f *fixture) (*smbtest.Clien
 			t.Error(err)
 		}
 	})
-	session, err := client.Login(ctx, smbtest.LoginOptions{Share: "TimeMachine", Account: auth.Account{User: "backup", Password: f.password}, Signing: smb.SigningGMAC})
+	session, err := client.Login(ctx, smbtest.LoginOptions{Share: "TimeMachine", Account: auth.Account{User: "backup", Password: f.password}, Cipher: smb.CipherAES256GCM, Signing: smb.SigningGMAC})
 	if err != nil {
 		t.Fatal(err)
 	}
