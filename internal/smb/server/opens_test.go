@@ -154,6 +154,56 @@ func TestReconnectKeepsReferencesAcrossVolatileIDs(t *testing.T) {
 	server.openMu.Unlock()
 }
 
+func TestSessionCleanupWaitsForOpenReference(t *testing.T) {
+	for _, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect} {
+		t.Run(map[wire.Command]string{wire.Logoff: "logoff", wire.TreeDisconnect: "tree disconnect"}[command], func(t *testing.T) {
+			options := testOptions(t)
+			storage := &cleanupStorage{}
+			options.Storage = storage
+			server, err := New(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
+			open := insertSessionOpen(t, server, session, false, 2)
+			_, release, status := useOpen(openRequestContext(server, open), wire.FileID(open.ID))
+			if status != smb.StatusSuccess {
+				t.Fatal(status)
+			}
+			if err := client.Send(ctx, []wire.Message{treeRequest(t, session, session.NextMessageID, command)}); err != nil {
+				release()
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				response, receiveErr := client.Receive(ctx)
+				if receiveErr == nil && response.Messages[0].Header.Status != smb.StatusSuccess {
+					t.Errorf("cleanup reply: %+v", response.Messages[0].Header)
+				}
+				done <- receiveErr
+			}()
+			select {
+			case err := <-done:
+				release()
+				t.Fatalf("cleanup replied with active reference: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			if storage.closed.Load() != 0 {
+				t.Error("session cleanup closed an active handle")
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil || storage.closed.Load() != 1 {
+					t.Fatalf("cleanup: %v, handles closed %d", err, storage.closed.Load())
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
+	}
+}
+
 func assertCleanupWaiting(t *testing.T, done <-chan error, storage *cleanupStorage) {
 	t.Helper()
 	select {
