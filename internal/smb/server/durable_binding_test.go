@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -21,10 +22,13 @@ func TestReconnectPublicationRejectsInvalidatedBinding(t *testing.T) {
 			server.mu.Lock()
 			owner := server.sessions[session.SessionID]
 			server.mu.Unlock()
-			request, status := owner.resolveRequest(wire.Header{Command: wire.Create, SessionID: session.SessionID, TreeID: session.TreeID})
+			_, cancel := context.WithCancel(ctx)
+			defer cancel()
+			request, operation, status := owner.resolveRequest(wire.Header{Command: wire.Create, SessionID: session.SessionID, TreeID: session.TreeID}, cancel)
 			if status != smb.StatusSuccess {
 				t.Fatalf("resolve = %#x", status)
 			}
+			defer owner.finishRequest(operation)
 			server.options.State.Disconnect(session.SessionID)
 			reconnect := state.ReconnectRequest{ID: state.FileID(first.Reply.ID), Binding: request.Binding(), User: request.Session.User, Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID, CreateGUID: options.Durable.CreateGUID, LeaseKey: options.Lease.Key}
 			candidate, status := server.options.State.ReconnectCandidate(reconnect)
