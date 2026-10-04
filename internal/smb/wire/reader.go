@@ -80,6 +80,13 @@ func (r *reader) exact() error {
 	return r.err
 }
 
+// A terminal list member can end with at most one alignment unit's padding.
+func (r *reader) paddingAfter(end uint64) {
+	if end > uint64(len(r.data)) || uint64(len(r.data))-end > 7 {
+		r.err = errMalformed
+	}
+}
+
 // region validates variable fields against the fixed prefix and each other.
 // Offsets are local to data; command callers subtract the SMB header separately.
 func (r *reader) region(offset, length, minimum, alignment uint64) []byte {

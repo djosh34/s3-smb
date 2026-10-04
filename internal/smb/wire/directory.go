@@ -47,6 +47,9 @@ func DecodeDirectoryIDBothEntries(data []byte) ([]DirectoryIDBothEntry, error) {
 		}
 		entry := DirectoryIDBothEntry{Metadata: metadata, ShortName: r.text(short[:int(shortLength)])}
 		entry.Name = r.text(r.region(104, uint64(n), 104, 2))
+		if next == 0 {
+			r.paddingAfter(104 + uint64(n))
+		}
 		if r.err != nil {
 			return nil, r.err
 		}
@@ -114,6 +117,9 @@ func DecodeDirectoryIDFullEntries(data []byte) ([]DirectoryIDFullEntry, error) {
 		r.skip(4)
 		metadata.FileID = r.u64()
 		entry := DirectoryIDFullEntry{Metadata: metadata, Name: r.text(r.region(80, uint64(n), 80, 2))}
+		if next == 0 {
+			r.paddingAfter(80 + uint64(n))
+		}
 		if r.err != nil {
 			return nil, r.err
 		}

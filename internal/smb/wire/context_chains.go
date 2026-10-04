@@ -23,6 +23,15 @@ func decodeCreateContexts(data []byte) ([]CreateContext, error) {
 		}
 		name := r.region(uint64(nameOffset), uint64(nameLength), 16, 1)
 		payload := r.region(uint64(dataOffset), uint64(dataLength), 16, 8)
+		if next == 0 {
+			end := uint64(16)
+			for _, field := range r.ranges {
+				if field.end > end {
+					end = field.end
+				}
+			}
+			r.paddingAfter(end)
+		}
 		if r.err != nil || len(name) == 0 {
 			return nil, errMalformed
 		}
@@ -92,6 +101,9 @@ func decodeNegotiateContexts(data []byte, count uint16) ([]NegotiateContext, err
 		if i+1 < count {
 			r.skip((8 - r.pos%8) % 8)
 		}
+	}
+	if len(r.data)-r.pos > 7 {
+		return nil, errMalformed
 	}
 	return contexts, r.err
 }

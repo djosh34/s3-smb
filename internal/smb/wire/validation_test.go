@@ -66,6 +66,7 @@ func TestCreateContextChainValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, change := range []func([]byte){
+		func(b []byte) { binary.LittleEndian.PutUint32(b, 0) },
 		func(b []byte) { binary.LittleEndian.PutUint32(b, 8) },
 		func(b []byte) { binary.LittleEndian.PutUint32(b, 25) },
 		func(b []byte) { binary.LittleEndian.PutUint32(b, 0xfffffff8) },
@@ -91,6 +92,7 @@ func TestNegotiateContextValidation(t *testing.T) {
 	for _, change := range []func([]byte){
 		func(b []byte) { binary.LittleEndian.PutUint32(b[28:], 100) },
 		func(b []byte) { binary.LittleEndian.PutUint32(b[28:], 105) },
+		func(b []byte) { binary.LittleEndian.PutUint16(b[32:], 1) },
 		func(b []byte) { binary.LittleEndian.PutUint16(b[32:], 0xffff) },
 		func(b []byte) { binary.LittleEndian.PutUint16(b[42:], 0xffff) },
 	} {
@@ -125,7 +127,7 @@ func TestLinkedInformationValidation(t *testing.T) {
 		{data: full, decode: func(b []byte) error { _, err := DecodeDirectoryIDFullEntries(b); return err }, lengthOffset: 60},
 	}
 	for _, c := range cases {
-		for _, offset := range []uint32{1, 8, 0xfffffff8} {
+		for _, offset := range []uint32{0, 1, 8, 0xfffffff8} {
 			bad := clone(c.data)
 			binary.LittleEndian.PutUint32(bad, offset)
 			if err := c.decode(bad); err == nil {

@@ -208,6 +208,9 @@ func DecodeFileStreamInformation(data []byte) (FileStreamInformation, error) {
 		n := r.u32()
 		entry := FileStreamEntry{Size: r.u64(), AllocationSize: r.u64()}
 		entry.Name = r.text(r.region(24, uint64(n), 24, 2))
+		if next == 0 {
+			r.paddingAfter(24 + uint64(n))
+		}
 		if r.err != nil {
 			return FileStreamInformation{}, r.err
 		}
