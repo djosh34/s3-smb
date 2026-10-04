@@ -100,7 +100,8 @@ The server replenishes credits before a valid synchronous compound can exhaust t
 ## Protection and reconnect
 
 SMB 3.1.1 uses SHA-512 preauth and NTLMv2 inside SPNEGO.
-The server chooses only offered algorithms and prefers GMAC and AES-256-GCM.
+The server prefers offered GMAC and AES-256-GCM.
+When signing offers have no overlap, MS-SMB2 requires the AES-CMAC default.
 Session-derived keys protect authenticated traffic.
 Plaintext replies are signed, including final SESSION_SETUP.
 Interim replies follow the protocol's unsigned-interim exception.

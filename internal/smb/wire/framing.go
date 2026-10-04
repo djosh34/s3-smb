@@ -125,7 +125,7 @@ func Join(messages []Message) ([]byte, error) {
 	return b.data, nil
 }
 
-// DecodeSMB1Negotiate accepts only the opening SMB1 request offering SMB2.
+// DecodeSMB1Negotiate accepts only an opening SMB1 request offering SMB 2.???.
 func DecodeSMB1Negotiate(packet []byte) error {
 	r := reader{data: packet}
 	if !bytes.Equal(r.take(4), []byte{0xff, 'S', 'M', 'B'}) || r.u8() != 0x72 {
@@ -154,7 +154,7 @@ func DecodeSMB1Negotiate(packet []byte) error {
 			return errMalformed
 		}
 		name := string(dialects[:end])
-		if name == "SMB 2.002" || name == "SMB 2.???" {
+		if name == "SMB 2.???" {
 			offered = true
 		}
 		dialects = dialects[end+1:]
