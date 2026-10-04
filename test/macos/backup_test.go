@@ -150,6 +150,13 @@ func mountpoints(text string) []string {
 }
 
 func (h *harness) detach() error {
+	if h.backupDirectory != nil {
+		file := h.backupDirectory
+		h.backupDirectory = nil
+		if err := file.Close(); err != nil {
+			h.t.Error("close held backup", err)
+		}
+	}
 	text, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 	if err != nil {
 		return err
@@ -312,15 +319,45 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	}
 	selected, err := helpers.SelectBackup(backups, latest, identifier)
 	h.must(err)
-	info, err := os.Stat(selected)
-	h.must(err)
-	if !info.IsDir() {
-		h.t.Fatal("not a completed remote backup directory")
-	}
+	selected = h.holdBackup(selected, volumes[0])
 	h.run(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 	h.run(2*time.Minute, "/sbin/mount")
 	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
 	return selected
+}
+
+func (h *harness) holdBackup(selected, volume string) string {
+	if h.backupDirectory != nil {
+		h.t.Fatal("backup directory already held open")
+	}
+	// Bound both the remount command and retries, not just the pauses between them.
+	parent := h.ctx
+	ctx, cancel := context.WithTimeout(parent, time.Minute)
+	h.ctx = ctx
+	defer func() { cancel(); h.ctx = parent }()
+	h.must(h.waitFor("open selected backup "+selected, time.Minute, time.Second, func() (bool, error) {
+		file, err := helpers.OpenBackup(selected, func() (string, error) {
+			return h.try(time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volume, "-m")
+		}, func() error {
+			select {
+			case <-h.ctx.Done():
+				return h.ctx.Err()
+			case <-time.After(2 * time.Second):
+				return nil
+			}
+		}, func(message string) { h.t.Log(message, selected) })
+		if errors.Is(err, os.ErrNotExist) {
+			h.t.Log("selected backup vanished again after remount", selected, err)
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		h.backupDirectory = file
+		return true, nil
+	}))
+	h.t.Log("selected backup held open until detach", h.backupDirectory.Name())
+	return h.backupDirectory.Name()
 }
 
 func (h *harness) backupTree(selected string) string {
