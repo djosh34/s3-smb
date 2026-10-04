@@ -18,7 +18,7 @@ import (
 
 // Reply carries the members from one received frame. The client identifies
 // pending replies by STATUS_PENDING and FlagAsync. It correlates both MessageID
-// and AsyncID and does not treat an interim reply as the request's result.
+// and AsyncID, checks SessionID, and returns interim replies separately.
 type Reply struct {
 	Messages []wire.Message
 	Raw      []byte
@@ -34,10 +34,15 @@ type Reply struct {
 // M2 adds protection after Login without repairing headers.
 type Client struct {
 	conn      net.Conn
-	pending   map[uint64]uint64
+	pending   map[uint64]pendingReply
+	sendSlot  chan struct{}
 	closeErr  error
-	sendMu    sync.Mutex
 	closeOnce sync.Once
+}
+
+type pendingReply struct {
+	asyncID   uint64
+	sessionID uint64
 }
 
 // Fixture owns the listener, server and test clients, not JuiceFS. M2 provides

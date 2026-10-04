@@ -1,6 +1,7 @@
 package smbtest_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -114,6 +115,80 @@ func TestCancellationInterruptsIO(t *testing.T) {
 	}
 }
 
+func TestQueuedSendCancellation(t *testing.T) {
+	for _, mode := range []string{"already canceled", "cancel", "deadline"} {
+		t.Run(mode, func(t *testing.T) { testQueuedSendCancellation(t, mode) })
+	}
+}
+
+func testQueuedSendCancellation(t *testing.T, mode string) {
+	t.Helper()
+	conn, peer := net.Pipe()
+	observed := &observedConn{Conn: conn, started: make(chan struct{})}
+	client, err := smbtest.NewClient(observed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := errors.Join(client.Close(), peer.Close()); err != nil {
+			t.Error(err)
+		}
+	})
+	frame := []byte{0, 0, 0, 1, 42}
+	active := make(chan error, 1)
+	go func() { active <- client.SendRaw(t.Context(), frame) }()
+	<-observed.started
+
+	ctx, cancel := context.WithCancel(t.Context())
+	want := context.Canceled
+	switch mode {
+	case "deadline":
+		cancel()
+		ctx, cancel = context.WithTimeout(t.Context(), 20*time.Millisecond)
+		want = context.DeadlineExceeded
+	case "already canceled":
+		cancel()
+	}
+	defer cancel()
+	queued := make(chan error, 1)
+	go func() { queued <- client.Send(ctx, []wire.Message{{Header: wire.Header{Command: wire.Echo}}}) }()
+	if mode == "cancel" {
+		cancel()
+	}
+	select {
+	case err := <-queued:
+		if !errors.Is(err, want) {
+			t.Errorf("queued send = %v, want %v", err, want)
+		}
+	case <-time.After(time.Second):
+		t.Error("queued send ignored cancellation while active send was blocked")
+		if err := client.Close(); err != nil {
+			t.Error(err)
+		}
+		<-active
+		<-queued
+		return
+	}
+	select {
+	case err := <-active:
+		t.Fatalf("queued cancellation interrupted active sender: %v", err)
+	default:
+	}
+	if err := peer.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	received := make([]byte, len(frame))
+	if _, err := io.ReadFull(peer, received); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(received, frame) {
+		t.Fatalf("active sender's bytes = %x, want %x", received, frame)
+	}
+	if err := <-active; err != nil {
+		t.Fatalf("active sender after queued cancellation: %v", err)
+	}
+}
+
 func TestContextDeadline(t *testing.T) {
 	client := fakePeer(t, func(peer net.Conn) error {
 		var data [1]byte
@@ -183,6 +258,46 @@ func TestBrokenFrames(t *testing.T) {
 
 var errInjected = errors.New("injected transport failure")
 
+type failedCloser struct{ net.Conn }
+
+func (conn failedCloser) Close() error {
+	return errors.Join(conn.Conn.Close(), errInjected)
+}
+
+func TestCancellationReturnsCleanupError(t *testing.T) {
+	conn, peer := net.Pipe()
+	observed := &observedConn{Conn: conn, started: make(chan struct{})}
+	client, err := smbtest.NewClient(failedCloser{observed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); !errors.Is(err, errInjected) {
+			t.Errorf("Close = %v, want cleanup error", err)
+		}
+		if err := peer.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := client.ReceiveRaw(ctx)
+		result <- err
+	}()
+	<-observed.started
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) || !errors.Is(err, errInjected) {
+			t.Fatalf("canceled receive = %v, want cancellation and cleanup errors", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not unblock receive")
+	}
+}
+
 type failedConn struct {
 	net.Conn
 	fail       string
@@ -198,20 +313,13 @@ func (conn *failedConn) Write(data []byte) (int, error) {
 	return len(data) / 2, errInjected
 }
 
-func (conn *failedConn) SetWriteDeadline(time.Time) error {
-	if conn.fail == "deadline" {
-		return errInjected
-	}
-	return nil
-}
-
 func (conn *failedConn) Close() error {
 	conn.closeCount++
 	return errInjected
 }
 
 func TestTransportAndCleanupErrors(t *testing.T) {
-	for _, failure := range []string{"partial write", "zero write", "deadline"} {
+	for _, failure := range []string{"partial write", "zero write"} {
 		t.Run(failure, func(t *testing.T) {
 			conn := &failedConn{fail: failure}
 			client, err := smbtest.NewClient(conn)
@@ -225,12 +333,8 @@ func TestTransportAndCleanupErrors(t *testing.T) {
 			if failure == "zero write" && !errors.Is(err, io.ErrNoProgress) {
 				t.Fatalf("zero write error = %v", err)
 			}
-			wantWrites := 1
-			if failure == "deadline" {
-				wantWrites = 0
-			}
-			if conn.writeCount != wantWrites {
-				t.Fatalf("writes = %d, want %d", conn.writeCount, wantWrites)
+			if conn.writeCount != 1 {
+				t.Fatalf("writes = %d, want 1", conn.writeCount)
 			}
 			if !errors.Is(client.Close(), errInjected) || conn.closeCount != 1 {
 				t.Fatalf("Close did not retain its error or closed %d times", conn.closeCount)

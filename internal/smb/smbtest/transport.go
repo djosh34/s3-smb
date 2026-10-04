@@ -2,11 +2,11 @@ package smbtest
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -17,7 +17,7 @@ func NewClient(conn net.Conn) (*Client, error) {
 	if conn == nil {
 		return nil, errors.New("smbtest: nil connection")
 	}
-	return &Client{conn: conn, pending: make(map[uint64]uint64)}, nil
+	return &Client{conn: conn, pending: make(map[uint64]pendingReply), sendSlot: make(chan struct{}, 1)}, nil
 }
 
 // Send encodes one compound, changing only NextCommand links and padding.
@@ -30,11 +30,8 @@ func (client *Client) Send(ctx context.Context, messages []wire.Message) error {
 	if len(payload) > 0xffffff {
 		return errors.New("smbtest: frame exceeds 24-bit length")
 	}
-	length := uint32(len(payload) & 0xffffff)
 	frame := make([]byte, 4, 4+len(payload))
-	frame[1] = byte(length >> 16 & 0xff)
-	frame[2] = byte(length >> 8 & 0xff)
-	frame[3] = byte(length & 0xff)
+	binary.BigEndian.PutUint32(frame, uint32(len(payload)&0xffffff))
 	return client.SendRaw(ctx, append(frame, payload...))
 }
 
@@ -42,9 +39,16 @@ func (client *Client) Send(ctx context.Context, messages []wire.Message) error {
 // Concurrent sends are serialized. An I/O error closes the connection, since a
 // partial frame cannot be retried safely.
 func (client *Client) SendRaw(ctx context.Context, framed []byte) error {
-	client.sendMu.Lock()
-	defer client.sendMu.Unlock()
-	return client.transfer(ctx, client.conn.SetWriteDeadline, func() error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	select {
+	case client.sendSlot <- struct{}{}:
+		defer func() { <-client.sendSlot }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	return client.transfer(ctx, func() error {
 		for len(framed) > 0 {
 			n, err := client.conn.Write(framed)
 			if err != nil {
@@ -59,8 +63,9 @@ func (client *Client) SendRaw(ctx context.Context, framed []byte) error {
 	})
 }
 
-// Receive returns one frame without consuming a pending reply's final result.
-// An async final must match a previously received pending reply by both IDs.
+// Receive returns the next frame. An interim reply is returned on its own, and
+// its final reply comes from a later call. An async final must keep the pending
+// reply's MessageID, AsyncID and SessionID.
 // A correlation error returns the decoded reply as well, for test assertions.
 // Callers must use only one receiver, including ReceiveRaw.
 func (client *Client) Receive(ctx context.Context) (Reply, error) {
@@ -88,11 +93,11 @@ func (client *Client) Receive(ctx context.Context) (Reply, error) {
 			if _, exists := client.pending[h.MessageID]; exists {
 				return reply, fmt.Errorf("smbtest: duplicate pending reply for message %d", h.MessageID)
 			}
-			client.pending[h.MessageID] = h.AsyncID
+			client.pending[h.MessageID] = pendingReply{asyncID: h.AsyncID, sessionID: h.SessionID}
 			continue
 		}
-		asyncID, exists := client.pending[h.MessageID]
-		if !exists || asyncID != h.AsyncID {
+		pending, exists := client.pending[h.MessageID]
+		if !exists || pending.asyncID != h.AsyncID || pending.sessionID != h.SessionID {
 			return reply, fmt.Errorf("smbtest: unmatched async final for message %d, async %d", h.MessageID, h.AsyncID)
 		}
 		delete(client.pending, h.MessageID)
@@ -104,7 +109,7 @@ func (client *Client) Receive(ctx context.Context) (Reply, error) {
 // decode SMB headers or track pending replies. It may run concurrently with Send.
 func (client *Client) ReceiveRaw(ctx context.Context) ([]byte, error) {
 	var payload []byte
-	err := client.transfer(ctx, client.conn.SetReadDeadline, func() error {
+	err := client.transfer(ctx, func() error {
 		var header [4]byte
 		if _, err := io.ReadFull(client.conn, header[:]); err != nil {
 			return err
@@ -123,44 +128,29 @@ func (client *Client) ReceiveRaw(ctx context.Context) ([]byte, error) {
 	return payload, nil
 }
 
-// transfer gives each direction its own deadline and cancellation callback.
-// It joins the callback before resetting the deadline for the next operation.
-func (client *Client) transfer(ctx context.Context, deadline func(time.Time) error, operation func() error) error {
+// transfer closes the connection when active I/O is canceled. Close waits for
+// the cancellation callback's cleanup and returns any error it recorded.
+func (client *Client) transfer(ctx context.Context, operation func() error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	limit, _ := ctx.Deadline()
-	if err := deadline(limit); err != nil {
-		return errors.Join(err, client.Close())
-	}
-	canceled := make(chan error, 1)
-	stop := context.AfterFunc(ctx, func() {
-		err := deadline(time.Now())
-		if err != nil {
-			err = errors.Join(err, client.Close())
-		}
-		canceled <- err
-	})
+	stop := context.AfterFunc(ctx, client.closeTransport)
 	err := operation()
-	if !stop() {
-		err = errors.Join(err, <-canceled)
-	}
-	if ctx.Err() != nil {
-		err = errors.Join(err, ctx.Err())
-	} else if err != nil && !limit.IsZero() && !time.Now().Before(limit) {
-		// The connection deadline can fire just before the context's timer.
-		err = errors.Join(err, context.DeadlineExceeded)
-	}
-	err = errors.Join(err, deadline(time.Time{}))
-	if err != nil {
+	stopped := stop()
+	err = errors.Join(err, ctx.Err())
+	if !stopped || err != nil {
 		return errors.Join(err, client.Close())
 	}
 	return nil
 }
 
+func (client *Client) closeTransport() {
+	client.closeOnce.Do(func() { client.closeErr = client.conn.Close() })
+}
+
 // Close closes the owned connection once and returns its cleanup error.
 // It unblocks any send or receive in progress.
 func (client *Client) Close() error {
-	client.closeOnce.Do(func() { client.closeErr = client.conn.Close() })
+	client.closeTransport()
 	return client.closeErr
 }

@@ -214,7 +214,10 @@ func TestPendingAndFinalReplies(t *testing.T) {
 }
 
 func TestAsyncIdentityMismatch(t *testing.T) {
+	wrongSession := response(10, 110, smb.StatusSuccess, 0)
+	wrongSession.Header.SessionID++
 	cases := map[string]wire.Message{
+		"session ID":         wrongSession,
 		"message ID":         response(11, 110, smb.StatusSuccess, 0),
 		"async ID":           response(10, 111, smb.StatusSuccess, 0),
 		"missing async flag": response(10, 0, smb.StatusSuccess, 0),
