@@ -12,5 +12,6 @@ func commandHandlers() map[wire.Command]handler {
 		wire.Write:     handleWrite,
 		wire.Echo:      handleEcho,
 		wire.QueryInfo: handleQueryInfo,
+		wire.SetInfo:   handleSetInfo,
 	}
 }
