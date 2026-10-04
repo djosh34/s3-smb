@@ -5,14 +5,25 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"net"
 
 	"github.com/djosh34/s3-smb/internal/config"
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	smb2 "github.com/djosh34/s3-smb/internal/smb-old/smb2/server"
 	"github.com/djosh34/s3-smb/internal/smb-old/smb2/vfs"
 	"github.com/djosh34/s3-smb/internal/smb-old/smbfs"
 	"github.com/djosh34/s3-smb/internal/storage"
 )
+
+// The old adapter uses SID-zero native locks in read-only mode. Clear those
+// orphan rows under the application state lock, before starting a session.
+func (r *resources) prepareSMBMetadata() error {
+	if err := meta.ClearOrphanLocks(r.metadata); err != nil {
+		return fmt.Errorf("clear SID-zero native locks left by an earlier process: %w", err)
+	}
+	return nil
+}
 
 type oldServer struct{ *smb2.Server }
 

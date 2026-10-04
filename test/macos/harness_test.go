@@ -31,6 +31,7 @@ type harness struct {
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
 	launchdPlist                                                              string
 	daemon, minio, backup                                                     *process
+	backupDirectory                                                           *os.File
 	attachments                                                               []string
 	serial, applicationSerial                                                 int
 	finished                                                                  bool
@@ -68,10 +69,10 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", "mac-acceptance")
 	t.Setenv("MINIO_ROOT_PASSWORD", "synthetic-mac-acceptance-secret")
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "m4": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
-		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
+		t.Fatal("MAC_PHASE must be discover, backup, m4, recover or scenario")
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -105,7 +106,7 @@ func TestTimeMachine(t *testing.T) {
 		h.discover()
 	case "recover":
 		outcome = h.recoverStore()
-	case "backup":
+	case "backup", "m4":
 		outcome = h.baseline()
 	case "scenario":
 		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))
