@@ -98,7 +98,7 @@ func TestMalformedAAPLDoesNotCreateFile(t *testing.T) {
 	server := newCapabilityServer(t)
 	client := capabilityConnection(t, server)
 	client.create(t, wire.CreateRequest{
-		Name: "invalid-aapl", Disposition: fileCreate, ShareAccess: 7, DesiredAccess: fileAllAccess,
+		Name: "invalid-aapl", Disposition: fileCreateDisposition, ShareAccess: 7, DesiredAccess: fileAllAccess,
 		Contexts: []wire.CreateContext{{Name: "AAPL", Data: []byte{1}}},
 	}, smb.StatusInvalidParameter)
 	resolved, err := server.options.Storage.Lookup(t.Context(), "invalid-aapl")

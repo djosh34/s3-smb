@@ -121,8 +121,8 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 	c.close(t, negotiated.ID)
 	client, ctx, session := loginClient(t, c.server, smb.CipherAES128GCM, smb.SigningCMAC)
 	fresh := &streamClient{server: c.server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
-	id := fresh.create(t, streamRequest("data:AFP_Resource", fileOpen), smb.StatusSuccess).ID
-	fresh.close(t, id)
+	freshID := fresh.create(t, streamRequest("data:AFP_Resource", fileOpen), smb.StatusSuccess).ID
+	fresh.close(t, freshID)
 	for _, stream := range []string{"AFP_AfpInfo", "AFP_Resource", "com.apple.FinderInfo", "other.xattr"} {
 		name := "data:" + stream
 		c.create(t, streamRequest(name, 1), smb.StatusObjectNameNotFound)
@@ -134,7 +134,7 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 		c.read(t, id, 0, []byte("x"))
 		c.close(t, id)
 	}
-	id = c.create(t, streamRequest("data", 1), smb.StatusSuccess).ID
+	id := c.create(t, streamRequest("data", 1), smb.StatusSuccess).ID
 	c.close(t, id)
 	c.close(t, base)
 }

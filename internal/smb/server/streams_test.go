@@ -193,12 +193,12 @@ func testStreamDisposition(t *testing.T, c *streamClient, stream string, disposi
 	baseData := []byte("base bytes must survive every stream disposition")
 	var baseID wire.FileID
 	if presence != "no-base" {
-		baseID = c.create(t, streamRequest(base, fileCreate), smb.StatusSuccess).ID
+		baseID = c.create(t, streamRequest(base, fileCreateDisposition), smb.StatusSuccess).ID
 		c.write(t, baseID, baseData, 0, smb.StatusSuccess)
 	}
 	name := base + ":" + stream + ":$DATA"
 	if presence == "stream" {
-		id := c.create(t, streamRequest(name, fileCreate), smb.StatusSuccess).ID
+		id := c.create(t, streamRequest(name, fileCreateDisposition), smb.StatusSuccess).ID
 		c.write(t, id, []byte("old stream"), 0, smb.StatusSuccess)
 		c.close(t, id)
 	}
