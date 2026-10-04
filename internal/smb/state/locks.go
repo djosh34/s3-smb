@@ -50,6 +50,11 @@ func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool
 	if status != smb.StatusSuccess {
 		return status
 	}
+	return table.applyLocks(open, ranges, unlock)
+}
+
+// applyLocks requires table.mu and publishes only a complete vector.
+func (table *Table) applyLocks(open *openEntry, ranges []Range, unlock bool) smb.Status {
 	if len(ranges) == 0 {
 		return smb.StatusInvalidParameter
 	}
@@ -59,10 +64,10 @@ func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool
 		if !validRange(requested.Offset, requested.Length) {
 			return smb.StatusInvalidLockRange
 		}
-		if requested.Owner != 0 && requested.Owner != id.Persistent {
+		if requested.Owner != 0 && requested.Owner != open.ID.Persistent {
 			return smb.StatusInvalidParameter
 		}
-		requested.Owner = id.Persistent
+		requested.Owner = open.ID.Persistent
 		if unlock {
 			index := slices.IndexFunc(locks, func(held Range) bool {
 				return held.Owner == requested.Owner && held.Offset == requested.Offset && held.Length == requested.Length
