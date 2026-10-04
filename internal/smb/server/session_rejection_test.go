@@ -21,7 +21,7 @@ func TestLoginRejectsWrongPasswordGuestAndMissingGCM(t *testing.T) {
 	}{
 		{name: "password", user: "backup", password: "wrong", cipher: smb.CipherAES128GCM},
 		{name: "guest", user: "Guest", password: "password", cipher: smb.CipherAES128GCM},
-		{name: "anonymous", password: "password", cipher: smb.CipherAES128GCM},
+		{name: "empty account user", password: "password", cipher: smb.CipherAES128GCM},
 		{name: "missing GCM", user: "backup", password: "password"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -60,7 +60,7 @@ func kerberosOffer(t *testing.T) []byte {
 	return token
 }
 
-func TestKerberosAndChannelBindingAreRefusedWithoutClosing(t *testing.T) {
+func TestKerberosAndSessionBindingAreRefusedWithoutClosing(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		token  []byte
@@ -68,7 +68,7 @@ func TestKerberosAndChannelBindingAreRefusedWithoutClosing(t *testing.T) {
 		status smb.Status
 	}{
 		{name: "Kerberos", token: kerberosOffer(t), status: smb.StatusLogonFailure},
-		{name: "channel binding", flags: 1, status: smb.StatusNotSupported},
+		{name: "session binding", flags: 1, status: smb.StatusRequestNotAccepted},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := New(testOptions(t))
@@ -98,17 +98,22 @@ func TestTreeConnectRefusesIPCAndUnknownShares(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
-	for index, path := range []string{"\\\\server\\IPC$", "\\\\server\\missing", "backup", "\\\\server\\backup\\file", "\\\\\\backup"} {
+	paths := []string{"\\\\server\\IPC$", "\\\\server\\missing", "backup", "\\\\server\\backup\\file", "\\\\\\backup", "\\\\server\\", "\\\\server\\back/up", "\\\\ser/ver\\backup"}
+	for index, path := range paths {
 		body, encodeErr := wire.EncodeTreeConnectRequest(wire.TreeConnectRequest{Path: path})
 		if encodeErr != nil {
 			t.Fatal(encodeErr)
 		}
 		response := exchange(ctx, t, client, wire.Message{Header: wire.Header{Command: wire.TreeConnect, MessageID: session.NextMessageID + uint64(index), SessionID: session.SessionID, CreditCharge: 1}, Body: body})[0]
-		if response.Header.Status != smb.StatusBadNetworkName {
+		want := smb.StatusBadNetworkName
+		if index >= 2 {
+			want = smb.StatusInvalidParameter
+		}
+		if response.Header.Status != want {
 			t.Fatalf("%q: %+v", path, response.Header)
 		}
 	}
-	response := exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+5))[0]
+	response := exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+uint64(len(paths))))[0]
 	if response.Header.Status != smb.StatusSuccess {
 		t.Fatal("share refusal closed the connection")
 	}
@@ -116,7 +121,7 @@ func TestTreeConnectRefusesIPCAndUnknownShares(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response = exchange(ctx, t, client, wire.Message{Header: wire.Header{Command: wire.TreeConnect, MessageID: session.NextMessageID + 6, SessionID: session.SessionID, CreditCharge: 1}, Body: body})[0]
+	response = exchange(ctx, t, client, wire.Message{Header: wire.Header{Command: wire.TreeConnect, MessageID: session.NextMessageID + uint64(len(paths)) + 1, SessionID: session.SessionID, CreditCharge: 1}, Body: body})[0]
 	if response.Header.Status != smb.StatusSuccess || response.Header.TreeID == session.TreeID {
 		t.Fatal("share did not get a fresh tree ID")
 	}
