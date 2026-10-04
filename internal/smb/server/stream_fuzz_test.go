@@ -13,6 +13,7 @@ import (
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -22,7 +23,9 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
-	storage := fuzzStorage(f)
+	// The connection corpus changes no files, so each fuzz worker can reuse
+	// storage. Every input still gets its own server and open table.
+	storage := smbtest.NewStorage(f)
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		// Bound total work as well as individual frame allocations.
 		if len(stream) > 64<<10 {
