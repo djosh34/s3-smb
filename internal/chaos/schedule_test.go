@@ -253,6 +253,29 @@ func TestScheduleValidation(t *testing.T) {
 	}
 }
 
+func TestSchedulePrevalidatesCutThresholds(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		step Step
+	}{
+		{name: "network negative threshold", step: Step{Net: &netfault.Fault{CutAfter: -1}}},
+		{name: "network missing direction", step: Step{Net: &netfault.Fault{CutAfter: 1}}},
+		{name: "network invalid direction", step: Step{Net: &netfault.Fault{CutDirection: netfault.ServerToClient + 1}}},
+		{name: "S3 negative request threshold", step: Step{S3: &s3fault.Fault{RequestCutAfter: -1}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			network, s3 := proxies(t)
+			s := Schedule{{S3: &s3fault.Fault{Status: 503}}, test.step}
+			if err := s.Run(t.Context(), network, s3); err == nil {
+				t.Fatal("accepted invalid cut fault")
+			}
+			if got := status(t, s3.URL()); got != 204 {
+				t.Fatalf("invalid later fault applied the earlier step: %d", got)
+			}
+		})
+	}
+}
+
 func TestScheduleSnapshotAndString(t *testing.T) {
 	network, s3 := proxies(t)
 	s := Schedule{{At: time.Second, Net: &netfault.Fault{Delay: time.Millisecond}, Cut: true, S3: &s3fault.Fault{Status: 503}, S3Outage: time.Second}, {At: 2 * time.Second}}
