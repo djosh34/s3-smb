@@ -29,6 +29,7 @@ type LoginOptions struct {
 // NextMessageID is the first unused ID after login; Send never allocates IDs.
 // Reconnect uses a new client with PreviousSessionID, then DH2C and RqLs.
 type Session struct {
+	ClientGUID    [16]byte
 	SessionID     uint64
 	NextMessageID uint64
 	TreeID        uint32
@@ -86,6 +87,7 @@ func (client *Client) loginNegotiate(ctx context.Context, session *Session, opti
 			return nil, randomErr
 		}
 	}
+	session.ClientGUID = guid
 	body, err := wire.EncodeNegotiateRequest(wire.NegotiateRequest{Dialects: []uint16{smb.Dialect311}, Contexts: contexts, ClientGUID: guid, SecurityMode: smb.AdvertisedSecurityMode})
 	if err != nil {
 		return nil, err
