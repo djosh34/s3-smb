@@ -2,8 +2,6 @@
 package e2e
 
 import (
-	"context"
-	"fmt"
 	"math/rand/v2"
 	"net/http"
 	"os"
@@ -111,12 +109,10 @@ func chaosKillWrite(t *testing.T, ledger *chaos.Ledger, file *smb.File, name str
 	t.Helper()
 	ledger.Attempt(name, offset, data)
 	n, err := file.WriteAt(data, offset)
-	if n > 0 {
-		ledger.Write(name, offset, data[:n])
-	}
 	if err != nil || n != len(data) {
 		t.Fatalf("write %s at %d: %d/%d bytes: %v", name, offset, n, len(data), err)
 	}
+	ledger.Write(name, offset, data)
 }
 
 func chaosKillCheckpoint(t *testing.T, f *fixture, ledger *chaos.Ledger, names []string, rng *rand.Rand) {
@@ -124,24 +120,31 @@ func chaosKillCheckpoint(t *testing.T, f *fixture, ledger *chaos.Ledger, names [
 	share, closeShare := f.share()
 	defer closeShare()
 	for _, name := range names {
-		file, err := share.OpenFile(name, os.O_CREATE|os.O_RDWR, 0600)
-		if err != nil {
-			t.Fatal(err)
-		}
-		// Less than a JuiceFS block keeps later unflushed writes buffered
-		// until the explicit FLUSH, where the proxy observes the real PUT.
-		chaosKillWrite(t, ledger, file, name, 0, chaosKillBytes(rng, 128<<10))
-		if err := file.Sync(); err != nil {
-			t.Fatal(err)
-		}
-		ledger.Flush(name)
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
+		chaosKillFlushWrite(t, share, ledger, name, chaosKillBytes(rng, 128<<10))
 	}
 	if err := ledger.CheckAcknowledged(share.ReadFile); err != nil {
 		t.Fatalf("acknowledged checkpoint: %v", err)
 	}
+}
+
+func chaosKillFlushWrite(t *testing.T, share *smb.Share, ledger *chaos.Ledger, name string, data []byte) {
+	t.Helper()
+	file, err := share.OpenFile(name, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := file.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	// Less than a JuiceFS block keeps later unflushed writes buffered
+	// until the explicit FLUSH, where the proxy observes the real PUT.
+	chaosKillWrite(t, ledger, file, name, 0, data)
+	if err := file.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	ledger.Flush(name)
 }
 
 func chaosKillPendingFlush(t *testing.T, f *fixture, d *daemon, proxy *s3fault.Proxy, ledger *chaos.Ledger, names []string, rng *rand.Rand, delay time.Duration) {
@@ -194,9 +197,7 @@ func chaosKillCheckFlushed(t *testing.T, f *fixture, ledger *chaos.Ledger) {
 	t.Helper()
 	share, closeShare := f.share()
 	defer closeShare()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-	defer cancel()
-	if err := ledger.CheckFlushed(share.WithContext(ctx).ReadFile); err != nil {
-		t.Fatal(fmt.Errorf("rule 2 after restart: %w", err))
+	if err := ledger.CheckFlushed(share.ReadFile); err != nil {
+		t.Fatalf("rule 2 after restart: %v", err)
 	}
 }
