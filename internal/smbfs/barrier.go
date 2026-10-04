@@ -28,7 +28,7 @@ func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 	return &diskBarrier{path: metadataPath}, nil
 }
 
-func (b *diskBarrier) Commit(ctx context.Context, full bool) error {
+func (b *diskBarrier) Commit(ctx context.Context, _ bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -41,9 +41,9 @@ func (b *diskBarrier) Commit(ctx context.Context, full bool) error {
 		return err
 	}
 	name := filepath.Base(b.path)
-	err = syncPath(ctx, root, name+"-wal", full, true)
+	err = syncPath(ctx, root, name+"-wal", true)
 	if err == nil {
-		err = syncPath(ctx, root, name, full, false)
+		err = syncPath(ctx, root, name, false)
 	}
 	if err == nil {
 		dir, openErr := root.Open(".")
@@ -56,7 +56,7 @@ func (b *diskBarrier) Commit(ctx context.Context, full bool) error {
 	return errors.Join(err, root.Close(), ctx.Err())
 }
 
-func syncPath(ctx context.Context, root *os.Root, name string, full, optional bool) error {
+func syncPath(ctx context.Context, root *os.Root, name string, optional bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -67,5 +67,6 @@ func syncPath(ctx context.Context, root *os.Root, name string, full, optional bo
 	if err != nil {
 		return err
 	}
-	return errors.Join(syncFile(file, full), file.Close(), ctx.Err())
+	// File.Sync uses F_FULLFSYNC on macOS for both sync modes.
+	return errors.Join(file.Sync(), file.Close(), ctx.Err())
 }
