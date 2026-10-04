@@ -15,24 +15,26 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-// The child owns the old cache workers. Exiting the child models machine loss,
-// so no old worker can recreate a cache entry after recovery wipes the volume.
+// Both cache runtimes live in child processes. The parent owns their cache
+// directory and waits for process exit to stop all cache workers before cleanup.
+// Exiting the old writer models machine loss before recovery wipes the volume.
 func TestSliceIDReuseReadsNewBytesThroughDiskCache(t *testing.T) {
 	if root := os.Getenv("S3_SMB_SNAPSHOT_CACHE_CHILD"); root != "" {
 		runSliceCacheChild(t, root)
 		return
 	}
-	if os.Getenv("S3_SMB_SNAPSHOT_CACHE_SCENARIO") == "" {
+	root := os.Getenv("S3_SMB_SNAPSHOT_CACHE_SCENARIO")
+	if root == "" {
+		root = t.TempDir()
 		ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 		defer cancel()
 		cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestSliceIDReuseReadsNewBytesThroughDiskCache$", "-test.timeout=40s")
-		cmd.Env = append(os.Environ(), "S3_SMB_SNAPSHOT_CACHE_SCENARIO=1")
+		cmd.Env = append(os.Environ(), "S3_SMB_SNAPSHOT_CACHE_SCENARIO="+root)
 		if output, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("cache recovery scenario: %v\n%s", err, output)
 		}
 		return
 	}
-	root := t.TempDir()
 	m, f := newMetadata(t)
 	s := newStore(t)
 	mgr := newManager(t, m, s, t.TempDir(), time.Now, time.Minute)
