@@ -49,6 +49,15 @@ func durableResult(t *testing.T, message wire.Message) smbtest.CreateResult {
 	return result
 }
 
+func durableOpen(t *testing.T, server *Server, session smbtest.Session, id wire.FileID) state.Open {
+	t.Helper()
+	open, status := server.options.State.Find(state.FileID(id), state.Binding{SessionID: session.SessionID, TreeID: session.TreeID})
+	if status != smb.StatusSuccess {
+		t.Fatalf("find durable open = %#x", status)
+	}
+	return open
+}
+
 func TestDurableTimeoutsAndPersistence(t *testing.T) {
 	for _, milliseconds := range []uint32{0, 1, 119999, 120000, 300000, 959999, 960000, 960001, ^uint32(0)} {
 		t.Run((time.Duration(milliseconds) * time.Millisecond).String(), func(t *testing.T) {

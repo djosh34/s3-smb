@@ -14,9 +14,11 @@ import (
 )
 
 type durableContexts struct {
-	request   *wire.DurableRequest
-	reconnect *wire.DurableReconnect
-	lease     *wire.LeaseContext
+	request         *wire.DurableRequest
+	reconnect       *wire.DurableReconnect
+	lease           *wire.LeaseContext
+	legacyRequest   bool
+	legacyReconnect bool
 }
 
 func decodeDurableContexts(create wire.CreateRequest) (durableContexts, error) {
@@ -44,6 +46,10 @@ func decodeDurableContexts(create wire.CreateRequest) (durableContexts, error) {
 				return result, err
 			}
 			result.reconnect = &value
+		case "DHnQ":
+			result.legacyRequest = true
+		case "DHnC":
+			result.legacyReconnect = true
 		case "RqLs":
 			if result.lease != nil {
 				return result, errors.New("duplicate lease context")
@@ -54,6 +60,9 @@ func decodeDurableContexts(create wire.CreateRequest) (durableContexts, error) {
 			}
 			result.lease = &value
 		}
+	}
+	if result.request != nil && (result.legacyRequest || result.legacyReconnect) {
+		return result, errors.New("durable v2 request conflicts with a durable v1 context")
 	}
 	return result, nil
 }
@@ -126,6 +135,9 @@ func replayCreate(ctx context.Context, request RequestContext, message wire.Mess
 	if err != nil {
 		return reply{}, true, errors.Join(smb.ErrInvalidParameter, err)
 	}
+	if contexts.legacyReconnect && contexts.reconnect == nil {
+		return reply{status: smb.StatusObjectNameNotFound}, true, nil
+	}
 	if contexts.reconnect != nil {
 		result, reconnectErr := reconnectCreate(ctx, request, create, contexts)
 		return result, true, reconnectErr
@@ -154,18 +166,58 @@ func replayCreate(ctx context.Context, request RequestContext, message wire.Mess
 }
 
 func reconnectCreate(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts durableContexts) (reply, error) {
-	if contexts.reconnect.Flags != 0 || contexts.lease == nil || contexts.lease.Version != 2 || create.OplockLevel != 0xff {
+	if contexts.reconnect.Flags&2 != 0 {
+		return reply{status: smb.StatusInvalidParameter}, nil
+	}
+	if contexts.legacyRequest || contexts.legacyReconnect || contexts.lease == nil || contexts.lease.Version != 2 || create.OplockLevel != leaseOplockLevel {
 		return reply{status: smb.StatusObjectNameNotFound}, nil
 	}
-	open, status := request.Opens.Reconnect(state.ReconnectRequest{
+	reconnect := state.ReconnectRequest{
 		ID: state.FileID(contexts.reconnect.ID), Binding: request.Binding(),
 		User: request.Session.User, Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
 		CreateGUID: contexts.reconnect.CreateGUID, LeaseKey: contexts.lease.Key,
-	})
+	}
+	candidate, status := request.Opens.ReconnectCandidate(reconnect)
+	if status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
+	if !candidate.DeleteOnClose {
+		resolved, unlock, err := lookupLocked(ctx, request, create.Name)
+		if err != nil {
+			return reply{}, err
+		}
+		defer unlock()
+		if !resolved.Exists || resolved.Object != candidate.Object {
+			return reply{status: smb.StatusObjectNameNotFound}, nil
+		}
+	}
+	open, status := reconnectBoundOpen(request, reconnect)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	return retainedCreateReply(ctx, request, open, 1) // FILE_OPENED.
+}
+
+// Session invalidation and this table publication share the owner's session
+// lock. No storage call, network call or wait belongs inside that lock.
+func reconnectBoundOpen(request RequestContext, reconnect state.ReconnectRequest) (state.Open, smb.Status) {
+	server := request.server
+	server.mu.Lock()
+	owner := server.sessions[request.Session.SessionID]
+	server.mu.Unlock()
+	if owner == nil {
+		return state.Open{}, smb.StatusUserSessionDeleted
+	}
+	owner.sessionMu.RLock()
+	defer owner.sessionMu.RUnlock()
+	session := owner.sessions[request.Session.SessionID]
+	if session == nil || !session.active || session.identity != request.Session {
+		return state.Open{}, smb.StatusUserSessionDeleted
+	}
+	if tree, exists := session.trees[request.Tree.TreeID]; !exists || tree != request.Tree {
+		return state.Open{}, smb.StatusNetworkNameDeleted
+	}
+	return request.Opens.Reconnect(reconnect)
 }
 
 func retainedCreateReply(ctx context.Context, request RequestContext, open state.Open, action uint32) (reply, error) {
