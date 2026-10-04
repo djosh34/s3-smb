@@ -17,15 +17,33 @@ import (
 
 var errSelfTarget = errors.New("network fault proxy cannot target its own address")
 
-// Fault applies in both directions until SetFault replaces it. Delay precedes
-// each forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
+// Fault stays in place until SetFault replaces it. Delay, Stall and Drop apply
+// in both directions; CutAfter applies only in CutDirection. Delay precedes each
+// forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
 // without discarding buffered data. Drop closes current connections and rejects
 // new ones without dialing the peer. A zero Fault restores normal forwarding.
 // Changes wake pending delays and stalls; bytes already written cannot be recalled.
+// CutAfter closes each connection after exactly that many bytes are forwarded in
+// CutDirection. Zero disables byte cuts. Replacing a fault resets the count for
+// each connection. Bytes whose write already started belong to the old fault
+// and cannot count toward or trigger the replacement's cut. Any buffered suffix
+// is forwarded under the replacement fault without losing bytes.
 type Fault struct {
-	Delay time.Duration
-	Stall bool
-	Drop  bool
+	Delay        time.Duration
+	CutAfter     int64
+	CutDirection Direction
+	Stall        bool
+	Drop         bool
+}
+
+func (f Fault) validate() error {
+	if f.Delay < 0 || f.CutAfter < 0 {
+		return errors.New("negative network fault delay or cut threshold")
+	}
+	if f.CutDirection > ServerToClient || (f.CutAfter > 0 && f.CutDirection == 0) {
+		return errors.New("invalid network fault cut direction")
+	}
+	return nil
 }
 
 // Step replaces the fault After elapsed time from Schedule. Cut also closes
@@ -41,27 +59,34 @@ type Step struct {
 // Methods are safe for concurrent use. Construct it with New; the zero value is
 // not usable. Cancel the construction context or call Close to stop all work.
 type Proxy struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	listener  net.Listener
-	links     map[*link]struct{}
-	changed   chan struct{}
-	closeErr  error
-	address   string
-	upstreams []string
-	fault     Fault
-	mu        sync.Mutex
-	workers   sync.WaitGroup
-	closed    bool
-	scheduled bool
+	ctx        context.Context
+	cancel     context.CancelFunc
+	listener   net.Listener
+	links      map[*link]struct{}
+	changed    chan struct{}
+	closeErr   error
+	events     chan Event
+	address    string
+	upstreams  []string
+	fault      Fault
+	mu         sync.Mutex
+	workers    sync.WaitGroup
+	dropped    uint64
+	generation uint64
+	nextID     uint64
+	eventsEnd  sync.Once
+	closed     bool
+	scheduled  bool
 }
 
 type link struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	client   net.Conn
-	upstream net.Conn
-	closed   bool
+	ctx       context.Context
+	cancel    context.CancelFunc
+	client    net.Conn
+	upstream  net.Conn
+	id        uint64
+	forwarded [2]int64
+	closed    bool
 }
 
 // New starts a proxy for an explicit TCP host:port. The listener binds only to
@@ -107,6 +132,7 @@ func start(ctx context.Context, upstream string, listener net.Listener) (*Proxy,
 		ctx: lifetime, cancel: cancel, listener: listener,
 		links: make(map[*link]struct{}), changed: make(chan struct{}),
 		upstreams: targets, address: listener.Addr().String(),
+		events: make(chan Event, 128),
 	}
 	p.workers.Add(1)
 	go p.accept()
@@ -143,6 +169,7 @@ func (p *Proxy) Address() string { return p.address }
 func (p *Proxy) Close() error {
 	p.stop()
 	p.workers.Wait()
+	p.eventsEnd.Do(func() { close(p.events) })
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.closeErr
@@ -195,8 +222,8 @@ func closeConn(conn net.Conn) error {
 // this call; the fault still takes effect. Close reports all collected errors.
 // Manual commands do not cancel an active schedule.
 func (p *Proxy) SetFault(fault Fault) error {
-	if fault.Delay < 0 {
-		return errors.New("negative network fault delay")
+	if err := fault.validate(); err != nil {
+		return err
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -217,11 +244,18 @@ func (p *Proxy) apply(fault Fault, cut bool) error {
 		return net.ErrClosed
 	}
 	p.fault = fault
+	p.generation++
+	for connection := range p.links {
+		connection.forwarded = [2]int64{}
+	}
 	close(p.changed)
 	p.changed = make(chan struct{})
 	var err error
 	if cut || fault.Drop {
 		for connection := range p.links {
+			if !connection.closed {
+				p.emit(Event{Connection: connection.id, Cut: true})
+			}
 			err = errors.Join(err, p.closeLink(connection))
 		}
 	}
@@ -249,7 +283,8 @@ func (p *Proxy) accept() {
 			continue
 		}
 		ctx, cancel := context.WithCancel(p.ctx)
-		connection := &link{ctx: ctx, cancel: cancel, client: client}
+		p.nextID++
+		connection := &link{ctx: ctx, cancel: cancel, client: client, id: p.nextID}
 		p.links[connection] = struct{}{}
 		p.workers.Add(1)
 		p.mu.Unlock()
@@ -279,8 +314,8 @@ func (p *Proxy) forward(connection *link) {
 	connection.upstream = upstream
 	p.mu.Unlock()
 	results := make(chan error, 2)
-	go func() { results <- p.relay(connection.ctx, connection.client, upstream) }()
-	go func() { results <- p.relay(connection.ctx, upstream, connection.client) }()
+	go func() { results <- p.relay(connection, ClientToServer, connection.client, upstream) }()
+	go func() { results <- p.relay(connection, ServerToClient, upstream, connection.client) }()
 	if err := <-results; err != nil {
 		// A failed direction must unblock the other direction's read or write.
 		p.mu.Lock()
@@ -307,7 +342,8 @@ func (p *Proxy) dialPeer(ctx context.Context) (net.Conn, error) {
 	return nil, dialErr
 }
 
-func (p *Proxy) relay(ctx context.Context, src, dst net.Conn) error {
+func (p *Proxy) relay(connection *link, direction Direction, src, dst net.Conn) error {
+	ctx := connection.ctx
 	buffer := make([]byte, 32*1024)
 	for {
 		if err := p.wait(ctx, false); err != nil {
@@ -315,15 +351,8 @@ func (p *Proxy) relay(ctx context.Context, src, dst net.Conn) error {
 		}
 		n, readErr := src.Read(buffer)
 		if n > 0 {
-			if err := p.wait(ctx, true); err != nil {
+			if err := p.forwardBytes(connection, direction, dst, buffer[:n]); err != nil {
 				return err
-			}
-			written, err := dst.Write(buffer[:n])
-			if err != nil {
-				return err
-			}
-			if written != n {
-				return io.ErrShortWrite
 			}
 		}
 		if errors.Is(readErr, io.EOF) {
