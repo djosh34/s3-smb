@@ -72,10 +72,8 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 	writer := insertIOOpen(t, server, session, "flush-data", 3)
 	other := insertIOOpen(t, server, session, "flush-data", 1)
 	payload := []byte("cross-handle durable bytes")
-	if n, writeErr := fixture.adapter.WriteAt(ctx, writer.Handle, payload, 0); writeErr != nil || n != len(payload) {
-		t.Fatalf("write = %d, %v", n, writeErr)
-	}
-	message := flushMessage(t, session, session.NextMessageID, flushFileID(other.ID.Persistent, other.ID.Volatile), reserved)
+	writeForFlush(ctx, t, client, session, flushFileID(writer.ID.Persistent, writer.ID.Volatile), payload)
+	message := flushMessage(t, session, session.NextMessageID+1, flushFileID(other.ID.Persistent, other.ID.Volatile), reserved)
 	if sendErr := client.Send(ctx, []wire.Message{message}); sendErr != nil {
 		t.Fatal(sendErr)
 	}
@@ -96,7 +94,7 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 		t.Fatalf("reply before metadata barrier: %+v", pending.Header)
 	}
 	// ECHO must be the next reply while the flush barrier remains blocked.
-	echoReply := exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+1))[0]
+	echoReply := exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+2))[0]
 	if echoReply.Header.Command != wire.Echo || echoReply.Header.Status != smb.StatusSuccess {
 		t.Fatalf("flush completed before barrier: %+v", echoReply.Header)
 	}
@@ -107,6 +105,22 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 	}
 	if _, decodeErr := wire.DecodeFlushResponse(final); decodeErr != nil {
 		t.Fatal(decodeErr)
+	}
+}
+
+func writeForFlush(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, id wire.FileID, payload []byte) {
+	t.Helper()
+	body, err := wire.EncodeWriteRequest(wire.WriteRequest{ID: id, Data: payload})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := ioRoundTrip(ctx, t, client, ioMessage(session, session.NextMessageID, wire.Write, body, 1))
+	if response.Header.Status != smb.StatusSuccess {
+		t.Fatal(response.Header)
+	}
+	written, err := wire.DecodeWriteResponse(response)
+	if err != nil || uint64(written.Count) != uint64(len(payload)) {
+		t.Fatalf("write reply = %+v, %v", written, err)
 	}
 }
 
@@ -167,10 +181,8 @@ func TestFlushStorageErrorsReachClient(t *testing.T) {
 			writer := insertIOOpen(t, server, session, "failed-flush", 3)
 			other := insertIOOpen(t, server, session, "failed-flush", 1)
 			fixture.store.fail.Store(upload)
-			if _, writeErr := fixture.adapter.WriteAt(ctx, writer.Handle, []byte("uncommitted bytes"), 0); writeErr != nil {
-				t.Fatal(writeErr)
-			}
-			response := ioRoundTrip(ctx, t, client, flushMessage(t, session, session.NextMessageID, flushFileID(other.ID.Persistent, other.ID.Volatile), 0xffff))
+			writeForFlush(ctx, t, client, session, flushFileID(writer.ID.Persistent, writer.ID.Volatile), []byte("uncommitted bytes"))
+			response := ioRoundTrip(ctx, t, client, flushMessage(t, session, session.NextMessageID+1, flushFileID(other.ID.Persistent, other.ID.Volatile), 0xffff))
 			if response.Header.Status != smb.StatusIODeviceError {
 				t.Fatalf("storage error = %+v", response.Header)
 			}
@@ -180,7 +192,7 @@ func TestFlushStorageErrorsReachClient(t *testing.T) {
 			if fixture.store.puts.Load() == 0 || (barrierCalls.Load() > 0) == upload {
 				t.Fatalf("upload/barrier calls = %d/%d", fixture.store.puts.Load(), barrierCalls.Load())
 			}
-			response = exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+1))[0]
+			response = exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+2))[0]
 			if response.Header.Status != smb.StatusSuccess {
 				t.Fatal("storage error dropped the connection")
 			}
