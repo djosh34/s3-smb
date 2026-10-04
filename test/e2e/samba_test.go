@@ -122,6 +122,11 @@ func requireRaceSmbnextBuild(settings []debug.BuildSetting) error {
 }
 
 func TestSambaInterop(t *testing.T) {
+	testSambaInterop(t, tortureAllowlist)
+}
+
+func testSambaInterop(t *testing.T, allowlist string) {
+	t.Helper()
 	binary := os.Getenv("S3_SMB_SAMBA_BINARY")
 	if binary == "" {
 		t.Skip("needs the smbnext daemon and Samba in the Linux integration run")
@@ -152,8 +157,8 @@ func TestSambaInterop(t *testing.T) {
 		}
 		return string(output), err
 	}
-	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, tortureAllowlist); err != nil {
+	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, allowlist); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Samba connected with encryption; the M2 credit allowlist is empty by the decision on #188")
+	t.Log("Samba connected with encryption and ran the selected exact tests")
 }

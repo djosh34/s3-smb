@@ -75,6 +75,18 @@ func TestM3SambaInventory(t *testing.T) {
 	}
 }
 
+func TestSambaM3Interop(t *testing.T) {
+	names, err := parseTortureAllowlist(m3TortureCandidates, m3PinnedListing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			testSambaInterop(t, name)
+		})
+	}
+}
+
 func TestM3SambaCandidatesStayDisabled(t *testing.T) {
 	selected := strings.Split(tortureAllowlist, "\n")
 	inventory, err := parseTortureAllowlist(m3PinnedListing, m3PinnedListing)
