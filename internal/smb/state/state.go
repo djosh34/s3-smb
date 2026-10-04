@@ -120,7 +120,7 @@ type Lease struct {
 // renamed base, the close path resolves PathOf and verifies the inode again.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
-// Records are removed only after opens/reservations, locks and leases are gone.
+// Records are removed only after opens, reservations, locks and leases are gone.
 type ObjectRecord struct {
 	Opens         []uint64
 	Locks         []Range

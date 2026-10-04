@@ -66,9 +66,11 @@ type Filetime uint64
 const (
 	// FiletimeUnchanged leaves a SET_INFO timestamp unchanged.
 	FiletimeUnchanged Filetime = 0
-	// FiletimeSuppress suppresses automatic timestamp updates for this open.
+	// FiletimeSuppress is the protocol's -1 sentinel. This server leaves the time
+	// unchanged for this SET_INFO only, without suppressing later updates (#189).
 	FiletimeSuppress Filetime = 0xffffffffffffffff
-	// FiletimeResume resumes automatic timestamp updates for this open.
+	// FiletimeResume is the protocol's -2 sentinel. This server also treats it as
+	// unchanged for this SET_INFO only; later I/O updates times as usual (#189).
 	FiletimeResume Filetime = 0xfffffffffffffffe
 )
 
@@ -79,12 +81,11 @@ type TimeUpdateAction uint8
 const (
 	TimeKeep TimeUpdateAction = iota
 	TimeSet
-	TimeSuppress
-	TimeResume
 )
 
 // TimeUpdate is DecodeTimeUpdate's result. Time is valid only for TimeSet.
-// The server applies suppression to the open, not to an inode's stored time.
+// TimeKeep leaves the field unchanged for this SET_INFO only. The server keeps
+// no per-open suppression state; later I/O updates times as usual (#189).
 type TimeUpdate struct {
 	Time   time.Time
 	Action TimeUpdateAction

@@ -87,10 +87,12 @@ package wire
 //
 // Ordinary Filetime conversion handles range errors without overflowing
 // nanoseconds. DecodeFiletime allows zero as the literal 1601 epoch for queries,
-// but rejects the suppression and resume sentinels. SET_INFO instead calls
-// DecodeTimeUpdate first: zero keeps the stored time, all-ones suppresses automatic
-// updates without changing the stored time, and all-ones-minus-one resumes them.
-// EncodeTimeUpdate rejects a TimeSet value that would collide with a sentinel.
+// but rejects the -1 and -2 sentinels. SET_INFO instead calls DecodeTimeUpdate
+// first: zero, all-ones and all-ones-minus-one return TimeKeep. They leave the
+// field unchanged for this SET_INFO only. The server keeps no per-open suppression
+// state, and later I/O updates times as usual, per the manager decision on #189.
+// EncodeTimeUpdate encodes TimeKeep as zero and rejects a TimeSet value that
+// would collide with a sentinel. Basic class codecs still preserve raw sentinel bits.
 //
 //	func DecodeFiletime(value Filetime) (time.Time, error)
 //	func EncodeFiletime(value time.Time) (Filetime, error)

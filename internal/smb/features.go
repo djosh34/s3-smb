@@ -53,8 +53,8 @@ const (
 // Feature and resource limits. Durable v2 is only for regular unnamed files
 // holding an H lease. Requests above MaxDurableTimeout receive that maximum,
 // reported in the reply. A zero request receives DefaultDurableTimeout.
-// Durable v1 and persistent
-// contexts receive no grant. Classic oplocks receive level none.
+// Durable v1 and persistent contexts receive no grant.
+// Classic oplocks receive level none.
 const (
 	LeaseVersion          uint16 = 2
 	LeaseRead             uint32 = 0x01

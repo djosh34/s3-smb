@@ -93,7 +93,7 @@ CANCEL has no reply and cancels only the identified pending request.
 No byte-range lock request waits.
 
 NEGOTIATE grants at least one credit, even when the request asks for zero.
-SESSION_SETUP grants at least five credits because macOS requires that balance before reconnecting its files.
+SESSION_SETUP grants at least five credits, our chosen minimum.
 The server grows the balance toward 256 within the bound in `features.go`.
 The server replenishes credits before a valid synchronous compound can exhaust the client's balance.
 
@@ -223,6 +223,8 @@ S3 fault proxy (#271):
 
 ### M2: connection setup (#188)
 
+LOGOFF and TREE_DISCONNECT tests put opens directly into the shared state table in `server.Options`, since M2 has no CREATE handler.
+
 - The client performs login and message protection against the running server.
 - smbclient authenticates and connects to the share without listing files.
 - Opening SMB1 NEGOTIATE receives the wildcard response.
@@ -254,6 +256,8 @@ S3 fault proxy (#271):
 - Cross-handle FLUSH reaches S3 and the required metadata barrier.
 - Truncate cannot resurrect old buffered bytes.
 - SET_INFO handles timestamp sentinels without overflow.
+- SET_INFO values -1 and -2 leave the stored time unchanged (#111).
+- Later I/O updates times as usual after those sentinels, with no suppression state.
 - Directory continuation reuses the original pattern.
 - Directory matching treats literal characters and DOS wildcards correctly.
 - Directory entries report live length.
