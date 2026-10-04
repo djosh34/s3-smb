@@ -56,22 +56,24 @@ func TestCreateDirectoryOptions(t *testing.T) {
 	}
 }
 
-func TestCreateIgnoresLeaseAndDurableContexts(t *testing.T) {
+func TestCreateDeclinesDurableWithoutLease(t *testing.T) {
 	client := newReadWriteClient(t, newFilesMetaStorage(t))
-	for _, tag := range []string{"RqLs", "DH2Q", "DH2C"} {
-		request := createRequest(tag, fileCreateDisposition)
-		request.OplockLevel = 0xff
-		request.Contexts = []wire.CreateContext{{Name: tag, Data: []byte{1, 2, 3}}}
-		response := createdFile(t, client.create(t, request))
-		if response.OplockLevel != 0 || len(response.Contexts) != 0 {
-			t.Fatalf("unrequested grant: %+v", response)
-		}
-		open, status := client.server.options.State.Find(state.FileID(response.ID), state.Binding{SessionID: client.session.SessionID, TreeID: client.session.TreeID})
-		if status != smb.StatusSuccess || open.Durable || open.LeaseKey != (state.GUID{}) {
-			t.Fatalf("CREATE context grant = %+v, status %#x", open, status)
-		}
-		requireIOStatus(t, client.close(t, response.ID, 0), smb.StatusSuccess)
+	context, err := wire.EncodeDurableRequest(wire.DurableRequest{CreateGUID: [16]byte{5}})
+	if err != nil {
+		t.Fatal(err)
 	}
+	request := createRequest("DH2Q", fileCreateDisposition)
+	request.OplockLevel = 0xff
+	request.Contexts = []wire.CreateContext{context}
+	response := createdFile(t, client.create(t, request))
+	if response.OplockLevel != 0 || len(response.Contexts) != 0 {
+		t.Fatalf("unrequested grant: %+v", response)
+	}
+	open, status := client.server.options.State.Find(state.FileID(response.ID), state.Binding{SessionID: client.session.SessionID, TreeID: client.session.TreeID})
+	if status != smb.StatusSuccess || open.Durable || open.LeaseKey != (state.GUID{}) {
+		t.Fatalf("CREATE context grant = %+v, status %#x", open, status)
+	}
+	requireIOStatus(t, client.close(t, response.ID, 0), smb.StatusSuccess)
 }
 
 func TestCreateDeleteOnCloseRecordedAndApplied(t *testing.T) {

@@ -76,6 +76,7 @@ type Open struct {
 	LeaseKey         GUID
 	DurableTimeout   time.Duration
 	GrantedAccess    uint32
+	CreateAction     uint32
 	SharingIntent    Rights
 	Sharing          ShareMode
 	DeleteOnClose    bool
@@ -115,6 +116,7 @@ type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
 	Key        GUID
+	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
 	Epoch      uint16
@@ -173,6 +175,7 @@ type Grant struct {
 	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
+	CreateAction   uint32
 	Directory      bool
 	DeleteOnClose  bool
 }
@@ -192,6 +195,7 @@ type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	// FileID identifies the removed open, even when Object selects a pending base deletion.
 	FileID FileID
 	Remove bool
 }
@@ -235,6 +239,7 @@ type Table struct {
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64
 	nextPersistent  uint64

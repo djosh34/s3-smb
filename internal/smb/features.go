@@ -25,7 +25,8 @@ const (
 )
 
 // NEGOTIATE advertises only capabilities implemented by the current handlers.
-// M5 adds CapabilityLeasing to AdvertisedCapabilities. SMB 3.1.1 negotiates GCM
+// M5 adds CapabilityLeasing only after the feature stack and Samba proof pass.
+// SMB 3.1.1 negotiates GCM
 // only through its encryption context, not SMB2_GLOBAL_CAP_ENCRYPTION. No DFS,
 // multichannel, persistent handles, directory leases, compression or RDMA.
 const (
