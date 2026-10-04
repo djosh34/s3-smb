@@ -67,13 +67,13 @@ func setInfoAsyncRequest(t *testing.T, f *setInfoFixture, class wire.FileInfoCla
 	t.Helper()
 	var input []byte
 	var err error
-	switch class {
-	case wire.ClassFileBasic:
+	switch uint8(class) {
+	case uint8(wire.ClassFileBasic):
 		value := filetime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
 		input, err = wire.EncodeFileBasicInformation(wire.FileBasicInformation{Accessed: value, Modified: value, Changed: value})
-	case wire.ClassFileEndOfFile:
+	case uint8(wire.ClassFileEndOfFile):
 		input, err = wire.EncodeFileEndOfFileInformation(wire.FileEndOfFileInformation{EndOfFile: 5000})
-	case wire.ClassFileAllocation:
+	case uint8(wire.ClassFileAllocation):
 		input, err = wire.EncodeFileAllocationInformation(wire.FileAllocationInformation{AllocationSize: 4096})
 	default:
 		t.Fatalf("unexpected metadata class: %d", class)
@@ -176,7 +176,10 @@ func checkSetInfoBufferedPending(t *testing.T, class wire.FileInfoClass, failure
 	storage.unblock()
 	final := receiveSetInfoAsync(f.ctx, t, f.client)
 	header = final.Header
-	want := smb.StatusFromError(failure)
+	want := smb.StatusSuccess
+	if failure != nil {
+		want = smb.StatusIODeviceError
+	}
 	if header.Command != wire.SetInfo || header.Status != want || header.Flags&wire.FlagAsync == 0 || header.MessageID != request.Header.MessageID || header.SessionID != request.Header.SessionID || header.AsyncID != pending.Header.AsyncID || header.TreeID != 0 || header.CreditCharge != 1 || header.Credit != 0 {
 		t.Fatalf("SET_INFO final identity/credits: %+v, want status %#x", header, want)
 	}
@@ -203,15 +206,15 @@ func assertSetInfoBufferedResult(t *testing.T, f *setInfoFixture, class wire.Fil
 	}
 	attr := f.attr(t)
 	wantSize := uint64(len(data))
-	switch class {
-	case wire.ClassFileBasic:
+	switch uint8(class) {
+	case uint8(wire.ClassFileBasic):
 		want := time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC)
 		if !attr.Accessed.Equal(want) || !attr.Modified.Equal(want) || !attr.Changed.Equal(want) {
 			t.Fatalf("explicit times lost after flush: %+v", attr)
 		}
-	case wire.ClassFileEndOfFile:
+	case uint8(wire.ClassFileEndOfFile):
 		wantSize = 5000
-	case wire.ClassFileAllocation:
+	case uint8(wire.ClassFileAllocation):
 		wantSize = 4096
 	default:
 		t.Fatalf("unexpected metadata class: %d", class)
