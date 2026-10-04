@@ -231,21 +231,14 @@ func TestChaosDurableExpiry(t *testing.T) {
 
 func durableChaosFixture(ctx context.Context, t *testing.T) (*fixture, *netfault.Proxy) {
 	t.Helper()
-	binary := os.Getenv("S3_SMB_CHAOS_BINARY")
-	if binary == "" {
-		t.Skip("needs S3_SMB_CHAOS_BINARY, the race-enabled smbnext daemon")
-	}
-	info, err := buildinfo.ReadFile(binary)
+	f := newChaosFixture(t, false)
+	info, err := buildinfo.ReadFile(f.binary)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := requireRaceSmbnextBuild(info.Settings); err != nil {
 		t.Fatal(err)
 	}
-	// Temporary draft selection approved for #354. Replace with the shared
-	// newChaosFixture once #349 supplies it. Never use the default daemon.
-	f := newFixture(t, false)
-	f.binary = binary
 	f.cacheSize = "8 MB"
 	d := f.start()
 	t.Cleanup(func() {
