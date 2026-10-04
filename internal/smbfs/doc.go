@@ -5,8 +5,8 @@
 //
 // M1 provides New(options Options) (*FS, error) and
 // NewMetadataBarrier(metadataPath string) (MetadataBarrier, error). The latter
-// covers the SQLite database and WAL with ordinary fsync or the platform's
-// full-fsync barrier. It owns no persistent file descriptor or metadata connection.
+// covers the SQLite database and WAL with File.Sync, which uses F_FULLFSYNC on
+// macOS for both sync modes. It owns no persistent descriptor or connection.
 // Tests may inject a barrier to check ordering and failures. There are no global
 // handle or open registries. Handles retain an inode reference, immutable object
 // key, kind and access mode. Private per-inode coordination is allowed and must not
@@ -43,7 +43,7 @@ type Options struct {
 	Barrier    MetadataBarrier
 	Config     *vfs.Config
 	Filesystem *jfs.FileSystem
-	// MetadataPath names the runtime SQLite database. Directory pages use a
+	// MetadataPath names the runtime SQLite database. Directory pages use
 	// indexed queries on one long-lived connection because Meta has no stable
 	// paged enumeration API.
 	MetadataPath string
