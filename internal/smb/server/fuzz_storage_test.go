@@ -13,8 +13,8 @@ import (
 	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
-// The connection corpus does not mutate files, so each fuzz worker can reuse
-// its runtime. Every input gets a new server, connection and open table.
+// Each fuzz input owns a fresh runtime and scratch directory. CREATE and I/O
+// mutations must not affect the next input.
 func fuzzStorage(t testing.TB) *smbfs.FS {
 	t.Helper()
 	dir := t.TempDir()
