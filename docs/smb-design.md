@@ -25,6 +25,23 @@ The raw client issue (#269) starts after the wire PR (#200) merges, still in M1.
 Its M1 scope is framing and exact messages.
 M2 (#188) adds client login, signing and encryption against a running server.
 
+## Handler request context
+
+Handlers receive a cancellation context, a `server.RequestContext` and the wire
+message. The request context contains immutable `Session` and `Tree` snapshots,
+the shared `Opens` table and `Storage`. `Binding()` gives the identity used by
+open-table methods. Session and tree validation belongs to dispatch, not file
+handlers. Commands that need neither identity receive zero snapshots.
+Handlers must not retain snapshots as mutable connection state. They perform
+storage work outside table locks and drain active handle users before cleanup.
+The connection core still owns replies, credits, async identity and protection.
+Session and tree IDs are unique across the running server. A tree belongs to
+one session, even though every tree names the same configured share.
+LOGOFF and TREE_DISCONNECT invalidate the identity, cancel and drain its pending
+work, then run open-table cleanup. An async cleanup member does not wait for
+itself. Cleanup continues if the transport is canceled. On a drop, the table
+detaches durable opens before waiting for work; storage cleanup follows the drain.
+
 ## CREATE and cleanup
 
 The server holds the parent namespace guard during CREATE.
@@ -103,11 +120,17 @@ SMB 3.1.1 uses SHA-512 preauth and NTLMv2 inside SPNEGO.
 The server prefers offered GMAC and AES-256-GCM.
 When signing offers have no overlap, MS-SMB2 requires the AES-CMAC default.
 Session-derived keys protect authenticated traffic.
+Each session forks the completed NEGOTIATE transcript, then hashes its own
+SESSION_SETUP requests and challenge replies. Keys use the hash through the
+last request, not the final response.
 Plaintext replies are signed, including final SESSION_SETUP.
 Interim replies follow the protocol's unsigned-interim exception.
 AES-GCM encrypts and authenticates encrypted traffic, including interim replies.
 The server does not sign encrypted messages separately.
 The server verifies the GCM tag before decoding plaintext.
+A reply to an encrypted request is encrypted even when plaintext is allowed.
+The raw client verifies final SESSION_SETUP before tree connect. Its returned
+`NextMessageID` lets a test send new traffic without reusing a handshake credit.
 A protector never reuses a send nonce.
 Reconnect derives fresh keys and nonce state.
 
