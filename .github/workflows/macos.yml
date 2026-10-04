@@ -62,7 +62,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-discover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
@@ -92,10 +94,14 @@ jobs:
         run: go test -count=1 ./internal/juicefs/pkg/meta -run '^TestSQLiteFullFSyncEveryConnection$'
       - name: Time Machine backup
         run: bash test/macos/run.sh
+      - name: Make transfer files readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_TRANSFER"
       - name: Upload the reference manifest
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-reference-${{ github.run_attempt }}
+          name: mac-reference-${{ github.run_id }}
+          overwrite: true
           path: ${{ env.MAC_TRANSFER }}/reference
           if-no-files-found: error
           retention-days: 1
@@ -103,7 +109,8 @@ jobs:
       - name: Upload the stopped MinIO store
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-store-${{ github.run_attempt }}
+          name: mac-store-${{ github.run_id }}
+          overwrite: true
           path: ${{ env.MAC_TRANSFER }}/store.tar
           if-no-files-found: error
           compression-level: 0
@@ -116,7 +123,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-backup-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
@@ -144,11 +153,11 @@ jobs:
           cache: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-reference-${{ github.run_attempt }}
+          name: mac-reference-${{ github.run_id }}
           path: ${{ env.MAC_TRANSFER }}/reference
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-store-${{ github.run_attempt }}
+          name: mac-store-${{ github.run_id }}
           path: ${{ env.MAC_TRANSFER }}
       - name: Recovery and restore
         run: bash test/macos/run.sh
@@ -160,7 +169,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-recover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
@@ -193,11 +204,15 @@ jobs:
           cache: false
       - name: Failed backup and recovery
         run: bash test/macos/run.sh
+      - name: Make transfer files readable
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_TRANSFER"
       - name: Upload the reference manifest
         if: matrix.scenario == 'machine-loss'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-loss-reference-${{ github.run_attempt }}
+          name: mac-loss-reference-${{ github.run_id }}
+          overwrite: true
           path: ${{ env.MAC_TRANSFER }}/reference
           if-no-files-found: error
           retention-days: 1
@@ -206,7 +221,8 @@ jobs:
         if: matrix.scenario == 'machine-loss'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-loss-store-${{ github.run_attempt }}
+          name: mac-loss-store-${{ github.run_id }}
+          overwrite: true
           path: ${{ env.MAC_TRANSFER }}/store.tar
           if-no-files-found: error
           compression-level: 0
@@ -219,7 +235,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
@@ -249,11 +267,11 @@ jobs:
           cache: false
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-loss-reference-${{ github.run_attempt }}
+          name: mac-loss-reference-${{ github.run_id }}
           path: ${{ env.MAC_TRANSFER }}/reference
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
-          name: mac-loss-store-${{ github.run_attempt }}
+          name: mac-loss-store-${{ github.run_id }}
           path: ${{ env.MAC_TRANSFER }}
       - name: Recovery and restore
         run: bash test/macos/run.sh
@@ -265,7 +283,9 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-machine-loss-recover-${{ github.sha }}-${{ github.run_attempt }}
-          path: ${{ env.MAC_ARTIFACTS }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true

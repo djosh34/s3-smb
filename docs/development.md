@@ -66,12 +66,13 @@ scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
-a C compiler and Python 3. They run golangci-lint and `go vet` with and without
-`-tags smbnext`, shellcheck over our shell scripts and actionlint over every
-workflow. They also check `go mod tidy -diff` and gofmt, then run the Mac harness
-Python unit tests and Go unit tests. The Docker
-step runs `go test -race -shuffle=on` once over every package with MinIO
-available. Python tests do not write bytecode into the tree.
+Python 3 for the MinIO publisher tests, and a C compiler. They run golangci-lint and `go vet` with and without
+`-tags smbnext`, and lint the Mac harness with `GOOS=darwin` and `-tags macos`.
+They run shellcheck over our shell scripts and actionlint over every workflow,
+then check `go mod tidy -diff` and gofmt. `go test -count=1 ./...` runs the Go
+unit tests, including the untagged helpers in `test/macos/helpers`. It does not
+run Time Machine. The Docker step runs `go test -race -shuffle=on` over the
+untagged packages with MinIO available, including the Linux integration tests.
 The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
 and the frozen SMB server (`internal/smb-old`).
 `scripts/lint-tools.sh` downloads golangci-lint 2.14.0, shellcheck 0.11.0 and
@@ -152,11 +153,19 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance -f server=def
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
 MinIO locally. `server=default` builds without tags; `server=smbnext` builds with
 `-tags smbnext`. The same selection applies to every job in the run.
-`test/macos/run.sh` passes `MAC_SERVER` to `test/macos/build.sh`. The evidence
-includes `application-revision`, `harness-revision`, `build-tags` (an empty line
-for the default build), `application-build.log` and `native-build.txt` from
-`go version -m` on the built binary. The harness does not install a released
-version from the Go proxy.
+`test/macos/run.sh` runs `go test -tags macos -count=1 -timeout <limit> -v
+./test/macos/...` with sudo for Apple's administrative commands. The Go test
+builds the binaries and owns Time Machine state. There are no parallel Time
+Machine tests within a job. The test stops itself at least ten minutes before
+its Go timeout and has a separate seven-minute cleanup budget. The workflow
+leaves another five to ten minutes for uploads before the job timeout.
+
+Evidence includes `mac-harness.log`, numbered command logs, application logs,
+`application-revision`, `harness-revision`, `build-tags` and `native-build.txt`
+from `go version -m`. Evidence uploads use `always()`, including after timeout
+or cancellation. Transfer artifact names use the run ID, not the attempt, so
+re-running failed recovery jobs can use a successful earlier producer. The
+harness does not install a released version from the Go proxy.
 
 The acceptance backup job first runs the SQLite full-fsync pool test on macOS.
 It checks both pragma values on four live connections and four replacements.
@@ -169,9 +178,21 @@ it. Five more Macs each interrupt a second backup. Four of them then restart or
 recover s3-smb and restore the first backup. In the machine-loss scenario the
 Mac exports the stopped store, and a further fresh Mac recovers it and restores
 the first backup. The scenarios kill the application or the Time Machine client.
-They do not cut power and do not remove objects from S3. The `discover` mode
-builds the selected server and lists the directories to exclude without running
-a backup:
+They do not cut power and do not remove objects from S3. Every interruption,
+including machine-loss, requires a nonempty change in remote chunk objects.
+The resumed backup must also complete and restore the changed tree. The test
+uses a five-minute metadata interval, or one minute for the midpoint scenario;
+the product default is one hour.
+
+To run just one scenario:
+
+```sh
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios -f server=default \
+  -f 'scenarios=["server-kill-cold"]'
+```
+
+The `discover` mode builds the selected server, lists directories to exclude
+and checks the literal exclusion list without running a backup:
 
 ```sh
 gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=default
