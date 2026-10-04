@@ -114,7 +114,7 @@ func (a *shutdownAdapter) Shutdown() error {
 
 func TestSMBShutdownDoesNotHideJoinedServeError(t *testing.T) {
 	acceptErr := errors.New("accept failed")
-	for _, signal := range []error{context.Canceled, net.ErrClosed} {
+	for _, signal := range []error{context.Canceled, net.ErrClosed, fmt.Errorf("close listener: %w", net.ErrClosed)} {
 		t.Run(signal.Error(), func(t *testing.T) {
 			done := make(chan error, 1)
 			done <- errors.Join(signal, acceptErr)
@@ -128,13 +128,24 @@ func TestSMBShutdownDoesNotHideJoinedServeError(t *testing.T) {
 }
 
 func TestSMBShutdownAcceptsOnlyExpectedServeErrors(t *testing.T) {
-	for _, err := range []error{nil, context.Canceled, net.ErrClosed, errors.Join(context.Canceled, net.ErrClosed)} {
+	wrappedClose := &net.OpError{Op: "close", Net: "tcp", Err: net.ErrClosed}
+	for _, err := range []error{
+		nil, context.Canceled, net.ErrClosed,
+		fmt.Errorf("close listener: %w", net.ErrClosed), wrappedClose,
+		errors.Join(context.Canceled, net.ErrClosed),
+		errors.Join(context.Canceled, wrappedClose),
+	} {
 		done := make(chan error, 1)
 		done <- err
 		close(done)
-		r := &resources{serveDone: done}
+		s := &shutdownServer{err: err}
+		a := &shutdownAdapter{}
+		r := &resources{server: s, adapter: a, serveDone: done}
 		if err := r.close(); err != nil {
 			t.Fatal(err)
+		}
+		if !s.called || !a.called {
+			t.Fatal("shutdown did not finish after an expected error")
 		}
 	}
 	// A wrapped error carries context beyond the shutdown signal.
@@ -149,7 +160,7 @@ func TestSMBShutdownAcceptsOnlyExpectedServeErrors(t *testing.T) {
 
 func TestSMBShutdownFailureKeepsStorageAndStateLock(t *testing.T) {
 	failure := errors.New("open close failed")
-	s := &shutdownServer{err: failure}
+	s := &shutdownServer{err: errors.Join(fmt.Errorf("close listener: %w", net.ErrClosed), failure)}
 	a := &shutdownAdapter{}
 	dir := t.TempDir()
 	lock, err := lockState(dir)
