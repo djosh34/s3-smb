@@ -33,6 +33,7 @@ const passphrase = "encryption-e2e-secret-marker-with-entropy"
 type fixture struct {
 	t                            *testing.T
 	bucket, root, addr, endpoint string
+	clientAddr                   string // Empty uses the daemon address; chaos tests set a proxy address.
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
@@ -300,9 +301,16 @@ func checkDaemonLog(t *testing.T, path string) {
 		t.Error(err)
 	}
 }
+func (f *fixture) connectAddr() string {
+	if f.clientAddr != "" {
+		return f.clientAddr
+	}
+	return f.addr
+}
+
 func (f *fixture) connect(user, password string) (*smb.Share, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	conn, err := net.DialTimeout("tcp", f.addr, time.Second)
+	conn, err := net.DialTimeout("tcp", f.connectAddr(), time.Second)
 	if err != nil {
 		cancel()
 		return nil, nil, err
