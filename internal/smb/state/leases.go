@@ -19,6 +19,9 @@ func (table *Table) validateLease(request OpenRequest, reservation Reservation, 
 	if !validLeaseState(lease.State) || lease.Breaking {
 		return smb.StatusInvalidParameter
 	}
+	if !table.leasesAllow(request, lease) {
+		return smb.StatusSharingViolation
+	}
 	if lease.State == 0 {
 		return smb.StatusSuccess
 	}
@@ -29,8 +32,10 @@ func (table *Table) validateLease(request OpenRequest, reservation Reservation, 
 	if object, exists := table.leaseObjects[identity]; exists && object != request.Object {
 		return smb.StatusInvalidParameter
 	}
-	if current := table.lease(request.Object, identity); current != nil && current.Breaking && lease.State & ^current.BreakTo != 0 {
-		return smb.StatusInvalidParameter
+	if current := table.lease(request.Object, identity); current != nil {
+		if (current.Breaking && lease.State & ^current.BreakTo != 0) || (!current.Breaking && current.State & ^lease.State != 0) {
+			return smb.StatusInvalidParameter
+		}
 	}
 	for _, open := range table.opens {
 		if open.Object == request.Object && (open.ClientGUID != lease.ClientGUID || open.LeaseKey != lease.Key) && !leaseCompatible(lease.State, open.SharingIntent) {
@@ -43,6 +48,22 @@ func (table *Table) validateLease(request OpenRequest, reservation Reservation, 
 		}
 	}
 	return smb.StatusSuccess
+}
+
+func (table *Table) leasesAllow(request OpenRequest, joining Lease) bool {
+	record := table.objects[request.Object]
+	if record == nil {
+		return true
+	}
+	for _, held := range record.Leases {
+		if held.ClientGUID == joining.ClientGUID && held.Key == joining.Key && joining.State != 0 {
+			continue
+		}
+		if !leaseCompatible(held.State, request.SharingIntent) {
+			return false
+		}
+	}
+	return true
 }
 
 func leaseCompatible(state uint32, rights Rights) bool {

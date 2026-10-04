@@ -64,7 +64,7 @@ func (table *Table) Reserve(request OpenRequest) (Reservation, smb.Status) {
 	if table.deletePending(request.Object) {
 		return 0, smb.StatusDeletePending
 	}
-	if !table.sharingAllowed(request, 0) {
+	if !table.sharingAllowed(request, 0, 0) {
 		return 0, smb.StatusSharingViolation
 	}
 	if !availableID(table.nextReservation) {
@@ -91,17 +91,17 @@ func sharingCompatible(left, right OpenRequest) bool {
 	if left.Object.Stream == "" && left.SharingIntent&RightDelete != 0 && Rights(right.Sharing)&RightDelete == 0 {
 		return false
 	}
-	return !(right.Object.Stream == "" && right.SharingIntent&RightDelete != 0 && Rights(left.Sharing)&RightDelete == 0)
+	return right.Object.Stream != "" || right.SharingIntent&RightDelete == 0 || Rights(left.Sharing)&RightDelete != 0
 }
 
-func (table *Table) sharingAllowed(request OpenRequest, except uint64) bool {
+func (table *Table) sharingAllowed(request OpenRequest, except uint64, reservation Reservation) bool {
 	for id, open := range table.opens {
 		if id != except && !sharingCompatible(request, openRequest(open.Open)) {
 			return false
 		}
 	}
-	for _, reserved := range table.reservations {
-		if !sharingCompatible(request, reserved) {
+	for token, reserved := range table.reservations {
+		if token != reservation && !sharingCompatible(request, reserved) {
 			return false
 		}
 	}
@@ -203,6 +203,11 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 		if !validName(grant.DeleteName, request.Object) {
 			return smb.StatusInvalidParameter
 		}
+		deleting := request
+		deleting.SharingIntent |= RightDelete
+		if !table.sharingAllowed(deleting, 0, reservation) {
+			return smb.StatusSharingViolation
+		}
 	}
 	if status := table.validateLease(request, reservation, grant); status != smb.StatusSuccess {
 		return status
@@ -279,7 +284,7 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 		}
 		request := openRequest(open.Open)
 		request.SharingIntent |= RightDelete
-		if !table.sharingAllowed(request, id.Persistent) {
+		if !table.sharingAllowed(request, id.Persistent, 0) {
 			return smb.StatusSharingViolation
 		}
 		open.deleteName = name

@@ -305,21 +305,21 @@ type Break struct {
 //
 //	func (table *Table) ExpireBreaks() []CloseAction
 type Table struct {
-	mu              sync.Mutex
 	now             func() time.Time
 	opens           map[uint64]*openEntry
 	reservations    map[Reservation]OpenRequest
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	mu              sync.Mutex
 	nextReservation uint64
 	nextPersistent  uint64
 	nextVolatile    uint64
 }
 
 type openEntry struct {
-	Open
 	deleteName smb.Name
+	Open
 }
 
 type objectEntry struct {
