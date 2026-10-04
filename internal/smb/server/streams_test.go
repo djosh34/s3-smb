@@ -14,6 +14,7 @@ import (
 // These tests exercise named objects through protected raw SMB messages, not
 // adapter calls. The storage fixture uses SQLite and file-backed JuiceFS data.
 type streamClient struct {
+	server  *Server
 	client  *smbtest.Client
 	ctx     context.Context
 	session smbtest.Session
@@ -29,7 +30,7 @@ func newStreamClient(t *testing.T) *streamClient {
 		t.Fatal(err)
 	}
 	client, ctx, session := loginClient(t, server, smb.CipherAES128GCM, smb.SigningCMAC)
-	return &streamClient{client: client, ctx: ctx, session: session, next: session.NextMessageID}
+	return &streamClient{server: server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
 }
 
 func (c *streamClient) call(t *testing.T, command wire.Command, body []byte) wire.Message {
@@ -219,7 +220,14 @@ func testStreamDisposition(t *testing.T, c *streamClient, stream string, disposi
 			t.Fatalf("CLOSE EOF: %d, want %d", closed.Size, wantSize)
 		}
 	}
-	if presence != "no-base" {
+	if status == smb.StatusObjectNameCollision {
+		id := c.create(t, streamRequest(name, fileOpen), smb.StatusSuccess).ID
+		c.read(t, id, 0, []byte("old stream"))
+		c.close(t, id)
+	}
+	if presence == "no-base" {
+		c.create(t, streamRequest(base, fileOpen), smb.StatusObjectNameNotFound)
+	} else {
 		c.read(t, baseID, 0, baseData)
 		c.close(t, baseID)
 	}
@@ -266,6 +274,7 @@ func TestStreamOffsetsResizeAndLimit(t *testing.T) {
 			c.read(t, id, 3, []byte{0, 0, 0, 0, 0, 'Z'})
 			c.write(t, id, []byte("!"), smb.MaxStreamSize-1, smb.StatusSuccess)
 			c.write(t, id, []byte("!"), smb.MaxStreamSize, smb.StatusFileTooLarge)
+			c.write(t, id, []byte("??"), smb.MaxStreamSize-1, smb.StatusFileTooLarge)
 			c.resize(t, id, smb.MaxStreamSize+1, smb.StatusFileTooLarge)
 			c.read(t, id, smb.MaxStreamSize-2, []byte{0, '!'})
 			c.resize(t, id, smb.MaxStreamSize, smb.StatusSuccess)

@@ -145,11 +145,11 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	if err != nil {
 		return reply{}, err
 	}
-	if status = streamOpenStatus(request, create, resolved); status != smb.StatusSuccess {
-		return reply{status: status}, nil
-	}
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
+	if status = streamOpenStatus(request, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	if !resolved.Exists {
