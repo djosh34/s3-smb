@@ -18,6 +18,7 @@ cd /src
 go build -buildvcs=false -o /tmp/s3-smb .
 export S3_SMB_E2E_BINARY=/tmp/s3-smb
 go test -race -shuffle=on -count=1 -timeout=30m ./...
+go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...
 
 echo '== Samba checks against smbnext =='
 go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .

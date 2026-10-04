@@ -216,7 +216,7 @@ func TestSMBNextShutdownClosesOpenBeforeJuiceFS(t *testing.T) {
 	if n, err := adapter.WriteAt(t.Context(), handle, data, 0); err != nil || n != len(data) {
 		t.Fatal(n, err)
 	}
-	// File handlers belong to M3. Put an open directly into the M0 table.
+	// Replace the first server only to supply a table with an open before M3.
 	r.server, err = server.New(server.Options{
 		Storage: closeOrderStorage{adapter, &closedOpen}, State: table, Logger: slog.Default(), Now: time.Now,
 		Account: auth.Account{User: c.Username, Password: c.Password}, ShareName: c.Share,
