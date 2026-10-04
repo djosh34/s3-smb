@@ -10,12 +10,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-const (
-	fileReadData   uint32 = 0x00000001
-	fileWriteData  uint32 = 0x00000002
-	fileAppendData uint32 = 0x00000004
-	writeThrough   uint32 = 0x00000001
-)
+const writeThrough uint32 = 0x00000001
 
 func handleRead(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	read, err := wire.DecodeReadRequest(message)
