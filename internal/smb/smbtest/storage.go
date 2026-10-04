@@ -13,7 +13,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
-// NewStorage builds a real JuiceFS adapter with SQLite metadata and a file
+// NewStorage builds a fresh real JuiceFS adapter with SQLite metadata and a file
 // object store in t.TempDir. Cleanup shuts down the adapter, filesystem and
 // metadata in that order. Close any server fixtures before this cleanup runs.
 // Setup and cleanup errors are reported through t.

@@ -86,6 +86,8 @@ The encryption setting can permit signed plaintext, but never AES-CCM or another
 ## Async I/O and credits
 
 The server sends an interim STATUS_PENDING when READ, WRITE or FLUSH waits on S3.
+CREATE uses the same path when it waits for a lease acknowledgment or holder CLOSE,
+so those requests can progress on the same connection.
 The server allows a short bounded wait for local work before choosing that reply.
 A request that finishes locally gets one synchronous reply.
 Each pending request owns its async ID and completion state.

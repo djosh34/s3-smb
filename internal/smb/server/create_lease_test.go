@@ -33,10 +33,15 @@ func newCreateLeaseClients(t *testing.T) (*Server, *createLeaseClient, *createLe
 
 func loginCreateLeaseClient(t *testing.T, server *Server, guid byte) *createLeaseClient {
 	t.Helper()
+	return loginCreateLeaseClientWithCipher(t, server, guid, smb.CipherAES128GCM)
+}
+
+func loginCreateLeaseClientWithCipher(t *testing.T, server *Server, guid byte, cipher uint16) *createLeaseClient {
+	t.Helper()
 	client, ctx := pipeClient(t, server)
 	session, err := client.Login(ctx, smbtest.LoginOptions{
 		Share: server.options.ShareName, Account: server.options.Account,
-		ClientGUID: [16]byte{guid}, Cipher: smb.CipherAES128GCM, Signing: smb.SigningCMAC,
+		ClientGUID: [16]byte{guid}, Cipher: cipher, Signing: smb.SigningCMAC,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,6 +60,19 @@ func (client *createLeaseClient) send(t *testing.T, request wire.CreateRequest, 
 	header := client.header(wire.Create)
 	if err := client.client.SendCreate(client.ctx, header, smbtest.CreateOptions{Request: request, Lease: lease}); err != nil {
 		t.Fatal(err)
+	}
+	return header.MessageID
+}
+
+func (client *createLeaseClient) sendRawCreate(t *testing.T, request wire.CreateRequest) uint64 {
+	t.Helper()
+	header := client.header(wire.Create)
+	body, err := wire.EncodeCreateRequest(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sendErr := client.client.Send(client.ctx, []wire.Message{{Header: header, Body: body}}); sendErr != nil {
+		t.Fatal(sendErr)
 	}
 	return header.MessageID
 }
@@ -165,7 +183,11 @@ func TestCreateLeaseV2SupportedStates(t *testing.T) {
 			want &^= smb.LeaseWrite
 		}
 		assertLeaseGrant(t, result, want)
-		if want != 0 && (result.Lease.Epoch != 8 || result.Lease.ParentKey != [16]byte{8} || result.Lease.Flags != leaseParentKeySet) {
+		epoch := uint16(7)
+		if want != 0 {
+			epoch++
+		}
+		if result.Lease.Epoch != epoch || result.Lease.ParentKey != [16]byte{8} || result.Lease.Flags != leaseParentKeySet {
 			t.Fatalf("V2 fields = %+v", result.Lease)
 		}
 		first.close(t, result.Reply.ID)
@@ -422,8 +444,10 @@ func TestCreateRefusesClassicOplocksAndNonFileLeases(t *testing.T) {
 	}
 	v1 := leaseCreateRequest("v1")
 	v1.OplockLevel, v1.Contexts = leaseOplockLevel, []wire.CreateContext{lease}
-	message := fileCreate(first.ctx, t, first.client, first.session, first.next, v1)
-	first.next++
+	message, err := first.receive(first.sendRawCreate(t, v1))
+	if err != nil {
+		t.Fatal(err)
+	}
 	decoded, err := smbtest.DecodeCreateReply(message)
 	if err != nil || decoded.Reply.OplockLevel != 0 || decoded.Lease != nil {
 		t.Fatalf("V1 lease = %+v, error %v", decoded, err)
@@ -438,8 +462,10 @@ func TestCreateLeaseContextValidation(t *testing.T) {
 	} {
 		request := leaseCreateRequest(fmt.Sprintf("invalid-%d", i))
 		request.OplockLevel, request.Contexts = leaseOplockLevel, contexts
-		message := fileCreate(first.ctx, t, first.client, first.session, first.next, request)
-		first.next++
+		message, receiveErr := first.receive(first.sendRawCreate(t, request))
+		if receiveErr != nil {
+			t.Fatal(receiveErr)
+		}
 		if message.Header.Status != smb.StatusInvalidParameter {
 			t.Fatalf("malformed lease = %#x", message.Header.Status)
 		}

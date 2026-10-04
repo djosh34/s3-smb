@@ -23,16 +23,14 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
-	// The connection corpus changes no files, so each fuzz worker can reuse
-	// storage. Every input still gets its own server and open table.
-	storage := smbtest.NewStorage(f)
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		// Bound total work as well as individual frame allocations.
 		if len(stream) > 64<<10 {
 			t.Skip("stream exceeds corpus limit")
 		}
 		options := testOptions(t)
-		options.Storage = storage
+		// CREATE and I/O mutations must not affect the next input.
+		options.Storage = smbtest.NewStorage(t)
 		server, err := New(options)
 		if err != nil {
 			t.Fatal(err)
