@@ -26,40 +26,15 @@ func lockServer(t *testing.T) *Server {
 
 func insertLockOpen(t *testing.T, server *Server, session smbtest.Session, path string) state.Open {
 	t.Helper()
-	storage := server.options.Storage
-	resolved, err := storage.Lookup(t.Context(), path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !resolved.Exists {
-		resolved, err = storage.Create(t.Context(), resolved.Name, smb.KindFile)
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	reservation, status := server.options.State.Reserve(state.OpenRequest{
-		Object: resolved.Object, Binding: state.Binding{SessionID: session.SessionID, TreeID: session.TreeID},
-		User: server.options.Account.User, Share: server.options.ShareName, GrantedAccess: 3, Sharing: 7,
-	})
+	return insertIOOpen(t, server, session, path, fileReadData|fileWriteData)
+}
+
+func createLockOpen(ctx context.Context, t *testing.T, server *Server, client *smbtest.Client, session smbtest.Session, id uint64, create wire.CreateRequest) state.Open {
+	t.Helper()
+	response := createdFile(t, fileCreate(ctx, t, client, session, id, create))
+	open, status := server.options.State.Find(state.FileID(response.ID), state.Binding{SessionID: session.SessionID, TreeID: session.TreeID})
 	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	handle, err := storage.Open(t.Context(), resolved.Object, smb.AccessRead|smb.AccessWrite)
-	if err != nil {
-		if abortStatus := server.options.State.Abort(reservation); abortStatus != smb.StatusSuccess {
-			t.Error(abortStatus)
-		}
-		t.Fatal(err)
-	}
-	open, status := server.options.State.Commit(reservation, state.Grant{Handle: handle})
-	if status != smb.StatusSuccess {
-		if err := storage.Close(context.WithoutCancel(t.Context()), handle); err != nil {
-			t.Error(err)
-		}
-		if abortStatus := server.options.State.Abort(reservation); abortStatus != smb.StatusSuccess {
-			t.Error(abortStatus)
-		}
-		t.Fatal(status)
+		t.Fatalf("CREATE open lookup: %#x", status)
 	}
 	return open
 }
@@ -99,6 +74,43 @@ func lockExchange(ctx context.Context, t *testing.T, client *smbtest.Client, wan
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+func TestLockRejectsDirectoryWithoutMutation(t *testing.T) {
+	server := lockServer(t)
+	client, ctx, session := loginClient(t, server, smb.CipherAES128GCM, smb.SigningGMAC)
+	id := session.NextMessageID
+	create := wire.CreateRequest{Name: "lock-directory", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileCreateDisposition, Options: fileDirectoryFile}
+	owner := createLockOpen(ctx, t, server, client, session, id, create)
+	id++
+	create.Disposition = fileOpen
+	peer := createLockOpen(ctx, t, server, client, session, id, create)
+	id++
+	// Seed a range below the handler to prove rejected unlocks preserve it.
+	if status := server.options.State.Lock(owner.ID, owner.Binding, []state.Range{{Length: 8, Exclusive: true}}, false); status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	for _, flags := range []uint32{lockShared, lockExclusive, lockShared | lockFailImmediately, lockExclusive | lockFailImmediately, lockUnlock} {
+		elements := []wire.LockElement{{Offset: 16, Length: 8, Flags: flags}, {Offset: 32, Length: 8, Flags: flags}}
+		if flags == lockUnlock {
+			elements = []wire.LockElement{{Length: 8, Flags: flags}}
+		}
+		lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidParameter}, lockMessage(t, session, id, owner.ID, elements...))
+		id++
+		if status := server.options.State.CheckIO(peer.ID, peer.Binding, 0, 8, true); status != smb.StatusFileLockConflict {
+			t.Fatalf("rejected directory vector changed existing range: %#x", status)
+		}
+		for _, offset := range []uint64{16, 32} {
+			if status := server.options.State.CheckIO(peer.ID, peer.Binding, offset, 8, true); status != smb.StatusSuccess {
+				t.Fatalf("rejected directory vector added range at %d: %#x", offset, status)
+			}
+		}
+	}
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, sessionEcho(t, session, id))
+	id++
+	if response := fileClose(ctx, t, client, session, id, wire.FileID(owner.ID), 0); response.Header.Status != smb.StatusSuccess {
+		t.Fatalf("directory CLOSE: %#x", response.Header.Status)
 	}
 }
 

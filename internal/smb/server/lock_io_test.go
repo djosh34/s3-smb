@@ -63,8 +63,12 @@ func TestLockStreamAndBaseIOStaySeparate(t *testing.T) {
 			peers := make([]state.Open, 0, len(paths))
 			ownerID, peerID := ownerSession.NextMessageID, peerSession.NextMessageID
 			for _, path := range paths {
-				owner := insertLockOpen(t, server, ownerSession, path)
-				peer := insertLockOpen(t, server, peerSession, path)
+				create := wire.CreateRequest{Name: path, DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileOpenIf}
+				owner := createLockOpen(ownerCtx, t, server, ownerClient, ownerSession, ownerID, create)
+				ownerID++
+				create.Disposition = fileOpen
+				peer := createLockOpen(peerCtx, t, server, peerClient, peerSession, peerID, create)
+				peerID++
 				owners, peers = append(owners, owner), append(peers, peer)
 				lockIO(ownerCtx, t, ownerClient, ownerSession, ownerID, owner, true, "original", smb.StatusSuccess)
 				ownerID++
