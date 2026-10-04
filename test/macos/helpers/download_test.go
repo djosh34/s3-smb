@@ -48,6 +48,7 @@ func TestRetryDownloadPermanentFailure(t *testing.T) {
 		"", "fatal: couldn't find remote ref bad-revision", "fatal: Authentication failed",
 		"go: invalid go.mod", "undefined: missingSymbol", "go: checksum mismatch",
 		"x509: certificate signed by unknown authority", "404 Not Found",
+		"error: RPC failed; curl 60 SSL certificate problem: unable to get local issuer certificate",
 	} {
 		t.Run(output, func(t *testing.T) {
 			failure := errors.New("permanent failure")
@@ -102,6 +103,14 @@ func TestTransientNetworkFailure(t *testing.T) {
 		"read: connection reset by peer", "connect: connection refused", "network is unreachable",
 		"dial tcp: i/o timeout", "net/http: TLS handshake timeout", "Connection timed out",
 		"Operation timed out", "unexpected EOF", "500 Internal Server Error", "502 Bad Gateway",
+		"Failed to connect to github.com port 443 after 21004 ms: Couldn't connect to server",
+		"Couldn't connect to server", "Could not connect to server",
+		"error: RPC failed; curl 18 transfer closed with outstanding read data remaining",
+		"error: RPC failed; curl 28 Operation timed out",
+		"error: RPC failed; curl 52 Empty reply from server",
+		"error: RPC failed; curl 55 Failed sending data to the peer",
+		"error: RPC failed; curl 56 Failure when receiving data from the peer",
+		"fatal: early EOF", "fetch-pack: unexpected disconnect while reading sideband packet",
 		"503 Service Unavailable", "504 Gateway Timeout",
 		"fatal: The requested URL returned error: 500", "fatal: The requested URL returned error: 502",
 		"fatal: The requested URL returned error: 503", "fatal: The requested URL returned error: 504",
