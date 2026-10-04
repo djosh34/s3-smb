@@ -3,8 +3,8 @@ package e2e
 
 import (
 	"math/rand/v2"
-	"net/http"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -55,7 +55,7 @@ func TestChaosKillRestart(t *testing.T) {
 		}
 		schedule := chaos.Schedule{{
 			Net: &netfault.Fault{Delay: netDelay},
-			S3:  &s3fault.Fault{Method: http.MethodPut, PathContains: "/chunks/", HeaderDelay: s3Delay},
+			S3:  &s3fault.Fault{PathContains: "/chunks/", HeaderDelay: s3Delay},
 		}}
 		t.Logf("cycle %d: kill %s after held PUT; faults %s", cycle+1, killDelay, schedule.String())
 		if err := schedule.Run(t.Context(), network, s3Proxy); err != nil {
@@ -67,13 +67,13 @@ func TestChaosKillRestart(t *testing.T) {
 		// still apply their faults while the new process starts and is checked.
 		d = chaosKillStart(t, f)
 		chaosKillCheckFlushed(t, f, ledger)
+		// A fresh acknowledged checkpoint proves writes work under faults
+		// after restart and gives the next crash a known flushed value.
+		chaosKillCheckpoint(t, f, ledger, names, data)
 		clear := chaos.Schedule{{Net: &netfault.Fault{}, S3: &s3fault.Fault{}}}
 		if err := clear.Run(t.Context(), network, s3Proxy); err != nil {
 			t.Fatal(err)
 		}
-		// A fresh acknowledged checkpoint proves writes work after restart
-		// and gives the next crash a known last-flushed value for every byte.
-		chaosKillCheckpoint(t, f, ledger, names, data)
 	}
 	d.stop()
 }
@@ -199,5 +199,17 @@ func chaosKillCheckFlushed(t *testing.T, f *fixture, ledger *chaos.Ledger) {
 	defer closeShare()
 	if err := ledger.CheckFlushed(share.ReadFile); err != nil {
 		t.Fatalf("rule 2 after restart: %v", err)
+	}
+	entries, err := share.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		names = append(names, entry.Name())
+	}
+	slices.Sort(names)
+	if want := ledger.Names(); !slices.Equal(names, want) {
+		t.Fatalf("directory after restart: got %q, want %q", names, want)
 	}
 }
