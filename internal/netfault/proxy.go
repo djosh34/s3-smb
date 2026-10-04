@@ -63,7 +63,8 @@ type link struct {
 }
 
 // New starts a proxy for an explicit TCP host:port. The listener binds only to
-// 127.0.0.1. The upstream is dialed separately for each accepted connection.
+// 127.0.0.1. It rejects an upstream equal to its own address. The upstream is
+// dialed separately for each accepted connection.
 func New(ctx context.Context, upstream string) (*Proxy, error) {
 	host, port, err := net.SplitHostPort(upstream)
 	if err != nil {
@@ -80,6 +81,15 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	listener, err := config.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for network fault proxy: %w", err)
+	}
+	return start(ctx, upstream, listener)
+}
+
+// start owns the listener, including on failure. Keeping listener creation
+// separate lets tests force a collision with the upstream address.
+func start(ctx context.Context, upstream string, listener net.Listener) (*Proxy, error) {
+	if upstream == listener.Addr().String() {
+		return nil, errors.Join(errors.New("network fault proxy cannot target its own address"), listener.Close())
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	p := &Proxy{
@@ -118,7 +128,7 @@ func (p *Proxy) stop() {
 	p.cancel()
 	p.recordClose(p.listener.Close())
 	for connection := range p.links {
-		p.closeLink(connection)
+		p.recordClose(p.closeLink(connection))
 	}
 }
 
@@ -129,20 +139,31 @@ func (p *Proxy) recordClose(err error) {
 }
 
 // closeLink runs under mu, including while an upstream dial is pending.
-func (p *Proxy) closeLink(connection *link) {
+func (p *Proxy) closeLink(connection *link) error {
 	if connection.closed {
-		return
+		return nil
 	}
 	connection.closed = true
 	connection.cancel()
-	p.recordClose(connection.client.Close())
+	err := closeConn(connection.client)
 	if connection.upstream != nil {
-		p.recordClose(connection.upstream.Close())
+		err = errors.Join(err, closeConn(connection.upstream))
 	}
+	return err
+}
+
+func closeConn(conn net.Conn) error {
+	err := conn.Close()
+	if errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 // SetFault replaces the fault for current and future connections. Invalid
-// values leave it unchanged. Manual commands do not cancel an active schedule.
+// values leave it unchanged. Cleanup errors concern only connections closed by
+// this call; the fault still takes effect. Close reports all collected errors.
+// Manual commands do not cancel an active schedule.
 func (p *Proxy) SetFault(fault Fault) error {
 	if fault.Delay < 0 {
 		return errors.New("negative network fault delay")
@@ -153,7 +174,8 @@ func (p *Proxy) SetFault(fault Fault) error {
 }
 
 // Cut closes all current connections, including pending upstream dials. Later
-// connections remain allowed unless the current fault has Drop set.
+// connections remain allowed unless the current fault has Drop set. It reports
+// only this cut's cleanup errors; Close reports all collected errors.
 func (p *Proxy) Cut() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -167,12 +189,14 @@ func (p *Proxy) apply(fault Fault, cut bool) error {
 	p.fault = fault
 	close(p.changed)
 	p.changed = make(chan struct{})
+	var err error
 	if cut || fault.Drop {
 		for connection := range p.links {
-			p.closeLink(connection)
+			err = errors.Join(err, p.closeLink(connection))
 		}
 	}
-	return p.closeErr
+	p.recordClose(err)
+	return err
 }
 
 func (p *Proxy) accept() {
@@ -207,7 +231,7 @@ func (p *Proxy) forward(connection *link) {
 	defer p.workers.Done()
 	defer func() {
 		p.mu.Lock()
-		p.closeLink(connection)
+		p.recordClose(p.closeLink(connection))
 		delete(p.links, connection)
 		p.mu.Unlock()
 	}()
@@ -231,13 +255,11 @@ func (p *Proxy) forward(connection *link) {
 	if err := <-results; err != nil {
 		// A failed direction must unblock the other direction's read or write.
 		p.mu.Lock()
-		p.closeLink(connection)
+		p.recordClose(p.closeLink(connection))
 		p.mu.Unlock()
 	}
-	if err := <-results; err != nil {
-		// The deferred cleanup also handles failure in the second direction.
-		return
-	}
+	// The deferred cleanup handles completion or failure in the second direction.
+	<-results
 }
 
 func (p *Proxy) relay(ctx context.Context, src, dst net.Conn) error {

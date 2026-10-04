@@ -345,6 +345,26 @@ func testName(fault Fault, canceled bool) string {
 }
 
 func TestInvalidInputs(t *testing.T) {
+	t.Run("self target", func(t *testing.T) {
+		var config net.ListenConfig
+		listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Force the port collision at the constructor seam used by New.
+		proxy, startErr := start(t.Context(), listener.Addr().String(), listener)
+		if proxy != nil {
+			if closeErr := proxy.Close(); closeErr != nil {
+				t.Error(closeErr)
+			}
+		}
+		if startErr == nil {
+			t.Fatal("accepted the proxy's own address as its upstream")
+		}
+		if _, acceptErr := listener.Accept(); !errors.Is(acceptErr, net.ErrClosed) {
+			t.Fatalf("rejected constructor did not close listener: %v", acceptErr)
+		}
+	})
 	for _, upstream := range []string{"", "http://127.0.0.1:123", ":123", "localhost:0", "localhost:65536", "localhost:abc"} {
 		if proxy, err := New(t.Context(), upstream); err == nil {
 			if closeErr := proxy.Close(); closeErr != nil {
@@ -383,10 +403,26 @@ func TestUnavailablePeer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	address := listener.Addr().String()
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	proxy := newProxy(t.Context(), t, address)
+	// Keep the port reserved so the proxy cannot acquire it. This peer
+	// accepts a connection but provides no service and closes it at once.
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		client, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			if !errors.Is(acceptErr, net.ErrClosed) {
+				t.Error(acceptErr)
+			}
+			return
+		}
+		closeSocket(t, client)
+	}()
+	t.Cleanup(func() {
+		if closeErr := listener.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		<-finished
+	})
+	proxy := newProxy(t.Context(), t, listener.Addr().String())
 	requireDisconnected(t, dialProxy(t, proxy))
 }

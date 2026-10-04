@@ -81,15 +81,17 @@ func TestCutDuringNormalTraffic(t *testing.T) {
 func TestManualCommandKeepsSchedule(t *testing.T) {
 	peer := startEcho(t)
 	proxy := newProxy(t.Context(), t, peer.listener.Addr().String())
-	setFault(t, proxy, Fault{Drop: true})
-	// A manual cut takes effect now, but the scheduled restore still runs.
-	done, err := proxy.Schedule(t.Context(), []Step{{After: 100 * time.Millisecond}})
+	conn := dialProxy(t, proxy)
+	exchange(t, conn)
+	// SetFault must take effect during the schedule without canceling it.
+	// Leave enough time to observe both existing and new connections dropping.
+	done, err := proxy.Schedule(t.Context(), []Step{{After: time.Second}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := proxy.Cut(); err != nil {
-		t.Fatal(err)
-	}
+	setFault(t, proxy, Fault{Drop: true})
+	requireDisconnected(t, conn)
+	requireDisconnected(t, dialProxy(t, proxy))
 	awaitSchedule(t, done, nil)
 	exchange(t, dialProxy(t, proxy))
 }
