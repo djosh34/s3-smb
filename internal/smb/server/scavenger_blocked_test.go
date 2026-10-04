@@ -105,7 +105,11 @@ func blockExpiryCleanup(t *testing.T, server *Server, open state.Open, block str
 	var release func()
 	switch block {
 	case "parent":
-		release = lockParent(RequestContext{server: server}, 1)
+		unlock, err := lockParent(t.Context(), RequestContext{server: server}, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		release = unlock
 	case "close":
 		release = func() { close(storage.release) }
 	case "open use":
