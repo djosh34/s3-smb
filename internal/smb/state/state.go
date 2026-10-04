@@ -9,6 +9,7 @@
 package state
 
 import (
+	"sync"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -297,10 +298,48 @@ type Break struct {
 // The acknowledged state must be a subset of its current target. There is no
 // acknowledgment epoch on the wire; the reserved field is ignored by wire.
 //
-//	func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) smb.Status
+//	func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]CloseAction, smb.Status)
 //
 // ExpireBreaks applies the target when a break times out. Losing H closes detached
 // opens and removes durability from attached opens, which remain usable.
 //
 //	func (table *Table) ExpireBreaks() []CloseAction
-type Table struct{}
+type Table struct {
+	mu              sync.Mutex
+	now             func() time.Time
+	opens           map[uint64]*openEntry
+	reservations    map[Reservation]OpenRequest
+	objects         map[smb.ObjectKey]*objectEntry
+	creates         map[createIdentity]createEntry
+	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	nextReservation uint64
+	nextPersistent  uint64
+	nextVolatile    uint64
+}
+
+type openEntry struct {
+	Open
+	deleteName smb.Name
+}
+
+type objectEntry struct {
+	ObjectRecord
+	deleteCommitted bool
+}
+
+type createIdentity struct {
+	user   string
+	share  string
+	client GUID
+	create GUID
+}
+
+type createEntry struct {
+	reservation Reservation
+	persistent  uint64
+}
+
+type leaseIdentity struct {
+	client GUID
+	key    GUID
+}
