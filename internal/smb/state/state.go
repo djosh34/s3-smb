@@ -90,7 +90,8 @@ type DirectoryCursor struct {
 }
 
 // Range describes a non-blocking byte lock owned by one persistent FileId.
-// End is Offset+Length (exclusive), checked for overflow before reservation.
+// A nonempty range's last byte is Offset+Length-1, checked before reservation.
+// The last byte may be 2^64-1; a larger value returns INVALID_LOCK_RANGE.
 // Zero-length ranges follow MS-SMB2 zero-byte rules, not arithmetic overlap.
 // Unlock requires the exact owner, offset and length, not just overlap. Closing
 // an open releases every range it owns, including when durability expires.

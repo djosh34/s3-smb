@@ -8,7 +8,7 @@ import (
 )
 
 func validRange(offset, length uint64) bool {
-	return length <= math.MaxUint64-offset
+	return length == 0 || length-1 <= math.MaxUint64-offset
 }
 
 // overlaps follows MS-FSA 2.1.4.10, including its zero-byte rule. {0, 0}
@@ -18,7 +18,14 @@ func overlaps(left, right Range) bool {
 	if (left.Offset == 0 && left.Length == 0) || (right.Offset == 0 && right.Length == 0) {
 		return false
 	}
-	return left.Offset <= right.Offset+right.Length-1 && right.Offset <= left.Offset+left.Length-1
+	return left.Offset <= lastByte(right) && right.Offset <= lastByte(left)
+}
+
+func lastByte(lock Range) uint64 {
+	if lock.Length == 0 {
+		return lock.Offset - 1
+	}
+	return lock.Offset + (lock.Length - 1)
 }
 
 func lockConflict(request, held Range) bool {
@@ -49,7 +56,10 @@ func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool
 	record := table.objects[open.Object]
 	locks := slices.Clone(record.Locks)
 	for _, requested := range ranges {
-		if !validRange(requested.Offset, requested.Length) || (requested.Owner != 0 && requested.Owner != id.Persistent) {
+		if !validRange(requested.Offset, requested.Length) {
+			return smb.StatusInvalidLockRange
+		}
+		if requested.Owner != 0 && requested.Owner != id.Persistent {
 			return smb.StatusInvalidParameter
 		}
 		requested.Owner = id.Persistent

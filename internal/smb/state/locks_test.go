@@ -101,11 +101,30 @@ func TestRangeOverflowRollsBack(t *testing.T) {
 	table := newTable(t)
 	owner := commit(t, table, request(1), state.Grant{})
 	other := commit(t, table, request(1), state.Grant{})
-	statusIs(t, table.Lock(owner.ID, binding, []state.Range{{Offset: 10, Length: 10, Exclusive: true}, {Offset: math.MaxUint64, Length: 1}}, false), smb.StatusInvalidParameter)
+	statusIs(t, table.Lock(owner.ID, binding, []state.Range{{Offset: 10, Length: 10, Exclusive: true}, {Offset: math.MaxUint64, Length: 2}}, false), 0xc00001a1)
 	statusIs(t, table.CheckIO(other.ID, binding, 15, 1, true), smb.StatusSuccess)
-	statusIs(t, table.CheckIO(owner.ID, binding, math.MaxUint64, 1, false), smb.StatusInvalidParameter)
+	statusIs(t, table.CheckIO(owner.ID, binding, math.MaxUint64, 2, false), smb.StatusInvalidParameter)
 	statusIs(t, table.Lock(owner.ID, binding, []state.Range{{Offset: math.MaxUint64 - 1, Length: 1, Exclusive: true}}, false), smb.StatusSuccess)
 	statusIs(t, table.Lock(owner.ID, binding, nil, false), smb.StatusInvalidParameter)
+}
+
+func TestLockCanIncludeLastUint64Byte(t *testing.T) {
+	for _, held := range []state.Range{
+		{Offset: math.MaxUint64, Length: 1, Exclusive: true},
+		{Offset: 1, Length: math.MaxUint64, Exclusive: true},
+	} {
+		table := newTable(t)
+		owner := commit(t, table, request(1), state.Grant{})
+		other := commit(t, table, request(1), state.Grant{})
+		statusIs(t, table.Lock(owner.ID, binding, []state.Range{held}, false), smb.StatusSuccess)
+		statusIs(t, table.CheckIO(owner.ID, binding, math.MaxUint64, 1, true), smb.StatusSuccess)
+		statusIs(t, table.CheckIO(other.ID, binding, math.MaxUint64, 1, false), smb.StatusFileLockConflict)
+		statusIs(t, table.Lock(other.ID, binding, []state.Range{{Offset: math.MaxUint64, Length: 1}}, false), smb.StatusLockNotGranted)
+		statusIs(t, table.Lock(owner.ID, binding, []state.Range{held, {Offset: math.MaxUint64, Length: 2}}, true), 0xc00001a1)
+		statusIs(t, table.CheckIO(other.ID, binding, math.MaxUint64, 1, false), smb.StatusFileLockConflict)
+		statusIs(t, table.Lock(owner.ID, binding, []state.Range{held}, true), smb.StatusSuccess)
+		statusIs(t, table.CheckIO(other.ID, binding, math.MaxUint64, 1, false), smb.StatusSuccess)
+	}
 }
 
 func TestZeroByteLocks(t *testing.T) {
@@ -124,6 +143,8 @@ func TestZeroByteLocks(t *testing.T) {
 		{name: "empty held at start", held: state.Range{Offset: 10}, requested: state.Range{Offset: 10, Length: 10}, want: smb.StatusSuccess},
 		{name: "two empty locks", held: state.Range{Offset: 15}, requested: state.Range{Offset: 15}, want: smb.StatusSuccess},
 		{name: "empty at maximum", held: state.Range{Offset: math.MaxUint64 - 1, Length: 1}, requested: state.Range{Offset: math.MaxUint64}, want: smb.StatusSuccess},
+		{name: "empty inside maximum byte", held: state.Range{Offset: math.MaxUint64 - 1, Length: 2}, requested: state.Range{Offset: math.MaxUint64}, want: smb.StatusLockNotGranted},
+		{name: "empty at maximum start", held: state.Range{Offset: math.MaxUint64, Length: 1}, requested: state.Range{Offset: math.MaxUint64}, want: smb.StatusSuccess},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			table := newTable(t)
