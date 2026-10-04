@@ -212,8 +212,9 @@ server, including Time Machine and restore mounts. It cuts during advancing
 Copying samples after 128 MiB, with at least 512 MiB of the four-GiB change left,
 and requires changed S3 chunks before the cut. After five seconds it restores
 forwarding without starting another backup. The same blocking Time Machine
-command must finish, the client log must show a successful reconnect and the
-completed backup must restore the changed tree. The earlier backup is restored
+command must finish, the client log must show one backup start and a successful
+reconnect and the completed backup must restore the changed tree. A measured
+drop above 30 seconds fails rather than counting as a short-drop attempt. The earlier backup is restored
 and checked too.
 
 Only the exact macOS non-idempotent refusal retries the test, up to three

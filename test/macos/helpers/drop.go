@@ -94,10 +94,16 @@ func RunDropAttempts(ctx context.Context, attempt func(int) (DropAttempt, error)
 		if err != nil {
 			return report, err
 		}
+		if err := ctx.Err(); err != nil {
+			return report, err
+		}
+		if err := CheckShortDrop(result.CutAt, result.RestoredAt); err != nil {
+			return report, err
+		}
 		if result.Log.Refused {
 			continue
 		}
-		if !result.Completed || !result.Log.Reconnected || result.Log.BackupStarts > 1 {
+		if !result.Completed || !result.Log.Reconnected || result.Log.BackupStarts != 1 {
 			return report, errors.New("same backup did not complete after reconnect")
 		}
 		report.Status = "passed"
@@ -105,6 +111,16 @@ func RunDropAttempts(ctx context.Context, attempt func(int) (DropAttempt, error)
 	}
 	report.Status = "not tested"
 	return report, nil
+}
+
+// CheckShortDrop prevents a slow runner from counting a long outage as a
+// short reconnect test, including attempts where the client refused reconnect.
+func CheckShortDrop(cut, restored time.Time) error {
+	elapsed := restored.Sub(cut)
+	if cut.IsZero() || elapsed <= 0 || elapsed > 30*time.Second {
+		return errors.New("short drop was not within the 30-second reconnect window")
+	}
+	return nil
 }
 
 // CheckOutage requires a measured outage beyond the Mac reconnect window,

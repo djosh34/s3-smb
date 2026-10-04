@@ -39,7 +39,7 @@ func (h *harness) networkScenario(name string) result {
 			h.t.Log("not tested: macOS refused reconnect", number)
 			return attempt, nil
 		}
-		if attempt.Completed && attempt.Log.Reconnected && attempt.Log.BackupStarts <= 1 {
+		if attempt.Completed && attempt.Log.Reconnected && attempt.Log.BackupStarts == 1 {
 			h.mount()
 			latest := h.remoteBackup("same-backup", "")
 			if filepath.Base(latest) == outcome.Baseline {

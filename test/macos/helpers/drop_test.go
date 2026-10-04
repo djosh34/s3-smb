@@ -123,6 +123,7 @@ func TestRunDropAttempts(t *testing.T) {
 		{"no reconnect evidence", "failed", []DropAttempt{{Completed: true}}, true},
 		{"command failure", "failed", []DropAttempt{{Log: passed.Log}}, true},
 		{"new backup", "failed", []DropAttempt{{Completed: true, Log: DropLog{Reconnected: true, BackupStarts: 2}}}, true},
+		{"missing start evidence", "failed", []DropAttempt{{Completed: true, Log: DropLog{Reconnected: true}}}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			calls := 0
@@ -131,7 +132,10 @@ func TestRunDropAttempts(t *testing.T) {
 				if number != calls || calls > len(test.attempts) {
 					t.Fatal("wrong retry count", number, calls)
 				}
-				return test.attempts[calls-1], nil
+				attempt := test.attempts[calls-1]
+				attempt.CutAt = time.Unix(100, 0)
+				attempt.RestoredAt = attempt.CutAt.Add(5 * time.Second)
+				return attempt, nil
 			})
 			if report.Status != test.status || (err != nil) != test.wantErr || calls != len(test.attempts) || len(report.Attempts) != calls {
 				t.Fatal(report, err, calls)
@@ -148,6 +152,25 @@ func TestRunDropAttempts(t *testing.T) {
 	report, err = RunDropAttempts(ctx, func(int) (DropAttempt, error) { calls++; cancel(); return refused, nil })
 	if !errors.Is(err, context.Canceled) || calls != 1 || report.Status != "failed" {
 		t.Fatal(report, err, calls)
+	}
+}
+
+func TestCheckShortDrop(t *testing.T) {
+	cut := time.Unix(100, 0)
+	for _, duration := range []time.Duration{-time.Second, 0, time.Second, 5 * time.Second, 30 * time.Second, 30*time.Second + time.Nanosecond, 45 * time.Second} {
+		wantErr := duration <= 0 || duration > 30*time.Second
+		if err := CheckShortDrop(cut, cut.Add(duration)); (err != nil) != wantErr {
+			t.Fatal(duration, err)
+		}
+	}
+	if err := CheckShortDrop(time.Time{}, cut); err == nil {
+		t.Fatal("missing cut time accepted")
+	}
+	report, err := RunDropAttempts(t.Context(), func(int) (DropAttempt, error) {
+		return DropAttempt{CutAt: cut, RestoredAt: cut.Add(45 * time.Second), Log: DropLog{Refused: true}}, nil
+	})
+	if err == nil || report.Status != "failed" || len(report.Attempts) != 1 {
+		t.Fatal("long outage counted as refusal", report, err)
 	}
 }
 
