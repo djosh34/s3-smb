@@ -64,6 +64,7 @@ type Server struct {
 	shutdownErr   error
 	handlers      map[wire.Command]handler
 	connections   map[*connection]struct{}
+	sessions      map[uint64]*connection
 	listeners     map[*ownedListener]struct{}
 	shutdownDone  chan struct{}
 	options       Options
