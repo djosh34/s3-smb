@@ -56,13 +56,11 @@ func TestScheduledFaults(t *testing.T) {
 			proxy := newProxy(t.Context(), t, peer.listener.Addr().String())
 			conn := dialProxy(t, proxy)
 			exchange(t, conn)
-			const restoreAfter = 200 * time.Millisecond
-			start := time.Now()
-			done, err := proxy.Schedule(t.Context(), []Step{{Fault: fault}, {After: restoreAfter}})
+			done, err := proxy.Schedule(t.Context(), []Step{{Fault: fault}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			awaitFault(t, proxy, fault)
+			awaitSchedule(t, done, nil)
 			payload := []byte("scheduled fault preserves traffic")
 			if fault.Drop {
 				requireDisconnected(t, conn)
@@ -70,6 +68,16 @@ func TestScheduledFaults(t *testing.T) {
 			} else {
 				writeBytes(t, conn, payload)
 				requireBlocked(t, conn)
+			}
+			// Arm restoration only after observing the fault, so a slow test
+			// runner cannot miss a short fault window.
+			const restoreAfter = 50 * time.Millisecond
+			start := time.Now()
+			done, err = proxy.Schedule(t.Context(), []Step{{After: restoreAfter}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !fault.Drop {
 				readBytes(t, conn, payload)
 			}
 			awaitSchedule(t, done, nil)

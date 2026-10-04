@@ -21,6 +21,7 @@ type echoPeer struct {
 	clients  map[net.Conn]struct{}
 	mu       sync.Mutex
 	workers  sync.WaitGroup
+	accepted int
 	closed   bool
 }
 
@@ -50,6 +51,7 @@ func startEcho(t *testing.T) *echoPeer {
 				continue
 			}
 			peer.clients[client] = struct{}{}
+			peer.accepted++
 			peer.workers.Add(1)
 			peer.mu.Unlock()
 			go func() {
@@ -278,9 +280,9 @@ func TestDropAndRestore(t *testing.T) {
 		requireDisconnected(t, dialProxy(t, proxy))
 	}
 	peer.mu.Lock()
-	count := len(peer.clients)
+	count := peer.accepted
 	peer.mu.Unlock()
-	if count > 1 {
+	if count != 1 {
 		t.Fatalf("drop dialed additional peer connections: %d", count)
 	}
 	setFault(t, proxy, Fault{})
