@@ -24,31 +24,31 @@ type reply struct {
 type handler func(context.Context, RequestContext, wire.Message) (reply, error)
 
 type connection struct {
-	conn             net.Conn
-	closeErr         error
-	ctx              context.Context
-	preauth          *crypt.Preauth
-	sender           *sender
-	server           *Server
-	cancel           context.CancelFunc
-	pending          map[uint64]*pendingRequest
-	sessions         map[uint64]*sessionEntry
-	encryptedReplies map[uint64]*sessionEntry
-	credits          credits
-	sessionMu        sync.RWMutex
-	pendingMu        sync.Mutex
-	workers          sync.WaitGroup
-	closeOnce        sync.Once
-	nextAsyncID      uint64
-	cipher           uint16
-	signing          uint16
-	clientGUID       [16]byte
-	negotiated       bool
-	opened           bool
+	conn            net.Conn
+	closeErr        error
+	ctx             context.Context
+	preauth         *crypt.Preauth
+	sender          *sender
+	server          *Server
+	cancel          context.CancelFunc
+	pending         map[uint64]*pendingRequest
+	sessions        map[uint64]*sessionEntry
+	replyProtection map[uint64]savedProtection
+	credits         credits
+	sessionMu       sync.RWMutex
+	pendingMu       sync.Mutex
+	workers         sync.WaitGroup
+	closeOnce       sync.Once
+	nextAsyncID     uint64
+	cipher          uint16
+	signing         uint16
+	clientGUID      [16]byte
+	negotiated      bool
+	opened          bool
 }
 
 func newConnection(ctx context.Context, cancel context.CancelFunc, server *Server, conn net.Conn) *connection {
-	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), sessions: make(map[uint64]*sessionEntry), encryptedReplies: make(map[uint64]*sessionEntry), nextAsyncID: 1}
+	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), sessions: make(map[uint64]*sessionEntry), replyProtection: make(map[uint64]savedProtection), nextAsyncID: 1}
 }
 
 func (connection *connection) close() error {
@@ -123,14 +123,15 @@ func (connection *connection) receive(ctx context.Context) error {
 		}
 		connection.opened = true
 		messages, encrypted, err := connection.decodePayload(payload)
-		if err != nil {
+		if err != nil && !errors.Is(err, errAccessDenied) {
 			return err
 		}
+		denied := errors.Is(err, errAccessDenied)
 		if err := connection.checkNegotiationState(messages); err != nil {
 			return err
 		}
-		connection.rememberEncryption(messages, encrypted)
-		if err := connection.process(ctx, messages); err != nil {
+		connection.rememberProtection(messages, encrypted)
+		if err := connection.process(ctx, messages, denied); err != nil {
 			return err
 		}
 	}

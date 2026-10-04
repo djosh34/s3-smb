@@ -84,7 +84,14 @@ func TestSendRawBypassesLoginProtection(t *testing.T) {
 		t.Fatal(err)
 	}
 	sendPayload(ctx, t, client, payload)
-	if _, err := client.ReceiveRaw(ctx); err == nil {
+	response, err := client.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Messages[0].Header.Status != smb.StatusAccessDenied {
 		t.Fatal("raw plaintext was encrypted by the client or accepted by the server")
+	}
+	if response := exchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID+1))[0]; response.Header.Status != smb.StatusSuccess {
+		t.Fatal("raw refusal closed the connection")
 	}
 }
