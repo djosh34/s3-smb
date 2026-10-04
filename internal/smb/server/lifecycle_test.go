@@ -19,7 +19,6 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 		name       string
 	}{
 		{name: "storage", invalidate: func(o *Options) { o.Storage = nil }},
-		{name: "typed nil storage", invalidate: func(o *Options) { o.Storage = (*unusedStorage)(nil) }},
 		{name: "state", invalidate: func(o *Options) { o.State = nil }},
 		{name: "logger", invalidate: func(o *Options) { o.Logger = nil }},
 		{name: "clock", invalidate: func(o *Options) { o.Now = nil }},

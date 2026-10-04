@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"reflect"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -18,10 +17,6 @@ import (
 func New(options Options) (*Server, error) {
 	if options.Storage == nil || options.State == nil || options.Logger == nil || options.Now == nil {
 		return nil, errors.New("server requires storage, state, logger and clock")
-	}
-	storage := reflect.ValueOf(options.Storage)
-	if storage.Kind() == reflect.Pointer && storage.IsNil() {
-		return nil, errors.New("storage is a nil pointer")
 	}
 	if options.Encryption != RequireEncryption && options.Encryption != AllowPlaintext {
 		return nil, errors.New("invalid encryption policy")

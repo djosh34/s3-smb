@@ -65,7 +65,7 @@ func (connection *connection) serve(ctx context.Context) error {
 	err := connection.receive(ctx)
 	ctxErr := ctx.Err()
 	if err != nil {
-		connection.server.options.Logger.Info("connection refused", "reason", err)
+		connection.server.options.Logger.Info("connection closed", "reason", err)
 	}
 	closeErr := connection.close()
 	<-connection.sender.done

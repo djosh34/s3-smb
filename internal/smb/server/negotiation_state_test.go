@@ -75,6 +75,21 @@ func TestNegotiationStateDisconnectsWithoutReply(t *testing.T) {
 	}
 }
 
+func TestWildcardConsumesMessageIDZero(t *testing.T) {
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ctx := pipeClient(t, server)
+	sendOpeningWildcard(ctx, t, client)
+	if err := client.Send(ctx, []wire.Message{negotiateMessage(t, 1)}); err != nil {
+		t.Fatal(err)
+	}
+	if response, err := client.Receive(ctx); err == nil {
+		t.Fatalf("wildcard left MessageId 0 available: %+v", response.Messages)
+	}
+}
+
 func TestSMB1WithoutWildcardOfferDisconnects(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {

@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math"
 	"time"
 
@@ -33,7 +34,11 @@ func asyncEligible(command wire.Command) bool {
 func (connection *connection) execute(ctx context.Context, message wire.Message) reply {
 	result, err := connection.dispatch(ctx, message)
 	if err != nil {
-		connection.server.options.Logger.Error("request failed", "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
+		level, text := slog.LevelError, "request failed"
+		if errors.Is(err, context.Canceled) {
+			level, text = slog.LevelDebug, "request canceled"
+		}
+		connection.server.options.Logger.Log(ctx, level, text, "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
 		return reply{status: smb.StatusFromError(err)}
 	}
 	return result
