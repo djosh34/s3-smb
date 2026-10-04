@@ -148,7 +148,8 @@ prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
 GitHub's `check` job calls `scripts/check.sh` on every pull request and on
-`main`. Dispatch the workflow with `gate=true` for a gate run. The job name
+`main`. It also runs when a merge queue group requests checks.
+Dispatch the workflow with `gate=true` for a gate run. The job name
 `check` is fixed because branch protection requires it. Failed runs upload
 daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
 
