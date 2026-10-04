@@ -71,7 +71,7 @@ func TestRequestLogLevelsDistinguishCancellation(t *testing.T) {
 			server, release := controlledAsync(t, wire.Read, reply{}, test.err)
 			logs := &recordedHandler{}
 			server.options.Logger = slog.New(logs)
-			client, ctx := pipeClient(t, server)
+			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 1))
 			exchange(ctx, t, client, asyncMessage(t, wire.Read, 1))
 			close(release)

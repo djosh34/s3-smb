@@ -15,35 +15,40 @@ import (
 
 // reply is independent of header identity and credit allocation.
 type reply struct {
-	body   []byte
-	status smb.Status
+	body      []byte
+	sessionID uint64
+	treeID    uint32
+	status    smb.Status
 }
 
-type handler func(context.Context, wire.Message) (reply, error)
+type handler func(context.Context, RequestContext, wire.Message) (reply, error)
 
 type connection struct {
-	conn        net.Conn
-	closeErr    error
-	ctx         context.Context
-	preauth     *crypt.Preauth
-	sender      *sender
-	server      *Server
-	cancel      context.CancelFunc
-	pending     map[uint64]*pendingRequest
-	credits     credits
-	pendingMu   sync.Mutex
-	workers     sync.WaitGroup
-	closeOnce   sync.Once
-	nextAsyncID uint64
-	cipher      uint16
-	signing     uint16
-	clientGUID  [16]byte
-	negotiated  bool
-	opened      bool
+	conn             net.Conn
+	closeErr         error
+	ctx              context.Context
+	preauth          *crypt.Preauth
+	sender           *sender
+	server           *Server
+	cancel           context.CancelFunc
+	pending          map[uint64]*pendingRequest
+	sessions         map[uint64]*sessionEntry
+	encryptedReplies map[uint64]*sessionEntry
+	credits          credits
+	sessionMu        sync.RWMutex
+	pendingMu        sync.Mutex
+	workers          sync.WaitGroup
+	closeOnce        sync.Once
+	nextAsyncID      uint64
+	cipher           uint16
+	signing          uint16
+	clientGUID       [16]byte
+	negotiated       bool
+	opened           bool
 }
 
 func newConnection(ctx context.Context, cancel context.CancelFunc, server *Server, conn net.Conn) *connection {
-	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), nextAsyncID: 1}
+	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), sessions: make(map[uint64]*sessionEntry), encryptedReplies: make(map[uint64]*sessionEntry), nextAsyncID: 1}
 }
 
 func (connection *connection) close() error {
@@ -68,9 +73,11 @@ func (connection *connection) serve(ctx context.Context) error {
 		connection.server.options.Logger.Info("connection closed", "reason", err)
 	}
 	closeErr := connection.close()
+	actions := connection.detachSessions()
 	<-connection.sender.done
 	connection.workers.Wait()
-	return errors.Join(err, ctxErr, closeErr)
+	cleanupErr := connection.server.cleanup(context.WithoutCancel(ctx), actions)
+	return errors.Join(err, ctxErr, closeErr, cleanupErr)
 }
 
 func readFrame(reader io.Reader, maxLength uint32) ([]byte, error) {
@@ -115,13 +122,14 @@ func (connection *connection) receive(ctx context.Context) error {
 			continue
 		}
 		connection.opened = true
-		messages, err := wire.Split(payload)
+		messages, encrypted, err := connection.decodePayload(payload)
 		if err != nil {
 			return err
 		}
 		if err := connection.checkNegotiationState(messages); err != nil {
 			return err
 		}
+		connection.rememberEncryption(messages, encrypted)
 		if err := connection.process(ctx, messages); err != nil {
 			return err
 		}
@@ -155,12 +163,9 @@ func (connection *connection) send(messages []wire.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-	payload, err := wire.Join(messages)
+	payload, err := connection.encodePayload(messages)
 	if err != nil {
 		return err
-	}
-	if len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess && connection.negotiated {
-		connection.preauth.Update(payload)
 	}
 	return <-connection.sender.enqueue(payload)
 }
@@ -169,6 +174,12 @@ func makeResponse(request wire.Header, result reply, credits uint16) (wire.Messa
 	header := wire.Header{
 		MessageID: request.MessageID, SessionID: request.SessionID, ProcessID: request.ProcessID,
 		TreeID: request.TreeID, Command: request.Command, CreditCharge: request.CreditCharge, Credit: credits, Flags: wire.FlagResponse | request.Flags&wire.FlagRelated, Status: result.status,
+	}
+	if result.sessionID != 0 {
+		header.SessionID = result.sessionID
+	}
+	if result.treeID != 0 {
+		header.TreeID = result.treeID
 	}
 	body := result.body
 	if errorBodyRequired(request.Command, result.status) {
@@ -199,19 +210,31 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 	if message.Header.Command == wire.Negotiate {
 		return connection.negotiate(message)
 	}
-	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
-		return handle(ctx, message)
+	if message.Header.Command == wire.SessionSetup {
+		return connection.sessionSetup(message)
 	}
-	if message.Header.Command <= wire.OplockBreak && (message.Header.Command != wire.SessionSetup || message.Header.SessionID != 0) {
-		return reply{status: smb.StatusUserSessionDeleted}, nil
+	if message.Header.Command > wire.OplockBreak {
+		return reply{status: smb.StatusNotSupported}, nil
+	}
+	request, status := connection.resolveRequest(message.Header)
+	if status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
+	switch uint16(message.Header.Command) {
+	case uint16(wire.TreeConnect):
+		return connection.treeConnect(message)
+	case uint16(wire.Logoff):
+		return connection.logoff(ctx, message)
+	case uint16(wire.TreeDisconnect):
+		return connection.treeDisconnect(ctx, message)
+	}
+	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
+		return handle(ctx, request, message)
 	}
 	return reply{status: smb.StatusNotSupported}, nil
 }
 
-func handleEcho(_ context.Context, message wire.Message) (reply, error) {
-	if message.Header.SessionID != 0 {
-		return reply{status: smb.StatusUserSessionDeleted}, nil
-	}
+func handleEcho(_ context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 	body, err := wire.EncodeEchoResponse(wire.EmptyResponse{})
 	return reply{body: body}, err
 }
