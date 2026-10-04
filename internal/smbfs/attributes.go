@@ -325,11 +325,28 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	}
 	st, release := s.acquire(key.Inode)
 	defer release()
-	if change.Size != nil && *change.Size >= maxFileSize {
+	if change.Size != nil && change.SizeCap != nil {
+		return smb.ErrInvalidParameter
+	}
+	if change.Size != nil && *change.Size >= maxFileSize || change.SizeCap != nil && *change.SizeCap >= maxFileSize {
 		return smb.ErrFileTooLarge
 	}
-	if _, err := s.attr(ctx, key, st); err != nil {
+	if change.SizeCap != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+	}
+	attr, err := s.attr(ctx, key, st)
+	if err != nil {
 		return err
+	}
+	if change.SizeCap != nil {
+		if attr.Kind == smb.KindDirectory {
+			return smb.ErrIsDirectory
+		}
+		if *change.SizeCap < attr.Size {
+			change.Size = change.SizeCap
+		}
 	}
 	if change.Accessed != nil || change.Modified != nil || change.Changed != nil || change.Created != nil || change.Attributes != nil {
 		// A later error can leave some attributes changed, so invalidate on error too.

@@ -31,7 +31,6 @@ type Receipt struct {
 	Snapshot          time.Time // when the snapshot started
 }
 type Manager struct {
-	meta    meta.Meta
 	blob    object.ObjectStorage
 	opts    Options
 	mu      sync.Mutex
@@ -56,7 +55,7 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 	if err := cleanupSnapshotStaging(filepath.Join(opts.StateDir, "backup-staging")); err != nil {
 		return nil, err
 	}
-	return &Manager{meta: m, blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now, wait: waitForRetry}, nil
+	return &Manager{blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now, wait: waitForRetry}, nil
 }
 
 // Backup retries until the last verified backup's protection expires, or until
@@ -193,11 +192,11 @@ func (m *Manager) attempts(ctx context.Context, deadline time.Time) (Receipt, er
 		} else {
 			digest, err := m.snapshot(ctx, key)
 			if err == nil {
-				f, e := m.meta.Load(false)
+				uuid, e := metadataUUID(ctx, m.opts.DatabasePath)
 				if e != nil {
 					return Receipt{}, e
 				}
-				return Receipt{Key: key, UUID: f.UUID, SHA256: digest, Snapshot: now}, nil
+				return Receipt{Key: key, UUID: uuid, SHA256: digest, Snapshot: now}, nil
 			}
 			last = err
 		}
@@ -294,11 +293,11 @@ func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 	if _, err = parsePoint(r.Key); err != nil {
 		return false, nil
 	}
-	f, err := m.meta.Load(false)
+	uuid, err := metadataUUID(ctx, m.opts.DatabasePath)
 	if err != nil {
 		return false, err
 	}
-	if r.UUID != f.UUID {
+	if r.UUID != uuid {
 		return false, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)

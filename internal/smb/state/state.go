@@ -45,10 +45,12 @@ const (
 	RightDelete
 )
 
-// ShareMode uses the same bits as Rights. New rights must be allowed by every
-// existing share mode, and existing rights must be allowed by the new share mode.
+// ShareMode uses the same bits as Rights. When both same-stream opens have
+// sharing intent, new rights must be allowed by the existing share mode and
+// existing rights by the new share mode. Metadata-only opens do not participate,
+// including in base-file delete checks against named streams.
 // Check and reservation occur before any create disposition can destroy bytes.
-// Base-file delete access also checks deny-delete opens on every named stream.
+// Base-file delete access also checks every named stream with sharing intent.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;
@@ -60,6 +62,7 @@ type ShareMode Rights
 // SharingIntent includes the minimum read, write and delete intent from the
 // granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
 // is tracked separately and makes the object delete-pending at once.
+// WriteThrough retains CREATE's durability mode for every WRITE on this open.
 // This table is never persisted across restart.
 type Open struct {
 	DurableDeadline  time.Time
@@ -79,6 +82,7 @@ type Open struct {
 	SharingIntent    Rights
 	Sharing          ShareMode
 	DeleteOnClose    bool
+	WriteThrough     bool
 	Durable          bool
 }
 
@@ -121,6 +125,7 @@ type Lease struct {
 // never cross stream keys. DeletePending rejects new opens. DeleteName is the
 // name selected for deletion, not the name of the last closing handle. For a
 // renamed base, the close path resolves PathOf and verifies the inode again.
+// DeletePending remains set until CompleteDelete reports the cleanup outcome.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
 // Records are removed only after opens, reservations, locks and leases are gone.
@@ -171,6 +176,7 @@ type Grant struct {
 	DurableTimeout time.Duration
 	Directory      bool
 	DeleteOnClose  bool
+	WriteThrough   bool
 }
 
 // CloseAction transfers cleanup to the server. FileID names the removed open;
@@ -181,9 +187,10 @@ type Grant struct {
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
-// blocks new opens through the guard until deletion finishes, and drains active
-// request references before closing Handle. A transport drop cannot close a
-// storage reference still in use by an async request.
+// retains delete-pending until CompleteDelete on every removal outcome, and
+// drains active request references before closing Handle without a parent guard.
+// A transport drop cannot close a storage reference still in use by an async
+// request.
 type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
@@ -246,6 +253,7 @@ type openEntry struct {
 type objectEntry struct {
 	ObjectRecord
 	deleteCommitted bool
+	removalPending  bool
 }
 
 type createIdentity struct {

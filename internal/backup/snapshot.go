@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	_ "github.com/mattn/go-sqlite3" // Register the SQLite driver.
 )
@@ -34,6 +36,25 @@ func openSnapshotDB(path, mode string) (*sql.DB, error) {
 	}
 	db.SetMaxOpenConns(1)
 	return db, nil
+}
+
+// metadataUUID reads persisted identity without Meta.Load, which replaces the
+// live format while JuiceFS mutations read it without taking the format lock.
+func metadataUUID(ctx context.Context, path string) (uuid string, err error) {
+	db, err := openSnapshotDB(path, "ro")
+	if err != nil {
+		return "", err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	var data string
+	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&data); err != nil {
+		return "", err
+	}
+	var format meta.Format
+	if err = json.Unmarshal([]byte(data), &format); err != nil {
+		return "", err
+	}
+	return format.UUID, nil
 }
 
 func takeSnapshot(ctx context.Context, source, target string) (err error) {

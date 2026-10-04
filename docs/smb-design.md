@@ -14,6 +14,17 @@ take precedence over the research.
 `smbtest` owns the raw client and real-adapter fixtures.
 No new package imports `internal/smb-old`.
 
+Storage access describes data permissions, not granted SMB masks.
+`AccessRead` permits reads; `AccessWrite` permits writes and truncate.
+`AccessAppend` restricts writes to offsets at or beyond the selected object's live EOF,
+including when combined with `AccessWrite` for destructive CREATE initialization.
+Alone, `AccessAppend` does not permit truncate.
+`Open` retains these permissions without creating or truncating data.
+`WriteAt` checks append access inside the adapter's existing per-inode mutation coordinator,
+atomically with every write and length change. Each stream has its own EOF.
+Normal `AccessWrite` has no append restriction. The server still checks granted SMB access
+for each operation, including later length changes.
+
 Code comments pin future function and method signatures.
 M1 adds their bodies and private state, without M0 stubs.
 Modules with one implementation return concrete pointers.
@@ -60,9 +71,14 @@ The server commits the reservation only after storage open succeeds.
 On failure, the server aborts its reservation and closes every storage reference it acquired.
 The table releases its mutex before the server calls storage.
 
-The server takes the namespace guard before removing an open from the table.
+A Remove action retains delete-pending until CompleteDelete on every cleanup
+outcome, including failure or cancellation. This covers bulk closes that remove
+opens from the table before taking a namespace guard.
+Cleanup resolves the current inode path under its parent guard and retries if a
+rename changed that identity. An inode with no unique path is left untouched.
 The adapter verifies the expected inode before deleting a name.
-The server drains active request references before closing their storage handle.
+The server drains active request references before closing their storage handle,
+never while holding a namespace guard.
 For a base-file rename, the server locks both parents in inode order.
 Open state follows the inode, not a cached path.
 The adapter refuses named-stream rename with STATUS_NOT_SUPPORTED and leaves data unchanged.

@@ -112,23 +112,31 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 	}
 }
 
-// closeOpen guards table removal, then unlocks before draining active references.
-// Cleanup locks the current parent again for deletion. Delete-pending must cover
-// that gap (#370). Callers release their own useOpen reference before calling it.
 func closeOpen(ctx context.Context, request RequestContext, id state.FileID) error {
+	action, err := removeOpen(ctx, request, id)
+	if action.FileID == (state.FileID{}) {
+		return err
+	}
+	return errors.Join(err, request.Cleanup(ctx, []state.CloseAction{action}))
+}
+
+// removeOpen transfers cleanup after table removal and namespace unlock. A
+// discovery error can accompany a valid action; the caller must still clean it.
+// Callers release their own useOpen reference before removing the open.
+func removeOpen(ctx context.Context, request RequestContext, id state.FileID) (state.CloseAction, error) {
 	open, status := request.Opens.Find(id, request.Binding())
 	if status != smb.StatusSuccess {
-		return smb.ErrInvalidHandle
+		return state.CloseAction{}, smb.ErrInvalidHandle
 	}
 	unlock, lookupErr := closingParent(ctx, request, open.Object.Inode)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if unlock != nil {
 			unlock()
 		}
-		return errors.Join(lookupErr, ctxErr)
+		return state.CloseAction{}, errors.Join(lookupErr, ctxErr)
 	}
 	if errors.Is(lookupErr, context.Canceled) || errors.Is(lookupErr, context.DeadlineExceeded) {
-		return lookupErr
+		return state.CloseAction{}, lookupErr
 	}
 	if errors.Is(lookupErr, smb.ErrNameNotFound) {
 		lookupErr = nil // An unlinked inode has no namespace name to guard.
@@ -138,9 +146,9 @@ func closeOpen(ctx context.Context, request RequestContext, id state.FileID) err
 		unlock()
 	}
 	if status != smb.StatusSuccess {
-		return errors.Join(lookupErr, smb.ErrInvalidHandle)
+		return state.CloseAction{}, errors.Join(lookupErr, smb.ErrInvalidHandle)
 	}
-	return errors.Join(lookupErr, request.server.cleanup(ctx, []state.CloseAction{action}))
+	return action, lookupErr
 }
 
 // closingParent discovers and guards the inode's current name. An unlinked
