@@ -30,7 +30,7 @@ func TestFilesystemSetSparseRefused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// IOCTL is not registered. Its dispatcher refusal must not grant sparse state.
+	// IOCTL refusal must not grant sparse state.
 	client.exchange(t, wire.IOCTL, body, smb.StatusNotSupported)
 	basic, err := wire.DecodeFileBasicInformation(client.fileInformation(t, created.ID, wire.ClassFileBasic))
 	if err != nil {
