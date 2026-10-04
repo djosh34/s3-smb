@@ -174,10 +174,12 @@ func TestPendingReplyByteLayout(t *testing.T) {
 	// Controlled work cannot finish until the interim reply has been checked.
 	// This tests the connection's async header without adding a file handler.
 	server, release := controlledAsync(t, wire.Flush, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := corePipeClient(t, server)
+	client, ctx := pipeClient(t, server)
 	layoutExchange(ctx, t, client, negotiateMessage(t, 2))
 	request := asyncMessage(t, wire.Flush, 2)
+	request.Header.SessionID = 0x1234567890abcdef
 	request.Header.ProcessID = 0x76543210
+	request.Header.TreeID = 0xfedcba98
 	raw := layoutExchange(ctx, t, client, request)
 	assertLayoutError(t, raw)
 	asyncID := binary.LittleEndian.Uint64(raw[32:40])
@@ -186,7 +188,7 @@ func TestPendingReplyByteLayout(t *testing.T) {
 	}
 	want := layoutHeader{
 		status: 0x00000103, flags: layoutResponse | layoutAsync, command: 0x0007,
-		charge: 1, credits: 16, messageID: 2, sessionID: 77, asyncID: asyncID,
+		charge: 1, credits: 16, messageID: 2, sessionID: 0x1234567890abcdef, asyncID: asyncID,
 	}
 	assertLayoutHeader(t, raw, want)
 
