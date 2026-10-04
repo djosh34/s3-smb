@@ -8,7 +8,7 @@ import (
 )
 
 func TestNegotiatedFlags(t *testing.T) {
-	for _, removed := range []uint32{flagKeyExch, flagVersion, flag128, flag128 | flag56, flagKeyExch | flagVersion | flag128 | flag56} {
+	for _, removed := range []uint32{flagTarget, flagKeyExch, flagSign | flagKeyExch, flagVersion, flag128, flag128 | flag56, flagKeyExch | flagVersion | flag128 | flag56} {
 		acceptor := testAcceptor(t, vectorAccount)
 		initiator := testInitiator(t, vectorAccount)
 		initial, err := acceptor.InitialToken()
@@ -168,38 +168,6 @@ func TestFinalSPNEGOAcceptance(t *testing.T) {
 	}
 }
 
-func TestNoMICDowngrade(t *testing.T) {
-	acceptor := testAcceptor(t, vectorAccount)
-	_, authenticate := startExchange(t, acceptor, testInitiator(t, vectorAccount))
-	wrapped, err := decodeSPNEGO(authenticate.Token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	message, err := decodeNTLM(wrapped.token)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Recompute a valid proof after clearing AV_FLAGS. This must not disable
-	// the MIC requirement imposed by the server's timestamp.
-	clear(message.av[avFlags])
-	key, err := responseKey(vectorAccount, "User", "Domain")
-	if err != nil {
-		t.Fatal(err)
-	}
-	proof, err := ntlmHMAC(key, acceptor.challenge[24:32], message.blob)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copy(message.fields[1], proof)
-	clear(message.raw[message.micOffset : message.micOffset+16])
-	token, err := encodeResponse(-1, nil, message.raw, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := acceptor.Step(token)
-	requireFailure(t, result, err)
-}
-
 func TestExchangeState(t *testing.T) {
 	var nilAcceptor *Acceptor
 	var nilInitiator *Initiator
@@ -328,7 +296,7 @@ func TestReservedChallengeFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := ntlmHMAC(key, acceptor.challenge[24:32], message.blob)
+	proof, err := ntlmHMAC(key, acceptor.challenge.raw[24:32], message.blob)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -342,7 +310,7 @@ func TestReservedChallengeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	copy(message.fields[5], encrypted)
-	mic, err := transcriptMIC(authenticate.SessionKey, acceptor.negotiate, acceptor.challenge, message.raw, message.micOffset)
+	mic, err := transcriptMIC(authenticate.SessionKey, acceptor.negotiate, acceptor.challenge.raw, message.raw, message.micOffset)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -257,7 +257,7 @@ func TestSPNEGOOnlyNTLM(t *testing.T) {
 		t.Fatalf("advertisement does not contain exactly NTLM: %v", err)
 	}
 	kerberos := asn1.ObjectIdentifier{1, 2, 840, 113554, 1, 2, 2}
-	for _, mechanisms := range [][]asn1.ObjectIdentifier{{kerberos}, {kerberos, ntlmOID}, {ntlmOID, ntlmOID}} {
+	for _, mechanisms := range [][]asn1.ObjectIdentifier{{kerberos}, {ntlmOID, ntlmOID}} {
 		token := initialWithMechanisms(t, mechanisms, negotiateMessage())
 		result, stepErr := testAcceptor(t, vectorAccount).Step(token)
 		requireFailure(t, result, stepErr)

@@ -70,10 +70,12 @@ state are written here, not copied from the old server. No old package is change
 or imported.
 
 The review found wrapping uint32 offset sums, unchecked short response slices,
-optional MIC verification, input mutation while checking the MIC and nonconstant
+unchecked MIC layouts, input mutation while checking the MIC and nonconstant
 proof comparisons in the old server half. The port uses widened bounds checks,
-validated AV pairs, a required transcript MIC, private transcript copies and
-constant-time proof comparisons. It removes guest, anonymous, NTLMv1 and NTLM
+validated AV pairs, verification of each supplied MIC, private transcript copies
+and constant-time proof comparisons. SPNEGO selects NTLM anywhere in the client
+list and requires a mechanism-list MIC when NTLM is not the first choice, as
+RFC 4178 requires. It removes guest, anonymous, NTLMv1 and NTLM
 session sealing. MD4, HMAC-MD5 and RC4 remain only where MS-NLMP requires them.
 `auth_test.go` checks the MS-NLMP section 4.2.4 proof and key vectors and the test
 initiator exchange. Decoder tests and fuzz targets cover malformed tokens.

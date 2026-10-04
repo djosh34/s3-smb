@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"math"
+	"strings"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -29,17 +30,25 @@ const (
 	flagKeyExch    uint32 = 1 << 30
 	flag56         uint32 = 1 << 31
 
-	requiredFlags = flagUnicode | flagNTLM | flagExtended | flagSign
-	offeredFlags  = requiredFlags | flagTarget | flagAlwaysSign | flagTargetInfo | flagVersion | flagKeyExch | flag128 | flag56
-	securityFlags = requiredFlags | flagSeal | flagVersion | flagKeyExch | flag128 | flag56
+	requiredFlags = flagUnicode | flagNTLM | flagExtended
+	offeredFlags  = requiredFlags | flagSign | flagTarget | flagAlwaysSign | flagTargetInfo | flagVersion | flagKeyExch | flag128 | flag56
 
-	avEnd       uint16 = 0
-	avComputer  uint16 = 1
-	avDomain    uint16 = 2
-	avFlags     uint16 = 6
-	avTimestamp uint16 = 7
-	avBindings  uint16 = 10
-	micPresent  uint32 = 2
+	messageNegotiate    uint32 = 1
+	messageChallenge    uint32 = 2
+	messageAuthenticate uint32 = 3
+
+	avEnd         uint16 = 0
+	avComputer    uint16 = 1
+	avDomain      uint16 = 2
+	avDNSComputer uint16 = 3
+	avDNSDomain   uint16 = 4
+	avDNSTree     uint16 = 5
+	avFlags       uint16 = 6
+	avTimestamp   uint16 = 7
+	avSingleHost  uint16 = 8
+	avTargetName  uint16 = 9
+	avBindings    uint16 = 10
+	micPresent    uint32 = 2
 )
 
 var (
@@ -55,6 +64,12 @@ type ntlmMessage struct {
 	flags     uint32
 	kind      uint32
 	micOffset int
+}
+
+// hasMIC is called only on decoded messages, whose AV lengths are validated.
+func (message ntlmMessage) hasMIC() bool {
+	flags, exists := message.av[avFlags]
+	return exists && littleEndian.Uint32(flags)&micPresent != 0
 }
 
 // field reads a security buffer with widened offset arithmetic. Zero-length
@@ -84,11 +99,11 @@ func decodeNTLM(data []byte) (ntlmMessage, error) {
 	var offsets []int
 	var flagOffset, floor int
 	switch result.kind {
-	case 1:
+	case messageNegotiate:
 		flagOffset, floor, offsets = 12, 32, []int{16, 24}
-	case 2:
+	case messageChallenge:
 		flagOffset, floor, offsets = 20, 48, []int{12, 40}
-	case 3:
+	case messageAuthenticate:
 		flagOffset, floor, offsets = 60, 64, []int{12, 20, 28, 36, 44, 52}
 	default:
 		return result, errToken
@@ -104,7 +119,8 @@ func decodeNTLM(data []byte) (ntlmMessage, error) {
 		return result, errToken
 	}
 	result.micOffset = floor
-	fields, err := readNTLMFields(data, offsets, floor)
+	ignoreSessionKey := result.kind == messageAuthenticate && result.flags&flagKeyExch == 0
+	fields, err := readNTLMFields(data, offsets, floor, ignoreSessionKey)
 	if err != nil {
 		return result, err
 	}
@@ -112,20 +128,25 @@ func decodeNTLM(data []byte) (ntlmMessage, error) {
 	if err := validateNTLMFields(&result); err != nil {
 		return result, err
 	}
-	if result.kind == 3 && len(result.av[avFlags]) == 4 && littleEndian.Uint32(result.av[avFlags])&micPresent != 0 {
+	if result.kind == messageAuthenticate && result.hasMIC() {
 		if len(data) < floor+16 {
 			return result, errToken
 		}
-		if _, err := readNTLMFields(data, offsets, floor+16); err != nil {
+		if _, err := readNTLMFields(data, offsets, floor+16, ignoreSessionKey); err != nil {
 			return result, err
 		}
 	}
 	return result, nil
 }
 
-func readNTLMFields(data []byte, offsets []int, floor int) ([][]byte, error) {
+func readNTLMFields(data []byte, offsets []int, floor int, ignoreSessionKey bool) ([][]byte, error) {
 	values := make([][]byte, 0, len(offsets))
 	for _, offset := range offsets {
+		// MS-NLMP 2.2.1.3 requires ignoring this buffer when KEY_EXCH is clear.
+		if ignoreSessionKey && offset == 52 {
+			values = append(values, nil)
+			continue
+		}
 		value, err := field(data, offset, floor)
 		if err != nil {
 			return nil, err
@@ -146,21 +167,21 @@ func readNTLMFields(data []byte, offsets []int, floor int) ([][]byte, error) {
 
 func validateNTLMFields(result *ntlmMessage) error {
 	switch result.kind {
-	case 1:
+	case messageNegotiate:
 		// Negotiate domain and workstation use OEM, not UTF-16.
 		return nil
-	case 2:
+	case messageChallenge:
 		if _, err := decodeUTF16(result.fields[0]); err != nil {
 			return err
 		}
 		av, err := decodeAV(result.fields[1])
 		result.av = av
 		return err
-	case 3:
+	case messageAuthenticate:
 		if len(result.fields[0]) != 0 && len(result.fields[0]) != 24 {
 			return errToken
 		}
-		if (result.flags&flagKeyExch != 0 && len(result.fields[5]) != 16) || (result.flags&flagKeyExch == 0 && len(result.fields[5]) != 0) {
+		if result.flags&flagKeyExch != 0 && len(result.fields[5]) != 16 {
 			return errToken
 		}
 		for _, value := range result.fields[2:5] {
@@ -217,7 +238,7 @@ func decodeAV(data []byte) (map[uint16][]byte, error) {
 
 func validateAV(id uint16, value []byte) error {
 	switch id {
-	case 1, 2, 3, 4, 5, 9:
+	case avComputer, avDomain, avDNSComputer, avDNSDomain, avDNSTree, avTargetName:
 		_, err := decodeUTF16(value)
 		return err
 	case avFlags:
@@ -228,7 +249,7 @@ func validateAV(id uint16, value []byte) error {
 		if len(value) != 8 {
 			return errToken
 		}
-	case 8:
+	case avSingleHost:
 		if len(value) != 48 {
 			return errToken
 		}
@@ -281,7 +302,7 @@ func decodeUTF16(data []byte) (string, error) {
 }
 
 func validateText(value string) error {
-	if !utf8.ValidString(value) || bytes.IndexByte([]byte(value), 0) >= 0 || len(encodeUTF16(value)) > 1024 {
+	if !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 || len(encodeUTF16(value)) > 1024 {
 		return errors.New("invalid authentication configuration text")
 	}
 	return nil
@@ -327,6 +348,25 @@ func encodeAV(pairs []avPair) ([]byte, error) {
 	return appendAV(data, avEnd, nil)
 }
 
+func targetInfoWithMIC(info []byte) ([]byte, error) {
+	copyInfo := bytes.Clone(info)
+	pairs, err := decodeAV(copyInfo)
+	if err != nil {
+		return nil, err
+	}
+	if flags, exists := pairs[avFlags]; exists {
+		littleEndian.PutUint32(flags, littleEndian.Uint32(flags)|micPresent)
+		return copyInfo, nil
+	}
+	var flags [4]byte
+	littleEndian.PutUint32(flags[:], micPresent)
+	withFlags, err := appendAV(copyInfo[:len(copyInfo)-4], avFlags, flags[:])
+	if err != nil {
+		return nil, err
+	}
+	return appendAV(withFlags, avEnd, nil)
+}
+
 func newNTLM(kind uint32, size int) []byte {
 	data := make([]byte, size)
 	copy(data, "NTLMSSP\x00")
@@ -335,7 +375,7 @@ func newNTLM(kind uint32, size int) []byte {
 }
 
 func negotiateMessage() []byte {
-	data := newNTLM(1, 40)
+	data := newNTLM(messageNegotiate, 40)
 	littleEndian.PutUint32(data[12:], offeredFlags)
 	copy(data[32:], ntlmVersion)
 	return data

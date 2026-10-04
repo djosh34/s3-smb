@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
+	"encoding/asn1"
 	"errors"
 	"fmt"
 	"io"
@@ -35,7 +36,7 @@ type Options struct {
 }
 
 // Result is one handshake step. Acceptor returns the canonical User and exported
-// SessionKey only after verifying proof and MIC. Initiator supplies its key when
+// SessionKey only after verifying the proof and any supplied MICs. Initiator supplies its key when
 // emitting Authenticate, before Done, so the raw client can verify the final
 // SESSION_SETUP signature. crypt derives SMB keys from this key. Failed steps
 // return a zero Result and an error, never an authenticated result.
@@ -50,6 +51,13 @@ const (
 	exchangeNew = iota + 1
 	exchangeChallenge
 	exchangeFinal
+	exchangeNegotiate
+
+	// FILETIME starts in 1601, 11644473600 seconds before the Unix epoch.
+	filetimeUnixOffsetSeconds int64 = 11644473600
+	// Last second of year 9999, measured from the FILETIME epoch. This is
+	// our clock's supported calendar range, not the maximum uint64 FILETIME.
+	lastSupportedFiletimeSecond int64 = 265046774399
 )
 
 var (
@@ -61,11 +69,12 @@ var (
 // Acceptor handles one server-side exchange. It is not shared by sessions or
 // used concurrently. Use NewAcceptor; a failed Step consumes the exchange.
 type Acceptor struct {
-	options   Options
-	negotiate []byte
-	challenge []byte
-	mechList  []byte
-	state     int
+	options        Options
+	negotiate      []byte
+	mechList       []byte
+	challenge      ntlmMessage
+	state          int
+	requireMechMIC bool
 }
 
 // NewAcceptor validates the account and creates an unused authentication exchange.
@@ -108,8 +117,10 @@ func (acceptor *Acceptor) InitialToken() ([]byte, error) {
 	return encodeInitial(nil)
 }
 
-// Step consumes an initial SPNEGO negotiate token, then an authenticate token.
-// A malformed token or bad credentials terminate this exchange.
+// Step selects NTLM from the client's SPNEGO offer, then consumes NTLM
+// Negotiate and Authenticate. A malformed token or bad credentials terminate
+// this exchange. Selecting a later mechanism requires an extra negotiate step
+// and a mechanism-list MIC, as RFC 4178 requires.
 func (acceptor *Acceptor) Step(token []byte) (Result, error) {
 	if acceptor == nil {
 		return Result{}, errExchange
@@ -125,37 +136,80 @@ func (acceptor *Acceptor) Step(token []byte) (Result, error) {
 		return acceptor.start(wrapped)
 	case exchangeChallenge:
 		return acceptor.finish(wrapped)
+	case exchangeNegotiate:
+		if !validClientResponse(wrapped) || len(wrapped.mic) != 0 {
+			return Result{}, errToken
+		}
+		return acceptor.startNTLM(wrapped.token, false)
 	default:
 		return Result{}, errExchange
 	}
 }
 
 func (acceptor *Acceptor) start(wrapped spnegoToken) (Result, error) {
-	// NTLM must be the optimistic mechanism. We do not run a Kerberos token or
-	// implement an exchange that switches from Kerberos to NTLM.
-	if !wrapped.initial || len(wrapped.mechs) == 0 || !wrapped.mechs[0].Equal(ntlmOID) || len(wrapped.mic) != 0 {
+	if !wrapped.initial {
 		return Result{}, errMechanism
 	}
-	negotiate, err := decodeNTLM(wrapped.token)
+	for index, mechanism := range wrapped.mechs {
+		if !mechanism.Equal(ntlmOID) {
+			continue
+		}
+		acceptor.mechList = bytes.Clone(wrapped.mechList)
+		acceptor.requireMechMIC = index != 0
+		if index == 0 && len(wrapped.token) != 0 {
+			return acceptor.startNTLM(wrapped.token, true)
+		}
+		// RFC 4178 3.2(c)(II): discard another mechanism's optimistic token
+		// and request a MIC when selecting something other than first choice.
+		state := 1
+		if acceptor.requireMechMIC {
+			state = 3
+		}
+		token, err := encodeResponse(state, ntlmOID, nil, nil)
+		if err != nil {
+			return Result{}, err
+		}
+		acceptor.state = exchangeNegotiate
+		return Result{Token: token}, nil
+	}
+	return Result{}, errMechanism
+}
+
+func validClientResponse(wrapped spnegoToken) bool {
+	return !wrapped.initial && wrapped.state != 2 && wrapped.state != 3 &&
+		(len(wrapped.mechanism) == 0 || wrapped.mechanism.Equal(ntlmOID))
+}
+
+func (acceptor *Acceptor) startNTLM(raw []byte, firstReply bool) (Result, error) {
+	negotiate, err := decodeNTLM(raw)
 	if err != nil {
 		return Result{}, err
 	}
-	if negotiate.kind != 1 || negotiate.flags&requiredFlags != requiredFlags || negotiate.flags&flagAnonymous != 0 {
+	if negotiate.kind != messageNegotiate || negotiate.flags&requiredFlags != requiredFlags || negotiate.flags&flagAnonymous != 0 {
 		return Result{}, errLogin
 	}
-	flags := negotiate.flags & offeredFlags
-	flags |= flagTargetInfo | flagServer
+	flags := negotiate.flags&offeredFlags | flagTargetInfo | flagTarget | flagServer
+	if flags&flagSign == 0 {
+		flags &^= flagKeyExch
+	}
 	challenge, err := acceptor.makeChallenge(flags)
 	if err != nil {
 		return Result{}, err
 	}
-	token, err := encodeResponse(1, ntlmOID, challenge, nil)
+	decoded, err := decodeNTLM(challenge)
 	if err != nil {
 		return Result{}, err
 	}
-	acceptor.negotiate = bytes.Clone(wrapped.token)
-	acceptor.challenge = challenge
-	acceptor.mechList = bytes.Clone(wrapped.mechList)
+	var mechanism asn1.ObjectIdentifier
+	if firstReply {
+		mechanism = ntlmOID
+	}
+	token, err := encodeResponse(1, mechanism, challenge, nil)
+	if err != nil {
+		return Result{}, err
+	}
+	acceptor.negotiate = bytes.Clone(raw)
+	acceptor.challenge = decoded
 	acceptor.state = exchangeChallenge
 	return Result{Token: token}, nil
 }
@@ -165,13 +219,15 @@ func (acceptor *Acceptor) makeChallenge(flags uint32) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	pairs := []avPair{{id: avComputer, value: encodeUTF16(acceptor.options.ServerName)}}
-	if acceptor.options.Account.Domain != "" {
-		pairs = append(pairs, avPair{id: avDomain, value: encodeUTF16(acceptor.options.Account.Domain)})
+	domain := acceptor.options.Account.Domain
+	if domain == "" {
+		domain = acceptor.options.ServerName
 	}
-	var micFlags [4]byte
-	littleEndian.PutUint32(micFlags[:], micPresent)
-	pairs = append(pairs, avPair{id: avTimestamp, value: stamp}, avPair{id: avFlags, value: micFlags[:]})
+	pairs := []avPair{
+		{id: avComputer, value: encodeUTF16(acceptor.options.ServerName)},
+		{id: avDomain, value: encodeUTF16(domain)},
+		{id: avTimestamp, value: stamp},
+	}
 	info, err := encodeAV(pairs)
 	if err != nil {
 		return nil, err
@@ -181,7 +237,7 @@ func (acceptor *Acceptor) makeChallenge(flags uint32) ([]byte, error) {
 	if flags&flagVersion != 0 {
 		floor += 8
 	}
-	data := newNTLM(2, floor+len(target)+len(info))
+	data := newNTLM(messageChallenge, floor+len(target)+len(info))
 	littleEndian.PutUint32(data[20:], flags)
 	if _, randomErr := io.ReadFull(acceptor.options.Random, data[24:32]); randomErr != nil {
 		return nil, fmt.Errorf("read NTLM server challenge: %w", randomErr)
@@ -200,9 +256,9 @@ func (acceptor *Acceptor) makeChallenge(flags uint32) ([]byte, error) {
 }
 
 func ntlmTimestamp(now time.Time) ([]byte, error) {
-	seconds := now.Unix() + 11644473600
-	if seconds < 0 || seconds > 265046774399 {
-		return nil, errors.New("NTLM clock is outside the FILETIME range")
+	seconds := now.Unix() + filetimeUnixOffsetSeconds
+	if seconds < 0 || seconds > lastSupportedFiletimeSecond {
+		return nil, errors.New("NTLM clock is outside supported years 1601 through 9999")
 	}
 	stamp := make([]byte, 8)
 	ticks := uint64(seconds)*10000000 + uint64(now.Nanosecond()/100) //nolint:gosec // time.Time.Nanosecond is in [0, 999999999].
@@ -211,14 +267,14 @@ func ntlmTimestamp(now time.Time) ([]byte, error) {
 }
 
 func (acceptor *Acceptor) finish(wrapped spnegoToken) (Result, error) {
-	if wrapped.initial || (wrapped.state != -1 && wrapped.state != 1) || (len(wrapped.mechanism) != 0 && !wrapped.mechanism.Equal(ntlmOID)) {
+	if !validClientResponse(wrapped) || (acceptor.requireMechMIC && len(wrapped.mic) == 0) {
 		return Result{}, errMechanism
 	}
 	authenticate, err := decodeNTLM(wrapped.token)
 	if err != nil {
 		return Result{}, err
 	}
-	if authenticate.kind != 3 {
+	if authenticate.kind != messageAuthenticate {
 		return Result{}, errToken
 	}
 	key, err := acceptor.verify(authenticate)
@@ -227,14 +283,15 @@ func (acceptor *Acceptor) finish(wrapped spnegoToken) (Result, error) {
 	}
 	var serverMIC []byte
 	if len(wrapped.mic) != 0 {
-		clientMIC, micErr := mechanismMIC(key, acceptor.mechList, authenticate.flags, true)
+		flags := acceptor.challenge.flags&^flagKeyExch | authenticate.flags&flagKeyExch
+		clientMIC, micErr := mechanismMIC(key, acceptor.mechList, flags, true)
 		if micErr != nil {
 			return Result{}, micErr
 		}
 		if !hmac.Equal(clientMIC, wrapped.mic) {
 			return Result{}, errLogin
 		}
-		serverMIC, err = mechanismMIC(key, acceptor.mechList, authenticate.flags, false)
+		serverMIC, err = mechanismMIC(key, acceptor.mechList, flags, false)
 		if err != nil {
 			return Result{}, err
 		}
@@ -247,8 +304,10 @@ func (acceptor *Acceptor) finish(wrapped spnegoToken) (Result, error) {
 }
 
 func (acceptor *Acceptor) verify(message ntlmMessage) ([]byte, error) {
-	challengeFlags := littleEndian.Uint32(acceptor.challenge[20:])
-	if message.flags&securityFlags != challengeFlags&securityFlags || message.flags&flagAnonymous != 0 {
+	if message.flags&requiredFlags != requiredFlags || message.flags&flagAnonymous != 0 {
+		return nil, errLogin
+	}
+	if message.flags&flagKeyExch != 0 && (acceptor.challenge.flags&flagKeyExch == 0 || message.flags&(flagSign|flagSeal) == 0) {
 		return nil, errLogin
 	}
 	user, err := decodeUTF16(message.fields[3])
@@ -263,27 +322,6 @@ func (acceptor *Acceptor) verify(message ntlmMessage) ([]byte, error) {
 	if !strings.EqualFold(user, account.User) || (account.Domain != "" && !strings.EqualFold(domain, account.Domain)) {
 		return nil, errLogin
 	}
-	// The server's timestamp requires a MIC even if the client removes AV_FLAGS.
-	if len(message.av[avFlags]) != 4 || littleEndian.Uint32(message.av[avFlags])&micPresent == 0 || len(message.raw) < message.micOffset+16 {
-		return nil, errLogin
-	}
-	for _, offset := range []int{12, 20, 28, 36, 44, 52} {
-		if _, fieldErr := field(message.raw, offset, message.micOffset+16); fieldErr != nil {
-			return nil, fieldErr
-		}
-	}
-	challenge, err := decodeNTLM(acceptor.challenge)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range []uint16{avComputer, avDomain, avTimestamp} {
-		if !bytes.Equal(message.av[id], challenge.av[id]) {
-			return nil, errLogin
-		}
-	}
-	if !bytes.Equal(message.blob[8:16], challenge.av[avTimestamp]) {
-		return nil, errLogin
-	}
 	return acceptor.verifyProof(message, user, domain)
 }
 
@@ -292,7 +330,7 @@ func (acceptor *Acceptor) verifyProof(message ntlmMessage, user, domain string) 
 	if err != nil {
 		return nil, err
 	}
-	proof, err := ntlmHMAC(responseKey, acceptor.challenge[24:32], message.blob)
+	proof, err := ntlmHMAC(responseKey, acceptor.challenge.raw[24:32], message.blob)
 	if err != nil {
 		return nil, err
 	}
@@ -305,22 +343,19 @@ func (acceptor *Acceptor) verifyProof(message ntlmMessage, user, domain string) 
 	}
 	key := baseKey
 	if message.flags&flagKeyExch != 0 {
-		if len(message.fields[5]) != 16 {
-			return nil, errToken
-		}
 		key, err = exchangeKey(baseKey, message.fields[5])
 		if err != nil {
 			return nil, err
 		}
-	} else if len(message.fields[5]) != 0 {
-		return nil, errToken
 	}
-	mic, err := transcriptMIC(key, acceptor.negotiate, acceptor.challenge, message.raw, message.micOffset)
-	if err != nil {
-		return nil, err
-	}
-	if !hmac.Equal(mic, message.raw[message.micOffset:message.micOffset+16]) {
-		return nil, errLogin
+	if message.hasMIC() {
+		mic, err := transcriptMIC(key, acceptor.negotiate, acceptor.challenge.raw, message.raw, message.micOffset)
+		if err != nil {
+			return nil, err
+		}
+		if !hmac.Equal(mic, message.raw[message.micOffset:message.micOffset+16]) {
+			return nil, errLogin
+		}
 	}
 	return key, nil
 }
@@ -385,7 +420,7 @@ func (initiator *Initiator) Step(serverToken []byte) (Result, error) {
 	}
 	switch state {
 	case exchangeChallenge:
-		if wrapped.state != 1 || !wrapped.mechanism.Equal(ntlmOID) {
+		if wrapped.state != 1 || (len(wrapped.mechanism) != 0 && !wrapped.mechanism.Equal(ntlmOID)) {
 			return Result{}, errMechanism
 		}
 		return initiator.authenticate(wrapped.token)
@@ -404,27 +439,14 @@ func (initiator *Initiator) authenticate(token []byte) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if challenge.kind != 2 || challenge.flags&requiredFlags != requiredFlags || challenge.flags&flagTargetInfo == 0 || challenge.flags&^(offeredFlags|flagServer) != 0 || len(challenge.av[avTimestamp]) != 8 {
+	if challenge.kind != messageChallenge || challenge.flags&requiredFlags != requiredFlags || challenge.flags&flagTargetInfo == 0 || len(challenge.av[avTimestamp]) != 8 || len(challenge.av[avComputer]) == 0 || len(challenge.av[avDomain]) == 0 {
 		return Result{}, errLogin
 	}
 	var nonce [8]byte
 	if _, randomErr := io.ReadFull(initiator.random, nonce[:]); randomErr != nil {
 		return Result{}, fmt.Errorf("read NTLM client challenge: %w", randomErr)
 	}
-	info := bytes.Clone(challenge.fields[1][:len(challenge.fields[1])-4])
-	if flags, exists := challenge.av[avFlags]; exists {
-		if littleEndian.Uint32(flags)&micPresent == 0 {
-			return Result{}, errLogin
-		}
-	} else {
-		var flags [4]byte
-		littleEndian.PutUint32(flags[:], micPresent)
-		info, err = appendAV(info, avFlags, flags[:])
-		if err != nil {
-			return Result{}, err
-		}
-	}
-	info, err = appendAV(info, avEnd, nil)
+	info, err := targetInfoWithMIC(challenge.fields[1])
 	if err != nil {
 		return Result{}, err
 	}
@@ -492,7 +514,7 @@ func (initiator *Initiator) makeAuthenticate(flags uint32, response, encryptedKe
 	if size > maxTokenSize {
 		return nil, errToken
 	}
-	data := newNTLM(3, size)
+	data := newNTLM(messageAuthenticate, size)
 	littleEndian.PutUint32(data[60:], flags)
 	if flags&flagVersion != 0 {
 		copy(data[64:72], ntlmVersion)

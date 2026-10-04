@@ -138,10 +138,10 @@ func TestVectorExchange(t *testing.T) {
 	}
 	requireBytes(t, message.blob[16:24], bytes.Repeat([]byte{0xaa}, 8))
 	// Independently calculated from the MS-NLMP inputs with the server's
-	// timestamp and MIC-required target info added to the transcript.
+	// timestamp and the client's MIC flag added to the transcript.
 	requireBytes(t, message.fields[1][:16], hexBytes(t, "884fa22befc5628983a77abe3da7db53"))
 	requireBytes(t, message.fields[5], hexBytes(t, "d0380d9477ece2c7d2e58f3473d21bfe"))
-	requireBytes(t, message.raw[message.micOffset:message.micOffset+16], hexBytes(t, "e698bae9ea17698e3820c20896c781e0"))
+	requireBytes(t, message.raw[message.micOffset:message.micOffset+16], hexBytes(t, "6f15f888be24b42b587710b57ff028ac"))
 	requireBytes(t, authenticate.SessionKey, bytes.Repeat([]byte{0x55}, 16))
 	original := bytes.Clone(authenticate.Token)
 	final, err := acceptor.Step(authenticate.Token)
@@ -214,7 +214,6 @@ func TestBadProofAndMIC(t *testing.T) {
 		{name: "MIC", mutate: func(message ntlmMessage) { message.raw[message.micOffset] ^= 1 }},
 		{name: "MIC removed", mutate: func(message ntlmMessage) { clear(message.raw[message.micOffset : message.micOffset+16]) }},
 		{name: "MIC flag cleared", mutate: func(message ntlmMessage) { clear(message.av[avFlags]) }},
-		{name: "timestamp", mutate: func(message ntlmMessage) { message.blob[8] ^= 1 }},
 		{name: "server name", mutate: func(message ntlmMessage) { message.av[avComputer][0] ^= 1 }},
 		{name: "negotiated flags", mutate: func(message ntlmMessage) { littleEndian.PutUint32(message.raw[60:], message.flags^flagKeyExch) }},
 		{name: "anonymous", mutate: func(message ntlmMessage) { littleEndian.PutUint32(message.raw[60:], message.flags|flagAnonymous) }},
