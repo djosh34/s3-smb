@@ -148,6 +148,42 @@ func TestChallengeNaming(t *testing.T) {
 	}
 }
 
+func TestMechanismMICWithDropped128(t *testing.T) {
+	acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+	challenge := clientChallenge(t, acceptor, initiator, offeredFlags)
+	if challenge.flags&flag128 == 0 {
+		t.Fatal("challenge must offer 128-bit keys for this regression")
+	}
+	flags := challenge.flags & offeredFlags &^ flag128
+	token, key := clientAuthenticate(t, initiator, challenge, clientTargetInfo(t, challenge, true), challenge.av[avTimestamp], flags, true)
+	wrapped, err := decodeSPNEGO(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientMIC, err := mechanismMIC(key, acceptor.mechList, flags, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err = encodeResponse(-1, nil, wrapped.token, clientMIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := acceptor.Step(token)
+	if err != nil || !final.Done {
+		t.Fatalf("client dropping 128-bit flag was refused: %v", err)
+	}
+	requireBytes(t, final.SessionKey, key)
+	wrapped, err = decodeSPNEGO(final.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverMIC, err := mechanismMIC(key, acceptor.mechList, flags, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireBytes(t, wrapped.mic, serverMIC)
+}
+
 func TestOptionalTranscriptMIC(t *testing.T) {
 	for _, includeFlags := range []bool{false, true} {
 		acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)

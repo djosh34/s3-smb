@@ -80,6 +80,17 @@ session sealing. MD4, HMAC-MD5 and RC4 remain only where MS-NLMP requires them.
 `auth_test.go` checks the MS-NLMP section 4.2.4 proof and key vectors and the test
 initiator exchange. Decoder tests and fuzz targets cover malformed tokens.
 
+### New SMB crypt package
+
+`internal/smb/crypt/cmac.go` ports the AES-CMAC algorithm from
+`internal/smb-old/smb2/internal/crypto/cmac/cmac.go` at the SMB upstream commit
+listed above. Review checked its subkey doubling, final-block handling and
+RFC 4493 padding. The port is AES-only, has call-local state, removes the
+panic and streaming hash interface, and uses fixed-size arrays.
+`internal/smb/crypt/cmac_test.go` checks all four RFC 4493 vectors.
+The file retains the Go Authors and Hiroshi Ioka copyright and BSD-3-Clause
+notice. The old package is unchanged.
+
 ### xorm and mpb
 
 `internal/thirdparty/xorm/engine.go` installs `log.SlogLogger`, added in `log/slog.go`, so the engine never builds the stdout SQL logger and never logs SQL arguments. Tests: `logging_s3smb_test.go`, `log/slog_test.go`. mpb has no changes.

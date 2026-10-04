@@ -36,10 +36,11 @@ type Options struct {
 }
 
 // Result is one handshake step. Acceptor returns the canonical User and exported
-// SessionKey only after verifying the proof and any supplied MICs. Initiator supplies its key when
-// emitting Authenticate, before Done, so the raw client can verify the final
-// SESSION_SETUP signature. crypt derives SMB keys from this key. Failed steps
-// return a zero Result and an error, never an authenticated result.
+// SessionKey only after verifying the proof and any supplied MICs. Initiator
+// supplies its key when emitting Authenticate, before Done, so the raw client
+// can verify the final SESSION_SETUP signature. crypt derives SMB keys from this
+// key. Failed steps return a zero Result and an error, never an authenticated
+// result.
 type Result struct {
 	User       string
 	Token      []byte
@@ -283,7 +284,7 @@ func (acceptor *Acceptor) finish(wrapped spnegoToken) (Result, error) {
 	}
 	var serverMIC []byte
 	if len(wrapped.mic) != 0 {
-		flags := acceptor.challenge.flags&^flagKeyExch | authenticate.flags&flagKeyExch
+		flags := authenticate.flags & acceptor.challenge.flags
 		clientMIC, micErr := mechanismMIC(key, acceptor.mechList, flags, true)
 		if micErr != nil {
 			return Result{}, micErr

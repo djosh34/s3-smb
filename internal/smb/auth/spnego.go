@@ -131,7 +131,6 @@ func decodeInitField(field asn1.RawValue, result *spnegoToken) error {
 		if err := unmarshalDER(field.Bytes, &result.mechs); err != nil {
 			return err
 		}
-
 	case 1:
 		var flags asn1.BitString
 		return unmarshalDER(field.Bytes, &flags)

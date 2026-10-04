@@ -44,6 +44,7 @@ const (
 	StatusFileIsADirectory       Status = 0xc00000ba
 	StatusNotSupported           Status = 0xc00000bb
 	StatusBadNetworkName         Status = 0xc00000cc
+	StatusRequestNotAccepted     Status = 0xc00000d0
 	StatusInternalError          Status = 0xc00000e5
 	StatusDirectoryNotEmpty      Status = 0xc0000101
 	StatusNotADirectory          Status = 0xc0000103
@@ -51,6 +52,7 @@ const (
 	StatusFileClosed             Status = 0xc0000128
 	StatusIOTimeout              Status = 0xc00000b5
 	StatusIODeviceError          Status = 0xc0000185
+	StatusInvalidLockRange       Status = 0xc00001a1
 	StatusDuplicateObjectID      Status = 0xc000022a
 	StatusUserSessionDeleted     Status = 0xc0000203
 	StatusNetworkNameDeleted     Status = 0xc00000c9

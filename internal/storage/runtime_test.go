@@ -62,6 +62,23 @@ func TestCacheConfig(t *testing.T) {
 	}
 }
 
+func TestChunkUploadConcurrencyAndTimeouts(t *testing.T) {
+	format, err := NewFormat("test", false, 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CacheConfig(format, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxUpload != 4 {
+		t.Errorf("MaxUpload = %d, want 4 for a home uplink", c.MaxUpload)
+	}
+	if c.PutTimeout != 60*time.Second || c.GetTimeout != 60*time.Second {
+		t.Errorf("block timeouts changed: put=%s get=%s", c.PutTimeout, c.GetTimeout)
+	}
+}
+
 func TestDataPathRetryBudget(t *testing.T) {
 	format, err := NewFormat("test", false, 14)
 	if err != nil {
