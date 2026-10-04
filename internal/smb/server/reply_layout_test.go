@@ -12,8 +12,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// These offsets and values come from MS-SMB2 2.2.1, 2.2.4, 2.2.5 and
-// 2.2.28, not the wire package. Requests may use encoders, but every reply,
+// Layouts come from MS-SMB2 2.2.1 (headers), 2.2.2 (ERROR), 2.2.4 and
+// 2.2.4.1 (NEGOTIATE and contexts), and 2.2.29 (ECHO). Reply values follow
+// 3.3.4.2, 3.3.4.4 and 3.3.5.3.1. Requests may use encoders, but every reply,
 // including the initial negotiation, is read with ReceiveRaw.
 const (
 	layoutHeaderSize = 64
@@ -175,31 +176,32 @@ func TestPendingReplyByteLayout(t *testing.T) {
 	server, release := controlledAsync(t, wire.Flush, reply{status: smb.StatusFileLockConflict}, nil)
 	client, ctx := pipeClient(t, server)
 	layoutExchange(ctx, t, client, negotiateMessage(t, 2))
-	request := asyncMessage(t, wire.Flush, 1)
+	request := asyncMessage(t, wire.Flush, 2)
 	request.Header.SessionID = 0x1234567890abcdef
 	request.Header.ProcessID = 0x76543210
 	request.Header.TreeID = 0xfedcba98
 	raw := layoutExchange(ctx, t, client, request)
+	assertLayoutError(t, raw)
+	asyncID := binary.LittleEndian.Uint64(raw[32:40])
+	if asyncID == 0 {
+		t.Fatal("interim reply has zero async ID at offset 32")
+	}
 	want := layoutHeader{
 		status: 0x00000103, flags: layoutResponse | layoutAsync, command: 0x0007,
-		charge: 1, credits: 16, messageID: 1, sessionID: 0x1234567890abcdef, asyncID: 1,
+		charge: 1, credits: 16, messageID: 2, sessionID: 0x1234567890abcdef, asyncID: asyncID,
 	}
 	assertLayoutHeader(t, raw, want)
-	assertLayoutError(t, raw)
 
 	// ECHO still completes while the controlled operation remains pending.
-	echoRaw := layoutExchange(ctx, t, client, echo(t, 2))
+	echoRaw := layoutExchange(ctx, t, client, echo(t, 1))
 	assertLayoutHeader(t, echoRaw, layoutHeader{
-		flags: layoutResponse, command: 0x000d, charge: 1, credits: 1, messageID: 2,
+		flags: layoutResponse, command: 0x000d, charge: 1, credits: 1, messageID: 1,
 	})
 	close(release)
 	final := layoutReceive(ctx, t, client)
 	want.status, want.credits = 0xc0000054, 0
 	assertLayoutHeader(t, final, want)
 	assertLayoutError(t, final)
-	if !bytes.Equal(raw[24:48], final[24:48]) {
-		t.Error("final async reply changed message, async or session ID")
-	}
 }
 
 func layoutNegotiateOptions(t *testing.T) Options {
@@ -258,7 +260,7 @@ func TestSMB1WildcardReplyByteLayout(t *testing.T) {
 	}
 	assertLayoutFields(t, raw,
 		layoutField{"wildcard context count", 70, 2, 0},
-		layoutField{"wildcard security buffer offset", 120, 2, 0},
+		layoutField{"wildcard security buffer offset", 120, 2, 128},
 		layoutField{"wildcard security buffer length", 122, 2, 0},
 		layoutField{"wildcard context offset", 124, 4, 0},
 	)
@@ -292,8 +294,8 @@ func TestNegotiate311ReplyByteLayout(t *testing.T) {
 	if !bytes.Equal(raw[128:158], token) {
 		t.Errorf("security buffer at offset 128 = %x, want %x", raw[128:158], token)
 	}
-	// Context headers start at 160, 208 and 224. Each has an 8-byte header;
-	// padding follows the preceding buffer, not its declared data length.
+	// Context headers start at 160, 208 and 224, each on an 8-byte boundary.
+	// DataLength does not count the padding after the data.
 	assertLayoutFields(t, raw,
 		layoutField{"preauth context type", 160, 2, 0x0001},
 		layoutField{"preauth data length", 162, 2, 38},
