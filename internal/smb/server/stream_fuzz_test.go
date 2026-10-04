@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -49,11 +50,47 @@ func streamSeeds(t testing.TB) []streamSeed {
 	first := streamFrame(t, echo(t, 1))
 	second := streamFrame(t, echo(t, 2))
 	compound := streamFrame(t, echo(t, 1), echo(t, 2))
+	setup := streamFrame(t, sessionSetupSeed(t))
+	body, err := wire.EncodeTreeConnectRequest(wire.TreeConnectRequest{Path: "\\\\server\\backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Session 1 is in progress after the first NTLM step. This seed checks
+	// the tree request decoder and session check, not an authenticated tree.
+	tree := streamFrame(t, wire.Message{Header: wire.Header{Command: wire.TreeConnect, MessageID: 2, SessionID: 1, CreditCharge: 1, Credit: 16}, Body: body})
 	return []streamSeed{
 		{name: "negotiate", stream: negotiate, wantReplies: 1},
 		{name: "echo stream", stream: bytes.Join([][]byte{negotiate, first, second}, nil), wantReplies: 3},
 		{name: "echo compound", stream: bytes.Join([][]byte{negotiate, compound}, nil), wantReplies: 3},
+		{name: "session setup", stream: bytes.Join([][]byte{negotiate, setup}, nil), wantReplies: 2},
+		{name: "tree connect", stream: bytes.Join([][]byte{negotiate, setup, tree}, nil), wantReplies: 3},
 	}
+}
+
+func sessionSetupSeed(t testing.TB) wire.Message {
+	t.Helper()
+	account := auth.Account{User: "backup", Password: "password"}
+	acceptor, err := auth.NewAcceptor(auth.Options{Account: account, ServerName: "s3-smb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := acceptor.InitialToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator, err := auth.NewInitiator(account, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := initiator.Start(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := wire.EncodeSessionSetupRequest(wire.SessionSetupRequest{Token: result.Token, SecurityMode: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire.Message{Header: wire.Header{Command: wire.SessionSetup, MessageID: 1, CreditCharge: 1, Credit: 16}, Body: body}
 }
 
 func streamFrame(t testing.TB, messages ...wire.Message) []byte {
@@ -159,16 +196,11 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 		_, err := io.Copy(conn, bytes.NewReader(frame))
 		written <- err
 	}()
-	var payload []byte
+	var messages []wire.Message
 	var readErr error
 	if wantReply {
-		reader := &streamReplyReader{Reader: conn}
-		payload, readErr = readFrame(reader, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
-		if reader.started && streamPeerClosed(readErr) {
-			readErr = io.ErrUnexpectedEOF
-		}
+		messages, readErr = readStreamReplies(conn, frame)
 		if readErr != nil {
-			readErr = fmt.Errorf("read reply: %w", readErr)
 			// Unblock the writer before waiting for its result.
 			if err := conn.Close(); err != nil {
 				return nil, false, errors.Join(readErr, err, <-written)
@@ -189,16 +221,75 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 	if !wantReply {
 		return nil, false, nil
 	}
-	messages, err := wire.Split(payload)
-	if err != nil {
-		return nil, false, fmt.Errorf("invalid reply: %w", err)
-	}
-	for _, message := range messages {
-		if message.Header.Flags&wire.FlagResponse == 0 {
-			return nil, false, errors.New("reply lacks response flag")
+	return messages, false, nil
+}
+
+// Valid compounds may produce separate prefix, interim and final frames. Count
+// terminal replies by request identity, not frames or the number of interims.
+func readStreamReplies(conn net.Conn, frame []byte) ([]wire.Message, error) {
+	requests, decodeErr := wire.Split(frame[4:])
+	known := decodeErr == nil
+	remaining := make(map[uint64]struct{})
+	for _, request := range requests {
+		if request.Header.Command != wire.Cancel {
+			remaining[request.Header.MessageID] = struct{}{}
 		}
 	}
-	return messages, false, nil
+	pending := make(map[uint64]wire.Header)
+	var replies []wire.Message
+	for {
+		reader := &streamReplyReader{Reader: conn}
+		payload, err := readFrame(reader, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
+		if streamPeerClosed(err) && (reader.started || len(replies) != 0) {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read reply: %w", err)
+		}
+		messages, err := wire.Split(payload)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reply: %w", err)
+		}
+		for _, message := range messages {
+			if err := countStreamReply(message.Header, remaining, pending, known); err != nil {
+				return nil, err
+			}
+		}
+		replies = append(replies, messages...)
+		if !known || len(remaining) == 0 {
+			return replies, nil
+		}
+	}
+}
+
+func countStreamReply(header wire.Header, remaining map[uint64]struct{}, pending map[uint64]wire.Header, known bool) error {
+	if header.Flags&wire.FlagResponse == 0 {
+		return errors.New("reply lacks response flag")
+	}
+	if !known {
+		return nil
+	}
+	if _, exists := remaining[header.MessageID]; !exists {
+		return errors.New("reply has unexpected or completed message ID")
+	}
+	interim, waiting := pending[header.MessageID]
+	if header.Status == smb.StatusPending {
+		if waiting || header.Flags&wire.FlagAsync == 0 || header.AsyncID == 0 {
+			return errors.New("invalid interim reply")
+		}
+		pending[header.MessageID] = header
+		return nil
+	}
+	if waiting {
+		if header.Flags&wire.FlagAsync == 0 || header.AsyncID != interim.AsyncID || header.SessionID != interim.SessionID || header.Command != interim.Command || header.Credit != 0 {
+			return errors.New("invalid final async reply")
+		}
+		delete(pending, header.MessageID)
+	} else if header.Flags&wire.FlagAsync != 0 {
+		return errors.New("async reply without interim")
+	}
+	delete(remaining, header.MessageID)
+	return nil
 }
 
 type streamReplyReader struct {

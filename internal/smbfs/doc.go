@@ -17,6 +17,7 @@ package smbfs
 
 import (
 	"context"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
@@ -47,6 +48,9 @@ type Options struct {
 	// indexed queries on one long-lived connection because Meta has no stable
 	// paged enumeration API.
 	MetadataPath string
-	Capacity     uint64
-	ReadOnly     bool
+	// ReadRetryWindow bounds retries of transient read failures. Zero uses the
+	// production outage window plus one minute. Negative values are invalid.
+	ReadRetryWindow time.Duration
+	Capacity        uint64
+	ReadOnly        bool
 }
