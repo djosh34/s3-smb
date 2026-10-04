@@ -40,6 +40,12 @@ func (h *harness) baseline() result {
 	if len(entries) != 0 {
 		h.t.Fatal("initial application share not empty")
 	}
+	if os.Getenv("MAC_PHASE") == "m4" {
+		h.must(helpers.MacFeatures(func(args ...string) (string, error) {
+			return h.try(5*time.Minute, args...)
+		}, h.share, filepath.Join(h.bin, "fullsync")))
+		h.t.Log("m4-share-features-passed")
+	}
 	h.destinationSetup()
 	h.createTree()
 	h.checkExclusions()
