@@ -112,8 +112,9 @@ func (storage *reconnectStorage) Flush(ctx context.Context, handle smb.Handle, m
 }
 
 type reconnectClock struct {
-	value time.Time
-	mu    sync.Mutex
+	value        time.Time
+	afterAdvance func()
+	mu           sync.Mutex
 }
 
 func (clock *reconnectClock) now() time.Time {
@@ -124,8 +125,12 @@ func (clock *reconnectClock) now() time.Time {
 
 func (clock *reconnectClock) advance(duration time.Duration) {
 	clock.mu.Lock()
-	defer clock.mu.Unlock()
 	clock.value = clock.value.Add(duration)
+	afterAdvance := clock.afterAdvance
+	clock.mu.Unlock()
+	if afterAdvance != nil {
+		afterAdvance()
+	}
 }
 
 type reconnectFixture struct {
