@@ -1,0 +1,13 @@
+# Exact top-level test/e2e names for the M3 smbnext daemon run.
+# Add one name per line. No patterns, prefixes or subtest selectors.
+# A failure or skip, including in a subtest, fails this run.
+#
+# No names are enabled yet. Each candidate below currently fails its first
+# CREATE with STATUS_NOT_SUPPORTED. File-handler PRs enable them as they pass.
+# TestSMBToS3Smoke
+# TestFilesystemOperations
+# TestAuthentication
+# TestReadOnly
+# TestRecovery
+# TestMissingDataIsSMBError
+# TestZeroCacheUnusableDirectory

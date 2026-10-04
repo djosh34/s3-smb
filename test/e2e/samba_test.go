@@ -20,35 +20,7 @@ const sambaVersion = "4.17.12-Debian"
 //go:embed smbtorture.allowlist
 var tortureAllowlist string
 
-type sambaCommand func(context.Context, string, ...string) (string, error)
-
-// parseTortureAllowlist accepts only individual test IDs from --list, never
-// suite selectors or patterns that could silently add tests at a later milestone.
-func parseTortureAllowlist(allowlist, listing string) ([]string, error) {
-	available := make(map[string]bool)
-	for _, line := range strings.Split(listing, "\n") {
-		available[strings.TrimSpace(line)] = true
-	}
-	seen := make(map[string]bool)
-	var names []string
-	for i, line := range strings.Split(allowlist, "\n") {
-		name := strings.TrimSpace(line)
-		if name == "" || strings.HasPrefix(name, "#") {
-			continue
-		}
-		if strings.ContainsAny(name, "*?[] \t\r") || !available[name] {
-			return nil, fmt.Errorf("allowlist line %d is not an exact test ID: %q", i+1, name)
-		}
-		if seen[name] {
-			return nil, fmt.Errorf("allowlist line %d repeats %q", i+1, name)
-		}
-		seen[name] = true
-		names = append(names, name)
-	}
-	return names, nil
-}
-
-func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allowlist string) error {
+func runSamba(ctx context.Context, run integrationCommand, addr, share, authFile, allowlist string) error {
 	for _, tool := range []string{"smbclient", "smbtorture"} {
 		output, err := run(ctx, tool, "--version")
 		if err != nil {
@@ -66,7 +38,7 @@ func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allo
 	if err != nil {
 		return fmt.Errorf("smbtorture listing: %w", err)
 	}
-	names, err := parseTortureAllowlist(allowlist, listing)
+	names, err := parseTestAllowlist(allowlist, listing)
 	if err != nil {
 		return err
 	}
@@ -116,7 +88,7 @@ func requireRaceSmbnextBuild(settings []debug.BuildSetting) error {
 		}
 	}
 	if race != "true" || !slices.Contains(strings.Split(tags, ","), "smbnext") {
-		return fmt.Errorf("Samba daemon must be built with -race -tags smbnext; got -race=%q -tags=%q", race, tags)
+		return fmt.Errorf("integration daemon must be built with -race -tags smbnext; got -race=%q -tags=%q", race, tags)
 	}
 	return nil
 }

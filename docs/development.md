@@ -158,6 +158,13 @@ and runs each exact test ID separately. A failure, skip or missing success fails
 the check. M2 has no eligible Samba credit tests; the allowlist records why.
 Later milestones add names to that file without changing the runner.
 
+A separate `TestSmbnextE2ESubset` step runs the exact names in
+`test/e2e/smbnext.allowlist` against the same race-enabled daemon, also with
+`GORACE=halt_on_error=1`. It validates names against Go's test listing and builds
+an anchored `-run` expression. Failures, skips (including subtests) and missing
+success reports fail the step. An empty list is validated but runs no tests.
+The M3 list gains names only after their dependencies land and the tests pass.
+
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
