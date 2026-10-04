@@ -216,7 +216,7 @@ func TestCutBodies(t *testing.T) {
 			t.Fatalf("cut %d: body = %q", cut, res.data)
 		}
 		// A zero-byte cut can close the connection before headers are flushed.
-		if cut < 10 && !errors.Is(res.err, io.ErrUnexpectedEOF) && !(cut == 0 && errors.Is(res.err, io.EOF)) {
+		if cut < 10 && !errors.Is(res.err, io.ErrUnexpectedEOF) && (cut != 0 || !errors.Is(res.err, io.EOF)) {
 			t.Fatalf("cut %d: error = %v, want truncation", cut, res.err)
 		}
 		if cut >= 10 && res.err != nil {
@@ -245,7 +245,7 @@ func TestCutChunkedBodies(t *testing.T) {
 		if string(res.data) != "0123456789"[:min(cut, 10)] {
 			t.Fatalf("cut %d: body = %q", cut, res.data)
 		}
-		if cut < 10 && !errors.Is(res.err, io.ErrUnexpectedEOF) && !(cut == 0 && errors.Is(res.err, io.EOF)) {
+		if cut < 10 && !errors.Is(res.err, io.ErrUnexpectedEOF) && (cut != 0 || !errors.Is(res.err, io.EOF)) {
 			t.Fatalf("cut %d: error = %v, want truncation", cut, res.err)
 		}
 		if cut >= 10 && res.err != nil {

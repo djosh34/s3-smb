@@ -71,9 +71,9 @@ func TestCancelAndClose(t *testing.T) {
 
 func testInterruption(t *testing.T, phase, action string) {
 	t.Helper()
-	proxy, err := New(t.Context(), "http://127.0.0.1:1")
-	if err != nil {
-		t.Fatal(err)
+	proxy, listenErr := New(t.Context(), "http://127.0.0.1:1")
+	if listenErr != nil {
+		t.Fatal(listenErr)
 	}
 	t.Cleanup(func() {
 		if err := proxy.Close(); err != nil {
@@ -96,9 +96,10 @@ func testInterruption(t *testing.T, phase, action string) {
 	}
 	var held <-chan Event
 	if phase == "hold" {
-		held, err = proxy.HoldNextChunkResponse()
-		if err != nil {
-			t.Fatal(err)
+		var holdErr error
+		held, holdErr = proxy.HoldNextChunkResponse()
+		if holdErr != nil {
+			t.Fatal(holdErr)
 		}
 	}
 	reverse := &httputil.ReverseProxy{
