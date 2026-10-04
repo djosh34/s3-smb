@@ -35,10 +35,7 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 		data, result.status = queryFileInfo(ctx, request, open, wire.FileInfoClass(query.InfoClass), query.OutputLength)
 	case wire.InfoFilesystem:
 		data, result.status = queryFilesystemInfo(ctx, request, query.InfoClass, query.OutputLength)
-	case wire.InfoSecurity:
-		// The storage contract and #169 promise no ACL queries or ACL fidelity.
-		result.status = smb.StatusNotSupported
-	case 4: // Quota.
+	case wire.InfoSecurity, 4: // Security and quota: there are no ACLs or quotas.
 		result.status = smb.StatusNotSupported
 	default:
 		result.status = smb.StatusInvalidParameter
@@ -47,10 +44,7 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 		return result, nil
 	}
 	result.body, err = wire.EncodeQueryInfoResponse(wire.QueryResponse{Data: data})
-	if err != nil {
-		result.status = smb.StatusInternalError
-	}
-	return result, nil
+	return result, err
 }
 
 // Fixed portions are from MS-FSCC 2.4. Name and All may return a truncated

@@ -71,10 +71,10 @@ func TestClosedDeleteIntentCannotBeClearedByAnotherOpen(t *testing.T) {
 
 func TestBaseDeletionWaitsForLastStream(t *testing.T) {
 	table := newTable(t)
-	base := commit(t, table, deleteRequest(1, ""), state.Grant{})
-	stream := commit(t, table, requestWithStream(1, "xattr"), state.Grant{})
+	base := commit(t, table, deleteRequest(2, ""), state.Grant{})
+	stream := commit(t, table, requestWithStream(2, "xattr"), state.Grant{})
 	statusIs(t, table.SetDelete(base.ID, binding, deleteName(""), true), smb.StatusSuccess)
-	_, status := table.Reserve(requestWithStream(1, "another"))
+	_, status := table.Reserve(requestWithStream(2, "another"))
 	statusIs(t, status, smb.StatusDeletePending)
 	if action := closeOpen(t, table, base); action.Remove {
 		t.Fatal("base removed before stream closed")
@@ -97,6 +97,7 @@ func TestDeleteNameMustSelectTheSameStream(t *testing.T) {
 	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusInvalidParameter)
 	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{Base: "backup", Stream: "xattr"}, true), smb.StatusInvalidParameter)
 	reserve(t, table, requestWithStream(1, "xattr"))
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName("xattr"), true), smb.StatusSuccess)
 }
 
 // However the opens of a session or tree end, a file deleted on close stays

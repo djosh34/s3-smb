@@ -7,7 +7,7 @@ import (
 
 // matchPattern follows MS-FSA 2.1.4.4 with case-sensitive comparison.
 // Empty names never match. An empty pattern selects every directory entry.
-// By lead decision, "*.*" also selects names without a dot.
+// "*.*" also selects names without a dot, as DOS-era clients expect.
 func matchPattern(pattern, name string) bool {
 	if name == "" {
 		return false

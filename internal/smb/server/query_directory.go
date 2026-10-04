@@ -229,20 +229,7 @@ func encodeDirectoryEntry(class wire.DirectoryInfoClass, entry smb.DirEntry) ([]
 	metadata.Basic.Attributes = entry.Attr.Attributes
 	if class != wire.ClassDirectoryNames {
 		var err error
-		metadata.Basic.Created, err = wire.EncodeFiletime(entry.Attr.Created)
-		if err != nil {
-			return nil, err
-		}
-		metadata.Basic.Accessed, err = wire.EncodeFiletime(entry.Attr.Accessed)
-		if err != nil {
-			return nil, err
-		}
-		metadata.Basic.Modified, err = wire.EncodeFiletime(entry.Attr.Modified)
-		if err != nil {
-			return nil, err
-		}
-		metadata.Basic.Changed, err = wire.EncodeFiletime(entry.Attr.Changed)
-		if err != nil {
+		if metadata.Basic, err = queryBasicInfo(entry.Attr); err != nil {
 			return nil, err
 		}
 	}

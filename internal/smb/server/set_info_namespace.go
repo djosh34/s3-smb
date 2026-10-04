@@ -77,9 +77,6 @@ func renameUnderGuard(ctx context.Context, request RequestContext, open state.Op
 	if source.Name.Parent != discoveredSource.Name.Parent || destination.Name.Parent != discoveredDestination.Name.Parent || !source.Exists || source.Object != open.Object {
 		return smb.StatusSuccess, true
 	}
-	if destination.Name.Stream != "" {
-		return smb.StatusNotSupported, false
-	}
 	if destination.Exists {
 		if !replace {
 			return smb.StatusObjectNameCollision, false

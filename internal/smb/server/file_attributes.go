@@ -31,7 +31,7 @@ func setCreateAttributes(ctx context.Context, storage smb.Storage, create wire.C
 	if action == 3 {
 		attributes |= resolved.Attr.Attributes
 	}
-	if !directory && resolved.Object.Stream == "" {
+	if !directory {
 		attributes |= 0x20 // MS-FSA sets FILE_ATTRIBUTE_ARCHIVE on new or replaced data files.
 	}
 	attributes = normalizeFileAttributes(attributes, directory)
