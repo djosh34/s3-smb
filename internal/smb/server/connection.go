@@ -130,7 +130,7 @@ func (connection *connection) send(messages []wire.Message) error {
 	if err != nil {
 		return err
 	}
-	if len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess {
+	if connection.negotiated && len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess {
 		connection.preauth.Update(payload)
 	}
 	return <-connection.sender.enqueue(payload)

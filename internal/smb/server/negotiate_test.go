@@ -2,6 +2,7 @@ package server
 
 import (
 	"bytes"
+	"crypto/sha512"
 	"encoding/binary"
 	"log/slog"
 	"strings"
@@ -97,9 +98,28 @@ func TestOpeningSMB1NegotiateGetsWildcard(t *testing.T) {
 		t.Fatal("wildcard granted no credits")
 	}
 	// The wildcard does not consume the initial SMB2 sequence number.
-	messages := exchange(ctx, t, client, negotiateMessage(t, 1))
+	request := negotiateMessage(t, 1)
+	messages := exchange(ctx, t, client, request)
 	if messages[0].Header.Status != smb.StatusSuccess {
 		t.Fatalf("SMB2 after wildcard: %+v", messages[0].Header)
+	}
+	requestBytes, err := wire.Join([]wire.Message{request})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := sha512.Sum512(append(make([]byte, 64), requestBytes...))
+	expected := sha512.Sum512(append(first[:], messages[0].Raw...))
+	// The connection transcript is consumed by SESSION_SETUP in the next PR.
+	// Read it after receiving the complete NEGOTIATE response.
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if len(server.connections) != 1 {
+		t.Fatal("negotiation closed the connection")
+	}
+	for connection := range server.connections {
+		if got := connection.preauth.Sum(); got != expected {
+			t.Fatal("preauth transcript includes the wildcard exchange")
+		}
 	}
 }
 
