@@ -29,6 +29,10 @@ func compoundFileRequest(t *testing.T, session smbtest.Session, command wire.Com
 		body, err = wire.EncodeEchoRequest(wire.EmptyRequest{})
 	case uint16(wire.Read):
 		body, err = wire.EncodeReadRequest(wire.ReadRequest{ID: id, Length: 1})
+	case uint16(wire.QueryInfo):
+		body, err = wire.EncodeQueryInfoRequest(wire.QueryInfoRequest{ID: id, OutputLength: 1})
+	case uint16(wire.QueryDirectory):
+		body, err = wire.EncodeQueryDirectoryRequest(wire.QueryDirectoryRequest{ID: id, OutputLength: 1})
 	default:
 		t.Fatalf("no test body for command %d", command)
 	}
