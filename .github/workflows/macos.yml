@@ -1,5 +1,5 @@
 name: Time Machine end-to-end
-# Backup and restore on two Macs, five failed-backup scenarios, or exclusion discovery.
+# Backup and restore on two Macs, six failed-backup scenarios, or exclusion discovery.
 on:
   workflow_dispatch:
     inputs:
@@ -23,7 +23,7 @@ on:
       scenarios:
         description: Failed-backup scenarios to run, as a JSON list
         required: true
-        default: '["server-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss"]'
+        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss"]'
         type: string
 permissions:
   contents: read

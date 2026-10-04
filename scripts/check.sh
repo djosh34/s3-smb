@@ -9,8 +9,6 @@ elif (( $# != 0 )); then
   echo 'Usage: scripts/check.sh [--gate]' >&2
   exit 2
 fi
-export GOMAXPROCS=${GOMAXPROCS:-2}
-export GOFLAGS=${GOFLAGS:--p=2}
 root=$(cd "$(dirname "$0")/.." && pwd)
 cd "$root"
 work=$(mktemp -d)
