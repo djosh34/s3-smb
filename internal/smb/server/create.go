@@ -157,11 +157,11 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
-	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
-		return reply{status: status}, nil
-	}
 	if result, handled, err := replayCreate(ctx, request, message, create); handled {
 		return result, err
+	}
+	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
+		return reply{status: status}, nil
 	}
 	return runCreateWithLeases(ctx, request, create, granted)
 }
