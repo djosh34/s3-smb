@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -66,7 +67,8 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 	}
 	client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
 	// Always unblock the barrier before connection cleanup, including failures.
-	t.Cleanup(func() { close(resume) })
+	unblock := sync.OnceFunc(func() { close(resume) })
+	t.Cleanup(unblock)
 	writer := insertIOOpen(t, server, session, "flush-data", 3)
 	other := insertIOOpen(t, server, session, "flush-data", 1)
 	payload := []byte("cross-handle durable bytes")
@@ -98,7 +100,7 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 	if echoReply.Header.Command != wire.Echo || echoReply.Header.Status != smb.StatusSuccess {
 		t.Fatalf("flush completed before barrier: %+v", echoReply.Header)
 	}
-	resume <- struct{}{}
+	unblock()
 	final := receiveFlushReply(ctx, t, client)
 	if final.Header.Status != smb.StatusSuccess || final.Header.MessageID != message.Header.MessageID {
 		t.Fatal(final.Header)
