@@ -110,12 +110,12 @@ func TestShortNTLMv2Response(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, offset := range []int{0, 1, 2, 4, 24, len(parsed.blob) - 1} {
+	for _, offset := range []int{0, 1, len(parsed.blob) - 1} {
 		corrupt := bytes.Clone(message)
 		start := int(littleEndian.Uint32(corrupt[24:])) + 16
 		corrupt[start+offset] ^= 2
 		if _, err := decodeNTLM(corrupt); err == nil {
-			t.Fatalf("accepted invalid response reserved byte %d", offset)
+			t.Fatalf("accepted invalid response type or suffix byte %d", offset)
 		}
 	}
 	for _, offset := range []int{12, 52} {

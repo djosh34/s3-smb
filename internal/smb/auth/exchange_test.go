@@ -308,6 +308,56 @@ func TestEncoderBounds(t *testing.T) {
 	}
 }
 
+func TestReservedChallengeFields(t *testing.T) {
+	// MS-NLMP 2.2.2.7: Reserved1, Reserved2 and Reserved3 MUST be ignored
+	// on receipt, but the complete wire blob still contributes to the proof.
+	acceptor := testAcceptor(t, vectorAccount)
+	_, authenticate := startExchange(t, acceptor, testInitiator(t, vectorAccount))
+	wrapped, err := decodeSPNEGO(authenticate.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := decodeNTLM(wrapped.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, offset := range []int{2, 4, 24} {
+		message.blob[offset] = 0xff
+	}
+	key, err := responseKey(vectorAccount, "User", "Domain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := ntlmHMAC(key, acceptor.challenge[24:32], message.blob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(message.fields[1], proof)
+	baseKey, err := ntlmHMAC(key, proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := exchangeKey(baseKey, authenticate.SessionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(message.fields[5], encrypted)
+	mic, err := transcriptMIC(authenticate.SessionKey, acceptor.negotiate, acceptor.challenge, message.raw, message.micOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(message.raw[message.micOffset:], mic)
+	token, err := encodeResponse(-1, nil, message.raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := acceptor.Step(token)
+	if err != nil || !final.Done {
+		t.Fatalf("reserved challenge bytes changed authentication: %v", err)
+	}
+	requireBytes(t, final.SessionKey, authenticate.SessionKey)
+}
+
 func TestIndependentExchanges(t *testing.T) {
 	for _, user := range []string{"one", "two", "three", "four"} {
 		t.Run(user, func(t *testing.T) {

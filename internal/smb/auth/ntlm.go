@@ -175,9 +175,11 @@ func validateNTLMFields(result *ntlmMessage) error {
 		}
 		result.blob = response[16:]
 		blob := result.blob
-		if blob[0] != 1 || blob[1] != 1 || !allZero(blob[2:8]) || !allZero(blob[24:28]) || !allZero(blob[len(blob)-4:]) {
+		if blob[0] != 1 || blob[1] != 1 || !allZero(blob[len(blob)-4:]) {
 			return errToken
 		}
+		// MS-NLMP 2.2.2.7 requires ignoring Reserved1, Reserved2 and
+		// Reserved3 on receipt. They remain covered by the proof and MIC.
 		av, err := decodeAV(blob[28 : len(blob)-4])
 		result.av = av
 		return err
