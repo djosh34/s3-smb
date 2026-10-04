@@ -49,6 +49,16 @@ func (f *setInfoFixture) set(t *testing.T, info wire.SetInfoRequest, want smb.St
 	response := exchange(f.ctx, t, f.client, wire.Message{Header: wire.Header{
 		Command: wire.SetInfo, MessageID: f.nextID, SessionID: f.session.SessionID, TreeID: f.session.TreeID, CreditCharge: 1, Credit: 16,
 	}, Body: body})[0]
+	if response.Header.Status == smb.StatusPending {
+		final, receiveErr := f.client.Receive(f.ctx)
+		if receiveErr != nil {
+			t.Fatal(receiveErr)
+		}
+		if len(final.Messages) != 1 {
+			t.Fatalf("SET_INFO final reply contains %d messages, want one", len(final.Messages))
+		}
+		response = final.Messages[0]
+	}
 	f.nextID++
 	if response.Header.Status != want {
 		t.Fatalf("SET_INFO type %d class %d: status %#x, want %#x", info.InfoType, info.InfoClass, response.Header.Status, want)
