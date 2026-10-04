@@ -129,7 +129,11 @@ func scriptReconnectOpen(peer net.Conn, protector *crypt.Protector, encrypted bo
 	header.Signature = [16]byte{}
 	header.Credit = 5
 	if index == 0 {
-		payload, encodeErr := peerEncode(notification, protector, encrypted)
+		notificationProtector := protector
+		if !encrypted {
+			notificationProtector = nil
+		}
+		payload, encodeErr := peerEncode(notification, notificationProtector, encrypted)
 		if encodeErr != nil {
 			return encodeErr
 		}
