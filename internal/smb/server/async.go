@@ -32,6 +32,9 @@ func asyncEligible(command wire.Command) bool {
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message) reply {
+	if err := ctx.Err(); err != nil {
+		return reply{status: smb.StatusFromError(err)}
+	}
 	result, err := connection.dispatch(ctx, message)
 	if err != nil {
 		level, text := slog.LevelError, "request failed"
