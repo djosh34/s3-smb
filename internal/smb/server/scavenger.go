@@ -54,8 +54,8 @@ func (server *Server) expire(ctx context.Context) {
 	actions = append(actions, server.options.State.ExpireBreaks()...)
 	for _, action := range actions {
 		if err := server.cleanup(ctx, []state.CloseAction{action}); err != nil {
-			server.options.Logger.Error("expire open", "persistent_id", action.ID.Persistent,
-				"volatile_id", action.ID.Volatile, "inode", action.Object.Inode,
+			server.options.Logger.Error("expire open", "persistent_id", action.FileID.Persistent,
+				"volatile_id", action.FileID.Volatile, "inode", action.Object.Inode,
 				"stream", action.Object.Stream, "error", err)
 		}
 	}

@@ -23,7 +23,7 @@ func closeOpen(t *testing.T, table *state.Table, open state.Open) state.CloseAct
 	t.Helper()
 	action, status := table.Close(open.ID, open.Binding)
 	statusIs(t, status, smb.StatusSuccess)
-	if action.ID != open.ID || action.Handle != open.Handle {
+	if action.FileID != open.ID || action.Handle != open.Handle {
 		t.Fatal("close lost open identity or storage handle")
 	}
 	_, status = table.Find(open.ID, open.Binding)

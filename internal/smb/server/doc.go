@@ -4,7 +4,9 @@
 //
 // New validates the supplied modules and identity. The server handles negotiation,
 // NTLMv2 sessions, disk-share trees, ECHO, signing and GCM encryption. File
-// handlers are added in M3 through the documented RequestContext.
+// handlers are registered in handlers.go, one line per command. They resolve
+// request IDs with RequestContext.FileID and report the ID used or created in
+// reply.fileID. Compounds save that ID for the next related member.
 // The server never closes the storage runtime. Tests use ServeConn over net.Pipe
 // without a listener or main wiring.
 package server
@@ -55,11 +57,13 @@ type Options struct {
 // its own completion channel. A partial write error closes the connection and
 // fails queued work without sending another frame.
 // The first Serve or ServeConn starts one expiry timer shared by all connections.
-// Shutdown stops the timer, stops accepting and drains requests. It closes every attached and
-// detached open, applies pending deletion, and returns all cleanup errors.
+// Shutdown stops the timer, stops accepting and drains requests. It closes every
+// attached and detached open, applies pending deletion, and returns cleanup errors.
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
 type Server struct {
 	shutdownErr   error
+	activeOpens   map[uint64]*openUses
+	parents       map[smb.Inode]*parentGuard
 	handlers      map[wire.Command]handler
 	connections   map[*connection]struct{}
 	listeners     map[*ownedListener]struct{}
@@ -69,6 +73,8 @@ type Server struct {
 	options       Options
 	workers       sync.WaitGroup
 	mu            sync.Mutex
+	openMu        sync.Mutex
+	namespaceMu   sync.Mutex
 	nextSessionID uint64
 	nextTreeID    uint32
 	stopping      bool

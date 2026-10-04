@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/djosh34/s3-smb/internal/smb/auth"
-	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
 // New validates the supplied modules and server identity. It does not own storage.
@@ -31,7 +30,7 @@ func New(options Options) (*Server, error) {
 		return nil, fmt.Errorf("server account: %w", err)
 	}
 	return &Server{
-		options: options, handlers: map[wire.Command]handler{wire.Echo: handleEcho},
+		options: options, handlers: commandHandlers(),
 		connections: make(map[*connection]struct{}), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }

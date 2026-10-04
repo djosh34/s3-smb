@@ -158,7 +158,7 @@ func TestFakeClockExpiryUsesClosePath(t *testing.T) {
 	_, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusObjectNameNotFound)
 	actions := table.Expire()
-	if len(actions) != 1 || actions[0].ID != open.ID || actions[0].Handle != open.Handle || !actions[0].Remove || actions[0].Name != grant.DeleteName {
+	if len(actions) != 1 || actions[0].FileID != open.ID || actions[0].Handle != open.Handle || !actions[0].Remove || actions[0].Name != grant.DeleteName {
 		t.Fatalf("expiry cleanup: %+v", actions)
 	}
 	if len(table.Expire()) != 0 || len(table.CloseAll()) != 0 {

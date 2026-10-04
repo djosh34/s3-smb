@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
@@ -26,6 +27,31 @@ func TestHandlerRequestContext(t *testing.T) {
 	client, ctx := pipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 1))
 	exchange(ctx, t, client, echo(t, 1))
+}
+
+func TestRequestFileID(t *testing.T) {
+	placeholder := wire.FileID{Persistent: ^uint64(0), Volatile: ^uint64(0)}
+	id := wire.FileID{Persistent: 17, Volatile: 3}
+	result := reply{fileID: id}
+	for _, test := range []struct {
+		name    string
+		request RequestContext
+		input   wire.FileID
+		want    wire.FileID
+		status  smb.Status
+	}{
+		{"existing", RequestContext{related: true, fileID: id}, id, id, smb.StatusSuccess},
+		{"inherited", RequestContext{related: true, fileID: result.fileID}, placeholder, id, smb.StatusSuccess},
+		{"missing", RequestContext{related: true}, placeholder, wire.FileID{}, smb.StatusInvalidParameter},
+		{"unrelated", RequestContext{fileID: id}, placeholder, placeholder, smb.StatusSuccess},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, status := test.request.FileID(test.input)
+			if got != test.want || status != test.status {
+				t.Fatalf("FileID: %+v, %v; want %+v, %v", got, status, test.want, test.status)
+			}
+		})
+	}
 }
 
 func TestRequestBinding(t *testing.T) {
