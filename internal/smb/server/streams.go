@@ -7,8 +7,8 @@ import (
 
 // AAPL treats an empty named stream as absent for FILE_OPEN only. Other
 // dispositions still use Lookup's selected-object existence without alteration.
-func streamOpenStatus(request RequestContext, create wire.CreateRequest, resolved smb.Resolved) smb.Status {
-	if request.aaplNegotiated() && create.Disposition == fileOpen && resolved.Exists && resolved.Name.Stream != "" && resolved.Attr.Size == 0 {
+func streamOpenStatus(negotiated bool, create wire.CreateRequest, resolved smb.Resolved) smb.Status {
+	if negotiated && create.Disposition == fileOpen && resolved.Exists && resolved.Name.Stream != "" && resolved.Attr.Size == 0 {
 		return smb.StatusObjectNameNotFound
 	}
 	return smb.StatusSuccess

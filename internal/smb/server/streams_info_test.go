@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"fmt"
+	"maps"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -29,9 +30,10 @@ func TestIssue97SelectedStreamInformation(t *testing.T) {
 					t.Fatalf("POSTQUERY_ATTRIB %s: flags %x size %d", stream, closed.Flags, closed.Size)
 				}
 			}
-			assertStreamList(t, c.query(t, base, wire.ClassFileStream), uint64(baseSize))
+			want := map[string]uint64{"::$DATA": uint64(baseSize), ":AFP_Resource:$DATA": 14, ":AFP_AfpInfo:$DATA": 14, ":com.apple.FinderInfo:$DATA": 14, ":other.xattr:$DATA": 14}
+			assertStreamList(t, c.query(t, base, wire.ClassFileStream), want)
 			resource := c.create(t, streamRequest("data:AFP_Resource", fileOpen), smb.StatusSuccess).ID
-			assertStreamList(t, c.query(t, resource, wire.ClassFileStream), uint64(baseSize))
+			assertStreamList(t, c.query(t, resource, wire.ClassFileStream), want)
 			c.close(t, resource)
 			assertStreamLength(t, c.query(t, base, wire.ClassFileStandard), wire.ClassFileStandard, uint64(baseSize))
 			c.close(t, base)
@@ -39,13 +41,13 @@ func TestIssue97SelectedStreamInformation(t *testing.T) {
 	}
 }
 
-func assertStreamList(t *testing.T, data []byte, baseSize uint64) {
+func assertStreamList(t *testing.T, data []byte, want map[string]uint64) {
 	t.Helper()
 	listed, err := wire.DecodeFileStreamInformation(data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[string]uint64{"::$DATA": baseSize, ":AFP_Resource:$DATA": 14, ":AFP_AfpInfo:$DATA": 14, ":com.apple.FinderInfo:$DATA": 14, ":other.xattr:$DATA": 14}
+	want = maps.Clone(want)
 	if len(listed.Entries) != len(want) {
 		t.Fatalf("streams: %+v", listed.Entries)
 	}
@@ -108,6 +110,10 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 		id = c.create(t, streamRequest(name, 1), smb.StatusSuccess).ID
 		c.close(t, id)
 	}
+	populated := c.create(t, streamRequest("data:populated", fileCreateDisposition), smb.StatusSuccess).ID
+	c.write(t, populated, []byte("x"), 0, smb.StatusSuccess)
+	before := map[string]uint64{"::$DATA": 0, ":populated:$DATA": 1, ":AFP_AfpInfo:$DATA": 0, ":AFP_Resource:$DATA": 0, ":com.apple.FinderInfo:$DATA": 0, ":other.xattr:$DATA": 0}
+	assertStreamList(t, c.query(t, base, wire.ClassFileStream), before)
 	query, err := wire.EncodeAAPLQuery(wire.AAPLQuery{Requested: 2})
 	if err != nil {
 		t.Fatal(err)
@@ -119,13 +125,28 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 		t.Fatalf("AAPL not negotiated: %+v", negotiated.Contexts)
 	}
 	c.close(t, negotiated.ID)
+	// fruit_filter_empty_streams keeps the unnamed stream, even when empty:
+	// https://github.com/samba-team/samba/blob/samba-4.23.0/source3/modules/vfs_fruit.c#L4043-L4071
+	after := map[string]uint64{"::$DATA": 0, ":populated:$DATA": 1}
+	assertStreamList(t, c.query(t, base, wire.ClassFileStream), after)
+	assertStreamList(t, c.query(t, populated, wire.ClassFileStream), after)
+	c.read(t, populated, 0, []byte("x"))
+	c.close(t, populated)
+	populated = c.create(t, streamRequest("data:populated", fileOpen), smb.StatusSuccess).ID
+	c.close(t, populated)
 	client, ctx, session := newFilesMetaClient(t, c.server)
 	fresh := &streamClient{server: c.server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
 	freshID := fresh.create(t, streamRequest("data:AFP_Resource", fileOpen), smb.StatusSuccess).ID
 	fresh.close(t, freshID)
+	freshBase := fresh.create(t, streamRequest("data", fileOpen), smb.StatusSuccess).ID
+	assertStreamList(t, fresh.query(t, freshBase, wire.ClassFileStream), before)
+	fresh.close(t, freshBase)
 	for _, stream := range []string{"AFP_AfpInfo", "AFP_Resource", "com.apple.FinderInfo", "other.xattr"} {
 		name := "data:" + stream
 		c.create(t, streamRequest(name, 1), smb.StatusObjectNameNotFound)
+		directory := streamRequest(name, fileOpen)
+		directory.Options = fileDirectoryFile
+		c.create(t, directory, smb.StatusNotADirectory)
 		c.create(t, streamRequest(name, 2), smb.StatusObjectNameCollision)
 		id := c.create(t, streamRequest(name, 3), smb.StatusSuccess).ID
 		c.write(t, id, []byte("x"), 0, smb.StatusSuccess)
@@ -134,7 +155,7 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 		c.read(t, id, 0, []byte("x"))
 		c.close(t, id)
 	}
-	id := c.create(t, streamRequest("data", 1), smb.StatusSuccess).ID
+	id := c.create(t, streamRequest("data::$DATA", fileOpen), smb.StatusSuccess).ID
 	c.close(t, id)
 	c.close(t, base)
 }

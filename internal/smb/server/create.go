@@ -159,7 +159,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	if status = streamOpenStatus(request, create, resolved); status != smb.StatusSuccess {
+	if status = streamOpenStatus(request.aaplNegotiated(), create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	if !resolved.Exists {
