@@ -53,23 +53,30 @@ func TestReadRetryEagain(t *testing.T) {
 	}
 }
 
-func TestReadRetryDeadlineStartsAtFirstFailure(t *testing.T) {
-	window := 50 * time.Millisecond
-	var failed time.Time
+func TestReadRetryPermanentFailureIsBounded(t *testing.T) {
+	window := 2*readRetrySleep + readRetrySleep/2
+	backendBudget := 2 * readRetrySleep
+	// Allow scheduling slack, but do not let the backend retry forever.
+	bound := window + backendBudget + 100*time.Millisecond
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
+	defer cancel()
+	start := time.Now()
 	calls := 0
-	n, err := retryRead(t.Context(), func() (int, syscall.Errno) {
+	n, err := retryRead(ctx, func() (int, syscall.Errno) {
 		calls++
-		// The initial backend attempt takes longer than our outage window.
-		time.Sleep(2 * window)
-		failed = time.Now()
+		// A missing or corrupt chunk exhausts JuiceFS's budget on every attempt.
+		time.Sleep(backendBudget)
 		return 0, syscall.EIO
 	}, window)
-	if n != 0 || !errors.Is(err, syscall.EIO) || calls != 1 {
-		t.Fatalf("read = %d, %v after %d calls", n, err, calls)
-	}
 	requireError(t, err, smb.ErrIO)
-	if time.Since(failed) < window {
-		t.Fatal("retry window started before the first failure")
+	if n != 0 || !errors.Is(err, syscall.EIO) || errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("permanent failure = %d, %v", n, err)
+	}
+	if calls != 1 {
+		t.Fatalf("retry window did not include the first backend attempt: %d calls", calls)
+	}
+	if elapsed := time.Since(start); elapsed > bound {
+		t.Fatalf("permanent failure took %s; bound is %s", elapsed, bound)
 	}
 }
 

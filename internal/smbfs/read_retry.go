@@ -5,24 +5,27 @@ import (
 	"errors"
 	"syscall"
 	"time"
+
+	"github.com/djosh34/s3-smb/internal/smb"
 )
 
 const (
-	readRetryWindow = 6 * time.Minute
+	readRetryWindow = smb.S3OutageWindow + time.Minute
 	readRetrySleep  = 100 * time.Millisecond
 )
 
-// retryRead gives each read its own outage window, starting at its first EIO.
-// The backend may spend time retrying before returning that first failure.
+// retryRead gives each read its own outage window, starting at the call.
+// An in-flight backend attempt may finish after the window, so a permanent
+// failure takes at most the window plus one backend retry budget.
 func retryRead(ctx context.Context, attempt func() (int, syscall.Errno), window time.Duration) (int, error) {
-	var deadline time.Time
+	deadline := time.Now().Add(window)
 	var n int
 	var eno syscall.Errno
 	for {
 		if err := ctx.Err(); err != nil {
 			return n, errors.Join(backendError(eno), err)
 		}
-		if !deadline.IsZero() && !time.Now().Before(deadline) {
+		if !time.Now().Before(deadline) {
 			return n, backendError(syscall.EIO)
 		}
 		n, eno = attempt()
@@ -32,14 +35,7 @@ func retryRead(ctx context.Context, attempt func() (int, syscall.Errno), window 
 		if eno == syscall.EAGAIN {
 			continue
 		}
-		if deadline.IsZero() {
-			deadline = time.Now().Add(window)
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return n, backendError(eno)
-		}
-		timer := time.NewTimer(min(readRetrySleep, remaining))
+		timer := time.NewTimer(min(readRetrySleep, time.Until(deadline)))
 		select {
 		case <-ctx.Done():
 			timer.Stop()

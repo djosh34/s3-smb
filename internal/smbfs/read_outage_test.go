@@ -3,6 +3,7 @@ package smbfs
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -102,7 +103,7 @@ func TestReadAcrossBlockBoundarySurvivesS3Outage(t *testing.T) {
 	go func() {
 		n, readErr := f.fs.ReadAt(ctx, h, got, offset)
 		if readErr == nil && (n != len(got) || !bytes.Equal(got, data[offset:offset+uint64(len(got))])) {
-			readErr = smb.ErrIO
+			readErr = fmt.Errorf("cold read returned %d bytes with a data mismatch; want %d matching bytes", n, len(got))
 		}
 		done <- readErr
 	}()
