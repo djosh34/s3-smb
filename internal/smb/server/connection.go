@@ -36,6 +36,7 @@ type connection struct {
 	pending         map[uint64]*pendingRequest
 	sessions        map[uint64]*sessionEntry
 	replyProtection map[uint64]savedProtection
+	inflight        map[*sessionRequest]struct{}
 	credits         credits
 	sessionMu       sync.RWMutex
 	pendingMu       sync.Mutex
@@ -125,7 +126,7 @@ func (connection *connection) receive(ctx context.Context) error {
 			continue
 		}
 		connection.opened = true
-		messages, encrypted, err := connection.decodePayload(payload)
+		messages, err := connection.decodePayload(payload)
 		if err != nil && !errors.Is(err, errAccessDenied) {
 			return err
 		}
@@ -133,7 +134,6 @@ func (connection *connection) receive(ctx context.Context) error {
 		if err := connection.checkNegotiationState(messages); err != nil {
 			return err
 		}
-		connection.rememberProtection(messages, encrypted)
 		if err := connection.process(ctx, messages, denied); err != nil {
 			return err
 		}
@@ -234,10 +234,13 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 	if message.Header.Command > wire.OplockBreak {
 		return reply{status: smb.StatusNotSupported}, nil
 	}
-	request, status := connection.resolveRequest(message.Header)
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	request, operation, status := connection.resolveRequest(message.Header, cancel)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
+	defer connection.finishRequest(operation)
 	switch uint16(message.Header.Command) {
 	case uint16(wire.TreeConnect):
 		return connection.treeConnect(message)
