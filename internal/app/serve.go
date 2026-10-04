@@ -178,15 +178,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err != nil {
 			return err
 		}
-		if c.Storage.Compression != nil {
-			format.Compression = *c.Storage.Compression
-		}
 		fresh = true
 	} else if remoteEmpty {
 		return errors.New("remote volume identity contradicts the empty listing")
-	}
-	if !fresh && c.Storage.Compression != nil && *c.Storage.Compression != format.Compression {
-		return errors.New("configured compression differs from existing dataset; omit storage.compression to use its stored format")
 	}
 	// The stored format supplies identity and data layout. The bucket and the
 	// credentials come from the current configuration.
