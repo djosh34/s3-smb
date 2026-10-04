@@ -66,8 +66,8 @@ type Open struct {
 	Handle           smb.Handle
 	User             string
 	Share            string
-	Directory        DirectoryCursor
 	Object           smb.ObjectKey
+	Directory        DirectoryCursor
 	ID               FileID
 	Binding          Binding
 	ClientGUID       GUID
@@ -84,10 +84,14 @@ type Open struct {
 }
 
 // DirectoryCursor belongs to one SMB open. Empty continuation patterns reuse
-// Pattern. Restart clears Cookie; reopening starts a new search.
+// Pattern. Restart clears Cookie and DotEntries; reopening starts a new search.
+// Started distinguishes an empty first search from an exhausted continuation.
+// DotEntries counts the synthetic dot entries already returned.
 type DirectoryCursor struct {
-	Pattern string
-	Cookie  smb.Cookie
+	Pattern    string
+	Cookie     smb.Cookie
+	DotEntries uint8
+	Started    bool
 }
 
 // Range describes a non-blocking byte lock owned by one persistent FileId.
