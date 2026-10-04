@@ -139,8 +139,8 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
-	if create.Options&fileDeleteOnClose != 0 && granted&fileDelete == 0 {
-		return reply{status: smb.StatusAccessDenied}, nil
+	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
+		return reply{status: status}, nil
 	}
 	result, unlock, err := createLocked(ctx, request, create, granted)
 	if unlock != nil {
@@ -235,6 +235,7 @@ func closeFailedCreate(ctx context.Context, request RequestContext, open state.O
 	}
 	closeErr := request.Storage.Close(ctx, action.Handle)
 	if action.Remove {
+		defer request.Opens.CompleteDelete(action.Object)
 		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object.Inode))
 	}
 	return closeErr

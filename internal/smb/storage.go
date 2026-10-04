@@ -216,7 +216,7 @@ type Storage interface {
 	// Named-stream rename returns ErrNotSupported, mapped to STATUS_NOT_SUPPORTED.
 	Rename(ctx context.Context, request RenameRequest) error
 	// PathOf returns the current share-relative base path. No hard links are
-	// supported, so a linked inode has one path. An unlinked inode is not found.
+	// supported. An unlinked inode or one with multiple paths is not found.
 	PathOf(ctx context.Context, inode Inode) (string, error)
 	// StatFS reports volume identity and configured capacity, independent of handles.
 	StatFS(ctx context.Context) (Space, error)

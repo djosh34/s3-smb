@@ -121,6 +121,7 @@ type Lease struct {
 // never cross stream keys. DeletePending rejects new opens. DeleteName is the
 // name selected for deletion, not the name of the last closing handle. For a
 // renamed base, the close path resolves PathOf and verifies the inode again.
+// DeletePending remains set until CompleteDelete reports the cleanup outcome.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
 // Records are removed only after opens, reservations, locks and leases are gone.
@@ -181,9 +182,10 @@ type Grant struct {
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
-// blocks new opens through the guard until deletion finishes, and drains active
-// request references before closing Handle. A transport drop cannot close a
-// storage reference still in use by an async request.
+// retains delete-pending until CompleteDelete on every removal outcome, and
+// drains active request references before closing Handle without a parent guard.
+// A transport drop cannot close a storage reference still in use by an async
+// request.
 type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
@@ -246,6 +248,7 @@ type openEntry struct {
 type objectEntry struct {
 	ObjectRecord
 	deleteCommitted bool
+	removalPending  bool
 }
 
 type createIdentity struct {
