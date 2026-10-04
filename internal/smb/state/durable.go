@@ -52,7 +52,8 @@ func (table *Table) Disconnect(sessionID uint64) []CloseAction {
 			open.DurableDeadline = now.Add(open.DurableTimeout)
 		}
 	}
-	return table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
+	actions := table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
+	return append(actions, table.closeDetachedBreaks()...)
 }
 
 // CloseSession closes attached session opens, including durable opens, on LOGOFF.

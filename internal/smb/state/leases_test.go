@@ -14,7 +14,10 @@ func leaseGrant(req state.OpenRequest, leaseState uint32) state.Grant {
 
 func startBreak(t *testing.T, table *state.Table, object smb.ObjectKey, target uint32) state.Break {
 	t.Helper()
-	breaks := table.BreakLeases(object, state.GUID{9}, state.GUID{9}, target)
+	breaks, actions := table.BreakLeases(object, state.GUID{9}, state.GUID{9}, target)
+	if len(actions) != 0 {
+		t.Fatalf("unexpected immediate break cleanup: %+v", actions)
+	}
 	if len(breaks) != 1 {
 		t.Fatalf("break count = %d, want 1", len(breaks))
 	}
@@ -42,7 +45,7 @@ func TestLeaseBreakCapturesNotificationAndAcknowledgesWithoutEpoch(t *testing.T)
 			if notification.CurrentState != test.current || notification.NewState != test.target || notification.AckRequired != test.ack || notification.Epoch != 8 || notification.Binding != binding || notification.ClientGUID != req.ClientGUID || notification.LeaseKey != grant.Lease.Key {
 				t.Fatalf("notification: %+v", notification)
 			}
-			if len(table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, test.target)) != 0 {
+			if breaks, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, test.target); len(breaks) != 0 || len(actions) != 0 {
 				t.Fatal("duplicate break notification")
 			}
 			if test.ack {
@@ -52,10 +55,10 @@ func TestLeaseBreakCapturesNotificationAndAcknowledgesWithoutEpoch(t *testing.T)
 					t.Fatal("non-durable acknowledgement returned cleanup")
 				}
 				_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, test.target)
-				statusIs(t, status, smb.StatusInvalidParameter)
+				statusIs(t, status, smb.StatusUnsuccessful)
 			} else {
 				_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
-				statusIs(t, status, smb.StatusInvalidParameter)
+				statusIs(t, status, smb.StatusUnsuccessful)
 			}
 			if notification.CurrentState != test.current {
 				t.Fatal("returned notification was mutated")
@@ -77,36 +80,65 @@ func TestAckBreakChecksIdentityAndSubset(t *testing.T) {
 		client  state.GUID
 		key     state.GUID
 		state   uint32
+		want    smb.Status
 	}{
-		{binding: state.Binding{SessionID: 2, TreeID: 1}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead},
-		{binding: state.Binding{SessionID: 1, TreeID: 2}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead},
-		{binding: binding, client: state.GUID{9}, key: grant.Lease.Key, state: smb.LeaseRead},
-		{binding: binding, client: req.ClientGUID, key: state.GUID{9}, state: smb.LeaseRead},
-		{binding: binding, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead | smb.LeaseHandle},
-		{binding: state.Binding{}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead},
+		{binding: state.Binding{SessionID: 2, TreeID: 1}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
+		{binding: state.Binding{SessionID: 1, TreeID: 2}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
+		{binding: binding, client: state.GUID{9}, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
+		{binding: binding, client: req.ClientGUID, key: state.GUID{9}, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
+		{binding: binding, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead | smb.LeaseHandle, want: 0xc00000d0},
+		{binding: state.Binding{}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
 	} {
 		_, status := table.AckBreak(test.binding, test.client, test.key, test.state)
-		statusIs(t, status, smb.StatusInvalidParameter)
+		statusIs(t, status, test.want)
 	}
 	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
 	statusIs(t, status, smb.StatusSuccess)
 }
 
-func TestBreakTimeoutRemovesDurability(t *testing.T) {
+func TestRejectedAckDoesNotExtendBreakDeadline(t *testing.T) {
+	table, now := clockTable(t)
+	req := durableRequest(1, 2)
+	grant := durableGrant(req)
+	grant.Lease.State |= smb.LeaseWrite
+	open := commit(t, table, req, grant)
+	startBreak(t, table, req.Object, smb.LeaseRead|smb.LeaseHandle)
+	*now = now.Add(10 * time.Second)
+	actions, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, grant.Lease.State)
+	statusIs(t, status, 0xc00000d0)
+	if len(actions) != 0 {
+		t.Fatalf("rejected acknowledgment returned cleanup: %+v", actions)
+	}
+	*now = now.Add(state.LeaseBreakTimeout - 10*time.Second)
+	table.ExpireBreaks()
+	found, status := table.Find(open.ID, binding)
+	statusIs(t, status, smb.StatusSuccess)
+	if found.Durable {
+		t.Fatal("rejected acknowledgment extended or cleared the pending break")
+	}
+	writer := request(1)
+	writer.GrantedAccess = 2
+	writer.ClientGUID = state.GUID{9}
+	commit(t, table, writer, state.Grant{})
+}
+
+func TestBreakTimeoutRevokesWholeLease(t *testing.T) {
 	table, now := clockTable(t)
 	attachedReq := durableRequest(1, 2)
 	attachedGrant := durableGrant(attachedReq)
+	attachedGrant.Lease.State |= smb.LeaseWrite
 	attached := commit(t, table, attachedReq, attachedGrant)
 	detachedReq := durableRequest(2, 4)
 	detachedReq.Binding.SessionID = 2
 	detachedReq.GrantedAccess |= 0x10000
 	detachedReq.SharingIntent |= state.RightDelete
 	detachedGrant := durableGrant(detachedReq)
+	detachedGrant.Lease.State |= smb.LeaseWrite
 	detachedGrant.DeleteOnClose, detachedGrant.DeleteName = true, deleteName("")
 	detached := commit(t, table, detachedReq, detachedGrant)
 	table.Disconnect(2)
-	startBreak(t, table, attached.Object, smb.LeaseRead)
-	notification := startBreak(t, table, detached.Object, 0)
+	startBreak(t, table, attached.Object, smb.LeaseRead|smb.LeaseHandle)
+	notification := startBreak(t, table, detached.Object, smb.LeaseRead|smb.LeaseHandle)
 	if notification.Binding != (state.Binding{}) || !notification.AckRequired {
 		t.Fatalf("detached notification: %+v", notification)
 	}
@@ -127,9 +159,78 @@ func TestBreakTimeoutRemovesDurability(t *testing.T) {
 	if len(table.ExpireBreaks()) != 0 {
 		t.Fatal("break cleanup repeated")
 	}
+	writer := request(1)
+	writer.GrantedAccess = 2
+	writer.Binding.SessionID = 3
+	commit(t, table, writer, state.Grant{})
 	if actions = table.Disconnect(1); len(actions) != 1 || actions[0].Handle != attached.Handle {
 		t.Fatalf("non-durable drop cleanup: %+v", actions)
 	}
+}
+
+func TestFullyDetachedHandleBreakClosesImmediately(t *testing.T) {
+	table, _ := clockTable(t)
+	req := durableRequest(1, 2)
+	req.GrantedAccess = 1
+	req.Sharing = state.ShareMode(state.RightRead | state.RightDelete)
+	open := commit(t, table, req, durableGrant(req))
+	observerReq := request(1)
+	observerReq.Binding.SessionID = 2
+	observer := commit(t, table, observerReq, state.Grant{})
+	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Length: 10, Exclusive: true}}, false), smb.StatusSuccess)
+	statusIs(t, table.CheckIO(observer.ID, observer.Binding, 1, 1, false), smb.StatusFileLockConflict)
+	writerReq := request(1)
+	writerReq.GrantedAccess = 2
+	writerReq.Binding.SessionID = 3
+	_, status := table.Reserve(writerReq)
+	statusIs(t, status, smb.StatusSharingViolation)
+	if len(table.Disconnect(1)) != 0 {
+		t.Fatal("durable open closed before a break")
+	}
+	breaks, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead)
+	if len(breaks) != 0 || len(actions) != 1 || actions[0].Handle != open.Handle {
+		t.Fatalf("fully detached break: notifications %+v, cleanup %+v", breaks, actions)
+	}
+	_, status = table.Reconnect(reconnectRequest(open))
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+	statusIs(t, table.CheckIO(observer.ID, observer.Binding, 1, 1, false), smb.StatusSuccess)
+	commit(t, table, writerReq, state.Grant{})
+	if len(table.ExpireBreaks()) != 0 || len(table.Expire()) != 0 {
+		t.Fatal("immediate cleanup ran twice")
+	}
+}
+
+func TestFullyDetachedSharedLeaseAppliesPendingDeletion(t *testing.T) {
+	table, _ := clockTable(t)
+	firstReq := durableRequest(1, 2)
+	firstReq.GrantedAccess |= 0x10000
+	grant := durableGrant(firstReq)
+	grant.DeleteOnClose, grant.DeleteName = true, deleteName("")
+	first := commit(t, table, firstReq, grant)
+	secondReq := durableRequest(1, 4)
+	second := commit(t, table, secondReq, durableGrant(firstReq))
+	table.Disconnect(1)
+	breaks, actions := table.BreakLeases(first.Object, state.GUID{9}, state.GUID{9}, 0)
+	if len(breaks) != 0 || len(actions) != 2 || actions[0].Handle != first.Handle || actions[1].Handle != second.Handle || actions[0].Remove || !actions[1].Remove || actions[1].Name != grant.DeleteName {
+		t.Fatalf("detached shared lease cleanup: %+v, %+v", breaks, actions)
+	}
+	_, status := table.Reconnect(reconnectRequest(first))
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+	_, status = table.Reconnect(reconnectRequest(second))
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+}
+
+func TestDisconnectDuringHandleBreakClosesLastDetachedMember(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	open := commit(t, table, req, durableGrant(req))
+	startBreak(t, table, req.Object, smb.LeaseRead)
+	actions := table.Disconnect(1)
+	if len(actions) != 1 || actions[0].Handle != open.Handle {
+		t.Fatalf("disconnect during H break: %+v", actions)
+	}
+	_, status := table.Reconnect(reconnectRequest(open))
+	statusIs(t, status, smb.StatusObjectNameNotFound)
 }
 
 func TestAckDroppingHClosesDetachedMembers(t *testing.T) {
@@ -168,7 +269,7 @@ func TestLeaseKeyIsSharedOnlyOnOneObject(t *testing.T) {
 	if first.LeaseKey != second.LeaseKey {
 		t.Fatal("same lease was not shared")
 	}
-	if breaks := table.BreakLeases(req.Object, req.ClientGUID, grant.Lease.Key, 0); len(breaks) != 0 {
+	if breaks, actions := table.BreakLeases(req.Object, req.ClientGUID, grant.Lease.Key, 0); len(breaks) != 0 || len(actions) != 0 {
 		t.Fatal("requesting lease was broken")
 	}
 	otherReq := request(2)
@@ -270,11 +371,11 @@ func TestBreakTargetOnlyLosesRights(t *testing.T) {
 	if second.CurrentState != grant.Lease.State || second.NewState != smb.LeaseRead || second.Epoch != 1 {
 		t.Fatalf("strengthened break: %+v", second)
 	}
-	if len(table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead|smb.LeaseHandle)) != 0 {
+	if breaks, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead|smb.LeaseHandle); len(breaks) != 0 || len(actions) != 0 {
 		t.Fatal("pending target regained H")
 	}
 	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead|smb.LeaseHandle)
-	statusIs(t, status, smb.StatusInvalidParameter)
+	statusIs(t, status, 0xc00000d0)
 	_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 	last := startBreak(t, table, req.Object, 0)
@@ -327,8 +428,11 @@ func TestHandleBreakCanRetainReadAndWriteCaching(t *testing.T) {
 func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
-	open := commit(t, table, req, durableGrant(req))
-	startBreak(t, table, req.Object, smb.LeaseRead)
+	grant := durableGrant(req)
+	grant.Lease.State |= smb.LeaseWrite
+	open := commit(t, table, req, grant)
+	// Keep H while breaking W so the detached open can still reconnect.
+	startBreak(t, table, req.Object, smb.LeaseRead|smb.LeaseHandle)
 	table.Disconnect(1)
 	fresh, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusSuccess)

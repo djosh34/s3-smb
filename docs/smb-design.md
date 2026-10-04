@@ -128,6 +128,9 @@ On a sharing violation against an open with an H lease, the server breaks H, wai
 A lease acknowledgment has no epoch field.
 The table checks its identity and acknowledged subset against the current break.
 Each returned break includes its captured current state and acknowledgment requirement.
+A timed-out break revokes the whole lease, even when its target retained caching rights.
+A break removing H closes fully detached members at once, without waiting for an acknowledgment.
+BreakLeases returns both notifications and cleanup actions.
 
 A normal traffic drop of about 30 seconds can continue the same Mac backup.
 An unanswered CREATE, LOCK or SET_INFO can make macOS refuse reconnect.

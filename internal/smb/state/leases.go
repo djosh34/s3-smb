@@ -124,19 +124,21 @@ func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
 	return Binding{}
 }
 
-// BreakLeases downgrades other leases and returns captured notifications.
+// BreakLeases downgrades other leases and returns notifications and cleanup.
 // The supplied client and key identify the requesting lease, which is excluded.
-func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) []Break {
+// When all members are detached and the break removes H, cleanup is immediate.
+func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite {
-		return nil
+		return nil, nil
 	}
 	record := table.objects[object]
 	if record == nil {
-		return nil
+		return nil, nil
 	}
 	var breaks []Break
+	var detached []leaseRef
 	for index := range record.Leases {
 		lease := &record.Leases[index]
 		if lease.ClientGUID == clientGUID && lease.Key == leaseKey {
@@ -149,10 +151,15 @@ func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey 
 		if lease.Breaking {
 			newState &= lease.BreakTo
 		}
+		binding := table.leaseBinding(record, *lease)
+		if !validBinding(binding) && newState&smb.LeaseHandle == 0 {
+			detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
+			continue
+		}
 		lease.Epoch++
 		ack := lease.State&(smb.LeaseHandle|smb.LeaseWrite) != 0
 		breaks = append(breaks, Break{
-			Binding: table.leaseBinding(record, *lease), ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
+			Binding: binding, ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
 			CurrentState: lease.State, NewState: newState, Epoch: lease.Epoch, AckRequired: ack,
 		})
 		lease.BreakTo = newState
@@ -164,7 +171,7 @@ func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey 
 			lease.Deadline = time.Time{}
 		}
 	}
-	return breaks
+	return breaks, table.revokeLeases(detached)
 }
 
 // AckBreak accepts only a pending break's identity and a subset of its target.
@@ -173,13 +180,25 @@ func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseSt
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	identity := leaseIdentity{client: clientGUID, key: key}
-	object, exists := table.leaseObjects[identity]
-	if !exists || !validBinding(binding) {
+	if !validBinding(binding) {
 		return nil, smb.StatusInvalidParameter
 	}
+	object, exists := table.leaseObjects[identity]
+	if !exists {
+		return nil, smb.StatusObjectNameNotFound
+	}
 	lease := table.lease(object, identity)
-	if lease == nil || !lease.Breaking || leaseState & ^lease.BreakTo != 0 || !table.ownsLease(binding, object, identity) {
+	if lease == nil {
+		return nil, smb.StatusObjectNameNotFound
+	}
+	if !table.ownsLease(binding, object, identity) {
 		return nil, smb.StatusInvalidParameter
+	}
+	if !lease.Breaking {
+		return nil, smb.StatusUnsuccessful
+	}
+	if leaseState & ^lease.BreakTo != 0 {
+		return nil, smb.StatusRequestNotAccepted
 	}
 	lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = leaseState, leaseState, false, time.Time{}
 	return table.dropDurability(object, identity, leaseState), smb.StatusSuccess
@@ -215,32 +234,50 @@ func (table *Table) dropDurability(object smb.ObjectKey, identity leaseIdentity,
 	return actions
 }
 
-// ExpireBreaks applies timed-out targets and releases detached opens losing H.
-// Attached opens lose durability but remain usable.
+type leaseRef struct {
+	object   smb.ObjectKey
+	identity leaseIdentity
+}
+
+// Closing members can remove leases, so callers capture references first.
+func (table *Table) revokeLeases(leases []leaseRef) []CloseAction {
+	var actions []CloseAction
+	for _, ref := range leases {
+		lease := table.lease(ref.object, ref.identity)
+		if lease == nil {
+			continue
+		}
+		lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = 0, 0, false, time.Time{}
+		actions = append(actions, table.dropDurability(ref.object, ref.identity, 0)...)
+	}
+	return actions
+}
+
+func (table *Table) closeDetachedBreaks() []CloseAction {
+	var detached []leaseRef
+	for object, record := range table.objects {
+		for _, lease := range record.Leases {
+			if lease.Breaking && lease.BreakTo&smb.LeaseHandle == 0 && !validBinding(table.leaseBinding(record, lease)) {
+				detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
+			}
+		}
+	}
+	return table.revokeLeases(detached)
+}
+
+// ExpireBreaks revokes the whole lease when an acknowledgment times out.
+// Attached opens lose durability but remain usable; detached opens close.
 func (table *Table) ExpireBreaks() []CloseAction {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	now := table.now()
-	// Closing a detached member can remove its lease, so capture transitions first.
-	type expired struct {
-		object   smb.ObjectKey
-		identity leaseIdentity
-		state    uint32
-	}
-	var expiredLeases []expired
+	var expired []leaseRef
 	for object, record := range table.objects {
-		for index := range record.Leases {
-			lease := &record.Leases[index]
-			if !lease.Breaking || lease.Deadline.After(now) {
-				continue
+		for _, lease := range record.Leases {
+			if lease.Breaking && !lease.Deadline.After(now) {
+				expired = append(expired, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
 			}
-			lease.State, lease.Breaking, lease.Deadline = lease.BreakTo, false, time.Time{}
-			expiredLeases = append(expiredLeases, expired{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}, state: lease.State})
 		}
 	}
-	var actions []CloseAction
-	for _, lease := range expiredLeases {
-		actions = append(actions, table.dropDurability(lease.object, lease.identity, lease.state)...)
-	}
-	return actions
+	return table.revokeLeases(expired)
 }
