@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -36,54 +37,75 @@ func TestAppendWriteRechecksEOFAfterCompetingWrite(t *testing.T) {
 		{"ordinary writer", fileReadData | fileWriteData},
 		{"append writer", fileReadData | fileAppendData},
 	} {
-		t.Run(access.name, func(t *testing.T) {
-			fixture := newIOFixture(t, nil)
-			storage := &pausedAppendStorage{Storage: fixture.adapter, entered: make(chan struct{}), resume: make(chan struct{})}
-			client := newReadWriteClient(t, storage)
-			var unblock sync.Once
-			t.Cleanup(func() { unblock.Do(func() { close(storage.resume) }) })
-			initial := createdFile(t, client.create(t, createRequest("append", fileCreateDisposition)))
-			writeCreatedFile(t, client, initial.ID, "seed")
-			request := createRequest("append", fileOpen)
-			request.DesiredAccess = fileReadData | fileAppendData
-			appender := createdFile(t, client.create(t, request))
-			request.DesiredAccess = access.mask
-			winner := createdFile(t, client.create(t, request))
-			other := createdFile(t, client.create(t, createRequest("unrelated", fileCreateDisposition)))
+		for _, stream := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream_%t", access.name, stream), func(t *testing.T) {
+				checkStaleAppendWrite(t, access.mask, stream)
+			})
+		}
+	}
+}
 
-			body, err := wire.EncodeWriteRequest(wire.WriteRequest{ID: appender.ID, Offset: 4, Data: []byte("stale")})
-			if err != nil {
-				t.Fatal(err)
-			}
-			message := ioMessage(client.session, client.next, wire.Write, body, 1)
-			client.next++
-			if err = client.client.Send(client.ctx, []wire.Message{message}); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-storage.entered:
-			case <-client.ctx.Done():
-				t.Fatal(client.ctx.Err())
-			}
-			pending, err := client.client.Receive(client.ctx)
-			if err != nil || len(pending.Messages) != 1 {
-				t.Fatalf("pending response: %+v, %v", pending, err)
-			}
-			requireIOStatus(t, pending.Messages[0], smb.StatusPending)
-			requireIOStatus(t, client.write(t, wire.WriteRequest{ID: winner.ID, Offset: 4, Data: []byte("winner")}, 1), smb.StatusSuccess)
-			writeCreatedFile(t, client, other.ID, "other")
-			readCreatedFile(t, client, other.ID, "other")
-			unblock.Do(func() { close(storage.resume) })
-			final, err := client.client.Receive(client.ctx)
-			if err != nil || len(final.Messages) != 1 {
-				t.Fatalf("final response: %+v, %v", final, err)
-			}
-			readCreatedFile(t, client, initial.ID, "seedwinner")
-			requireIOStatus(t, final.Messages[0], smb.StatusAccessDenied)
-			if final.Messages[0].Header.MessageID != message.Header.MessageID || final.Messages[0].Header.AsyncID != pending.Messages[0].Header.AsyncID {
-				t.Fatal("append completion lost its request identity")
-			}
-		})
+func checkStaleAppendWrite(t *testing.T, access uint32, stream bool) {
+	t.Helper()
+	fixture := newIOFixture(t, nil)
+	storage := &pausedAppendStorage{Storage: fixture.adapter, entered: make(chan struct{}), resume: make(chan struct{})}
+	client := newReadWriteClient(t, storage)
+	var unblock sync.Once
+	t.Cleanup(func() { unblock.Do(func() { close(storage.resume) }) })
+	base := createdFile(t, client.create(t, createRequest("append", fileCreateDisposition)))
+	path := "append"
+	initial := base
+	var sibling wire.CreateResponse
+	if stream {
+		writeCreatedFile(t, client, base.ID, "base payload")
+		path = "append:fork"
+		initial = createdFile(t, client.create(t, createRequest(path, fileCreateDisposition)))
+		sibling = createdFile(t, client.create(t, createRequest("append:other", fileCreateDisposition)))
+		writeCreatedFile(t, client, sibling.ID, "other stream")
+	}
+	writeCreatedFile(t, client, initial.ID, "seed")
+	request := createRequest(path, fileOpen)
+	request.DesiredAccess = fileReadData | fileAppendData
+	appender := createdFile(t, client.create(t, request))
+	request.DesiredAccess = access
+	winner := createdFile(t, client.create(t, request))
+	other := createdFile(t, client.create(t, createRequest("unrelated", fileCreateDisposition)))
+
+	body, err := wire.EncodeWriteRequest(wire.WriteRequest{ID: appender.ID, Offset: 4, Data: []byte("stale")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message := ioMessage(client.session, client.next, wire.Write, body, 1)
+	client.next++
+	if err = client.client.Send(client.ctx, []wire.Message{message}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-storage.entered:
+	case <-client.ctx.Done():
+		t.Fatal(client.ctx.Err())
+	}
+	pending, err := client.client.Receive(client.ctx)
+	if err != nil || len(pending.Messages) != 1 {
+		t.Fatalf("pending response: %+v, %v", pending, err)
+	}
+	requireIOStatus(t, pending.Messages[0], smb.StatusPending)
+	requireIOStatus(t, client.write(t, wire.WriteRequest{ID: winner.ID, Offset: 4, Data: []byte("winner")}, 1), smb.StatusSuccess)
+	writeCreatedFile(t, client, other.ID, "other")
+	readCreatedFile(t, client, other.ID, "other")
+	unblock.Do(func() { close(storage.resume) })
+	final, err := client.client.Receive(client.ctx)
+	if err != nil || len(final.Messages) != 1 {
+		t.Fatalf("final response: %+v, %v", final, err)
+	}
+	readCreatedFile(t, client, initial.ID, "seedwinner")
+	requireIOStatus(t, final.Messages[0], smb.StatusAccessDenied)
+	if final.Messages[0].Header.MessageID != message.Header.MessageID || final.Messages[0].Header.AsyncID != pending.Messages[0].Header.AsyncID {
+		t.Fatal("append completion lost its request identity")
+	}
+	if stream {
+		readCreatedFile(t, client, base.ID, "base payload")
+		readCreatedFile(t, client, sibling.ID, "other stream")
 	}
 }
 

@@ -400,6 +400,9 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 		return 0, smb.ErrIsDirectory
 	}
 	appendOnly := h.access&smb.AccessAppend != 0
+	if len(src) == 0 && !appendOnly {
+		return 0, nil
+	}
 	if h.key.Stream != "" {
 		return s.writeStream(ctx, h.key, h.state, src, offset, appendOnly)
 	}
