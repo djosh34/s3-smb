@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -82,6 +83,28 @@ func TestStoragePrimitivesForCreateDispositions(t *testing.T) {
 		for _, disposition := range []string{"open", "create", "open_if", "overwrite", "overwrite_if", "supersede"} {
 			t.Run(disposition+"/"+map[bool]string{false: "file", true: "stream"}[stream], func(t *testing.T) { testDisposition(t, stream, disposition) })
 		}
+		for _, disposition := range []string{"open_if", "overwrite_if"} {
+			t.Run(disposition+"/missing/"+map[bool]string{false: "file", true: "stream"}[stream], func(t *testing.T) {
+				f := newFixture(t, 0)
+				path := "data"
+				if stream {
+					f.create(t, path, smb.KindFile)
+					path += ":fork"
+				}
+				missing, err := f.fs.Lookup(t.Context(), path)
+				if err != nil || missing.Exists {
+					t.Fatalf("missing lookup = %+v, %v", missing, err)
+				}
+				created, err := f.fs.Create(t.Context(), missing.Name, smb.KindFile)
+				if err != nil {
+					t.Fatal(err)
+				}
+				h := f.open(t, created.Object, smb.AccessRead|smb.AccessWrite)
+				read(t, f.fs, h, []byte{})
+				write(t, f.fs, h, "created", 0)
+				read(t, f.fs, h, []byte("created"))
+			})
+		}
 	}
 }
 
@@ -128,7 +151,14 @@ func testDisposition(t *testing.T, stream bool, disposition string) {
 }
 
 func TestNamespaceChangesRequireExpectedIdentities(t *testing.T) {
-	f := newFixture(t, 0)
+	for _, trashDays := range []int{0, 14} {
+		t.Run(strconv.Itoa(trashDays), func(t *testing.T) { testNamespaceChanges(t, trashDays) })
+	}
+}
+
+func testNamespaceChanges(t *testing.T, trashDays int) {
+	t.Helper()
+	f := fixtureAt(t, t.TempDir(), 0, true, trashDays)
 	source := f.create(t, "source", smb.KindFile)
 	destination := f.create(t, "destination", smb.KindFile)
 	a := f.open(t, source.Object, smb.AccessRead|smb.AccessWrite)

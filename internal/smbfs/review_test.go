@@ -3,8 +3,17 @@ package smbfs
 import (
 	"context"
 	"errors"
+	"fmt"
+	"math"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
+
+	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
@@ -76,5 +85,317 @@ func TestDirectoryRenameRejectsDescendant(t *testing.T) {
 	r, err := f.fs.Lookup(t.Context(), "a/b/c")
 	if err != nil || !r.Exists {
 		t.Fatalf("rejected move changed subtree: %+v, %v", r, err)
+	}
+	destination := f.create(t, "destination", smb.KindDirectory)
+	if err = f.fs.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: smb.Name{Parent: destination.Object.Inode, Base: "moved"}, SourceInode: source.Object.Inode}); err != nil {
+		t.Fatal(err)
+	}
+	r, err = f.fs.Lookup(t.Context(), "destination/moved/b/c")
+	if err != nil || !r.Exists || r.Object.Inode != descendant.Object.Inode {
+		t.Fatalf("ordinary move lost subtree: %+v, %v", r, err)
+	}
+}
+
+func TestBackendFileSizeBoundary(t *testing.T) {
+	f := newFixture(t, 0)
+	r := f.create(t, "data", smb.KindFile)
+	h := f.open(t, r.Object, smb.AccessRead|smb.AccessWrite)
+	write(t, f.fs, h, "abc", 0)
+	puts := f.store.puts.Load()
+	for _, size := range []uint64{maxFileSize, maxFileSize + 1, math.MaxUint64} {
+		requireError(t, f.fs.Truncate(t.Context(), h, size), smb.ErrFileTooLarge)
+		requireError(t, f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Size: &size}), smb.ErrFileTooLarge)
+		_, err := f.fs.WriteAt(t.Context(), h, []byte("x"), size-1)
+		requireError(t, err, smb.ErrFileTooLarge)
+		_, err = f.fs.ReadAt(t.Context(), h, make([]byte, 1), size-1)
+		requireError(t, err, smb.ErrFileTooLarge)
+	}
+	a, err := f.fs.GetAttr(t.Context(), r.Object)
+	if err != nil || a.Size != 3 || f.store.puts.Load() != puts {
+		t.Fatalf("invalid range mutated data: %+v, %v, puts=%d", a, err, f.store.puts.Load())
+	}
+	read(t, f.fs, h, []byte("abc"))
+	if err = f.fs.Truncate(t.Context(), h, maxFileSize-1); err != nil {
+		t.Fatal(err)
+	}
+	write(t, f.fs, h, "z", maxFileSize-2)
+	data := make([]byte, 1)
+	n, err := f.fs.ReadAt(t.Context(), h, data, maxFileSize-2)
+	if err != nil || n != 1 || data[0] != 'z' {
+		t.Fatalf("last supported byte = %q, %d, %v", data, n, err)
+	}
+	if err = f.fs.Truncate(t.Context(), h, 3); err != nil {
+		t.Fatal(err)
+	}
+	read(t, f.fs, h, []byte("abc"))
+}
+
+func TestRetainedReferencesWorkWithTrash(t *testing.T) {
+	for _, days := range []int{0, 14} {
+		t.Run(strconv.Itoa(days), func(t *testing.T) {
+			f := fixtureAt(t, t.TempDir(), 0, true, days)
+			r := f.create(t, "data", smb.KindFile)
+			stream := f.create(t, "data:fork", smb.KindFile)
+			h := f.open(t, r.Object, smb.AccessRead|smb.AccessWrite)
+			sh := f.open(t, stream.Object, smb.AccessRead|smb.AccessWrite)
+			write(t, f.fs, h, "base", 0)
+			write(t, f.fs, sh, "stream", 0)
+			if err := f.fs.Remove(t.Context(), r.Name, r.Object.Inode); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.fs.PathOf(t.Context(), r.Object.Inode)
+			requireError(t, err, smb.ErrNameNotFound)
+			read(t, f.fs, h, []byte("base"))
+			read(t, f.fs, sh, []byte("stream"))
+			write(t, f.fs, h, "new", 0)
+			write(t, f.fs, sh, "new", 0)
+			if err = f.fs.Truncate(t.Context(), h, 3); err != nil {
+				t.Fatal(err)
+			}
+			if err = f.fs.Truncate(t.Context(), sh, 3); err != nil {
+				t.Fatal(err)
+			}
+			stamp := time.Unix(1000000000, 123456700)
+			if err = f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Modified: &stamp}); err != nil {
+				t.Fatal(err)
+			}
+			if err = f.fs.Flush(t.Context(), h, smb.SyncFull); err != nil {
+				t.Fatal(err)
+			}
+			read(t, f.fs, h, []byte("new"))
+			read(t, f.fs, sh, []byte("new"))
+			a, err := f.fs.GetAttr(t.Context(), r.Object)
+			if err != nil || !a.Modified.Equal(stamp) {
+				t.Fatalf("retained attrs = %+v, %v", a, err)
+			}
+			if _, err = f.fs.Lookup(t.Context(), ".trash"); err == nil {
+				t.Fatal("trash admitted into namespace")
+			}
+		})
+	}
+}
+
+func TestMetadataQueriesDoNotWaitForColdRead(t *testing.T) {
+	f := newFixture(t, 0)
+	r := f.create(t, "data", smb.KindFile)
+	h := f.open(t, r.Object, smb.AccessRead|smb.AccessWrite)
+	write(t, f.fs, h, "cold", 0)
+	if err := f.fs.Flush(t.Context(), h, smb.SyncData); err != nil {
+		t.Fatal(err)
+	}
+	f.store.cold.Store(true)
+	readDone := make(chan error, 1)
+	go func() { _, err := f.fs.ReadAt(t.Context(), h, make([]byte, 4), 0); readDone <- err }()
+	select {
+	case <-f.store.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cold GET not reached")
+	}
+	queriesDone := make(chan error, 1)
+	go func() {
+		_, err := f.fs.GetAttr(t.Context(), r.Object)
+		if err == nil {
+			_, err = f.fs.Lookup(t.Context(), "data")
+		}
+		if err == nil {
+			_, err = f.fs.ReadDir(t.Context(), 1, 0, 10)
+		}
+		queriesDone <- err
+	}()
+	select {
+	case err := <-queriesDone:
+		if err != nil {
+			t.Error(err)
+		}
+	case <-time.After(time.Second):
+		t.Error("metadata query waited for cold read")
+	}
+	completed := false
+	select {
+	case err := <-readDone:
+		completed = true
+		t.Errorf("cold read completed before release: %v", err)
+	default:
+	}
+	f.store.cold.Store(false)
+	close(f.store.resume)
+	if !completed {
+		if err := <-readDone; err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+type countedMetadata struct {
+	meta.Meta
+	attrs       atomic.Int64
+	xattrs      atomic.Int64
+	lookups     atomic.Int64
+	directories atomic.Int64
+	denyLoad    bool
+}
+
+func (m *countedMetadata) GetAttr(ctx meta.Context, ino meta.Ino, a *meta.Attr) syscall.Errno {
+	m.attrs.Add(1)
+	return m.Meta.GetAttr(ctx, ino, a)
+}
+
+func (m *countedMetadata) GetXattr(ctx meta.Context, ino meta.Ino, key string, value *[]byte) syscall.Errno {
+	m.xattrs.Add(1)
+	return m.Meta.GetXattr(ctx, ino, key, value)
+}
+
+func (m *countedMetadata) Lookup(ctx meta.Context, parent meta.Ino, name string, ino *meta.Ino, a *meta.Attr, check bool) syscall.Errno {
+	m.lookups.Add(1)
+	return m.Meta.Lookup(ctx, parent, name, ino, a, check)
+}
+
+func (m *countedMetadata) Readdir(ctx meta.Context, ino meta.Ino, plus uint8, entries *[]*meta.Entry) syscall.Errno {
+	m.directories.Add(1)
+	return m.Meta.Readdir(ctx, ino, plus, entries)
+}
+
+func (m *countedMetadata) Load(check bool) (*meta.Format, error) {
+	if m.denyLoad {
+		return nil, errors.New("unexpected format reload")
+	}
+	return m.Meta.Load(check)
+}
+
+func TestIOUsesRetainedKindAndLength(t *testing.T) {
+	f := newFixture(t, 0)
+	r := f.create(t, "data", smb.KindFile)
+	h := f.open(t, r.Object, smb.AccessRead|smb.AccessWrite)
+	counted := &countedMetadata{Meta: f.metadata}
+	f.fs.metadata = counted
+	for i := 0; i < 5; i++ {
+		write(t, f.fs, h, "data", 0)
+		read(t, f.fs, h, []byte("data"))
+	}
+	if counted.attrs.Load() != 0 || counted.xattrs.Load() != 0 {
+		t.Fatalf("adapter queried attributes during I/O: attr=%d, xattr=%d", counted.attrs.Load(), counted.xattrs.Load())
+	}
+}
+
+func TestDirectoryPagesUseBoundedIndexedQueries(t *testing.T) {
+	f := newFixture(t, 0)
+	dir := f.create(t, "dir", smb.KindDirectory)
+	for i := 0; i < 256; i++ {
+		f.create(t, fmt.Sprintf("dir/band-%04d", i), smb.KindFile)
+	}
+	counted := &countedMetadata{Meta: f.metadata}
+	f.fs.metadata = counted
+	page, err := f.fs.ReadDir(t.Context(), dir.Object.Inode, 0, 3)
+	if err != nil || len(page) != 3 {
+		t.Fatalf("page = %+v, %v", page, err)
+	}
+	if counted.directories.Load() != 0 || counted.lookups.Load() != 0 || counted.xattrs.Load() != 0 || counted.attrs.Load() != 1 {
+		t.Fatalf("page used whole-directory or per-entry queries: %+v", counted)
+	}
+	raw, err := f.fs.directoryPage(t.Context(), dir.Object.Inode, page[2].Next, 3)
+	if err != nil || len(raw) != 3 {
+		t.Fatalf("SQL page = %d, %v", len(raw), err)
+	}
+	db, err := directoryDB(f.path, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := db.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	rows, err := db.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+directoryQuery, birthKey, attributesKey, accessedKey, modifiedKey, changedKey, dir.Object.Inode, 0, 3)
+	if err != nil {
+		t.Fatal(errors.Join(err, db.Close()))
+	}
+	t.Cleanup(func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	indexed := false
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(detail, "IDX_jfs_edge_smbfs_directory_page") {
+			indexed = true
+		}
+		if strings.Contains(detail, "TEMP B-TREE") {
+			t.Errorf("page sorts directory: %s", detail)
+		}
+	}
+	if err = errors.Join(rows.Err(), rows.Close(), db.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if !indexed {
+		t.Fatal("page query did not use the parent/ID index")
+	}
+}
+
+func TestReadDirWithConcurrentRemoval(t *testing.T) {
+	f := newFixture(t, 0)
+	dir := f.create(t, "dir", smb.KindDirectory)
+	var removed []smb.Resolved
+	for i := 0; i < 80; i++ {
+		r := f.create(t, fmt.Sprintf("dir/band-%02d", i), smb.KindFile)
+		if i%2 == 0 {
+			removed = append(removed, r)
+		}
+	}
+	done := make(chan error, 1)
+	go func() {
+		for _, r := range removed {
+			if eno := f.metadata.Unlink(storageContext(t.Context()), meta.Ino(r.Name.Parent), r.Name.Base); eno != 0 {
+				done <- eno
+				return
+			}
+		}
+		done <- nil
+	}()
+	seen := make(map[string]bool)
+	var cookie smb.Cookie
+	for {
+		page, err := f.fs.ReadDir(t.Context(), dir.Object.Inode, cookie, 7)
+		if err != nil {
+			t.Error(err)
+			break
+		}
+		if len(page) == 0 {
+			break
+		}
+		for _, entry := range page {
+			seen[entry.Name] = true
+			cookie = entry.Next
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i < 80; i += 2 {
+		name := fmt.Sprintf("band-%02d", i)
+		if !seen[name] {
+			t.Errorf("skipped live entry %s", name)
+		}
+	}
+}
+
+func TestConstructorUsesCurrentFormat(t *testing.T) {
+	f := newFixture(t, 0)
+	counted := &countedMetadata{Meta: f.metadata}
+	filesystem, err := jfs.NewFileSystem(f.config, counted, f.chunks, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	counted.denyLoad = true
+	_, err = New(Options{Filesystem: filesystem, Barrier: f.fs.barrier, Config: f.config, Store: f.chunks, MetadataPath: f.path})
+	if err != nil {
+		t.Error(err)
+	}
+	if err = filesystem.Close(); err != nil {
+		t.Fatal(err)
 	}
 }

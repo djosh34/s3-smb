@@ -50,13 +50,14 @@ type liveState struct {
 }
 
 type inodeState struct {
-	reader vfs.FileReader
-	writer vfs.FileWriter
-	live   liveState
-	liveMu sync.RWMutex
-	mu     sync.Mutex
-	refs   atomic.Int64
-	users  int
+	reader  vfs.FileReader
+	writer  vfs.FileWriter
+	streams map[string][]byte
+	live    liveState
+	liveMu  sync.RWMutex
+	mu      sync.Mutex
+	refs    atomic.Int64
+	users   int
 }
 
 type handle struct {
@@ -221,6 +222,13 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 	if err != nil {
 		return nil, err
 	}
+	var streamData []byte
+	if key.Stream != "" {
+		streamData, err = s.stream(ctx, key)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if st.refs.Load() == 0 {
 		var raw meta.Attr
 		flags := uint32(syscall.O_RDWR)
@@ -233,6 +241,9 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 		st.publish(liveState{size: raw.Length})
 	}
 	st.refs.Add(1)
+	if key.Stream != "" {
+		st.publishStream(key.Stream, streamData)
+	}
 	return &handle{owner: s, state: st, key: key, access: access, kind: a.Kind}, nil
 }
 
@@ -397,11 +408,12 @@ func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, off
 	if err != nil {
 		return 0, err
 	}
+	data = append([]byte{}, data...)
 	if end > uint64(len(data)) {
 		data = append(data, make([]byte, int(end)-len(data))...)
 	}
 	copy(data[offset:], src)
-	if err = backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace)); err != nil {
+	if err = s.saveStream(ctx, key, data); err != nil {
 		return 0, err
 	}
 	if err = s.touchStream(ctx, key.Inode); err != nil {
@@ -429,12 +441,13 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		if streamErr != nil {
 			return streamErr
 		}
+		data = append([]byte{}, data...)
 		if size > uint64(len(data)) {
 			data = append(data, make([]byte, int(size)-len(data))...)
 		} else {
 			data = data[:size]
 		}
-		if err = backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace)); err != nil {
+		if err = s.saveStream(ctx, key, data); err != nil {
 			return err
 		}
 		return s.touchStream(ctx, key.Inode)

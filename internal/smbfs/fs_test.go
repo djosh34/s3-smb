@@ -27,6 +27,7 @@ type testStore struct {
 	puts    atomic.Int64
 	fail    atomic.Bool
 	slow    atomic.Bool
+	cold    atomic.Bool
 }
 
 func (s *testStore) Put(ctx context.Context, key string, r io.Reader, getters ...object.AttrGetter) error {
@@ -48,6 +49,21 @@ func (s *testStore) Put(ctx context.Context, key string, r io.Reader, getters ..
 	return s.ObjectStorage.Put(ctx, key, r, getters...)
 }
 
+func (s *testStore) Get(ctx context.Context, key string, off, limit int64, getters ...object.AttrGetter) (io.ReadCloser, error) {
+	if s.cold.Load() {
+		select {
+		case s.started <- struct{}{}:
+		default:
+		}
+		select {
+		case <-s.resume:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return s.ObjectStorage.Get(ctx, key, off, limit, getters...)
+}
+
 type fixture struct {
 	fs       *FS
 	metadata meta.Meta
@@ -61,10 +77,10 @@ type fixture struct {
 
 func newFixture(t *testing.T, capacity uint64) *fixture {
 	t.Helper()
-	return fixtureAt(t, t.TempDir(), capacity, true)
+	return fixtureAt(t, t.TempDir(), capacity, true, 0)
 }
 
-func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixture {
+func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool, trashDays int) *fixture {
 	t.Helper()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
 	if err != nil {
@@ -80,7 +96,7 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	format := meta.Format{Name: "smbfs-test", UUID: "smbfs-fixture", Storage: "file", BlockSize: 64, Compression: "none", Capacity: capacity, DirStats: true, TrashDays: 0}
+	format := meta.Format{Name: "smbfs-test", UUID: "smbfs-fixture", Storage: "file", BlockSize: 64, Compression: "none", Capacity: capacity, DirStats: true, TrashDays: trashDays}
 	if initialize {
 		if err = m.Init(&format, true); err != nil {
 			t.Fatal(err)
@@ -99,7 +115,7 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixt
 	if err = m.NewSession(true); err != nil {
 		t.Fatal(err)
 	}
-	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
+	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: 5 * time.Second, PutTimeout: time.Second}
 	chunks := chunk.NewCachedStore(store, cc, nil)
 	config := &vfs.Config{Meta: mc, Format: format, Chunk: &cc}
 	native, err := jfs.NewFileSystem(config, m, chunks, nil)
@@ -118,6 +134,7 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixt
 	t.Cleanup(func() {
 		store.slow.Store(false)
 		store.fail.Store(false)
+		store.cold.Store(false)
 		for _, h := range f.handles {
 			nativeHandle, ok := h.(*handle)
 			if !ok {
@@ -391,6 +408,15 @@ func TestIssue59OtherInodesProgressDuringSlowFlush(t *testing.T) {
 		}
 		if err == nil {
 			_, err = f.fs.Lookup(t.Context(), "other")
+		}
+		if err == nil {
+			_, err = f.fs.GetAttr(t.Context(), slow.Object)
+		}
+		if err == nil {
+			_, err = f.fs.Lookup(t.Context(), "slow")
+		}
+		if err == nil {
+			_, err = f.fs.ReadDir(t.Context(), 1, 0, 10)
 		}
 		progressed <- err
 	}()

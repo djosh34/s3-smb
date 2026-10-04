@@ -51,7 +51,7 @@ func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 			if !errors.As(err, &exitError) {
 				t.Fatalf("killed child = %v; output: %s", err, output.String())
 			}
-			f := fixtureAt(t, dir, 0, false)
+			f := fixtureAt(t, dir, 0, false, 0)
 			for _, entry := range []struct {
 				path string
 				data string
@@ -74,7 +74,7 @@ func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 
 func crashWriter(t *testing.T, dir string, mode smb.SyncMode) {
 	t.Helper()
-	f := fixtureAt(t, dir, 0, true)
+	f := fixtureAt(t, dir, 0, true, 0)
 	r := f.create(t, "data", smb.KindFile)
 	a := f.open(t, r.Object, smb.AccessWrite)
 	b := f.open(t, r.Object, smb.AccessRead)

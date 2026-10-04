@@ -253,7 +253,7 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 	defer release()
 	var out []smb.DirEntry
 	for uint64(len(out)) < uint64(limit) {
-		entries, err := s.directoryPage(ctx, ino, cookie, limit)
+		entries, err := s.directoryPage(ctx, ino, cookie, min(limit, 512))
 		if err != nil {
 			return nil, storageError(err)
 		}
@@ -321,9 +321,13 @@ func (s *FS) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error 
 		return err
 	}
 	if name.Stream != "" {
-		_, done := s.acquire(expect)
+		st, done := s.acquire(expect)
 		defer done()
-		return backendError(s.metadata.RemoveXattr(storageContext(ctx), meta.Ino(expect), name.Stream))
+		if err := backendError(s.metadata.RemoveXattr(storageContext(ctx), meta.Ino(expect), name.Stream)); err != nil {
+			return err
+		}
+		st.forgetStream(name.Stream)
+		return nil
 	}
 	var eno syscall.Errno
 	if a.Typ == meta.TypeDirectory {

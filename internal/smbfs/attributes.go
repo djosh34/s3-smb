@@ -191,11 +191,66 @@ func (s *FS) touchStream(ctx context.Context, ino smb.Inode) error {
 	return s.storeTime(ctx, ino, changedKey, now, time.Unix(attr.Ctime, int64(attr.Ctimensec)))
 }
 
+// Stream snapshots are immutable and belong to inode coherence, not SMB open
+// policy. JuiceFS may remove xattrs at unlink even while the inode is sustained.
+func (st *inodeState) cachedStream(name string) ([]byte, bool) {
+	st.liveMu.RLock()
+	defer st.liveMu.RUnlock()
+	data, ok := st.streams[name]
+	return data, ok
+}
+
+func (st *inodeState) publishStream(name string, data []byte) {
+	st.liveMu.Lock()
+	defer st.liveMu.Unlock()
+	if st.streams == nil {
+		st.streams = make(map[string][]byte)
+	}
+	st.streams[name] = data
+}
+
+func (st *inodeState) forgetStream(name string) {
+	st.liveMu.Lock()
+	defer st.liveMu.Unlock()
+	delete(st.streams, name)
+}
+
+func (s *FS) saveStream(ctx context.Context, key smb.ObjectKey, data []byte) error {
+	eno := s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace)
+	if errors.Is(eno, meta.ENOATTR) {
+		var attr meta.Attr
+		if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(key.Inode), &attr)); err != nil {
+			return err
+		}
+		// A retained stream still selects its old inode after unlink. Restore its
+		// metadata value, rather than treating unlink as a selected-stream delete.
+		if attr.Nlink == 0 {
+			eno = s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, 0)
+		}
+	}
+	if eno != 0 {
+		return backendError(eno)
+	}
+	st, release := s.pin(key.Inode)
+	defer release()
+	if st.refs.Load() > 0 {
+		st.publishStream(key.Stream, data)
+	}
+	return nil
+}
+
 func (s *FS) stream(ctx context.Context, key smb.ObjectKey) ([]byte, error) {
 	if !validStream(key.Stream) {
 		return nil, smb.ErrInvalidName
 	}
-	var data []byte
+	st, release := s.pin(key.Inode)
+	data, cached := st.cachedStream(key.Stream)
+	retained := st.refs.Load() > 0
+	release()
+	if cached && retained {
+		return data, nil
+	}
+	data = nil
 	err := backendError(s.metadata.GetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, &data))
 	return data, err
 }
@@ -347,8 +402,19 @@ func (s *FS) Streams(ctx context.Context, ino smb.Inode) ([]smb.StreamInfo, erro
 	if err := backendError(s.metadata.ListXattr(storageContext(ctx), meta.Ino(ino), &data)); err != nil {
 		return nil, err
 	}
-	var result []smb.StreamInfo
+	names := make(map[string]bool)
 	for _, name := range strings.Split(strings.TrimSuffix(string(data), "\x00"), "\x00") {
+		names[name] = true
+	}
+	if st.refs.Load() > 0 {
+		st.liveMu.RLock()
+		for name := range st.streams {
+			names[name] = true
+		}
+		st.liveMu.RUnlock()
+	}
+	var result []smb.StreamInfo
+	for name := range names {
 		if !validStream(name) {
 			continue
 		}
