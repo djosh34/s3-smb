@@ -42,9 +42,15 @@ type ioFixture struct {
 	adapter *smbfs.FS
 	native  *jfs.FileSystem
 	store   *ioStore
+	config  *vfs.Config
 }
 
 func newIOFixture(t *testing.T, barrier smbfs.MetadataBarrier) *ioFixture {
+	t.Helper()
+	return newConfiguredIOFixture(t, barrier, nil, 0)
+}
+
+func newConfiguredIOFixture(t *testing.T, barrier smbfs.MetadataBarrier, configure func(string, *meta.Config, *chunk.Config, *ioStore), readWindow time.Duration) *ioFixture {
 	t.Helper()
 	dir := t.TempDir()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
@@ -54,6 +60,10 @@ func newIOFixture(t *testing.T, barrier smbfs.MetadataBarrier) *ioFixture {
 	store := &ioStore{ObjectStorage: blob}
 	mc := meta.DefaultConf()
 	mc.NoBGJob, mc.MaxDeletes, mc.Retries = true, 0, 0
+	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
+	if configure != nil {
+		configure(dir, mc, &cc, store)
+	}
 	database := filepath.Join(dir, "meta.db")
 	metadata, err := meta.NewSQLite(database, mc)
 	if err != nil {
@@ -75,7 +85,6 @@ func newIOFixture(t *testing.T, barrier smbfs.MetadataBarrier) *ioFixture {
 	if sessionErr := metadata.NewSession(true); sessionErr != nil {
 		t.Fatal(sessionErr)
 	}
-	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
 	chunks := chunk.NewCachedStore(store, cc, nil)
 	config := &vfs.Config{Meta: mc, Format: format, Chunk: &cc}
 	native, err := jfs.NewFileSystem(config, metadata, chunks, nil)
@@ -93,7 +102,7 @@ func newIOFixture(t *testing.T, barrier smbfs.MetadataBarrier) *ioFixture {
 			t.Fatal(err)
 		}
 	}
-	adapter, err := smbfs.New(smbfs.Options{Filesystem: native, Barrier: barrier, MetadataPath: database, Config: config, Store: chunks})
+	adapter, err := smbfs.New(smbfs.Options{Filesystem: native, Barrier: barrier, MetadataPath: database, Config: config, Store: chunks, ReadRetryWindow: readWindow})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +111,7 @@ func newIOFixture(t *testing.T, barrier smbfs.MetadataBarrier) *ioFixture {
 			t.Error(err)
 		}
 	})
-	return &ioFixture{adapter: adapter, native: native, store: store}
+	return &ioFixture{adapter: adapter, native: native, store: store, config: config}
 }
 
 func insertIOOpen(t *testing.T, server *Server, session smbtest.Session, path string, granted uint32) state.Open {
@@ -122,7 +131,7 @@ func insertIOOpen(t *testing.T, server *Server, session smbtest.Session, path st
 	if status != smb.StatusSuccess {
 		t.Fatal(status)
 	}
-	handle, err := storage.Open(t.Context(), selected.Object, smb.AccessRead|smb.AccessWrite)
+	handle, err := storage.Open(t.Context(), selected.Object, createStorageAccess(granted, false))
 	if err != nil {
 		if abortStatus := server.options.State.Abort(token); abortStatus != smb.StatusSuccess {
 			t.Error(abortStatus)
