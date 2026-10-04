@@ -72,7 +72,7 @@ mv internal/smb internal/app/newpackage
 lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
 rm -rf internal/app/newpackage
 
-mkdir -p internal/smb cmd/probe
+mkdir -p internal/smb cmd/probe test/macos/fullsync
 cat > internal/smb/print_test.go <<'GO'
 package smb
 
@@ -96,7 +96,19 @@ func main() {
 	os.Exit(0)
 }
 GO
+cp cmd/probe/main.go test/macos/fullsync/main.go
 lint_passes
+cat > test/macos/fullsync/write.go <<'GO'
+package main
+
+import "os"
+
+func exitHelper() {
+	os.Exit(0)
+}
+GO
+lint_fails '(forbidigo)'
+rm test/macos/fullsync/write.go
 cat > internal/smb/main.go <<'GO'
 package smb
 

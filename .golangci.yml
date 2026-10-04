@@ -65,7 +65,7 @@ linters:
       - path: '_test\.go$'
         linters: [forbidigo]
         text: 'forbidden by pattern .*fmt'
-      - path: '^(cmd/[^/]+/)?main\.go$'
+      - path: '^((cmd/[^/]+|test/macos/fullsync)/)?main\.go$'
         linters: [forbidigo]
         text: 'forbidden by pattern .*os'
     paths: &old-code
