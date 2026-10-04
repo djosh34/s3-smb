@@ -7,13 +7,18 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func (connection *connection) process(ctx context.Context, messages []wire.Message) error {
+func (connection *connection) process(ctx context.Context, messages []wire.Message, denied bool) error {
 	validationErr := validateCompound(messages)
 	if err := connection.credits.consume(messages); err != nil {
 		return err
 	}
+	rejection := smb.StatusSuccess
 	if validationErr != nil {
 		connection.server.options.Logger.Info("compound refused", "reason", validationErr)
+		rejection = smb.StatusInvalidParameter
+	}
+	if denied {
+		rejection = smb.StatusAccessDenied
 	}
 	var responses []wire.Message
 	var preceding wire.Header
@@ -26,14 +31,14 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 		}
 		preceding = message.Header
 		if message.Header.Command == wire.Cancel {
-			if validationErr == nil {
+			if rejection == smb.StatusSuccess {
 				connection.cancelPending(message.Header)
 			}
 			continue
 		}
-		result := reply{status: smb.StatusInvalidParameter}
+		result := reply{status: rejection}
 		prerequisite = nil
-		if validationErr == nil {
+		if rejection == smb.StatusSuccess {
 			operation, completed, err := connection.runMember(ctx, message, dependency)
 			if err != nil {
 				return err
@@ -55,6 +60,7 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 		if err != nil {
 			return err
 		}
+		preceding = response.Header
 		responses = append(responses, response)
 	}
 	return connection.send(responses)
