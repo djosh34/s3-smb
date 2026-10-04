@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"slices"
 	"testing"
 	"time"
 
@@ -130,6 +131,16 @@ func TestChaosDurableExpiry(t *testing.T) {
 	ledger := chaos.NewLedger()
 	band := peer.open(ctx, t, "earlier-band", timeout, false)
 	sentinel := peer.open(ctx, t, "expiry-sentinel", timeout, true)
+	initialShare, closeInitialShare := f.share()
+	entries, listErr := initialShare.ReadDir(".")
+	closeInitialShare()
+	if listErr != nil {
+		t.Fatal(listErr)
+	}
+	sentinelEntry := func(entry os.FileInfo) bool { return entry.Name() == sentinel.Request.Name }
+	if !slices.ContainsFunc(entries, sentinelEntry) {
+		t.Fatal("delete-on-close sentinel was not present before the drop")
+	}
 	random := chaos.Rand(seed, "durable-expiry-data")
 	data := make([]byte, 32*1024)
 	for i := range data {
@@ -188,11 +199,7 @@ func TestChaosDurableExpiry(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		present := false
-		for _, entry := range entries {
-			present = present || entry.Name() == sentinel.Request.Name
-		}
-		if !present {
+		if !slices.ContainsFunc(entries, sentinelEntry) {
 			break
 		}
 		if time.Now().After(cleanupDeadline) {
