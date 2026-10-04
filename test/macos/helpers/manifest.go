@@ -15,7 +15,7 @@ import (
 	"slices"
 )
 
-// Entry describes content, not permissions or timestamps. References contain no file bytes.
+// Entry records a path's type and file content, not timestamps or permissions.
 type Entry struct {
 	Path   string `json:"path"`
 	Type   string `json:"type"`
@@ -23,7 +23,7 @@ type Entry struct {
 	Bytes  int64  `json:"bytes,omitempty"`
 }
 
-// Counts summarizes a fixture tree.
+// Counts summarizes the restored fixture.
 type Counts struct {
 	Entries int
 	Files   int
@@ -67,48 +67,24 @@ func Manifest(root string) ([]Entry, Counts, error) {
 	return rows, counts, err
 }
 
-// WriteManifest writes one entry per line, refusing to overwrite evidence.
+// WriteManifest writes a JSON reference with hashes only, refusing to overwrite it.
 func WriteManifest(path string, rows []Entry) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // The caller chooses an exclusive evidence output, not a user request.
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // The caller chooses an exclusive run-owned output, not a user request.
 	if err != nil {
 		return err
 	}
-	encoder := json.NewEncoder(file)
-	for _, row := range rows {
-		if err := encoder.Encode(row); err != nil {
-			return errors.Join(err, file.Close())
-		}
-	}
-	return file.Close()
+	return errors.Join(json.NewEncoder(file).Encode(rows), file.Close())
 }
 
-// ReadManifest rejects empty or duplicate references.
+// ReadManifest reads one JSON reference. Compare validates empty and duplicate paths.
 func ReadManifest(path string) ([]Entry, error) {
-	file, err := os.Open(path) //nolint:gosec // The caller chooses a manifest in the run-owned evidence or transfer directory.
+	data, err := os.ReadFile(path) //nolint:gosec // The caller chooses a reference in the run-owned evidence or transfer directory.
 	if err != nil {
 		return nil, err
 	}
 	var rows []Entry
-	decoder := json.NewDecoder(file)
-	for {
-		var row Entry
-		err := decoder.Decode(&row)
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, errors.Join(err, file.Close())
-		}
-		rows = append(rows, row)
-	}
-	return rows, file.Close()
-}
-
-// Difference records missing, extra, or changed content.
-type Difference struct {
-	Expected *Entry `json:"expected"`
-	Actual   *Entry `json:"actual"`
-	Path     string `json:"path"`
+	err = json.Unmarshal(data, &rows)
+	return rows, err
 }
 
 func index(rows []Entry) (map[string]Entry, error) {
@@ -125,8 +101,8 @@ func index(rows []Entry) (map[string]Entry, error) {
 	return result, nil
 }
 
-// Compare ignores row order but checks every entry and its content.
-func Compare(expected, actual []Entry) ([]Difference, error) {
+// Compare returns differing paths, ignoring row order but checking every type, size and hash.
+func Compare(expected, actual []Entry) ([]string, error) {
 	left, err := index(expected)
 	if err != nil {
 		return nil, err
@@ -135,29 +111,16 @@ func Compare(expected, actual []Entry) ([]Difference, error) {
 	if err != nil {
 		return nil, err
 	}
-	keys := make([]string, 0, len(left)+len(right))
-	for key := range left {
-		keys = append(keys, key)
-	}
-	for key := range right {
-		keys = append(keys, key)
-	}
-	slices.Sort(keys)
-	var differences []Difference
-	for _, key := range slices.Compact(keys) {
-		l, lok := left[key]
-		r, rok := right[key]
-		if lok == rok && l == r {
-			continue
+	var paths []string
+	for path, row := range left {
+		if other, exists := right[path]; !exists || row != other {
+			paths = append(paths, path)
 		}
-		difference := Difference{Path: key}
-		if lok {
-			difference.Expected = &l
-		}
-		if rok {
-			difference.Actual = &r
-		}
-		differences = append(differences, difference)
+		delete(right, path)
 	}
-	return differences, nil
+	for path := range right {
+		paths = append(paths, path)
+	}
+	slices.Sort(paths)
+	return paths, nil
 }

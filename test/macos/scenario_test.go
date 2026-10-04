@@ -9,13 +9,24 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
-func (h *harness) baseline() map[string]any {
+type result struct {
+	Baseline        string         `json:"baseline"`
+	Scenario        string         `json:"scenario,omitempty"`
+	MetadataBackup  string         `json:"metadata_backup,omitempty"`
+	AtKill          string         `json:"at_kill,omitempty"`
+	Resumed         string         `json:"resumed,omitempty"`
+	RecoveredFrom   string         `json:"recovered_from,omitempty"`
+	BaselineRestore helpers.Counts `json:"baseline_restore,omitempty"`
+	ResumedRestore  helpers.Counts `json:"resumed_restore,omitempty"`
+	ChunkObjectsEnd int            `json:"chunk_objects_end,omitempty"`
+}
+
+func (h *harness) baseline() result {
 	h.must(absent(filepath.Join(h.work, "objects")))
 	h.must(absent(h.local))
 	h.platform(false)
@@ -33,62 +44,71 @@ func (h *harness) baseline() map[string]any {
 	h.startBackup("baseline")
 	completed, err := h.completeBackup("baseline")
 	h.must(err)
-	h.must(h.detach(h.ctx))
+	h.must(h.detach())
 	h.mount()
 	selected := h.remoteBackup("baseline", "")
 	h.backupTree(selected)
-	h.must(h.detach(h.ctx))
+	h.must(h.detach())
 	h.metadata(completed, "baseline")
-	return map[string]any{"baseline": filepath.Base(selected)}
+	return result{Baseline: filepath.Base(selected)}
 }
 
 func (h *harness) stopDaemon(abrupt bool) {
 	p := h.daemon
 	h.daemon = nil
-	h.must(h.stop(p, abrupt, 45*time.Second))
+	h.must(stop(p, abrupt))
+}
+
+func (h *harness) stopBackup(limit time.Duration) error {
+	output, err := h.try(time.Minute, "/usr/bin/tmutil", "stopbackup")
+	h.t.Log("stopbackup", output, err)
+	if h.backup == nil {
+		return nil
+	}
+	p := h.backup
+	select {
+	case <-p.done:
+	case <-h.ctx.Done():
+		return h.ctx.Err()
+	case <-time.After(limit):
+		if err := p.cmd.Process.Kill(); err != nil {
+			return err
+		}
+		select {
+		case <-p.done:
+		case <-time.After(5 * time.Second):
+			return errors.New("Time Machine client was not reaped")
+		}
+	}
+	p.cancel()
+	h.backup = nil
+	return p.log.Close()
 }
 
 func (h *harness) stopClient() {
-	output, err := h.command(h.ctx, time.Minute, "", "/usr/bin/tmutil", "stopbackup")
-	h.t.Log("stopbackup", output, err)
-	if h.backup != nil {
-		p := h.backup
-		select {
-		case <-p.done:
-		case <-time.After(3 * time.Minute):
-			h.must(p.cmd.Process.Kill())
-			select {
-			case <-p.done:
-			case <-h.ctx.Done():
-				h.t.Fatal(h.ctx.Err())
-			}
+	h.must(h.stopBackup(3 * time.Minute))
+	err := h.waitFor("backupd stop", 3*time.Minute, 5*time.Second, func() (bool, error) { return !h.status(), nil })
+	if err != nil {
+		if h.ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			h.must(err)
 		}
-		h.must(p.log.Close())
-		h.backup = nil
+		h.t.Log("backupd still stopping before forced detach", err)
 	}
-	deadline := time.Now().Add(3 * time.Minute)
-	for h.status() && time.Now().Before(deadline) {
-		h.pause(5 * time.Second)
-	}
-	h.must(h.detach(h.ctx))
+	h.must(h.detach())
 }
 
 func (h *harness) copying() string {
 	h.startBackup("interrupted")
-	deadline := time.Now().Add(30 * time.Minute)
-	for time.Now().Before(deadline) {
+	var text string
+	h.must(h.waitFor("Time Machine Copying", 30*time.Minute, 2*time.Second, func() (bool, error) {
 		if h.backup.exited() {
-			h.t.Fatal("Time Machine ended before Copying was seen")
+			return false, errors.New("Time Machine ended before Copying was seen")
 		}
-		text := h.native("/usr/bin/tmutil", "status")
-		if helpers.Copying(text) {
-			h.event("time-machine-copying", map[string]any{"native_status": text})
-			return text
-		}
-		h.pause(2 * time.Second)
-	}
-	h.t.Fatal("Time Machine did not reach Copying in 30 minutes")
-	return ""
+		text = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
+		return helpers.Copying(text), nil
+	}))
+	h.t.Log("time-machine-copying", text)
+	return text
 }
 
 func (h *harness) cold() {
@@ -99,7 +119,7 @@ func (h *harness) cold() {
 	h.startDaemon("recover")
 }
 
-func (h *harness) scenario(name string) map[string]any {
+func (h *harness) scenario(name string) result {
 	switch name {
 	case "server-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
@@ -109,107 +129,99 @@ func (h *harness) scenario(name string) map[string]any {
 	if midpoint {
 		h.interval = "1m"
 	}
-	// The baseline routine waits for a native completed backup before any interruption.
-	result := h.baseline()
+	outcome := h.baseline()
 	size := int64(1 << 30)
 	if midpoint {
 		size = 4 << 30
 	}
 	h.randomFile("later.bin", size)
 	h.must(os.WriteFile(filepath.Join(h.proof, "nested/message.txt"), []byte("changed after the baseline\n"), 0o600))
-	updated := filepath.Join(h.evidence, "updated-tree.jsonl")
+	updated := filepath.Join(h.evidence, "updated-tree.json")
 	h.manifest(h.proof, updated)
-	// Take P1 last so cold and machine-loss kills precede the next scheduled point.
+	// Take P1 last, so cold and machine-loss kills precede the next scheduled point.
 	p1 := h.metadata(time.Now().UTC(), "pre-interruption")
 	before := h.objects("s3-smb/chunks/")
 	atKill := h.copying()
 	point := p1
 	if midpoint {
 		point = h.metadata(time.Now().UTC(), "midpoint")
-		atKill = h.native("/usr/bin/tmutil", "status")
+		atKill = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
 		if !helpers.Copying(atKill) {
 			h.t.Fatal("Time Machine stopped copying before the metadata backup landed")
 		}
 	}
+	aborted := time.Now().UTC()
 	if name == "client-abort-cold" {
-		aborted := time.Now().UTC()
 		for _, args := range [][]string{{"/usr/bin/tmutil", "stopbackup"}, {"/usr/bin/pkill", "-9", "-x", "backupd"}} {
-			output, err := h.command(h.ctx, time.Minute, "", args...)
+			output, err := h.try(time.Minute, args...)
 			h.t.Log("client abort", output, err)
 		}
-		for _, path := range mountpoints(h.native("/sbin/mount")) {
-			output, err := h.command(h.ctx, 2*time.Minute, "", "/sbin/umount", "-f", path)
+		for _, path := range mountpoints(h.run(2*time.Minute, "/sbin/mount")) {
+			output, err := h.try(2*time.Minute, "/sbin/umount", "-f", path)
 			h.t.Log("forced client unmount", output, err)
 		}
-		h.stopClient()
-		// Check before the metadata wait so housekeeping cannot supply the change.
-		after := h.objects("s3-smb/chunks/")
-		h.must(helpers.CheckRemoteChange(before, after))
-		h.save("interrupted-chunks.json", map[string]any{"before": before, "after": after, "at_kill": atKill}, false)
-		point = h.metadata(aborted, "after-abort")
-		h.cold()
 	} else {
 		h.stopDaemon(true)
-		h.stopClient()
-		after := h.objects("s3-smb/chunks/")
-		h.must(helpers.CheckRemoteChange(before, after))
-		h.save("interrupted-chunks.json", map[string]any{"before": before, "after": after, "at_kill": atKill}, false)
-		if name == "server-kill-restart" {
-			h.startDaemon("restart")
-		} else if name != "machine-loss" {
-			h.cold()
+	}
+	h.stopClient()
+	// Check before any recovery or metadata wait. This also runs for machine-loss.
+	after := h.objects("s3-smb/chunks/")
+	h.must(helpers.CheckRemoteChange(before, after))
+	h.save("interrupted-chunks.json", map[string]any{"before": before, "after": after, "at_kill": atKill})
+	outcome.Scenario, outcome.AtKill = name, atKill
+	if name == "machine-loss" {
+		outcome.MetadataBackup = p1.Key
+		return outcome
+	}
+	if name == "server-kill-restart" {
+		h.startDaemon("restart")
+	} else {
+		if name == "client-abort-cold" {
+			point = h.metadata(aborted, "after-abort")
+		}
+		h.cold()
+		if name == "server-kill-cold" && h.daemon.point != p1.Key {
+			h.t.Fatalf("recovered from %s, expected P1 %s", h.daemon.point, p1.Key)
+		}
+		if name != "server-kill-cold" && h.daemon.point < point.Key {
+			h.t.Fatalf("recovered from %s, expected %s or later", h.daemon.point, point.Key)
 		}
 	}
-	result["scenario"], result["metadata_backup"], result["at_kill"] = name, point.Key, atKill
-	if name == "machine-loss" {
-		return result
-	}
-	if name == "server-kill-cold" && h.daemon.point != p1.Key {
-		h.t.Fatalf("recovered from %s, expected P1 %s", h.daemon.point, p1.Key)
-	}
-	if (midpoint || name == "client-abort-cold") && h.daemon.point < point.Key {
-		h.t.Fatalf("recovered from %s, expected %s or later", h.daemon.point, point.Key)
-	}
-	baseline, ok := result["baseline"].(string)
-	if !ok {
-		h.t.Fatal("missing baseline identifier")
-	}
+	outcome.MetadataBackup = point.Key
 	h.mount()
-	result["baseline_restore"] = h.restore(h.remoteBackup("baseline-recovered", baseline), filepath.Join(h.transfer, "reference/tree.jsonl"), "restore-baseline")
-	h.must(h.detach(h.ctx))
+	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-recovered", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	h.must(h.detach())
 	var latest string
 	for _, label := range []string{"resumed", "resumed-retry"} {
 		h.startBackup(label)
-		// Time Machine may return 0 without completing a backup. The native list is the gate.
 		if _, err := h.completeBackup(label); err != nil {
-			h.event("resumed-backup-failed", map[string]any{"label": label, "error": err.Error()})
+			h.t.Log("resumed-backup-failed", label, err)
 		}
-		h.must(h.detach(h.ctx))
+		h.must(h.detach())
 		h.mount()
 		latest = h.remoteBackup(label, "")
-		if filepath.Base(latest) != baseline {
+		if filepath.Base(latest) != outcome.Baseline {
 			break
 		}
-		h.must(h.detach(h.ctx))
+		h.must(h.detach())
 	}
-	if filepath.Base(latest) == baseline {
+	if filepath.Base(latest) == outcome.Baseline {
 		h.t.Fatal("no backup completed after recovery")
 	}
-	result["resumed_restore"] = h.restore(latest, updated, "restore-resumed")
-	result["resumed"], result["recovered_from"], result["chunk_objects_end"] = filepath.Base(latest), h.daemon.point, len(h.objects("s3-smb/chunks/"))
-	h.must(h.detach(h.ctx))
-	return result
+	outcome.ResumedRestore = h.restore(latest, updated, "restore-resumed")
+	outcome.Resumed, outcome.RecoveredFrom, outcome.ChunkObjectsEnd = filepath.Base(latest), h.daemon.point, len(h.objects("s3-smb/chunks/"))
+	h.must(h.detach())
+	return outcome
 }
 
-func (h *harness) recoverStore() map[string]any {
+func (h *harness) recoverStore() result {
 	h.must(absent(h.local))
 	h.must(absent(filepath.Join(h.work, "objects")))
 	data, err := os.ReadFile(filepath.Join(h.transfer, "reference/recovery.json"))
 	h.must(err)
-	var result map[string]any
-	h.must(json.Unmarshal(data, &result))
-	baseline, ok := result["baseline"].(string)
-	if !ok || baseline == "" {
+	var outcome result
+	h.must(json.Unmarshal(data, &outcome))
+	if outcome.Baseline == "" {
 		h.t.Fatal("missing baseline identifier")
 	}
 	h.platform(true)
@@ -218,16 +230,16 @@ func (h *harness) recoverStore() map[string]any {
 	h.must(os.Remove(tar))
 	h.services(false)
 	h.startDaemon("recover")
-	if point, ok := result["metadata_backup"].(string); ok && point != h.daemon.point {
-		h.t.Fatalf("recovered from %s, expected %s", h.daemon.point, point)
+	if outcome.MetadataBackup != "" && outcome.MetadataBackup != h.daemon.point {
+		h.t.Fatalf("recovered from %s, expected %s", h.daemon.point, outcome.MetadataBackup)
 	}
-	// No fixture is created on this Mac. Only hashes and the object store crossed runners.
+	// No source tree is created here. Only hashes and S3 objects crossed runners.
 	h.must(absent(h.proof))
 	h.mount()
-	result["baseline_restore"] = h.restore(h.remoteBackup("baseline", baseline), filepath.Join(h.transfer, "reference/tree.jsonl"), "restore-baseline")
-	result["recovered_from"] = h.daemon.point
-	h.must(h.detach(h.ctx))
-	return result
+	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.RecoveredFrom = h.daemon.point
+	h.must(h.detach())
+	return outcome
 }
 
 func (h *harness) finish() {
@@ -235,58 +247,34 @@ func (h *harness) finish() {
 		return
 	}
 	h.finished = true
+	parent := h.ctx
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
-	defer cancel()
-	var failures []error
-	attempt := func(err error) {
+	h.ctx = ctx
+	defer func() { cancel(); h.ctx = parent }()
+	report := func(err error) {
 		if err != nil {
-			failures = append(failures, err)
 			h.t.Error(err)
 		}
 	}
 	if h.backup != nil {
-		attempt(errors.New("owned Time Machine startbackup still active at final cleanup"))
-		_, err := h.command(ctx, time.Minute, "", "/usr/bin/tmutil", "stopbackup")
-		attempt(err)
-		p := h.backup
-		// The client can exit nonzero after a deliberately cancelled backup.
-		select {
-		case <-p.done:
-		case <-time.After(30 * time.Second):
-			attempt(p.cmd.Process.Kill())
-			select {
-			case <-p.done:
-			case <-time.After(5 * time.Second):
-				attempt(errors.New("backup client did not exit"))
-			}
-		}
-		attempt(p.log.Close())
-		h.backup = nil
+		h.t.Error("owned Time Machine startbackup still active at final cleanup")
+		report(h.stopBackup(30 * time.Second))
+	}
+	if h.daemon != nil || len(h.attachments) != 0 {
+		report(h.detach())
 	}
 	if h.daemon != nil {
-		attempt(h.detach(ctx))
-		attempt(h.stop(h.daemon, false, 45*time.Second))
+		report(stop(h.daemon, false))
 		h.daemon = nil
 	}
 	if h.minio != nil {
-		attempt(h.stop(h.minio, false, 30*time.Second))
+		report(stop(h.minio, false))
 		h.minio = nil
 	}
 	for _, args := range [][]string{{"/usr/bin/tmutil", "status"}, {"/sbin/mount"}, {"/usr/bin/hdiutil", "info", "-plist"}, {"/bin/df", "-k"}, {"/usr/bin/log", "show", "--style", "json", "--last", "6h", "--info", "--debug", "--predicate", `process == "backupd" OR process == "backupd-helper" OR process == "tmutil" OR process == "NetAuthSysAgent" OR subsystem BEGINSWITH "com.apple.smb" OR senderImagePath CONTAINS "smbfs"`}} {
-		output, err := h.command(ctx, 90*time.Second, "", args...)
-		if err != nil {
-			h.t.Log("diagnostic failed", args, output, err)
+		if _, err := h.try(90*time.Second, args...); err != nil {
+			h.t.Log("diagnostic failed", args, err)
 		}
 	}
-	messages := make([]string, len(failures))
-	for index, err := range failures {
-		messages[index] = err.Error()
-	}
-	data, err := json.Marshal(map[string]any{"errors": messages})
-	attempt(err)
-	attempt(os.WriteFile(filepath.Join(h.evidence, "cleanup.json"), data, 0o600))
-	// All other failures are already in the verbose go test log and command evidence.
-	if h.t.Failed() {
-		attempt(os.WriteFile(filepath.Join(h.evidence, "failure.txt"), []byte(strings.Join(messages, "\n")+"\nSee harness.log and commands.jsonl for the test failure.\n"), 0o600))
-	}
+	h.t.Log("cleanup finished")
 }

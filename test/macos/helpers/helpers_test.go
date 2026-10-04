@@ -2,6 +2,7 @@
 package helpers
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,67 +18,77 @@ func must(t *testing.T, err error) {
 }
 
 func TestManifest(t *testing.T) {
-	for _, change := range []string{"none", "content", "missing", "extra", "empty", "type", "symlink", "metadata", "outside"} {
-		t.Run(change, func(t *testing.T) { testManifest(t, change) })
+	changes := map[string]func(string) error{
+		"none": func(string) error { return nil },
+		"content": func(root string) error {
+			return os.WriteFile(filepath.Join(root, "nested/deeper/file"), []byte("changed"), 0o600)
+		},
+		"missing": func(root string) error { return os.Remove(filepath.Join(root, "file")) },
+		"extra":   func(root string) error { return os.WriteFile(filepath.Join(root, "extra"), []byte("extra"), 0o600) },
+		"empty":   func(root string) error { return os.Remove(filepath.Join(root, "nested/empty")) },
+		"type": func(root string) error {
+			path := filepath.Join(root, "empty")
+			return errors.Join(os.Remove(path), os.WriteFile(path, nil, 0o600))
+		},
+		"symlink": func(root string) error {
+			return errors.Join(os.Remove(filepath.Join(root, "empty")), os.Symlink(filepath.Dir(root), filepath.Join(root, "empty")))
+		},
+		"metadata": func(root string) error { return os.Chmod(filepath.Join(root, "file"), 0o400) },
+		"outside": func(root string) error {
+			return os.WriteFile(filepath.Join(filepath.Dir(root), "outside"), []byte("not test data"), 0o600)
+		},
+	}
+	for name, change := range changes {
+		t.Run(name, func(t *testing.T) { checkManifest(t, name, change) })
 	}
 }
 
-func testManifest(t *testing.T, change string) {
-	base := t.TempDir()
-	tree := filepath.Join(base, "tree")
-	for _, path := range []string{"nested/deeper", "nested/empty", "empty"} {
-		must(t, os.MkdirAll(filepath.Join(tree, path), 0o700))
+func checkManifest(t *testing.T, name string, change func(string) error) {
+	root := filepath.Join(t.TempDir(), "tree")
+	for _, dir := range []string{"nested/deeper", "nested/empty", "empty"} {
+		must(t, os.MkdirAll(filepath.Join(root, dir), 0o700))
 	}
 	for path, value := range map[string]string{"file": "independent test data\x00", "nested/deeper/file": "nested test data", "zero": ""} {
-		must(t, os.WriteFile(filepath.Join(tree, path), []byte(value), 0o600))
+		must(t, os.WriteFile(filepath.Join(root, path), []byte(value), 0o600))
 	}
-	before, counts, err := Manifest(tree)
+	before, counts, err := Manifest(root)
 	must(t, err)
-	if counts.Entries != 8 || counts.Files != 3 || counts.Bytes != 38 {
-		t.Fatalf("counts: %+v", counts)
+	if counts != (Counts{Entries: 8, Files: 3, Bytes: 38}) {
+		t.Fatal(counts)
 	}
-	if before[0].Path != "." || before[0].Type != "directory" {
-		t.Fatal(before)
+	entries, err := index(before)
+	must(t, err)
+	for _, dir := range []string{".", "empty", "nested", "nested/empty", "nested/deeper"} {
+		if entries[dir].Type != "directory" {
+			t.Fatal(dir, entries[dir])
+		}
 	}
-	switch change {
-	case "none":
-	case "content":
-		must(t, os.WriteFile(filepath.Join(tree, "nested/deeper/file"), []byte("changed"), 0o600))
-	case "missing":
-		must(t, os.Remove(filepath.Join(tree, "file")))
-	case "extra":
-		must(t, os.WriteFile(filepath.Join(tree, "extra"), []byte("extra"), 0o600))
-	case "empty":
-		must(t, os.Remove(filepath.Join(tree, "nested/empty")))
-	case "type":
-		must(t, os.Remove(filepath.Join(tree, "empty")))
-		must(t, os.WriteFile(filepath.Join(tree, "empty"), nil, 0o600))
-	case "symlink":
-		must(t, os.Remove(filepath.Join(tree, "empty")))
-		must(t, os.Symlink(base, filepath.Join(tree, "empty")))
-	case "metadata":
-		must(t, os.Chmod(filepath.Join(tree, "file"), 0o400))
-	case "outside":
-		must(t, os.WriteFile(filepath.Join(base, "ordinary-system-file"), []byte("not test data"), 0o600))
+	if entries["zero"].Type != "file" || entries["zero"].Bytes != 0 || len(entries["zero"].SHA256) != 64 {
+		t.Fatal(entries["zero"])
 	}
-	after, _, err := Manifest(tree)
+	must(t, change(root))
+	after, _, err := Manifest(root)
 	must(t, err)
 	slices.Reverse(after)
-	path := filepath.Join(base, "manifest.jsonl")
+	path := filepath.Join(filepath.Dir(root), "manifest.json")
 	must(t, WriteManifest(path, after))
 	loaded, err := ReadManifest(path)
 	must(t, err)
-	diff, err := Compare(before, loaded)
+	differences, err := Compare(before, loaded)
 	must(t, err)
-	equal := change == "none" || change == "metadata" || change == "outside"
-	if (len(diff) == 0) != equal {
-		t.Fatalf("differences: %+v", diff)
+	equal := name == "none" || name == "metadata" || name == "outside"
+	if (len(differences) == 0) != equal {
+		t.Fatal(differences)
 	}
-	if change == "content" && (len(diff) != 1 || diff[0].Path != "nested/deeper/file") {
-		t.Fatal(diff)
+	if name == "content" && !slices.Equal(differences, []string{"nested/deeper/file"}) {
+		t.Fatal(differences)
 	}
-	if change == "symlink" && (len(diff) != 1 || !strings.HasPrefix(diff[0].Actual.Type, "unexpected:")) {
-		t.Fatal(diff)
+	if name == "symlink" {
+		entries, err := index(loaded)
+		must(t, err)
+		if !strings.HasPrefix(entries["empty"].Type, "unexpected:") || len(differences) != 1 {
+			t.Fatal(entries, differences)
+		}
 	}
 	if err := WriteManifest(path, after); err == nil {
 		t.Fatal("overwrote evidence")
@@ -96,12 +107,11 @@ func TestManifestErrors(t *testing.T) {
 			t.Fatal("invalid actual accepted")
 		}
 	}
-	path := filepath.Join(t.TempDir(), "bad")
+	path := filepath.Join(t.TempDir(), "bad.json")
 	must(t, os.WriteFile(path, []byte("not json"), 0o600))
 	if _, err := ReadManifest(path); err == nil {
 		t.Fatal("invalid JSON accepted")
 	}
-	// A regular /proc file whose read fails checks that hashing does not hide read errors on Linux.
 	if _, err := os.Stat("/proc/self/mem"); err == nil {
 		if _, _, err := Manifest("/proc/self/mem"); err == nil {
 			t.Fatal("silent read failure")
@@ -159,26 +169,49 @@ func TestChecks(t *testing.T) {
 	}
 }
 
-func TestBuildInputs(t *testing.T) {
-	for server, expected := range map[string]string{"default": "", "smbnext": "smbnext"} {
-		tags, err := BuildTags(server)
-		must(t, err)
-		if tags != expected {
-			t.Fatal(tags)
+func TestConfirmation(t *testing.T) {
+	initialize := "Initialize a genuinely empty S3 dataset?\nContinue? [yes/no]: "
+	recoverPrompt := "Recover metadata from meta/dump-2099\nContinue? [yes/no]: "
+	point, err := Confirmation("initialize", initialize)
+	must(t, err)
+	if point != "" {
+		t.Fatal(point)
+	}
+	point, err = Confirmation("recover", recoverPrompt)
+	must(t, err)
+	if point != "meta/dump-2099" {
+		t.Fatal(point)
+	}
+	for _, test := range []struct{ phase, text string }{{"restart", initialize}, {"initialize", recoverPrompt}, {"recover", initialize}, {"initialize", "Continue? [yes/no]: "}, {"recover", ""}} {
+		if _, err := Confirmation(test.phase, test.text); err == nil {
+			t.Fatal("unexpected consent accepted", test)
 		}
 	}
-	if _, err := BuildTags("other"); err == nil {
-		t.Fatal("invalid server accepted")
+}
+
+func TestSelectBackup(t *testing.T) {
+	path := "/Volumes/.timemachine/id/2099.backup/2099.backup"
+	for _, identifier := range []string{"", "2099.backup"} {
+		selected, err := SelectBackup([]string{path}, path, identifier)
+		must(t, err)
+		if selected != path {
+			t.Fatal(selected)
+		}
 	}
-	commit := strings.Repeat("b", 40)
-	release, got, err := MinIOPin("ARG MINIO_RELEASE=RELEASE.2099-01-02T03-04-05Z\nARG MINIO_COMMIT=" + commit + "\n")
-	must(t, err)
-	if got != commit || release != "RELEASE.2099-01-02T03-04-05Z" {
-		t.Fatal(release, got)
-	}
-	for _, source := range []string{"", "ARG MINIO_RELEASE=bad\nARG MINIO_COMMIT=bad", "ARG MINIO_RELEASE=RELEASE.2099-01-02T03-04-05Z\nARG MINIO_COMMIT=" + strings.Repeat("b", 39)} {
-		if _, _, err := MinIOPin(source); err == nil {
-			t.Fatal("invalid pin accepted")
+	for _, test := range []struct {
+		latest, identifier string
+		paths              []string
+	}{
+		{path, "", nil},
+		{"/source", "", []string{path}},
+		{"", "missing.backup", []string{path}},
+		{path, "", []string{path, path}},
+		{"", "2099.backup", []string{path, path}},
+		{"relative", "", []string{"relative"}},
+		{"/Volumes/2099.inProgress", "", []string{"/Volumes/2099.inProgress"}},
+	} {
+		if _, err := SelectBackup(test.paths, test.latest, test.identifier); err == nil {
+			t.Fatal(test, "accepted incomplete backup")
 		}
 	}
 }

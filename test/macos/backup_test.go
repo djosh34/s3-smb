@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,36 +31,35 @@ type imageInfo struct {
 }
 
 func (h *harness) destinationSetup() {
-	output := h.native("/usr/bin/tmutil", "setdestination", "smb://timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine")
+	output := h.run(2*time.Minute, "/usr/bin/tmutil", "setdestination", "smb://timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine")
 	if strings.Contains(output, "The backup destination could not be set.") {
 		h.t.Fatal("tmutil could not set the destination despite exit 0")
 	}
-	text := h.native("/usr/bin/tmutil", "destinationinfo", "-X")
 	var info struct {
 		Destinations []struct {
 			ID string `plist:"ID"`
 		} `plist:"Destinations"`
 	}
-	_, err := plist.Unmarshal([]byte(text), &info)
+	_, err := plist.Unmarshal([]byte(h.run(2*time.Minute, "/usr/bin/tmutil", "destinationinfo", "-X")), &info)
 	h.must(err)
-	h.save("destination.json", info, false)
+	h.save("destination.json", info)
 	if len(info.Destinations) != 1 || info.Destinations[0].ID == "" {
 		h.t.Fatal("expected exactly one Time Machine destination with an ID")
 	}
 	h.destination = info.Destinations[0].ID
-	// Port 1445 bypasses Apple's loopback 139/445 restriction. backupd needs the System keychain.
+	// Port 1445 bypasses Apple's loopback restriction. backupd needs the System keychain.
 	keychain := "/Library/Keychains/System.keychain"
-	output, err = h.command(h.ctx, 2*time.Minute, "", "/usr/bin/security", "find-internet-password", "-s", "127.0.0.1", "-a", "timemachine", keychain)
+	output, err = h.try(2*time.Minute, "/usr/bin/security", "find-internet-password", "-s", "127.0.0.1", "-a", "timemachine", keychain)
 	h.t.Log("existing synthetic credential", output, err)
 	attributes := []string{"-s", "127.0.0.1", "-a", "timemachine", "-P", "1445", "-r", "smb ", "-p", "TimeMachine"}
 	args := append([]string{"/usr/bin/security", "add-internet-password", "-U"}, attributes...)
 	args = append(args, "-T", "/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent", "-T", "/System/Library/CoreServices/TimeMachine/backupd", "-w", "synthetic-tm-control", keychain)
-	h.native(args...)
-	h.native(append(append([]string{"/usr/bin/security", "find-internet-password"}, attributes...), keychain)...)
+	h.run(2*time.Minute, args...)
+	h.run(2*time.Minute, append(append([]string{"/usr/bin/security", "find-internet-password"}, attributes...), keychain)...)
 }
 
 func (h *harness) status() bool {
-	running, err := helpers.Running(h.native("/usr/bin/tmutil", "status"))
+	running, err := helpers.Running(h.run(2*time.Minute, "/usr/bin/tmutil", "status"))
 	h.must(err)
 	return running
 }
@@ -70,13 +68,12 @@ func (h *harness) startBackup(label string) {
 	if h.backup != nil {
 		h.t.Fatal("backup already active")
 	}
-	h.backup = h.start(label+"-startbackup", nativeCommand(h.ctx, "/usr/bin/tmutil", "startbackup", "--block", "--destination", h.destination))
-	h.event("time-machine-start", map[string]any{"label": label})
+	h.backup = h.start(label+"-startbackup", "/usr/bin/tmutil", "startbackup", "--block", "--destination", h.destination)
+	h.t.Log("time-machine-start", label)
 }
 
 func (h *harness) completeBackup(label string) (time.Time, error) {
-	deadline := time.Now().Add(90 * time.Minute)
-	next := time.Time{}
+	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
 			h.t.Fatal("full backup exceeded 90 minute stage budget")
@@ -85,7 +82,7 @@ func (h *harness) completeBackup(label string) (time.Time, error) {
 			var stat syscall.Statfs_t
 			h.must(syscall.Statfs(h.work, &stat))
 			free := stat.Bavail * uint64(stat.Bsize)
-			h.event("time-machine-progress", map[string]any{"label": label, "native_status": h.native("/usr/bin/tmutil", "status"), "free_bytes": free})
+			h.t.Log("time-machine-progress", label, "free_bytes", free, h.run(2*time.Minute, "/usr/bin/tmutil", "status"))
 			if free < 20<<30 {
 				h.t.Fatal("free space below 20 GiB")
 			}
@@ -95,12 +92,13 @@ func (h *harness) completeBackup(label string) (time.Time, error) {
 	}
 	p := h.backup
 	h.backup = nil
+	p.cancel()
 	h.must(p.log.Close())
 	if p.err != nil || h.status() {
-		return time.Time{}, fmt.Errorf("Time Machine did not complete cleanly: %w", errors.Join(p.err, errors.New("backup client failed or backup still running")))
+		return time.Time{}, errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
 	}
-	h.event("time-machine-command-completed", map[string]any{"label": label})
-	// This is only the command boundary. remoteBackup must also find a completed native backup.
+	h.t.Log("time-machine-command-completed", label)
+	// A command exit is not enough. remoteBackup must also find a completed native backup.
 	return time.Now().UTC(), nil
 }
 
@@ -110,30 +108,27 @@ type receipt struct {
 }
 
 func (h *harness) metadata(after time.Time, label string) receipt {
-	path := filepath.Join(h.local, "state/backup-receipt.json")
-	deadline := time.Now().Add(15 * time.Minute)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path) //nolint:gosec // This is the application's receipt inside the test-owned state directory.
-		if err == nil {
-			var point receipt
-			h.must(json.Unmarshal(data, &point))
-			if point.Snapshot.After(after) {
-				objects := h.objects("s3-smb/meta/")
-				size, ok := objects["s3-smb/"+point.Key]
-				if !ok {
-					h.t.Fatal("receipt object absent from S3", point.Key)
-				}
-				h.save(label+"-receipt.json", point, false)
-				h.event("native-point-after-completion", map[string]any{"label": label, "receipt": point, "object_bytes": size})
-				return point
-			}
-		} else if !errors.Is(err, os.ErrNotExist) {
-			h.must(err)
+	var point receipt
+	h.must(h.waitFor("metadata point after "+after.Format(time.RFC3339), 15*time.Minute, time.Second, func() (bool, error) {
+		data, err := os.ReadFile(filepath.Join(h.local, "state/backup-receipt.json"))
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
 		}
-		h.pause(time.Second)
+		if err != nil {
+			return false, err
+		}
+		if err := json.Unmarshal(data, &point); err != nil {
+			return false, err
+		}
+		return point.Snapshot.After(after), nil
+	}))
+	size, exists := h.objects("s3-smb/meta/")["s3-smb/"+point.Key]
+	if !exists {
+		h.t.Fatal("receipt object absent from S3", point.Key)
 	}
-	h.t.Fatal("no successful native metadata point after Time Machine completion")
-	return receipt{}
+	h.save(label+"-receipt.json", point)
+	h.t.Log("native-point-after-completion", label, point, "object_bytes", size)
+	return point
 }
 
 func mountpoints(text string) []string {
@@ -154,9 +149,8 @@ func mountpoints(text string) []string {
 	return paths
 }
 
-func (h *harness) detach(ctx context.Context) error {
-	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
-	text, err := run("/usr/bin/hdiutil", "info", "-plist")
+func (h *harness) detach() error {
+	text, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 	if err != nil {
 		return err
 	}
@@ -177,96 +171,86 @@ func (h *harness) detach(ctx context.Context) error {
 			}
 		}
 	}
-	mounts, err := run("/sbin/mount")
+	mounts, err := h.try(2*time.Minute, "/sbin/mount")
 	if err != nil {
 		return err
 	}
-	// APFS snapshots mounted by listbackups must go before the image.
+	// listbackups mounts APFS snapshots. They must go before their image.
 	for _, line := range strings.Split(mounts, "\n") {
 		if !strings.HasPrefix(line, "com.apple.TimeMachine.") || !strings.Contains(line, " on /Volumes/.timemachine/") {
 			continue
 		}
 		_, tail, _ := strings.Cut(line, " on ")
 		path, _, _ := strings.Cut(tail, " (")
-		if _, err := run("/sbin/umount", path); err != nil {
-			if _, err := run("/sbin/umount", "-f", path); err != nil {
+		if _, err := h.try(2*time.Minute, "/sbin/umount", path); err != nil {
+			if _, err := h.try(2*time.Minute, "/sbin/umount", "-f", path); err != nil {
 				return err
 			}
 		}
 	}
 	for index := len(devices) - 1; index >= 0; index-- {
-		if err := h.detachDevice(ctx, devices[index]); err != nil {
+		if err := h.detachDevice(devices[index]); err != nil {
 			return err
 		}
 	}
 	h.attachments = nil
-	return h.detachShares(ctx)
+	return h.detachShares()
 }
 
-func (h *harness) detachDevice(ctx context.Context, device string) error {
-	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
-	if _, err := run("/usr/bin/hdiutil", "detach", device); err == nil {
+func (h *harness) detachDevice(device string) error {
+	if _, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "detach", device); err == nil {
 		return nil
 	}
-	deadline := time.Now().Add(time.Minute)
-	for {
-		text, err := run("/usr/bin/hdiutil", "info", "-plist")
+	return h.waitFor("eject "+device, time.Minute, 5*time.Second, func() (bool, error) {
+		text, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 		if err != nil {
-			return err
+			return false, err
 		}
 		if !strings.Contains(text, "<string>"+device+"</string>") {
-			return nil
+			return true, nil
 		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("cannot detach %s", device)
+		_, err = h.try(2*time.Minute, "/usr/bin/hdiutil", "detach", "-force", device)
+		if err != nil {
+			h.t.Log("image still busy", device, err)
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
-		}
-		if _, err := run("/usr/bin/hdiutil", "detach", "-force", device); err == nil {
-			return nil
-		}
-	}
+		return err == nil, nil
+	})
 }
 
-func (h *harness) detachShares(ctx context.Context) error {
-	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
-	deadline := time.Now().Add(time.Minute)
-	for {
-		text, err := run("/sbin/mount")
+func (h *harness) detachShares() error {
+	err := h.waitFor("SMB unmount", time.Minute, 5*time.Second, func() (bool, error) {
+		text, err := h.try(2*time.Minute, "/sbin/mount")
 		if err != nil {
-			return err
+			return false, err
 		}
 		paths := mountpoints(text)
-		if len(paths) == 0 {
-			return nil
-		}
-		late := time.Now().After(deadline)
 		for _, path := range paths {
-			if _, err := run("/sbin/umount", path); err != nil && late {
-				if _, err := run("/sbin/umount", "-f", path); err != nil {
-					return err
-				}
+			if _, err := h.try(2*time.Minute, "/sbin/umount", path); err != nil {
+				h.t.Log("SMB mount still busy", err)
 			}
 		}
-		if late {
-			text, err := run("/sbin/mount")
-			if err != nil {
-				return err
-			}
-			if len(mountpoints(text)) != 0 {
-				return errors.New("task SMB mount remains")
-			}
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(5 * time.Second):
+		return len(paths) == 0, nil
+	})
+	if err == nil || h.ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	text, err := h.try(2*time.Minute, "/sbin/mount")
+	if err != nil {
+		return err
+	}
+	for _, path := range mountpoints(text) {
+		if _, err = h.try(2*time.Minute, "/sbin/umount", "-f", path); err != nil {
+			return err
 		}
 	}
+	text, err = h.try(2*time.Minute, "/sbin/mount")
+	if err != nil {
+		return err
+	}
+	if len(mountpoints(text)) != 0 {
+		return errors.New("task SMB mount remains")
+	}
+	return nil
 }
 
 func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
@@ -274,7 +258,7 @@ func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
 	if readonly {
 		args = append(args, "-readonly")
 	}
-	output, err := h.command(h.ctx, 5*time.Minute, "", append(args, bundle)...)
+	output, err := h.try(5*time.Minute, append(args, bundle)...)
 	if err != nil {
 		h.t.Log("attach failed", err)
 		return nil, nil
@@ -338,12 +322,12 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	h.must(err)
 	info, err := os.Stat(selected)
 	h.must(err)
-	if !info.IsDir() || strings.HasSuffix(filepath.Base(selected), ".inProgress") {
+	if !info.IsDir() {
 		h.t.Fatal("not a completed remote backup directory")
 	}
-	h.native("/usr/bin/hdiutil", "info", "-plist")
-	h.native("/sbin/mount")
-	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected}, false)
+	h.run(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
+	h.run(2*time.Minute, "/sbin/mount")
+	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
 	return selected
 }
 
@@ -375,9 +359,9 @@ func (h *harness) restore(selected, reference, name string) helpers.Counts {
 	}
 	output := filepath.Join(h.work, name)
 	h.must(absent(output))
-	h.event("native-created-tree-restore-start", map[string]any{"source": source})
+	h.t.Log("native-created-tree-restore-start", source)
 	h.run(30*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
-	manifest := filepath.Join(h.evidence, name+".jsonl")
+	manifest := filepath.Join(h.evidence, name+".json")
 	counts := h.manifest(output, manifest)
 	expected, err := helpers.ReadManifest(reference)
 	h.must(err)
@@ -385,10 +369,10 @@ func (h *harness) restore(selected, reference, name string) helpers.Counts {
 	h.must(err)
 	differences, err := helpers.Compare(expected, actual)
 	h.must(err)
-	h.save(name+"-differences.json", differences, false)
+	h.save(name+"-differences.json", differences)
 	if len(differences) != 0 {
 		h.t.Fatalf("%d created-tree differences; see %s-differences.json", len(differences), name)
 	}
-	h.event("native-created-tree-restore-verified", map[string]any{"backup": filepath.Base(selected), "counts": counts})
+	h.t.Log("native-created-tree-restore-verified", filepath.Base(selected), counts)
 	return counts
 }

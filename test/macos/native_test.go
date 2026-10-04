@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -23,9 +24,9 @@ type process struct {
 	cmd      *exec.Cmd
 	done     chan struct{}
 	err      error
+	cancel   context.CancelFunc
 	log      *os.File
-	terminal *os.File
-	drained  chan error
+	closeTTY func() error
 	point    string
 }
 
@@ -37,154 +38,105 @@ func (p *process) exited() bool {
 		return false
 	}
 }
+func (p *process) wait() { go func() { p.err = p.cmd.Wait(); close(p.done) }() }
 
-func (h *harness) start(name string, cmd *exec.Cmd) *process {
-	h.t.Helper()
-	log, err := os.OpenFile(filepath.Join(h.evidence, name+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The log path is built from a harness label and the run-owned evidence directory.
-	h.must(err)
-	cmd.Stdout, cmd.Stderr = log, log
-	if err := cmd.Start(); err != nil {
-		h.must(errors.Join(err, log.Close()))
+func nativeCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // Callers supply fixed native commands and run-owned binaries, not shell text.
+}
+
+func (h *harness) newProcess(name string, args ...string) *process {
+	// The phase deadline must leave services alive until cleanup detaches their clients.
+	ctx, cancel := context.WithCancel(context.Background())
+	log, err := os.OpenFile(filepath.Join(h.evidence, name+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Logs are created exclusively under this run's evidence directory.
+	if err != nil {
+		cancel()
+		h.must(err)
 	}
-	p := &process{cmd: cmd, done: make(chan struct{}), log: log}
-	go func() { p.err = cmd.Wait(); close(p.done) }()
+	cmd := nativeCommand(ctx, args...)
+	cmd.Stdout, cmd.Stderr = log, log
+	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
+	cmd.WaitDelay = 45 * time.Second
+	return &process{cmd: cmd, cancel: cancel, done: make(chan struct{}), log: log}
+}
+
+func (h *harness) start(name string, args ...string) *process {
+	p := h.newProcess(name, args...)
+	if err := p.cmd.Start(); err != nil {
+		p.cancel()
+		h.must(errors.Join(err, p.log.Close()))
+	}
+	p.wait()
 	return p
 }
 
-func (h *harness) stop(p *process, abrupt bool, timeout time.Duration) error {
-	if p == nil {
-		return nil
+func stop(p *process, abrupt bool) error {
+	defer p.cancel()
+	early := p.exited()
+	var err error
+	if abrupt {
+		err = p.cmd.Process.Kill()
+	} else {
+		p.cancel()
 	}
-	wasExited := p.exited()
-	var signalErr error
-	if !wasExited {
-		signal := os.Signal(syscall.SIGTERM)
-		if abrupt {
-			signal = syscall.SIGKILL
-		}
-		signalErr = p.cmd.Process.Signal(signal)
-	}
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	forced := false
 	select {
 	case <-p.done:
-	case <-timer.C:
-		forced = true
-		signalErr = errors.Join(signalErr, p.cmd.Process.Kill())
+	case <-time.After(50 * time.Second):
+		err = errors.Join(err, errors.New("process exceeded shutdown deadline"), p.cmd.Process.Kill())
 		select {
 		case <-p.done:
 		case <-time.After(5 * time.Second):
-			return errors.Join(signalErr, errors.New("process did not exit after kill"))
+			return errors.Join(err, errors.New("process was not reaped"))
 		}
 	}
-	var drainErr, closeErr error
-	if p.terminal != nil {
-		drainErr = p.terminal.Close()
-		select {
-		case err := <-p.drained:
-			drainErr = errors.Join(drainErr, err)
-		case <-time.After(5 * time.Second):
-			drainErr = errors.Join(drainErr, errors.New("PTY reader did not close"))
-		}
-		p.terminal = nil
-	}
-	if p.log != nil {
-		closeErr = p.log.Close()
-		p.log = nil
-	}
-	expected := p.err == nil
-	if abrupt {
+	switch {
+	case early || p.cmd.ProcessState == nil:
+		err = errors.Join(err, errors.New("application or service exited before shutdown"), p.err)
+	case abrupt:
 		status, ok := p.cmd.ProcessState.Sys().(syscall.WaitStatus)
-		expected = ok && status.Signal() == syscall.SIGKILL
+		if !ok || status.Signal() != syscall.SIGKILL {
+			err = errors.Join(err, errors.New("application did not exit from SIGKILL"))
+		}
+	case p.cmd.ProcessState.ExitCode() != 0:
+		err = errors.Join(err, errors.New("unsuccessful service shutdown"), p.err)
+	case p.err != nil && !errors.Is(p.err, context.Canceled):
+		err = errors.Join(err, p.err)
 	}
-	if forced || !expected || wasExited {
-		return errors.Join(signalErr, drainErr, closeErr, fmt.Errorf("%s shutdown failed: exited=%t forced=%t status=%s", p.cmd.Path, wasExited, forced, p.cmd.ProcessState))
+	if p.closeTTY != nil {
+		err = errors.Join(err, p.closeTTY())
 	}
-	return errors.Join(signalErr, drainErr, closeErr)
+	return errors.Join(err, p.log.Close())
 }
 
-func (h *harness) command(ctx context.Context, timeout time.Duration, directory string, args ...string) (string, error) {
-	h.t.Helper()
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+func (h *harness) try(timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(h.ctx, timeout)
 	defer cancel()
 	h.serial++
 	name := fmt.Sprintf("%04d-%s.log", h.serial, filepath.Base(args[0]))
-	h.t.Logf("native-command-start %s %v", name, args)
-	cmd := nativeCommand(ctx, args...)
-	cmd.Dir = directory
+	h.t.Logf("native-command-start %s %s %v", time.Now().UTC().Format(time.RFC3339), name, args)
 	path := filepath.Join(h.evidence, name)
-	log, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Evidence paths belong to this test run.
+	log, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The path is a numbered command log in the run-owned evidence directory.
 	if err != nil {
 		return "", err
 	}
+	cmd := nativeCommand(ctx, args...)
 	cmd.Stdout, cmd.Stderr = log, log
-	start := time.Now()
 	err = errors.Join(cmd.Run(), log.Close())
-	h.save("commands.jsonl", map[string]any{"argv": args, "start": start, "end": time.Now(), "error": fmt.Sprint(err), "output": name}, true)
-	h.t.Logf("native-command-exit %s %v", name, err)
+	h.t.Logf("native-command-exit %s %s %v", time.Now().UTC().Format(time.RFC3339), name, err)
 	if err != nil {
 		return "", fmt.Errorf("%v: %w; see %s", args, err, name)
 	}
 	if args[0] == "/usr/bin/log" {
 		return "", nil
-	} // Keep large unified logs on disk.
+	}
 	output, err := os.ReadFile(path) //nolint:gosec // Read only the command log just created above.
 	return string(output), err
 }
 
 func (h *harness) run(timeout time.Duration, args ...string) string {
 	h.t.Helper()
-	output, err := h.command(h.ctx, timeout, "", args...)
+	output, err := h.try(timeout, args...)
 	h.must(err)
 	return output
-}
-
-func (h *harness) native(args ...string) string { h.t.Helper(); return h.run(2*time.Minute, args...) }
-
-func (h *harness) pause(delay time.Duration) {
-	h.t.Helper()
-	select {
-	case <-h.ctx.Done():
-		h.t.Fatal(h.ctx.Err())
-	case <-time.After(delay):
-	}
-	if h.daemon != nil && h.daemon.exited() {
-		h.t.Fatalf("application exited unexpectedly: %v", h.daemon.err)
-	}
-}
-
-func nativeCommand(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // Callers supply only harness-owned binaries and native test commands, never shell text.
-}
-
-func drainTerminal(terminal *os.File, log io.Writer, phase string, ready chan<- string) error {
-	startup := helpers.NewStartup(phase)
-	data := make([]byte, 64*1024)
-	for {
-		count, readErr := terminal.Read(data)
-		if _, err := log.Write(data[:count]); err != nil {
-			return err
-		}
-		answer, serving, point, err := startup.Observe(data[:count])
-		if err != nil {
-			return err
-		}
-		if answer {
-			if _, err := terminal.Write([]byte("yes\n")); err != nil {
-				return err
-			}
-		}
-		if serving {
-			ready <- point
-		}
-		if errors.Is(readErr, io.EOF) || errors.Is(readErr, syscall.EIO) || errors.Is(readErr, os.ErrClosed) {
-			return nil
-		}
-		if readErr != nil {
-			return readErr
-		}
-	}
 }
 
 func (h *harness) startDaemon(phase string) {
@@ -221,28 +173,62 @@ logging:
 		h.must(os.WriteFile(filepath.Join(h.local, "config.yaml"), []byte(config), 0o600))
 	}
 	h.applicationSerial++
-	log, err := os.OpenFile(filepath.Join(h.evidence, fmt.Sprintf("application-%d-%s.log", h.applicationSerial, phase)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	h.must(err)
-	cmd := nativeCommand(h.ctx, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
-	terminal, err := pty.Start(cmd)
+	name := fmt.Sprintf("application-%d-%s", h.applicationSerial, phase)
+	p := h.newProcess(name, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
+	terminal, err := pty.Start(p.cmd)
 	if err != nil {
-		h.must(errors.Join(err, log.Close()))
+		p.cancel()
+		h.must(errors.Join(err, p.log.Close()))
 	}
-	p := &process{cmd: cmd, done: make(chan struct{}), log: log, terminal: terminal, drained: make(chan error, 1)}
 	h.daemon = p
-	ready := make(chan string, 1)
-	go func() { p.drained <- drainTerminal(terminal, log, phase, ready) }()
-	go func() { p.err = cmd.Wait(); close(p.done) }()
-	select {
-	case p.point = <-ready:
-	case err := <-p.drained:
-		h.t.Fatalf("application evidence: %v", err)
-	case <-p.done:
-		h.t.Fatalf("application startup: %v", p.err)
-	case <-h.ctx.Done():
-		h.t.Fatal(h.ctx.Err())
-	case <-time.After(3 * time.Minute):
-		h.t.Fatal("application startup timeout")
+	p.wait()
+	ttyPath := filepath.Join(h.evidence, name+"-tty.log")
+	ttyLog, err := os.OpenFile(ttyPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The small consent log belongs to this run's application start.
+	if err != nil {
+		h.must(errors.Join(err, terminal.Close()))
 	}
-	h.event("application-ready", map[string]any{"phase": phase, "pid": cmd.Process.Pid, "recovered_from": p.point})
+	copied := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(ttyLog, terminal)
+		if errors.Is(err, syscall.EIO) {
+			err = nil
+		}
+		copied <- err
+	}()
+	p.closeTTY = func() error {
+		var err error
+		select {
+		case err = <-copied:
+		case <-time.After(5 * time.Second):
+			err = errors.New("PTY evidence reader did not close")
+		}
+		return errors.Join(err, terminal.Close(), ttyLog.Close())
+	}
+	confirmed := false
+	h.must(h.waitFor("application startup", 3*time.Minute, 100*time.Millisecond, func() (bool, error) {
+		text, err := os.ReadFile(ttyPath) //nolint:gosec // This is the consent log created above.
+		if err != nil {
+			return false, err
+		}
+		if !confirmed && strings.Contains(string(text), "Continue? [yes/no]: ") {
+			p.point, err = helpers.Confirmation(phase, string(text))
+			if err != nil {
+				return false, err
+			}
+			if _, err = terminal.Write([]byte("yes\n")); err != nil {
+				return false, err
+			}
+			confirmed = true
+		}
+		data, err := os.ReadFile(p.log.Name())
+		if err != nil {
+			return false, err
+		}
+		ready := strings.Contains(string(data), `"msg":"SMB serving"`)
+		if ready && phase != "restart" && !confirmed {
+			return false, errors.New("fresh start did not require documented confirmation")
+		}
+		return ready, nil
+	}))
+	h.t.Log("application-ready", phase, p.cmd.Process.Pid, "recovered_from", p.point)
 }

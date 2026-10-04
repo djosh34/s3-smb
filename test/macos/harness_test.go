@@ -42,24 +42,11 @@ func (h *harness) must(err error) {
 	}
 }
 
-func (h *harness) save(name string, value any, appendLine bool) {
+func (h *harness) save(name string, value any) {
 	h.t.Helper()
-	data, err := json.Marshal(value)
+	file, err := os.OpenFile(filepath.Join(h.evidence, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Only fixed evidence names are created under the run-owned directory.
 	h.must(err)
-	flags := os.O_CREATE | os.O_WRONLY | os.O_EXCL
-	if appendLine {
-		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
-	}
-	file, err := os.OpenFile(filepath.Join(h.evidence, name), flags, 0o600) //nolint:gosec // Only harness-selected evidence names are written under the run-owned directory.
-	h.must(err)
-	_, err = file.Write(append(data, '\n'))
-	h.must(errors.Join(err, file.Close()))
-}
-
-func (h *harness) event(name string, fields map[string]any) {
-	h.t.Helper()
-	h.t.Log(name, fields)
-	h.save("acceptance.jsonl", map[string]any{"time": time.Now().UTC(), "event": name, "fields": fields}, true)
+	h.must(errors.Join(json.NewEncoder(file).Encode(value), file.Close()))
 }
 
 func absent(path string) error {
@@ -111,16 +98,16 @@ func TestTimeMachine(t *testing.T) {
 	}
 	t.Cleanup(h.finish)
 	h.build()
-	var result map[string]any
+	var outcome result
 	switch phase {
 	case "discover":
-		result = h.discover()
+		h.discover()
 	case "recover":
-		result = h.recoverStore()
+		outcome = h.recoverStore()
 	case "backup":
-		result = h.baseline()
+		outcome = h.baseline()
 	case "scenario":
-		result = h.scenario(os.Getenv("MAC_SCENARIO"))
+		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))
 	}
 	h.finish()
 	if t.Failed() {
@@ -130,30 +117,65 @@ func TestTimeMachine(t *testing.T) {
 		if h.backup != nil || len(h.attachments) != 0 || h.daemon != nil || h.minio != nil {
 			t.Fatal("cannot export active storage")
 		}
-		h.native("/usr/bin/du", "-sk", filepath.Join(h.work, "objects"))
+		h.run(2*time.Minute, "/usr/bin/du", "-sk", filepath.Join(h.work, "objects"))
 		h.run(30*time.Minute, "/usr/bin/tar", "-C", h.work, "-cf", filepath.Join(h.transfer, "store.tar"), "objects")
-		data, err := json.Marshal(result)
+		data, err := json.Marshal(outcome)
 		h.must(err)
-		h.must(os.WriteFile(filepath.Join(h.transfer, "reference/recovery.json"), data, 0o600))
+		h.must(os.WriteFile(filepath.Join(h.transfer, "reference/recovery.json"), data, 0o600)) //nolint:gosec // Only the run-owned transfer path is used; recovery fields are file content.
 	}
-	h.event("acceptance-passed", result)
+	h.t.Log("acceptance-passed", outcome)
+}
+
+func (h *harness) waitFor(what string, limit, every time.Duration, condition func() (bool, error)) error {
+	deadline := time.Now().Add(limit)
+	for {
+		if err := h.ctx.Err(); err != nil {
+			return fmt.Errorf("%s: %w", what, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("%s exceeded %s: %w", what, limit, context.DeadlineExceeded)
+		}
+		if !h.finished && h.daemon != nil && h.daemon.exited() {
+			return errors.Join(errors.New("application exited unexpectedly"), h.daemon.err)
+		}
+		done, err := condition()
+		if err != nil || done {
+			return err
+		}
+		select {
+		case <-h.ctx.Done():
+			return h.ctx.Err()
+		case <-time.After(every):
+		}
+	}
+}
+
+func (h *harness) pause(delay time.Duration) {
+	select {
+	case <-h.ctx.Done():
+		h.t.Fatal(h.ctx.Err())
+	case <-time.After(delay):
+	}
+	if h.daemon != nil && h.daemon.exited() {
+		h.t.Fatalf("application exited unexpectedly: %v", h.daemon.err)
+	}
 }
 
 func (h *harness) platform(recovery bool) {
 	h.status()
-	h.native("/sbin/mount")
-	if _, err := h.command(h.ctx, 2*time.Minute, "", "/bin/launchctl", "print", "system/com.apple.backupd"); err != nil {
-		h.native("/bin/launchctl", "enable", "system/com.apple.backupd")
-		h.native("/bin/launchctl", "bootstrap", "system", "/System/Library/LaunchDaemons/com.apple.backupd.plist")
+	h.run(2*time.Minute, "/sbin/mount")
+	if _, err := h.try(2*time.Minute, "/bin/launchctl", "print", "system/com.apple.backupd"); err != nil {
+		h.run(2*time.Minute, "/bin/launchctl", "enable", "system/com.apple.backupd")
+		h.run(2*time.Minute, "/bin/launchctl", "bootstrap", "system", "/System/Library/LaunchDaemons/com.apple.backupd.plist")
 	}
-	h.native("/bin/launchctl", "print", "system/com.apple.backupd")
+	h.run(2*time.Minute, "/bin/launchctl", "print", "system/com.apple.backupd")
 	for _, path := range []string{h.work, h.evidence, h.transfer} {
-		h.native("/usr/bin/tmutil", "addexclusion", "-p", path)
+		h.run(2*time.Minute, "/usr/bin/tmutil", "addexclusion", "-p", path)
 	}
 	if !recovery {
 		h.exclusions(false)
 	}
-	h.native("/bin/df", "-k")
+	h.run(2*time.Minute, "/bin/df", "-k")
 }
 
 func (h *harness) exclusions(diagnostic bool) {
@@ -164,7 +186,7 @@ func (h *harness) exclusions(diagnostic bool) {
 		} else {
 			h.must(err)
 		}
-		output, err := h.command(h.ctx, 2*time.Minute, "", "/usr/bin/tmutil", "addexclusion", "-p", path)
+		output, err := h.try(2*time.Minute, "/usr/bin/tmutil", "addexclusion", "-p", path)
 		h.t.Log("exclusion-added", path, output, err)
 		if !diagnostic {
 			h.must(err)
@@ -174,7 +196,7 @@ func (h *harness) exclusions(diagnostic bool) {
 
 func (h *harness) checkExclusions() {
 	for path, excluded := range map[string]bool{h.proof: false, filepath.Join(h.proof, "nested/message.txt"): false, filepath.Join(h.proof, "empty"): false, filepath.Join(h.work, "objects"): true, "/Users/runner/Library": true} {
-		output := h.native("/usr/bin/tmutil", "isexcluded", path)
+		output := h.run(2*time.Minute, "/usr/bin/tmutil", "isexcluded", path)
 		h.t.Log(output)
 		h.must(helpers.CheckExclusion(output, excluded))
 	}
@@ -186,28 +208,25 @@ func (h *harness) services(fresh bool) {
 		h.must(err)
 		h.must(listener.Close())
 	}
-	cmd := nativeCommand(h.ctx, filepath.Join(h.bin, "minio"), "server", "--address", "127.0.0.1:19000", "--console-address", "127.0.0.1:19003", filepath.Join(h.work, "objects"))
-	cmd.Env = append(os.Environ(), "MINIO_ROOT_USER=mac-acceptance", "MINIO_ROOT_PASSWORD=synthetic-mac-acceptance-secret")
-	h.minio = h.start("minio", cmd)
+	h.minio = h.start("minio", filepath.Join(h.bin, "minio"), "server", "--address", "127.0.0.1:19000", "--console-address", "127.0.0.1:19003", filepath.Join(h.work, "objects"))
 	client := &http.Client{Timeout: 2 * time.Second}
-	deadline := time.Now().Add(time.Minute)
-	for {
+	h.must(h.waitFor("MinIO readiness", time.Minute, 200*time.Millisecond, func() (bool, error) {
+		if h.minio.exited() {
+			return false, errors.Join(errors.New("MinIO exited during startup"), h.minio.err)
+		}
 		request, err := http.NewRequestWithContext(h.ctx, http.MethodGet, "http://127.0.0.1:19000/minio/health/ready", nil)
-		h.must(err)
+		if err != nil {
+			return false, err
+		}
 		response, err := client.Do(request)
-		if err == nil {
-			h.must(response.Body.Close())
-			if response.StatusCode == http.StatusOK {
-				break
-			}
+		if err != nil {
+			h.t.Log("MinIO not ready", err)
+			return false, nil
 		}
-		if h.minio.exited() || time.Now().After(deadline) {
-			h.t.Fatalf("MinIO readiness failed: %v", err)
-		}
-		h.pause(200 * time.Millisecond)
-	}
+		return response.StatusCode == http.StatusOK, response.Body.Close()
+	}))
 	if fresh {
-		h.native(filepath.Join(h.bin, "fixture"), "bucket-create", "--endpoint", "http://127.0.0.1:19000", "--bucket", "time-machine")
+		h.run(2*time.Minute, filepath.Join(h.bin, "fixture"), "bucket-create", "--endpoint", "http://127.0.0.1:19000", "--bucket", "time-machine")
 		if len(h.objects("")) != 0 {
 			h.t.Fatal("initial bucket is not empty")
 		}
@@ -232,9 +251,9 @@ func (h *harness) objects(prefix string) map[string]int64 {
 
 func (h *harness) mount() {
 	h.must(os.MkdirAll(h.share, 0o700))
-	h.native("/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine", h.share)
-	h.native("/usr/bin/smbutil", "statshares", "-a")
-	h.native("/sbin/mount")
+	h.run(2*time.Minute, "/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine", h.share)
+	h.run(2*time.Minute, "/usr/bin/smbutil", "statshares", "-a")
+	h.run(2*time.Minute, "/sbin/mount")
 }
 
 func (h *harness) createTree() {
@@ -246,7 +265,7 @@ func (h *harness) createTree() {
 	h.must(os.WriteFile(filepath.Join(h.proof, "nested/message.txt"), []byte("independent baseline contents\n"), 0o600))
 	h.must(os.WriteFile(filepath.Join(h.proof, "nested/deeper/zero-length"), nil, 0o600))
 	h.must(os.Mkdir(filepath.Join(h.transfer, "reference"), 0o700))
-	h.manifest(h.proof, filepath.Join(h.transfer, "reference/tree.jsonl"))
+	h.manifest(h.proof, filepath.Join(h.transfer, "reference/tree.json"))
 }
 
 func (h *harness) randomFile(name string, size int64) {
@@ -263,7 +282,7 @@ func (h *harness) manifest(tree, path string) helpers.Counts {
 	return counts
 }
 
-func (h *harness) discover() map[string]any {
+func (h *harness) discover() {
 	var found []string
 	for parent, kept := range map[string]string{"/System/Volumes/Data": "Users", "/Users": filepath.Base(filepath.Dir(h.proof)), filepath.Dir(h.proof): filepath.Base(h.proof)} {
 		entries, err := os.ReadDir(parent)
@@ -296,21 +315,20 @@ func (h *harness) discover() map[string]any {
 		}
 	}
 	slices.Sort(found)
-	h.save("proposed-exclusions.json", found, false)
+	h.save("proposed-exclusions.json", found)
 	for _, path := range found {
 		h.t.Logf("discover-directory %q", path)
 	}
 	h.t.Log("discover-image", os.Getenv("ImageOS"), os.Getenv("ImageVersion"))
-	h.t.Log(h.native("/usr/bin/sw_vers"))
-	h.t.Log(h.native("/sbin/mount"))
+	h.t.Log(h.run(2*time.Minute, "/usr/bin/sw_vers"))
+	h.t.Log(h.run(2*time.Minute, "/sbin/mount"))
 	h.createTree()
 	h.must(os.Mkdir(filepath.Join(h.work, "objects"), 0o700))
 	h.exclusions(true)
 	for _, name := range []string{"Applications", "Library", "opt"} {
 		for _, parent := range []string{"/", "/System/Volumes/Data"} {
-			h.t.Log(h.native("/usr/bin/tmutil", "isexcluded", filepath.Join(parent, name)))
+			h.t.Log(h.run(2*time.Minute, "/usr/bin/tmutil", "isexcluded", filepath.Join(parent, name)))
 		}
 	}
 	h.checkExclusions()
-	return map[string]any{"directories": found}
 }

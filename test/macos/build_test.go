@@ -4,44 +4,72 @@
 package macos
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 func (h *harness) build() {
-	tags, err := helpers.BuildTags(os.Getenv("MAC_SERVER"))
-	h.must(err)
-	// go test starts in the package directory, not the checkout root.
+	tags := ""
+	switch os.Getenv("MAC_SERVER") {
+	case "default":
+	case "smbnext":
+		tags = "smbnext"
+	default:
+		h.t.Fatal("MAC_SERVER must be default or smbnext")
+	}
 	root, err := filepath.Abs("../..")
 	h.must(err)
-	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile")) //nolint:gosec // Read the checked-out test pin, not an external input.
+	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile")) //nolint:gosec // This is the checked-out test pin.
 	h.must(err)
-	release, commit, err := helpers.MinIOPin(string(dockerfile))
-	h.must(err)
+	var release, commit string
+	for _, line := range strings.Split(string(dockerfile), "\n") {
+		if value, ok := strings.CutPrefix(line, "ARG MINIO_RELEASE="); ok {
+			release = value
+		}
+		if value, ok := strings.CutPrefix(line, "ARG MINIO_COMMIT="); ok {
+			commit = value
+		}
+	}
+	if !strings.HasPrefix(release, "RELEASE.") || len(release) <= len("RELEASE.") || strings.Trim(strings.TrimPrefix(release, "RELEASE."), "0123456789TZ-") != "" || len(commit) != 40 || strings.Trim(commit, "0123456789abcdef") != "" {
+		h.t.Fatal("invalid MinIO source pin")
+	}
 	h.must(os.Mkdir(h.bin, 0o700))
-	revision, err := h.command(h.ctx, time.Minute, root, "git", "rev-parse", "HEAD")
-	h.must(err)
+	revision := h.run(time.Minute, "git", "-C", root, "rev-parse", "HEAD")
 	for name, value := range map[string]string{"application-revision": revision, "harness-revision": revision, "build-tags": tags + "\n", "minio-release": release + "\n", "minio-revision": commit + "\n"} {
 		h.must(os.WriteFile(filepath.Join(h.evidence, name), []byte(value), 0o600))
 	}
 	for _, args := range [][]string{{"/usr/bin/sw_vers"}, {"uname", "-a"}, {"go", "version"}, {"xcodebuild", "-version"}, {"xcrun", "--show-sdk-path"}, {"/bin/df", "-k"}, {"/usr/sbin/diskutil", "list"}, {"/usr/sbin/diskutil", "apfs", "list"}} {
-		h.native(args...)
+		h.run(2*time.Minute, args...)
 	}
-	if version := strings.TrimSpace(h.native("go", "env", "GOVERSION")); version != "go1.26.3" {
+	if version := strings.TrimSpace(h.run(2*time.Minute, "go", "env", "GOVERSION")); version != "go1.26.3" {
 		h.t.Fatal("unexpected Go version", version)
 	}
 	source, err := os.MkdirTemp(h.work, "minio-source-")
 	h.must(err)
-	defer func() { h.must(os.RemoveAll(source)) }()
-	metadata, err := helpers.Build(h.ctx, root, h.bin, source, os.Getenv("MAC_SERVER"), commit,
-		func(ctx context.Context, dir string, args ...string) (string, error) {
-			return h.command(ctx, 20*time.Minute, dir, args...)
-		})
-	h.must(err)
-	h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(metadata), 0o600)) //nolint:gosec // The path is the run-owned evidence directory; compiler output is only file content.
+	defer func() {
+		if err := os.RemoveAll(source); err != nil {
+			h.t.Error(err)
+		}
+	}()
+	application := filepath.Join(h.bin, "s3-smb")
+	for index, args := range [][]string{
+		{"go", "-C", root, "build", "-p", "2", "-tags", tags, "-o", application, "."},
+		{application, "help"},
+		{application, "version"},
+		{"go", "version", "-m", application},
+		{"git", "-C", source, "init"},
+		{"git", "-C", source, "remote", "add", "origin", "https://github.com/minio/minio.git"},
+		{"git", "-C", source, "fetch", "--depth", "1", "origin", commit},
+		{"git", "-C", source, "checkout", "--detach", "FETCH_HEAD"},
+		{"go", "-C", source, "build", "-p", "2", "-o", filepath.Join(h.bin, "minio"), "."},
+		{"go", "version", "-m", filepath.Join(h.bin, "minio")},
+		{"go", "-C", root, "build", "-p", "2", "-o", filepath.Join(h.bin, "fixture"), "./test/macos/fixture"},
+	} {
+		output := h.run(20*time.Minute, args...)
+		if index == 3 {
+			h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(output), 0o600)) //nolint:gosec // The fixed output path belongs to this run; compiler output is only content.
+		}
+	}
 }

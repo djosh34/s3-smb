@@ -54,7 +54,7 @@ func Running(text string) (bool, error) {
 	return match[1] == "1", nil
 }
 
-// Copying requires a running backup, the Copying phase, and positive copied bytes.
+// Copying requires a running backup, the Copying phase and positive copied bytes.
 func Copying(text string) bool {
 	running, err := Running(text)
 	match := bytesPattern.FindStringSubmatch(text)
@@ -65,44 +65,10 @@ func Copying(text string) bool {
 	return err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) && number > 0
 }
 
-// CheckRemoteChange requires a nonempty change in chunk keys or object sizes, not just a count.
+// CheckRemoteChange requires a change in chunk keys or sizes, not just a larger count.
 func CheckRemoteChange(before, after map[string]int64) error {
 	if len(after) == 0 || maps.Equal(before, after) {
 		return errors.New("interrupted backup made no remote chunk change")
 	}
 	return nil
-}
-
-// BuildTags selects only the server requested by the workflow.
-func BuildTags(server string) (string, error) {
-	switch server {
-	case "default":
-		return "", nil
-	case "smbnext":
-		return "smbnext", nil
-	default:
-		return "", errors.New("MAC_SERVER must be default or smbnext")
-	}
-}
-
-var (
-	releasePattern = regexp.MustCompile(`^RELEASE\.[0-9TZ-]+$`)
-	commitPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
-)
-
-// MinIOPin reads the same immutable source pin used by Linux.
-func MinIOPin(dockerfile string) (string, string, error) {
-	var release, commit string
-	for _, line := range strings.Split(dockerfile, "\n") {
-		if value, ok := strings.CutPrefix(line, "ARG MINIO_RELEASE="); ok {
-			release = value
-		}
-		if value, ok := strings.CutPrefix(line, "ARG MINIO_COMMIT="); ok {
-			commit = value
-		}
-	}
-	if !releasePattern.MatchString(release) || !commitPattern.MatchString(commit) {
-		return "", "", errors.New("invalid MinIO source pin")
-	}
-	return release, commit, nil
 }
