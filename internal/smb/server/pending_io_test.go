@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"io"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -66,7 +67,16 @@ func newPendingIOFixture(t *testing.T, outage bool) (*ioFixture, *s3fault.Proxy)
 		if outage {
 			mc.Retries, cc.MaxRetries = 4, 3
 			if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
-				mc.Retries, cc.MaxRetries = 53, 15
+				// Match the production retry budgets and block timeouts in
+				// internal/storage/runtime.go, but keep the cache cold.
+				mc.Retries, cc.MaxRetries = 53, 12
+				cc.GetTimeout, cc.PutTimeout = time.Minute, time.Minute
+				store.put = func(ctx context.Context, key string, src io.Reader) error {
+					start := time.Now()
+					putErr := store.ObjectStorage.Put(ctx, key, src)
+					t.Logf("S3 PUT %s at %s: duration %s, error %v", key, start.Format(time.RFC3339Nano), time.Since(start), putErr)
+					return putErr
+				}
 			}
 		}
 	}, window)
@@ -367,7 +377,7 @@ func TestS3OutagePendingIO(t *testing.T) {
 				t.Fatal("cold I/O completed during the outage")
 			}
 			assertIOSuccess(t, command, final, want)
-			t.Logf("%s survived %s S3 outage", commandName(command), outage)
+			t.Logf("%s survived %s S3 outage, completed after %s", commandName(command), outage, time.Since(start))
 		})
 	}
 }
