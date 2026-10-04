@@ -92,7 +92,7 @@ type cacheStore struct {
 
 	used    int64
 	keys    KeyIndex
-	scanned bool
+	scanned bool // protected by Mutex, together with keys
 	// s3-smb: free-space monitor publishes these flags to concurrent cache I/O.
 	stageFull atomic.Bool
 	rawFull   atomic.Bool
@@ -892,7 +892,10 @@ func (cache *cacheStore) cleanupFull() {
 }
 
 func (cache *cacheStore) uploadStaging() {
-	if !cache.scanned || cache.uploader == nil {
+	cache.Lock()
+	scanned := cache.scanned
+	cache.Unlock()
+	if !scanned || cache.uploader == nil {
 		return
 	}
 	usage := cache.curFreeRatio()
