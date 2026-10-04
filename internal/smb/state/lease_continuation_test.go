@@ -8,6 +8,13 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
+func TestLeaseBreakChangesInitializedAtCreation(t *testing.T) {
+	table := newTable(t)
+	if table.BreakChanges() == nil {
+		t.Fatal("new table has no lease-break change channel")
+	}
+}
+
 func TestQueuedBreakTimeoutUsesCurrentStageDeadline(t *testing.T) {
 	for _, continuation := range []bool{false, true} {
 		t.Run(map[bool]string{false: "original", true: "continuation"}[continuation], func(t *testing.T) {

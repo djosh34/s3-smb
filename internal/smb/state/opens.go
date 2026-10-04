@@ -26,6 +26,7 @@ func New(now func() time.Time) (*Table, error) {
 		objects:      make(map[smb.ObjectKey]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
 		leaseObjects: make(map[leaseIdentity]smb.ObjectKey),
+		breakChanges: make(chan struct{}),
 	}, nil
 }
 
