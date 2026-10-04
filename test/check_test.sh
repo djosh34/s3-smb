@@ -185,7 +185,9 @@ for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
   'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
   'go test -list ^Fuzz example/one' \
-  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'; do
+  'go test -list ^Fuzz example/two' \
+  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one' \
+  'go test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 2 example/two'; do
   export CHECK_TEST_FAIL=$command
   run_check --gate
   fails
@@ -280,7 +282,7 @@ if grep -E 'GOMAXPROCS|(^|[[:space:]"=])-p([=[:space:]]|$)' "$root/test/Dockerfi
   fail 'Docker image caps Go parallelism'
 fi
 
-# The internal Docker step builds a normal daemon and race-tests every package.
+# The internal Docker step also race-tests the tagged app wiring.
 : > "$CHECK_TEST_COMMANDS"
 export S3_SMB_CHECK_MODE=gate S3_SMB_E2E_ENDPOINT=http://minio:9000
 export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
@@ -294,9 +296,12 @@ run_internal() {
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
+contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 export CHECK_TEST_FAIL='go build -buildvcs=false -o /tmp/s3-smb .'
 if run_internal; then fail 'internal build failure ignored'; fi
+export CHECK_TEST_FAIL='go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
+if run_internal; then fail 'tagged app test failure ignored'; fi
 unset CHECK_TEST_FAIL
 export S3_SMB_TEST_ARTIFACTS="$fixture/missing-logs"
 if run_internal; then fail 'log permission failure ignored'; fi
@@ -306,4 +311,7 @@ for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
     fail "internal step accepted missing $variable"
   fi
 done
+# Only dispatched gates receive the longer job timeout.
+grep -Fx "    timeout-minutes: \${{ inputs.gate && 180 || 60 }}" \
+  "$root/.github/workflows/check.yml" >/dev/null || fail 'wrong workflow timeout'
 echo 'check.sh tests passed'

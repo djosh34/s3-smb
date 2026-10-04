@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
@@ -29,8 +30,11 @@ type harness struct {
 	t                                                                         *testing.T
 	ctx                                                                       context.Context
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
-	launchdPlist                                                              string
+	launchdPlist, smbAddress                                                  string
+	proxy                                                                     *netfault.Proxy
+	smbLogging                                                                helpers.SMBLogging
 	daemon, minio, backup                                                     *process
+	backupDirectory                                                           *os.File
 	attachments                                                               []string
 	serial, applicationSerial                                                 int
 	finished                                                                  bool
@@ -68,16 +72,16 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", "mac-acceptance")
 	t.Setenv("MINIO_ROOT_PASSWORD", "synthetic-mac-acceptance-secret")
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "m4": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
-		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
+		t.Fatal("MAC_PHASE must be discover, backup, m4, recover or scenario")
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	h := &harness{t: t, ctx: ctx, interval: "5m"}
+	h := &harness{t: t, ctx: ctx, interval: "5m", smbAddress: "127.0.0.1:1445"}
 	for name, target := range map[string]*string{"MAC_WORK": &h.work, "MAC_ARTIFACTS": &h.evidence, "MAC_TRANSFER": &h.transfer} {
 		*target = os.Getenv(name)
 		if !filepath.IsAbs(*target) || filepath.Clean(*target) == "/" {
@@ -105,7 +109,7 @@ func TestTimeMachine(t *testing.T) {
 		h.discover()
 	case "recover":
 		outcome = h.recoverStore()
-	case "backup":
+	case "backup", "m4":
 		outcome = h.baseline()
 	case "scenario":
 		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))
@@ -123,6 +127,9 @@ func TestTimeMachine(t *testing.T) {
 		data, err := json.Marshal(outcome)
 		h.must(err)
 		h.must(os.WriteFile(filepath.Join(h.transfer, "reference/recovery.json"), data, 0o600)) //nolint:gosec // Only the run-owned transfer path is used; recovery fields are file content.
+	}
+	if outcome.NetworkDrop != nil && outcome.NetworkDrop.Status == "not tested" {
+		t.Fatal("not tested: macOS refused reconnect in all three connection-drop attempts")
 	}
 	h.t.Log("acceptance-passed", outcome)
 }
@@ -252,7 +259,7 @@ func (h *harness) objects(prefix string) map[string]int64 {
 
 func (h *harness) mount() {
 	h.must(os.MkdirAll(h.share, 0o700))
-	h.run(2*time.Minute, "/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine", h.share)
+	h.run(2*time.Minute, "/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@"+h.smbAddress+"/TimeMachine", h.share)
 	h.run(2*time.Minute, "/usr/bin/smbutil", "statshares", "-a")
 	h.run(2*time.Minute, "/sbin/mount")
 }
