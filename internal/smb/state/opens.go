@@ -349,7 +349,7 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
-	action := CloseAction{Handle: open.Handle, Object: key}
+	action := CloseAction{FileID: open.ID, Handle: open.Handle, Object: key}
 	if open.DeleteOnClose || open.dispositionPending {
 		if !record.DeletePending {
 			record.DeleteName = open.deleteName
@@ -380,6 +380,22 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	}
 	table.prune(key)
 	return action
+}
+
+// InodeOpen reports whether an inode has any open or sharing reservation,
+// including named streams and detached durable opens.
+func (table *Table) InodeOpen(inode smb.Inode) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.inodeOpen(inode) {
+		return true
+	}
+	for _, request := range table.reservations {
+		if request.Object.Inode == inode {
+			return true
+		}
+	}
+	return false
 }
 
 func (table *Table) inodeOpen(inode smb.Inode) bool {
