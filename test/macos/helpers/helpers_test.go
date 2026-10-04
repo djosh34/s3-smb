@@ -158,13 +158,13 @@ func TestChecks(t *testing.T) {
 			t.Fatal(number)
 		}
 	}
-	before := map[string]int64{"a": 1}
-	for _, after := range []map[string]int64{nil, {}, {"a": 1}} {
+	before := map[string]int64{"a": 1, "b": 1}
+	for _, after := range []map[string]int64{nil, {}, {"a": 1, "b": 1}, {"a": 1}} {
 		if err := CheckRemoteChange(before, after); err == nil {
 			t.Fatal("no remote change", after)
 		}
 	}
-	for _, after := range []map[string]int64{{"a": 2}, {"b": 1}, {"a": 1, "b": 1}} {
+	for _, after := range []map[string]int64{{"a": 2}, {"c": 1}, {"a": 1, "b": 1, "c": 1}} {
 		must(t, CheckRemoteChange(before, after))
 	}
 }

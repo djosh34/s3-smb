@@ -315,10 +315,13 @@ func (h *harness) discover() {
 		}
 	}
 	slices.Sort(found)
-	h.save("proposed-exclusions.json", found)
+	notInList, listOnly := helpers.Difference(found, helpers.Exclusions), helpers.Difference(helpers.Exclusions, found)
+	h.save("proposed-exclusions.json", map[string][]string{"proposed": found, "not_in_list": notInList, "list_only": listOnly})
 	for _, path := range found {
 		h.t.Logf("discover-directory %q", path)
 	}
+	h.t.Logf("discover-not-in-list %q", notInList)
+	h.t.Logf("discover-list-only %q", listOnly)
 	h.t.Log("discover-image", os.Getenv("ImageOS"), os.Getenv("ImageVersion"))
 	h.t.Log(h.run(2*time.Minute, "/usr/bin/sw_vers"))
 	h.t.Log(h.run(2*time.Minute, "/sbin/mount"))

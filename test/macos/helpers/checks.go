@@ -7,6 +7,7 @@ import (
 	"maps"
 	"math"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -65,10 +66,24 @@ func Copying(text string) bool {
 	return err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) && number > 0
 }
 
-// CheckRemoteChange requires a change in chunk keys or sizes, not just a larger count.
+// CheckRemoteChange requires new or changed remote chunks, not just deletions.
 func CheckRemoteChange(before, after map[string]int64) error {
-	if len(after) == 0 || maps.Equal(before, after) {
-		return errors.New("interrupted backup made no remote chunk change")
+	for key, size := range after {
+		if old, exists := before[key]; !exists || old != size {
+			return nil
+		}
 	}
-	return nil
+	return errors.New("interrupted backup made no new or changed remote chunks")
+}
+
+// Difference returns the sorted set of paths in left but not right.
+func Difference(left, right []string) []string {
+	remaining := make(map[string]struct{}, len(left))
+	for _, path := range left {
+		remaining[path] = struct{}{}
+	}
+	for _, path := range right {
+		delete(remaining, path)
+	}
+	return slices.Sorted(maps.Keys(remaining))
 }

@@ -54,11 +54,10 @@ func (h *harness) build() {
 		}
 	}()
 	application := filepath.Join(h.bin, "s3-smb")
-	for index, args := range [][]string{
+	for _, args := range [][]string{
 		{"go", "-C", root, "build", "-p", "2", "-tags", tags, "-o", application, "."},
 		{application, "help"},
 		{application, "version"},
-		{"go", "version", "-m", application},
 		{"git", "-C", source, "init"},
 		{"git", "-C", source, "remote", "add", "origin", "https://github.com/minio/minio.git"},
 		{"git", "-C", source, "fetch", "--depth", "1", "origin", commit},
@@ -67,9 +66,7 @@ func (h *harness) build() {
 		{"go", "version", "-m", filepath.Join(h.bin, "minio")},
 		{"go", "-C", root, "build", "-p", "2", "-o", filepath.Join(h.bin, "fixture"), "./test/macos/fixture"},
 	} {
-		output := h.run(20*time.Minute, args...)
-		if index == 3 {
-			h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(output), 0o600)) //nolint:gosec // The fixed output path belongs to this run; compiler output is only content.
-		}
+		h.run(20*time.Minute, args...)
 	}
+	h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(h.run(2*time.Minute, "go", "version", "-m", application)), 0o600))
 }

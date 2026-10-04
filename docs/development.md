@@ -66,7 +66,7 @@ scripts/check.sh --gate  # phase and release gates, including fuzz exploration
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
-and a C compiler. They run golangci-lint and `go vet` with and without
+Python 3 for the MinIO publisher tests, and a C compiler. They run golangci-lint and `go vet` with and without
 `-tags smbnext`, and lint the Mac harness with `GOOS=darwin` and `-tags macos`.
 They run shellcheck over our shell scripts and actionlint over every workflow,
 then check `go mod tidy -diff` and gofmt. `go test -count=1 ./...` runs the Go

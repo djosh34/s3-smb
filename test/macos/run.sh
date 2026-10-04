@@ -15,6 +15,6 @@ sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_RUNNER_HOME=$HOME" \
   "MAC_WORK=$MAC_WORK" "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_SERVER=$MAC_SERVER" "MAC_PHASE=$MAC_PHASE" "MAC_SCENARIO=${MAC_SCENARIO:-}" \
   "ImageOS=${ImageOS:-unknown}" "ImageVersion=${ImageVersion:-unknown}" \
-  GOMAXPROCS=2 GOFLAGS=-p=2 GOENV=off GOTOOLCHAIN=local GOWORK=off \
-  go test -tags macos -count=1 -timeout "$timeout" -v ./test/macos/... \
+  GOENV=off GOTOOLCHAIN=local GOWORK=off \
+  go test -p 1 -tags macos -count=1 -timeout "$timeout" -v ./test/macos/... \
   | tee "$RUNNER_TEMP/mac-harness.log"
