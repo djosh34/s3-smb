@@ -14,6 +14,8 @@ import (
 	"time"
 
 	smb "github.com/hirochachacha/go-smb2"
+
+	"github.com/djosh34/s3-smb/internal/s3fault"
 )
 
 func crashBaseline() map[string][]byte {
@@ -46,7 +48,7 @@ func pendingSMBWrite(share *smb.Share, name string, data []byte) <-chan error {
 	}()
 	return done
 }
-func waitHeldPut(t *testing.T, held <-chan faultEvent, write <-chan error) faultEvent {
+func waitHeldPut(t *testing.T, held <-chan s3fault.Event, write <-chan error) s3fault.Event {
 	t.Helper()
 	select {
 	case event := <-held:
@@ -64,9 +66,9 @@ func waitHeldPut(t *testing.T, held <-chan faultEvent, write <-chan error) fault
 	case <-time.After(15 * time.Second):
 		t.Fatal("no real chunk PUT observed while SMB write/flush pending")
 	}
-	return faultEvent{}
+	return s3fault.Event{}
 }
-func killAtObservedPut(t *testing.T, d *daemon, p *faultProxy) {
+func killAtObservedPut(t *testing.T, d *daemon, p *s3fault.Proxy) {
 	t.Helper()
 	sigkill(t, d)
 	p.Release()
@@ -124,7 +126,10 @@ func TestCrashDuringChunkPut(t *testing.T) {
 			closeShare()
 			f.protectedAfter(time.Now())
 			s, closeShare = f.share()
-			held := p.HoldNextChunkResponse()
+			held, err := p.HoldNextChunkResponse()
+			if err != nil {
+				t.Fatal(err)
+			}
 			pending := pendingSMBWrite(s, "interrupted-new-file.bin", bytes.Repeat([]byte("subsequent-SMB-write\n"), 500_000))
 			waitHeldPut(t, held, pending)
 			killAtObservedPut(t, d, p)
@@ -158,7 +163,10 @@ func TestStalledIOBoundedShutdown(t *testing.T) {
 	d := f.start()
 	s, closeShare := f.share()
 	defer closeShare()
-	held := p.HoldNextChunkResponse()
+	held, err := p.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
 	pending := pendingSMBWrite(s, "held-native-upload.bin", bytes.Repeat([]byte("stalled-native-upload\n"), 500_000))
 	waitHeldPut(t, held, pending)
 	lock, err := os.OpenFile(filepath.Join(f.root, "state", "state.lock"), os.O_RDWR, 0)

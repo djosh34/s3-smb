@@ -41,7 +41,7 @@ func TestS3FaultProxyOutage(t *testing.T) {
 	for _, method := range []string{http.MethodPut, http.MethodGet} {
 		request(method, "/bucket/chunks/fixture", http.StatusServiceUnavailable)
 		select {
-		case event := <-p.outageSeen:
+		case event := <-p.OutageSeen():
 			if event.Method != method || event.Status != http.StatusServiceUnavailable {
 				t.Fatalf("unexpected outage event: %+v", event)
 			}
@@ -127,7 +127,7 @@ func TestDataPathS3Outage(t *testing.T) {
 				done <- outageResult{err: err, finished: time.Now()}
 			}()
 			select {
-			case event := <-p.outageSeen:
+			case event := <-p.OutageSeen():
 				if event.Method != method || event.Status != http.StatusServiceUnavailable || time.Since(start) >= time.Second {
 					t.Fatalf("%s did not reach failed S3 in the first second: %+v after %s", operation, event, time.Since(start))
 				}
