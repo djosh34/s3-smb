@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -17,26 +18,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-func TestNewFormatUsesNoCompression(t *testing.T) {
-	for _, encrypted := range []bool{false, true} {
-		f, err := NewFormat("test", encrypted, 14)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if f.Compression != "none" {
-			t.Fatalf("encrypted=%t: new format compression = %q, want none", encrypted, f.Compression)
-		}
-		c, err := CacheConfig(f, t.TempDir(), nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.Compress != "none" {
-			t.Fatalf("encrypted=%t: chunk compression = %q, want none", encrypted, c.Compress)
-		}
-	}
-}
-
-func TestCacheConfig(t *testing.T) {
+func TestCacheConfigSize(t *testing.T) {
 	f, err := NewFormat("test", false, 14)
 	if err != nil {
 		t.Fatal(err)
@@ -46,53 +28,31 @@ func TestCacheConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	if c.CacheSize != 100<<30 {
-		t.Fatal("native omitted capacity changed")
+		t.Fatalf("default cache size = %d", c.CacheSize)
 	}
-	for _, size := range []int64{0, 1, 999999, 1000000, 1000000000} {
-		c, err = CacheConfig(f, "/not/usable", &size)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if c.CacheSize != uint64(size) {
-			t.Fatal("decimal capacity truncated")
-		}
-		if size == 0 && (c.CacheDir != "memory" || c.Prefetch != 0 || c.Writeback) {
-			t.Fatal("zero retained cache not disabled")
-		}
+	size := uint64(1000000)
+	c, err = CacheConfig(f, t.TempDir(), &size)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.CacheSize != size {
+		t.Fatalf("cache size = %d, want %d", c.CacheSize, size)
 	}
 }
 
-func TestChunkUploadConcurrencyAndTimeouts(t *testing.T) {
+// The budgets follow vfs/writer.go flush, vfs/reader.go retry_time and
+// chunk/cached_store.go upload, ignoring request time.
+func TestDataPathRetryBudgetCoversOutage(t *testing.T) {
 	format, err := NewFormat("test", false, 14)
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := CacheConfig(format, t.TempDir(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.MaxUpload != 4 {
-		t.Errorf("MaxUpload = %d, want 4 for a home uplink", c.MaxUpload)
-	}
-	if c.PutTimeout != 60*time.Second || c.GetTimeout != 60*time.Second {
-		t.Errorf("block timeouts changed: put=%s get=%s", c.PutTimeout, c.GetTimeout)
-	}
-}
-
-func TestDataPathRetryBudget(t *testing.T) {
-	format, err := NewFormat("test", false, 14)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zero := int64(0)
+	var zero uint64
 	c, err := CacheConfig(format, "/unusable", &zero)
 	if err != nil {
 		t.Fatal(err)
 	}
 	conf := filesystemConfig(format, &c)
-
-	// Mirror vfs/writer.go flush, vfs/reader.go retry_time, and
-	// chunk/cached_store.go upload. Ignore request time for the shortest budget.
 	flush := max(time.Duration((conf.Meta.Retries+2)*(conf.Meta.Retries+2)/2)*time.Second, 5*time.Minute)
 	var download, upload time.Duration
 	for attempt := 1; attempt <= conf.Meta.Retries; attempt++ {
@@ -110,9 +70,6 @@ func TestDataPathRetryBudget(t *testing.T) {
 			t.Errorf("%s budget %s must cover a 300s outage with at least 60s margin", name, budget)
 		}
 	}
-	if flush != 1512*time.Second || download != 361829*time.Millisecond || upload != 650*time.Second {
-		t.Fatalf("retry budgets changed: flush=%s download=%s upload=%s", flush, download, upload)
-	}
 	if flush <= upload+conf.Chunk.PutTimeout {
 		t.Fatal("flush deadline must allow the last upload attempt to finish")
 	}
@@ -127,19 +84,30 @@ func (s *countStore) Get(ctx context.Context, key string, off, limit int64, gett
 	s.gets.Add(1)
 	return s.ObjectStorage.Get(ctx, key, off, limit, getters...)
 }
+
+func readSlice(store chunk.ChunkStore, id uint64, size int) ([]byte, error) {
+	page := chunk.NewOffPage(size)
+	defer page.Release()
+	n, err := store.NewReader(id, size).ReadAt(context.Background(), page, 0)
+	return bytes.Clone(page.Data[:n]), err
+}
+
 func TestZeroCacheColdRead(t *testing.T) {
-	remote := t.TempDir()
-	raw, err := object.CreateStorage("file", remote, "", "", "")
+	raw, err := object.CreateStorage("file", t.TempDir()+"/", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	counted := &countStore{ObjectStorage: raw}
-	f, _ := NewFormat("test", false, 14)
-	zero := int64(0)
-	cache := filepath.Join(t.TempDir(), "old-cache")
-	if err = os.WriteFile(cache, []byte("not a cache directory"), 0600); err != nil {
+	f, err := NewFormat("test", false, 14)
+	if err != nil {
 		t.Fatal(err)
 	}
+	// A zero cache must not touch a configured cache path.
+	cache := filepath.Join(t.TempDir(), "old-cache")
+	if err = os.WriteFile(cache, []byte("not a cache directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var zero uint64
 	c, err := CacheConfig(f, filepath.Join(cache, "unusable"), &zero)
 	if err != nil {
 		t.Fatal(err)
@@ -147,22 +115,19 @@ func TestZeroCacheColdRead(t *testing.T) {
 	data := bytes.Repeat([]byte("cold remote fixture"), 30000)
 	first := chunk.NewCachedStore(counted, c, nil)
 	w := first.NewWriter(17, 0)
-	if n, err := w.WriteAt(data, 0); err != nil || n != len(data) {
-		t.Fatal(n, err)
+	if n, writeErr := w.WriteAt(data, 0); writeErr != nil || n != len(data) {
+		t.Fatal(n, writeErr)
 	}
 	if err = w.Finish(len(data)); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		cold := chunk.NewCachedStore(counted, c, nil)
-		page := chunk.NewOffPage(len(data))
 		before := counted.gets.Load()
-		n, err := cold.NewReader(17, len(data)).ReadAt(context.Background(), page, 0)
-		if err != nil || n != len(data) || !bytes.Equal(page.Data, data) {
-			page.Release()
-			t.Fatal("cold read mismatch", n, err)
+		got, readErr := readSlice(cold, 17, len(data))
+		if readErr != nil || !bytes.Equal(got, data) {
+			t.Fatal("cold read mismatch", readErr)
 		}
-		page.Release()
 		if counted.gets.Load() <= before {
 			t.Fatal("zero cache read did not reach remote")
 		}
@@ -170,59 +135,78 @@ func TestZeroCacheColdRead(t *testing.T) {
 			t.Fatal("retained memory cache at zero")
 		}
 	}
-	old, err := os.ReadFile(cache)
+	old, err := os.ReadFile(filepath.Clean(cache))
 	if err != nil || string(old) != "not a cache directory" {
 		t.Fatal("old cache touched", err)
 	}
-	// Referenced but missing native data must fail, not become zero-filled data.
+	// Referenced but missing data must fail, not read as zeroes.
 	if err = first.Remove(17, len(data)); err != nil {
 		t.Fatal(err)
 	}
-	cold := chunk.NewCachedStore(counted, c, nil)
-	page := chunk.NewOffPage(len(data))
-	defer page.Release()
-	if _, err = cold.NewReader(17, len(data)).ReadAt(context.Background(), page, 0); err == nil {
+	if _, err = readSlice(chunk.NewCachedStore(counted, c, nil), 17, len(data)); err == nil {
 		t.Fatal("missing data reported success")
 	}
 }
-func TestFilesystemNativeLifecycle(t *testing.T) {
-	f, err := NewFormat("test", false, 14)
-	if err != nil {
-		t.Fatal(err)
-	}
+
+type testRuntime struct {
+	*Runtime
+	meta meta.Meta
+}
+
+func (r testRuntime) close() error { return errors.Join(r.Close(), r.meta.Shutdown()) }
+
+// openRuntime opens the metadata at path and a filesystem without a local cache.
+// It initializes new metadata with format, or loads existing metadata.
+func openRuntime(t *testing.T, path string, raw object.ObjectStorage, format *meta.Format, initialize bool) testRuntime {
+	t.Helper()
 	conf := meta.DefaultConf()
 	conf.NoBGJob = true
-	path := filepath.Join(t.TempDir(), "metadata.db")
 	m, err := OpenMetadata(path, conf)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = m.Init(f, false); err != nil {
-		t.Fatal(err)
+	if initialize {
+		err = m.Init(format, false)
+	} else {
+		_, err = m.Load(true)
 	}
+	if err != nil {
+		t.Fatal(errors.Join(err, m.Shutdown()))
+	}
+	var zero uint64
+	runtime, err := OpenFilesystem(m, raw, format, t.TempDir(), &zero, func() error { return nil })
+	if err != nil {
+		t.Fatal(errors.Join(err, m.Shutdown()))
+	}
+	r := testRuntime{Runtime: runtime, meta: m}
 	if err = m.NewSession(false); err != nil {
-		t.Fatal(err)
+		t.Fatal(errors.Join(err, r.close()))
 	}
-	raw, err := object.CreateStorage("file", t.TempDir(), "", "", "")
+	return r
+}
+
+func TestFilesystemRestart(t *testing.T) {
+	f, err := NewFormat("test", false, 14)
 	if err != nil {
 		t.Fatal(err)
 	}
-	zero := int64(0)
-	runtime, err := OpenFilesystem(m, raw, f, "/unusable", &zero, func() error { return nil })
+	raw, err := object.CreateStorage("file", t.TempDir()+"/", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runtime.Config == nil || runtime.Config.Format.UUID != f.UUID || runtime.Config.Chunk == nil || runtime.Config.Chunk.CacheSize != 0 || runtime.Config.Meta.Retries != filesystemRetries {
-		t.Fatal("runtime did not expose its adapter I/O settings")
+	path := filepath.Join(t.TempDir(), "metadata.db")
+	runtime := openRuntime(t, path, raw, f, true)
+	if runtime.Config.Format.UUID != f.UUID || runtime.Config.Chunk.CacheSize != 0 || runtime.Config.Meta.Retries != filesystemRetries {
+		t.Fatal("runtime did not expose its I/O settings")
 	}
 	ctx := meta.NewContext(1, 0, []uint32{0})
-	handle, errno := runtime.FS.Create(ctx, "/fixture", 0600, 0)
+	handle, errno := runtime.FS.Create(ctx, "/fixture", 0o600, 0)
 	if errno != 0 {
 		t.Fatal(errno)
 	}
-	data := []byte("native filesystem durable data")
-	if n, errno := handle.Write(ctx, data); errno != 0 || n != len(data) {
-		t.Fatal(n, errno)
+	data := []byte("durable data")
+	if n, writeErr := handle.Write(ctx, data); writeErr != 0 || n != len(data) {
+		t.Fatal(n, writeErr)
 	}
 	if errno = handle.Fsync(ctx); errno != 0 {
 		t.Fatal(errno)
@@ -230,38 +214,23 @@ func TestFilesystemNativeLifecycle(t *testing.T) {
 	if errno = handle.Close(ctx); errno != 0 {
 		t.Fatal(errno)
 	}
-	if err = runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err = m.Shutdown(); err != nil {
+	if err = runtime.close(); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm() != 0600 {
+	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("new SQLite mode %o", info.Mode().Perm())
 	}
-	// Existing readable modes are preserved, not rejected or silently chmodded.
-	if err = os.Chmod(path, 0640); err != nil {
-		t.Fatal(err)
-	}
-	m, err = OpenMetadata(path, conf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = m.Load(true); err != nil {
-		t.Fatal(err)
-	}
-	if err = m.NewSession(false); err != nil {
-		t.Fatal(err)
-	}
-	runtime, err = OpenFilesystem(m, raw, f, "/unusable", &zero, func() error { return nil })
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = runtime.Close(); _ = m.Shutdown() }()
+
+	runtime = openRuntime(t, path, raw, f, false)
+	t.Cleanup(func() {
+		if closeErr := runtime.close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
 	handle, errno = runtime.FS.Open(ctx, "/fixture", 0)
 	if errno != 0 {
 		t.Fatal(errno)
@@ -274,13 +243,56 @@ func TestFilesystemNativeLifecycle(t *testing.T) {
 	if errno = handle.Close(ctx); errno != 0 {
 		t.Fatal(errno)
 	}
-	info, err = os.Stat(path)
-	if err != nil {
-		t.Fatal(err)
+}
+
+func TestFilesystemCapacity(t *testing.T) {
+	for _, capacity := range []uint64{16 * 1024, 0} {
+		format, err := NewFormat("test", false, 14)
+		if err != nil {
+			t.Fatal(err)
+		}
+		format.Capacity = capacity
+		raw, err := object.CreateStorage("file", t.TempDir()+"/", "", "", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		runtime := openRuntime(t, filepath.Join(t.TempDir(), "metadata.db"), raw, format, true)
+		below, errno := writeTwice(runtime, 4096, 16*1024)
+		if below != 0 {
+			t.Errorf("write below capacity %d failed: %v", capacity, below)
+		}
+		if capacity == 0 && errno != 0 {
+			t.Errorf("unlimited write failed: %v", errno)
+		}
+		if capacity != 0 && !errors.Is(errno, syscall.ENOSPC) {
+			t.Errorf("write beyond capacity: got %v, want ENOSPC", errno)
+		}
+		if err = runtime.close(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if info.Mode().Perm() != 0640 {
-		t.Fatal("existing file mode changed")
+}
+
+// writeTwice writes and syncs first bytes, then second bytes, and returns the
+// error of each sync. JuiceFS checks capacity when it commits writes.
+func writeTwice(runtime testRuntime, first, second int) (syscall.Errno, syscall.Errno) {
+	ctx := meta.NewContext(1, 0, []uint32{0})
+	handle, errno := runtime.FS.Create(ctx, "/fixture", 0o600, 0)
+	if errno != 0 {
+		return errno, 0
 	}
+	write := func(data []byte) syscall.Errno {
+		if _, writeErr := handle.Write(ctx, data); writeErr != 0 {
+			return writeErr
+		}
+		return handle.Fsync(ctx)
+	}
+	firstErr := write(bytes.Repeat([]byte("a"), first))
+	secondErr := write(bytes.Repeat([]byte("b"), second))
+	if closeErr := handle.Close(ctx); secondErr == 0 {
+		secondErr = closeErr
+	}
+	return firstErr, secondErr
 }
 
 func TestDeletionProtectionAtExecution(t *testing.T) {

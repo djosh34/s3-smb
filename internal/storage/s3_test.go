@@ -4,7 +4,6 @@ package storage
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -15,49 +14,61 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-func TestS3MissingIsNotAuthenticationFailure(t *testing.T) {
+// fakeS3 answers every request with one XML error.
+func fakeS3(t *testing.T, check func(*http.Request) (int, string)) object.ObjectStorage {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		status, code := check(r)
 		w.Header().Set("Content-Type", "application/xml")
-		if strings.HasSuffix(r.URL.Path, "missing") {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, "<Error><Code>NoSuchKey</Code><Message>Missing</Message></Error>")
-		} else {
-			w.WriteHeader(http.StatusForbidden)
-			fmt.Fprint(w, "<Error><Code>AccessDenied</Code><Message>Denied</Message></Error>")
+		w.WriteHeader(status)
+		if _, err := io.WriteString(w, "<Error><Code>"+code+"</Code><Message>fixture</Message></Error>"); err != nil {
+			t.Error(err)
 		}
 	}))
-	defer srv.Close()
-	raw, err := object.NewS3(object.S3Options{Bucket: "fixture", Endpoint: srv.URL, AccessKey: "synthetic", SecretKey: "synthetic-secret"})
+	t.Cleanup(srv.Close)
+	raw, err := object.NewS3(object.S3Options{Bucket: "fixture", Endpoint: srv.URL, AccessKey: "synthetic", SecretKey: "synthetic"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer raw.(io.Closer).Close()
-	if _, err = raw.Get(context.Background(), "missing", 0, -1); !errors.Is(err, os.ErrNotExist) {
+	if closer, ok := raw.(io.Closer); ok {
+		t.Cleanup(func() {
+			if closeErr := closer.Close(); closeErr != nil {
+				t.Error(closeErr)
+			}
+		})
+	}
+	return raw
+}
+
+func TestS3MissingIsNotAuthenticationFailure(t *testing.T) {
+	raw := fakeS3(t, func(r *http.Request) (int, string) {
+		if strings.HasSuffix(r.URL.Path, "missing") {
+			return http.StatusNotFound, "NoSuchKey"
+		}
+		return http.StatusForbidden, "AccessDenied"
+	})
+	if _, err := raw.Get(context.Background(), "missing", 0, -1); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing: %v", err)
 	}
-	if _, err = raw.Get(context.Background(), "denied", 0, -1); err == nil || errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("auth mistaken for empty dataset: %v", err)
+	if _, err := raw.Get(context.Background(), "denied", 0, -1); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("denied access mistaken for a missing object: %v", err)
 	}
 }
+
 func TestS3ConditionalPublicationHeader(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	raw := fakeS3(t, func(r *http.Request) (int, string) {
 		if r.Method != http.MethodPut || r.Header.Get("If-None-Match") != "*" {
-			t.Errorf("unsafe publication: %s %q", r.Method, r.Header.Get("If-None-Match"))
+			t.Errorf("unconditional publication: %s %q", r.Method, r.Header.Get("If-None-Match"))
 		}
-		w.Header().Set("Content-Type", "application/xml")
-		w.WriteHeader(http.StatusPreconditionFailed)
-		fmt.Fprint(w, "<Error><Code>PreconditionFailed</Code><Message>Exists</Message></Error>")
-	}))
-	defer srv.Close()
-	raw, err := object.NewS3(object.S3Options{Bucket: "fixture", Endpoint: srv.URL, AccessKey: "synthetic", SecretKey: "synthetic-secret"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer raw.(io.Closer).Close()
-	conditional := raw.(interface {
+		return http.StatusPreconditionFailed, "PreconditionFailed"
+	})
+	conditional, ok := raw.(interface {
 		PutIfAbsent(context.Context, string, io.Reader) error
 	})
-	if err = conditional.PutIfAbsent(context.Background(), "keep", strings.NewReader("data")); err == nil {
+	if !ok {
+		t.Fatal("S3 client has no conditional PUT")
+	}
+	if err := conditional.PutIfAbsent(context.Background(), "keep", strings.NewReader("data")); err == nil {
 		t.Fatal("precondition failure ignored")
 	}
 }

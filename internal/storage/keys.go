@@ -10,16 +10,22 @@ import (
 	"encoding/pem"
 	"errors"
 
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/emmansun/gmsm/pkcs"
 	"github.com/emmansun/gmsm/pkcs8"
+
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-const maxKeyBytes = 32768
-const scryptN = 131072 // 128*N*r = 134217728 bytes
-var oidPBES2 = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 13}
-var oidScrypt = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11591, 4, 11}
-var oidAES256GCM = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 46}
+const (
+	maxKeyBytes = 32768
+	scryptN     = 131072 // 128*N*r = 134217728 bytes
+)
+
+var (
+	oidPBES2     = asn1.ObjectIdentifier{1, 2, 840, 113549, 1, 5, 13}
+	oidScrypt    = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 11591, 4, 11}
+	oidAES256GCM = asn1.ObjectIdentifier{2, 16, 840, 1, 101, 3, 4, 1, 46}
+)
 
 // These types decode the algorithm and cost fields of a stored key, so they
 // are checked before the key is parsed and a tampered object cannot choose its
@@ -45,6 +51,7 @@ func unmarshalExact(data []byte, v any) error {
 	}
 	return nil
 }
+
 func validateKeyEnvelope(data []byte) error {
 	if len(data) == 0 || len(data) > maxKeyBytes {
 		return errors.New("invalid protected key size")
@@ -83,6 +90,7 @@ func validateKeyEnvelope(data []byte) error {
 	}
 	return nil
 }
+
 func unlockKey(data []byte, passphrase string) (*rsa.PrivateKey, error) {
 	if len(passphrase) == 0 {
 		return nil, errors.New("encryption passphrase is required")
@@ -103,6 +111,7 @@ func unlockKey(data []byte, passphrase string) (*rsa.PrivateKey, error) {
 	}
 	return rsaKey, nil
 }
+
 func generateKey(passphrase string) ([]byte, error) {
 	if passphrase == "" {
 		return nil, errors.New("encryption passphrase is required")
