@@ -97,21 +97,21 @@ func TestLockRefusals(t *testing.T) {
 	free := wire.LockElement{Offset: 100, Length: 8, Flags: exclusiveNow}
 	for _, test := range []struct {
 		name     string
-		id       wire.FileID
 		elements []wire.LockElement
+		id       wire.FileID
 		want     smb.Status
 	}{
-		{"no flags", id, []wire.LockElement{free, {Length: 8}}, smb.StatusInvalidParameter},
-		{"shared and exclusive", id, []wire.LockElement{free, {Length: 8, Flags: lockShared | lockExclusive | lockFailImmediately}}, smb.StatusInvalidParameter},
-		{"unlock and lock", id, []wire.LockElement{free, {Length: 8, Flags: lockUnlock | lockShared}}, smb.StatusInvalidParameter},
-		{"unlock with fail immediately", id, []wire.LockElement{{Length: 8, Flags: lockUnlock | lockFailImmediately}}, smb.StatusInvalidParameter},
-		{"unknown flag", id, []wire.LockElement{free, {Length: 8, Flags: 0x20 | exclusiveNow}}, smb.StatusInvalidParameter},
-		{"lock after unlock", id, []wire.LockElement{{Length: 8, Flags: lockUnlock}, free}, smb.StatusInvalidParameter},
-		{"waiting first range of many", id, []wire.LockElement{{Length: 8, Flags: lockExclusive}, free}, smb.StatusInvalidParameter},
-		{"waiting second range of many", id, []wire.LockElement{free, {Length: 8, Flags: lockShared}}, smb.StatusInvalidParameter},
-		{"past the last byte", id, []wire.LockElement{free, {Offset: math.MaxUint64, Length: 2, Flags: exclusiveNow}}, smb.StatusInvalidLockRange},
-		{"directory", directory, []wire.LockElement{free}, smb.StatusInvalidParameter},
-		{"closed open", stale, []wire.LockElement{free}, smb.StatusFileClosed},
+		{"no flags", []wire.LockElement{free, {Length: 8}}, id, smb.StatusInvalidParameter},
+		{"shared and exclusive", []wire.LockElement{free, {Length: 8, Flags: lockShared | lockExclusive | lockFailImmediately}}, id, smb.StatusInvalidParameter},
+		{"unlock and lock", []wire.LockElement{free, {Length: 8, Flags: lockUnlock | lockShared}}, id, smb.StatusInvalidParameter},
+		{"unlock with fail immediately", []wire.LockElement{{Length: 8, Flags: lockUnlock | lockFailImmediately}}, id, smb.StatusInvalidParameter},
+		{"unknown flag", []wire.LockElement{free, {Length: 8, Flags: 0x20 | exclusiveNow}}, id, smb.StatusInvalidParameter},
+		{"lock after unlock", []wire.LockElement{{Length: 8, Flags: lockUnlock}, free}, id, smb.StatusInvalidParameter},
+		{"waiting first range of many", []wire.LockElement{{Length: 8, Flags: lockExclusive}, free}, id, smb.StatusInvalidParameter},
+		{"waiting second range of many", []wire.LockElement{free, {Length: 8, Flags: lockShared}}, id, smb.StatusInvalidParameter},
+		{"past the last byte", []wire.LockElement{free, {Offset: math.MaxUint64, Length: 2, Flags: exclusiveNow}}, id, smb.StatusInvalidLockRange},
+		{"directory", []wire.LockElement{free}, directory, smb.StatusInvalidParameter},
+		{"closed open", []wire.LockElement{free}, stale, smb.StatusFileClosed},
 	} {
 		if status := client.lock(t, wire.LockRequest{ID: test.id, Elements: test.elements}); status != test.want {
 			t.Errorf("%s: status %#x, want %#x", test.name, status, test.want)
