@@ -11,6 +11,9 @@ import (
 )
 
 func (h *harness) build() {
+	if os.Getenv("MAC_PHASE") == "m4" && os.Getenv("MAC_SERVER") != "smbnext" {
+		h.t.Fatal("M4 acceptance requires MAC_SERVER=smbnext")
+	}
 	tags := ""
 	switch os.Getenv("MAC_SERVER") {
 	case "default":
@@ -65,6 +68,7 @@ func (h *harness) build() {
 		{"go", "-C", source, "build", "-p", "2", "-o", filepath.Join(h.bin, "minio"), "."},
 		{"go", "version", "-m", filepath.Join(h.bin, "minio")},
 		{"go", "-C", root, "build", "-p", "2", "-o", filepath.Join(h.bin, "fixture"), "./test/macos/fixture"},
+		{"go", "-C", root, "build", "-o", filepath.Join(h.bin, "fullsync"), "./test/macos/fullsync"},
 	} {
 		h.run(20*time.Minute, args...)
 	}
