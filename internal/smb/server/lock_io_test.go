@@ -80,11 +80,15 @@ func TestLockStreamAndBaseIOStaySeparate(t *testing.T) {
 			ownerID++
 			for index, peer := range peers {
 				want := smb.StatusSuccess
+				wantLock := smb.StatusSuccess
 				data := "changed!"
 				if index == held {
 					want = smb.StatusFileLockConflict
+					wantLock = smb.StatusLockNotGranted
 					data = "original"
 				}
+				lockExchange(peerCtx, t, peerClient, []smb.Status{wantLock}, lockMessage(t, peerSession, peerID, peer.ID, wire.LockElement{Length: 8, Flags: lockExclusive}))
+				peerID++
 				lockIO(peerCtx, t, peerClient, peerSession, peerID, peer, true, "changed!", want)
 				peerID++
 				lockIO(peerCtx, t, peerClient, peerSession, peerID, peer, false, data, want)
