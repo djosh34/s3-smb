@@ -33,6 +33,7 @@ type harness struct {
 	launchdPlist, smbAddress                                                  string
 	proxy                                                                     *netfault.Proxy
 	daemon, minio, backup                                                     *process
+	backupDirectory                                                           *os.File
 	attachments                                                               []string
 	serial, applicationSerial                                                 int
 	finished                                                                  bool
