@@ -119,6 +119,68 @@ func checkFilesystemSpace(t *testing.T, data []byte, class wire.FilesystemInfoCl
 	}
 }
 
+func TestFilesystemQueryOutputLengthsOnWire(t *testing.T) {
+	f := newQueryInfoFixture(t)
+	_, open := f.create(t, "fs-buffers", smb.KindFile)
+	for _, test := range []struct {
+		class   wire.FilesystemInfoClass
+		minimum uint32
+		full    uint32
+	}{
+		{wire.ClassFilesystemVolume, 18, 30},
+		{wire.ClassFilesystemSize, 24, 24},
+		{wire.ClassFilesystemFullSize, 32, 32},
+		{wire.ClassFilesystemDevice, 8, 8},
+		{wire.ClassFilesystemAttribute, 12, 24},
+	} {
+		full := queryData(t, f.query(t, open, wire.InfoFilesystem, uint8(test.class), test.full), smb.StatusSuccess)
+		for _, length := range []uint32{0, test.minimum - 1} {
+			message := f.query(t, open, wire.InfoFilesystem, uint8(test.class), length)
+			if message.Header.Status != smb.StatusInfoLengthMismatch {
+				t.Fatalf("class %d length %d: status = %x", test.class, length, message.Header.Status)
+			}
+			if _, err := wire.DecodeErrorResponse(message); err != nil {
+				t.Fatal(err)
+			}
+			f.echo(t)
+		}
+		if test.minimum < test.full {
+			for _, length := range []uint32{test.minimum, test.minimum + 1, test.full - 1} {
+				data := queryData(t, f.query(t, open, wire.InfoFilesystem, uint8(test.class), length), smb.StatusBufferOverflow)
+				if !bytes.Equal(data, full[:length]) {
+					t.Fatalf("class %d length %d: prefix = %x, want %x", test.class, length, data, full[:length])
+				}
+				f.echo(t)
+			}
+		}
+		data := queryData(t, f.query(t, open, wire.InfoFilesystem, uint8(test.class), test.full+1), smb.StatusSuccess)
+		if !bytes.Equal(data, full) {
+			t.Fatalf("class %d: output changed with larger buffer", test.class)
+		}
+	}
+}
+
+func TestFilesystemStatFSFailureKeepsConnection(t *testing.T) {
+	storage := statFSFaultStorage{Storage: newFilesMetaStorage(t), err: smb.ErrIO}
+	f := newQueryInfoFixtureWithStorage(t, storage)
+	_, open := f.create(t, "fs-fault", smb.KindFile)
+	for _, class := range []wire.FilesystemInfoClass{wire.ClassFilesystemVolume, wire.ClassFilesystemSize, wire.ClassFilesystemFullSize} {
+		message := f.query(t, open, wire.InfoFilesystem, uint8(class), 1024)
+		if message.Header.Status != smb.StatusIODeviceError {
+			t.Fatalf("class %d StatFS failure: status = %x", class, message.Header.Status)
+		}
+		if _, err := wire.DecodeErrorResponse(message); err != nil {
+			t.Fatal(err)
+		}
+		f.echo(t)
+	}
+	// These two classes need no space data, so a StatFS outage does not block them.
+	for _, class := range []wire.FilesystemInfoClass{wire.ClassFilesystemDevice, wire.ClassFilesystemAttribute} {
+		queryData(t, f.query(t, open, wire.InfoFilesystem, uint8(class), 1024), smb.StatusSuccess)
+		f.echo(t)
+	}
+}
+
 func TestUnsupportedFilesystemQueriesKeepConnection(t *testing.T) {
 	f := newQueryInfoFixture(t)
 	_, file := f.create(t, "fs-query", smb.KindFile)
