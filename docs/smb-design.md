@@ -54,9 +54,14 @@ The server commits the reservation only after storage open succeeds.
 On failure, the server aborts its reservation and closes every storage reference it acquired.
 The table releases its mutex before the server calls storage.
 
-The server takes the namespace guard before removing an open from the table.
+A Remove action retains delete-pending until CompleteDelete on every cleanup
+outcome, including failure or cancellation. This covers bulk closes that remove
+opens from the table before taking a namespace guard.
+Cleanup resolves the current inode path under its parent guard and retries if a
+rename changed that identity. An inode with no unique path is left untouched.
 The adapter verifies the expected inode before deleting a name.
-The server drains active request references before closing their storage handle.
+The server drains active request references before closing their storage handle,
+never while holding a namespace guard.
 For a base-file rename, the server locks both parents in inode order.
 Open state follows the inode, not a cached path.
 The adapter refuses named-stream rename with STATUS_NOT_SUPPORTED and leaves data unchanged.

@@ -182,9 +182,10 @@ type Grant struct {
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
-// blocks new opens through the guard until deletion finishes, and drains active
-// request references before closing Handle. A transport drop cannot close a
-// storage reference still in use by an async request.
+// retains delete-pending until CompleteDelete on every removal outcome, and
+// drains active request references before closing Handle without a parent guard.
+// A transport drop cannot close a storage reference still in use by an async
+// request.
 type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey

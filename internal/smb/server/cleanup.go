@@ -38,27 +38,39 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 }
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
-	path, err := server.options.Storage.PathOf(ctx, action.Object.Inode)
-	if err != nil {
-		return fmt.Errorf("find deletion name: %w", err)
-	}
 	request := RequestContext{server: server, Storage: server.options.Storage}
-	resolved, unlock, err := lookupLocked(ctx, request, path)
-	if err != nil {
-		return fmt.Errorf("resolve deletion name: %w", err)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		path, err := request.Storage.PathOf(ctx, action.Object.Inode)
+		if errors.Is(err, smb.ErrNameNotFound) {
+			return nil
+		}
+		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("find deletion name: %w", err)
+		}
+		resolved, unlock, err := lookupLocked(ctx, request, path)
+		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) || errors.Is(err, smb.ErrNameNotFound) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("resolve deletion name: %w", err)
+		}
+		if !resolved.Exists || resolved.Object.Inode != action.Object.Inode {
+			unlock()
+			continue
+		}
+		name := resolved.Name
+		name.Stream = action.Object.Stream
+		err = request.Storage.Remove(ctx, name, action.Object.Inode)
+		unlock()
+		if err != nil {
+			return fmt.Errorf("remove closed object: %w", err)
+		}
+		return nil
 	}
-	defer unlock()
-	return server.removeSelected(ctx, action, resolved)
-}
-
-func (server *Server) removeSelected(ctx context.Context, action state.CloseAction, resolved smb.Resolved) error {
-	if !resolved.Exists || resolved.Object.Inode != action.Object.Inode {
-		return errors.New("deletion name no longer identifies the closed inode")
-	}
-	name := resolved.Name
-	name.Stream = action.Object.Stream
-	if err := server.options.Storage.Remove(ctx, name, action.Object.Inode); err != nil {
-		return fmt.Errorf("remove closed object: %w", err)
-	}
-	return nil
 }
