@@ -1,6 +1,8 @@
 package server
 
 import (
+	"sync/atomic"
+
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -33,6 +35,7 @@ type RequestContext struct {
 	server  *Server
 	Storage smb.Storage
 	Opens   *state.Table
+	aapl    *atomic.Bool
 	Tree    Tree
 	Session Session
 
@@ -58,5 +61,15 @@ func (request RequestContext) Binding() state.Binding {
 }
 
 func (connection *connection) requestContext() RequestContext {
-	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State, server: connection.server}
+	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State, server: connection.server, aapl: &connection.aapl}
+}
+
+func (request RequestContext) aaplNegotiated() bool {
+	return request.aapl != nil && request.aapl.Load()
+}
+
+func (request RequestContext) markAAPL() {
+	if request.aapl != nil {
+		request.aapl.Store(true)
+	}
 }
