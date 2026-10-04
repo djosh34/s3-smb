@@ -159,16 +159,11 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 		_, err := io.Copy(conn, bytes.NewReader(frame))
 		written <- err
 	}()
-	var payload []byte
+	var messages []wire.Message
 	var readErr error
 	if wantReply {
-		reader := &streamReplyReader{Reader: conn}
-		payload, readErr = readFrame(reader, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
-		if reader.started && streamPeerClosed(readErr) {
-			readErr = io.ErrUnexpectedEOF
-		}
+		messages, readErr = readStreamReplies(conn, frame)
 		if readErr != nil {
-			readErr = fmt.Errorf("read reply: %w", readErr)
 			// Unblock the writer before waiting for its result.
 			if err := conn.Close(); err != nil {
 				return nil, false, errors.Join(readErr, err, <-written)
@@ -189,16 +184,75 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 	if !wantReply {
 		return nil, false, nil
 	}
-	messages, err := wire.Split(payload)
-	if err != nil {
-		return nil, false, fmt.Errorf("invalid reply: %w", err)
-	}
-	for _, message := range messages {
-		if message.Header.Flags&wire.FlagResponse == 0 {
-			return nil, false, errors.New("reply lacks response flag")
+	return messages, false, nil
+}
+
+// Valid compounds may produce separate prefix, interim and final frames. Count
+// terminal replies by request identity, not frames or the number of interims.
+func readStreamReplies(conn net.Conn, frame []byte) ([]wire.Message, error) {
+	requests, decodeErr := wire.Split(frame[4:])
+	known := decodeErr == nil
+	remaining := make(map[uint64]struct{})
+	for _, request := range requests {
+		if request.Header.Command != wire.Cancel {
+			remaining[request.Header.MessageID] = struct{}{}
 		}
 	}
-	return messages, false, nil
+	pending := make(map[uint64]wire.Header)
+	var replies []wire.Message
+	for {
+		reader := &streamReplyReader{Reader: conn}
+		payload, err := readFrame(reader, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
+		if streamPeerClosed(err) && (reader.started || len(replies) != 0) {
+			err = io.ErrUnexpectedEOF
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read reply: %w", err)
+		}
+		messages, err := wire.Split(payload)
+		if err != nil {
+			return nil, fmt.Errorf("invalid reply: %w", err)
+		}
+		for _, message := range messages {
+			if err := countStreamReply(message.Header, remaining, pending, known); err != nil {
+				return nil, err
+			}
+		}
+		replies = append(replies, messages...)
+		if !known || len(remaining) == 0 {
+			return replies, nil
+		}
+	}
+}
+
+func countStreamReply(header wire.Header, remaining map[uint64]struct{}, pending map[uint64]wire.Header, known bool) error {
+	if header.Flags&wire.FlagResponse == 0 {
+		return errors.New("reply lacks response flag")
+	}
+	if !known {
+		return nil
+	}
+	if _, exists := remaining[header.MessageID]; !exists {
+		return errors.New("reply has unexpected or completed message ID")
+	}
+	interim, waiting := pending[header.MessageID]
+	if header.Status == smb.StatusPending {
+		if waiting || header.Flags&wire.FlagAsync == 0 || header.AsyncID == 0 {
+			return errors.New("invalid interim reply")
+		}
+		pending[header.MessageID] = header
+		return nil
+	}
+	if waiting {
+		if header.Flags&wire.FlagAsync == 0 || header.AsyncID != interim.AsyncID || header.SessionID != interim.SessionID || header.Command != interim.Command || header.Credit != 0 {
+			return errors.New("invalid final async reply")
+		}
+		delete(pending, header.MessageID)
+	} else if header.Flags&wire.FlagAsync != 0 {
+		return errors.New("async reply without interim")
+	}
+	delete(remaining, header.MessageID)
+	return nil
 }
 
 type streamReplyReader struct {

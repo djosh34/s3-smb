@@ -44,7 +44,12 @@ func corePipeClient(t *testing.T, server *Server) (*smbtest.Client, context.Cont
 
 func configuredPipeClient(t *testing.T, server *Server, coreIdentity bool) (*smbtest.Client, context.Context) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	return boundedPipeClient(t, server, coreIdentity, 3*time.Second)
+}
+
+func boundedPipeClient(t *testing.T, server *Server, coreIdentity bool, bound time.Duration) (*smbtest.Client, context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
 	local, remote := net.Pipe()
 	client, err := smbtest.NewClient(remote)
 	if err != nil {
