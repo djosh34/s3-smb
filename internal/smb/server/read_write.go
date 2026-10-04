@@ -66,21 +66,12 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 		result.status = smb.StatusAccessDenied
 		return result, nil
 	}
-	if len(write.Data) > int(smb.MaxWriteSize) || write.Channel != 0 || write.Offset == math.MaxUint64 || write.Offset > math.MaxUint64-uint64(len(write.Data)) {
+	length := uint64(len(write.Data))
+	if length > uint64(smb.MaxWriteSize) || write.Channel != 0 || write.Offset == math.MaxUint64 || write.Offset > math.MaxUint64-length {
 		result.status = smb.StatusInvalidParameter
 		return result, nil
 	}
-	if open.GrantedAccess&fileWriteData == 0 {
-		attr, attrErr := request.Storage.GetAttr(ctx, open.Object)
-		if attrErr != nil {
-			return result, attrErr
-		}
-		if write.Offset < attr.Size {
-			result.status = smb.StatusAccessDenied
-			return result, nil
-		}
-	}
-	if status = request.Opens.CheckIO(open.ID, request.Binding(), write.Offset, uint64(len(write.Data)), true); status != smb.StatusSuccess {
+	if status = request.Opens.CheckIO(open.ID, request.Binding(), write.Offset, length, true); status != smb.StatusSuccess {
 		result.status = status
 		return result, nil
 	}
@@ -88,7 +79,7 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 	if err != nil {
 		return result, err
 	}
-	if n < 0 || n > math.MaxUint32 || n != len(write.Data) {
+	if n != len(write.Data) {
 		return result, fmt.Errorf("%w: %w", smb.ErrIO, io.ErrShortWrite)
 	}
 	if write.Flags&writeThrough != 0 {
@@ -96,6 +87,6 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 			return result, err
 		}
 	}
-	result.body, err = wire.EncodeWriteResponse(wire.WriteResponse{Count: uint32(n)})
+	result.body, err = wire.EncodeWriteResponse(wire.WriteResponse{Count: uint32(length)})
 	return result, err
 }

@@ -23,19 +23,37 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
+	storage := smbtest.NewStorage(f)
+	root, err := storage.Lookup(f.Context(), "")
+	if err != nil {
+		f.Fatal(err)
+	}
 	f.Fuzz(func(t *testing.T, stream []byte) {
-		// Bound total work as well as individual frame allocations.
-		if len(stream) > 64<<10 {
-			t.Skip("stream exceeds corpus limit")
-		}
-		options := testOptions(t)
-		options.Storage = smbtest.NewStorage(t)
-		server, err := New(options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		runServerStream(t, server, stream)
+		runFuzzInput(t, storage, root.Attr, stream)
 	})
+}
+
+func runFuzzInput(t *testing.T, storage smb.Storage, root smb.Attr, stream []byte) {
+	t.Helper()
+	// Bound total work as well as individual frame allocations.
+	if len(stream) > 64<<10 {
+		t.Skip("stream exceeds corpus limit")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), streamBound)
+		defer cancel()
+		if err := resetFuzzStorage(ctx, storage, root); err != nil {
+			t.Error(err)
+		}
+	})
+	options := testOptions(t)
+	options.Storage = storage
+	server, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Cleanup is LIFO: server requests and opens drain before storage resets.
+	runServerStream(t, server, stream)
 }
 
 type streamSeed struct {
