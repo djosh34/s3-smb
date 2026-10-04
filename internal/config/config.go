@@ -21,14 +21,16 @@ import (
 // Config is the parsed file. Secrets are still sources here. It prints as a
 // placeholder in logs.
 type Config struct {
-	SMB        SMBConfig        `yaml:"smb"`
-	Storage    StorageConfig    `yaml:"storage"`
-	S3         S3Config         `yaml:"s3"`
+	SMB        SMBConfig     `yaml:"smb"`
+	Storage    StorageConfig `yaml:"storage"`
+	S3         S3Config      `yaml:"s3"`
+	Logging    LoggingConfig `yaml:"logging"`
+	path       string
 	Encryption EncryptionConfig `yaml:"encryption"`
 	Backup     BackupConfig     `yaml:"backup"`
-	Logging    LoggingConfig    `yaml:"logging"`
-	path       string
 }
+
+// SMBConfig is the smb section: the listener, the share and its account.
 type SMBConfig struct {
 	Listen     string `yaml:"listen"`
 	Share      string `yaml:"share"`
@@ -37,35 +39,47 @@ type SMBConfig struct {
 	ReadOnly   bool   `yaml:"read_only"`
 	Encryption bool   `yaml:"encryption"`
 }
+
+// StorageConfig is the storage section: local directories and sizes.
 type StorageConfig struct {
+	CacheSize *ByteSize `yaml:"cache_size"`
 	StateDir  string    `yaml:"state_dir"`
 	CacheDir  string    `yaml:"cache_dir"`
-	CacheSize *ByteSize `yaml:"cache_size"`
 	Capacity  ByteSize  `yaml:"capacity"`
 }
+
+// S3Config is the s3 section: the bucket, the endpoint and its credentials.
 type S3Config struct {
 	Bucket       string       `yaml:"bucket"`
 	Region       string       `yaml:"region"`
 	Endpoint     string       `yaml:"endpoint"`
 	PathStyle    *bool        `yaml:"path_style"`
-	AccessKey    SecretSource `yaml:"access_key"`
-	SecretKey    SecretSource `yaml:"secret_key"`
 	SessionToken string       `yaml:"session_token"`
 	TLS          TLSConfig    `yaml:"tls"`
+	AccessKey    SecretSource `yaml:"access_key"`
+	SecretKey    SecretSource `yaml:"secret_key"`
 }
+
+// TLSConfig holds the optional CA and client certificate files for S3.
 type TLSConfig struct {
 	CAFile         string `yaml:"ca_file"`
 	ClientCertFile string `yaml:"client_cert_file"`
 	ClientKeyFile  string `yaml:"client_key_file"`
 }
+
+// EncryptionConfig is the encryption section for data and metadata in S3.
 type EncryptionConfig struct {
-	Enabled    bool         `yaml:"enabled"`
 	Passphrase SecretSource `yaml:"passphrase"`
+	Enabled    bool         `yaml:"enabled"`
 }
+
+// BackupConfig is the backup section for metadata backups and trash.
 type BackupConfig struct {
 	Interval  time.Duration `yaml:"interval"`
 	TrashDays int           `yaml:"trash_days"`
 }
+
+// LoggingConfig is the logging section.
 type LoggingConfig struct {
 	Format string `yaml:"format"`
 	Level  string `yaml:"level"`
@@ -79,6 +93,7 @@ func DefaultPath() (string, error) {
 	}
 	return filepath.Join(dir, "s3-smb", "config.yaml"), nil
 }
+
 func xdg(env, fallback string) (string, error) {
 	if dir := os.Getenv(env); dir != "" {
 		if !filepath.IsAbs(dir) {
@@ -102,17 +117,16 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, errors.New("resolve configuration path failed")
 	}
-	f, err := os.OpenFile(absolute, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(filepath.Clean(absolute), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, errors.New("open configuration file failed")
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New("configuration must be a readable regular file")
+		return nil, errors.Join(errors.New("configuration must be a readable regular file"), f.Close())
 	}
 	data, err := io.ReadAll(io.LimitReader(f, maxConfigBytes+1))
-	if err != nil {
+	if err = errors.Join(err, f.Close()); err != nil {
 		return nil, errors.New("read configuration file failed")
 	}
 	if len(data) > maxConfigBytes {
@@ -120,6 +134,7 @@ func Load(path string) (*Config, error) {
 	}
 	return parse(data, absolute)
 }
+
 func parse(data []byte, path string) (*Config, error) {
 	// Check the nodes first. Null, aliases and merge keys hide whether a field
 	// was set. YAML error text may quote secrets, so the errors here are fixed.
@@ -131,7 +146,7 @@ func parse(data []byte, path string) (*Config, error) {
 	if len(node.Content) != 1 || node.Content[0].Kind != yaml.MappingNode || !plainYAML(&node) {
 		return nil, errors.New("configuration must be a mapping without null, aliases or merge keys")
 	}
-	if err := dec.Decode(new(yaml.Node)); err != io.EOF {
+	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
 		return nil, errors.New("configuration must contain exactly one YAML document")
 	}
 	dataDir, err := xdg("XDG_DATA_HOME", ".local/share")
@@ -178,6 +193,7 @@ func parse(data []byte, path string) (*Config, error) {
 	}
 	return c, nil
 }
+
 func plainYAML(n *yaml.Node) bool {
 	if n.Kind == yaml.AliasNode || n.Tag == "!!null" || n.Tag == "!!merge" {
 		return false
@@ -189,6 +205,7 @@ func plainYAML(n *yaml.Node) bool {
 	}
 	return true
 }
+
 func validateCacheDirectory(path string) error {
 	if strings.ContainsAny(path, `:,*?[\`) {
 		return errors.New("storage.cache_dir must be one directory without path lists, glob characters or backslashes")
@@ -197,58 +214,14 @@ func validateCacheDirectory(path string) error {
 }
 
 func (c *Config) validate() error {
-	_, port, err := net.SplitHostPort(c.SMB.Listen)
-	p, e := strconv.Atoi(port)
-	if err != nil || e != nil || p < 1 || p > 65535 {
-		return errors.New("smb.listen requires a host and port from 1 to 65535")
-	}
-	if c.SMB.Share == "" || strings.ContainsAny(c.SMB.Share, "/\\\x00") || strings.EqualFold(c.SMB.Share, "IPC$") {
-		return errors.New("smb.share must be a nonempty share name")
-	}
-	if c.SMB.Username == "" || strings.ContainsRune(c.SMB.Username, 0) {
-		return errors.New("smb.username is required")
-	}
-	if c.SMB.Password == "" {
-		return errors.New("smb.password must be nonempty")
-	}
-	if strings.ContainsRune(c.SMB.Password, 0) {
-		return errors.New("smb.password contains NUL")
-	}
-	if c.Storage.StateDir == "" || c.Storage.CacheDir == "" || strings.ContainsRune(c.Storage.StateDir+c.Storage.CacheDir, 0) {
-		return errors.New("storage directories must be nonempty paths without NUL")
-	}
-	if err := validateCacheDirectory(c.Storage.CacheDir); err != nil {
+	if err := c.SMB.validate(); err != nil {
 		return err
 	}
-	if c.Storage.CacheSize != nil && *c.Storage.CacheSize < 0 {
-		return errors.New("storage.cache_size must be nonnegative")
-	}
-	if c.Storage.Capacity < 0 {
-		return errors.New("storage.capacity must be nonnegative")
-	}
-	if c.S3.Bucket == "" || strings.ContainsAny(c.S3.Bucket, "/\\\x00") {
-		return errors.New("s3.bucket is required and must be a bucket name")
-	}
-	if c.S3.Endpoint != "" {
-		u, err := url.Parse(c.S3.Endpoint)
-		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-			return errors.New("s3.endpoint requires an http or https origin without credentials, query or path")
-		}
-		if u.Scheme == "http" && (c.S3.TLS.CAFile != "" || c.S3.TLS.ClientCertFile != "" || c.S3.TLS.ClientKeyFile != "") {
-			return errors.New("s3 TLS files require an HTTPS endpoint")
-		}
-	}
-	if (c.S3.TLS.ClientCertFile == "") != (c.S3.TLS.ClientKeyFile == "") {
-		return errors.New("s3.tls client certificate and key must be supplied together")
-	}
-	if err := c.S3.AccessKey.validate("s3.access_key"); err != nil {
+	if err := c.Storage.validate(); err != nil {
 		return err
 	}
-	if err := c.S3.SecretKey.validate("s3.secret_key"); err != nil {
+	if err := c.S3.validate(); err != nil {
 		return err
-	}
-	if strings.ContainsRune(c.S3.SessionToken, 0) {
-		return errors.New("s3.session_token contains NUL")
 	}
 	if c.Encryption.Enabled {
 		if err := c.Encryption.Passphrase.validate("encryption.passphrase"); err != nil {
@@ -268,6 +241,62 @@ func (c *Config) validate() error {
 	case "debug", "info", "warn", "error":
 	default:
 		return errors.New("logging.level must be debug, info, warn or error")
+	}
+	return nil
+}
+
+func (c SMBConfig) validate() error {
+	_, port, err := net.SplitHostPort(c.Listen)
+	p, e := strconv.Atoi(port)
+	if err != nil || e != nil || p < 1 || p > 65535 {
+		return errors.New("smb.listen requires a host and port from 1 to 65535")
+	}
+	if c.Share == "" || strings.ContainsAny(c.Share, "/\\\x00") || strings.EqualFold(c.Share, "IPC$") {
+		return errors.New("smb.share must be a nonempty share name")
+	}
+	if c.Username == "" || strings.ContainsRune(c.Username, 0) {
+		return errors.New("smb.username is required")
+	}
+	if c.Password == "" {
+		return errors.New("smb.password must be nonempty")
+	}
+	if strings.ContainsRune(c.Password, 0) {
+		return errors.New("smb.password contains NUL")
+	}
+	return nil
+}
+
+func (c StorageConfig) validate() error {
+	if c.StateDir == "" || c.CacheDir == "" || strings.ContainsRune(c.StateDir+c.CacheDir, 0) {
+		return errors.New("storage directories must be nonempty paths without NUL")
+	}
+	return validateCacheDirectory(c.CacheDir)
+}
+
+func (c S3Config) validate() error {
+	if c.Bucket == "" || strings.ContainsAny(c.Bucket, "/\\\x00") {
+		return errors.New("s3.bucket is required and must be a bucket name")
+	}
+	if c.Endpoint != "" {
+		u, err := url.Parse(c.Endpoint)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
+			return errors.New("s3.endpoint requires an http or https origin without credentials, query or path")
+		}
+		if u.Scheme == "http" && (c.TLS.CAFile != "" || c.TLS.ClientCertFile != "" || c.TLS.ClientKeyFile != "") {
+			return errors.New("s3 TLS files require an HTTPS endpoint")
+		}
+	}
+	if (c.TLS.ClientCertFile == "") != (c.TLS.ClientKeyFile == "") {
+		return errors.New("s3.tls client certificate and key must be supplied together")
+	}
+	if err := c.AccessKey.validate("s3.access_key"); err != nil {
+		return err
+	}
+	if err := c.SecretKey.validate("s3.secret_key"); err != nil {
+		return err
+	}
+	if strings.ContainsRune(c.SessionToken, 0) {
+		return errors.New("s3.session_token contains NUL")
 	}
 	return nil
 }

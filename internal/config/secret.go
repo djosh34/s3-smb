@@ -25,8 +25,11 @@ type SecretSource struct {
 	Command []string `yaml:"command"`
 }
 
-func (SecretSource) String() string       { return "[redacted source]" }
+func (SecretSource) String() string { return "[redacted source]" }
+
+// LogValue keeps the source out of logs.
 func (SecretSource) LogValue() slog.Value { return slog.StringValue("[redacted source]") }
+
 func (s SecretSource) validate(label string) error {
 	n := 0
 	if s.Value != nil {
@@ -58,7 +61,9 @@ func (s SecretSource) validate(label string) error {
 }
 
 const (
-	HelperTimeout  = 10 * time.Second
+	// HelperTimeout bounds a credential helper command.
+	HelperTimeout = 10 * time.Second
+	// MaxSecretBytes bounds a secret and a helper's output.
 	MaxSecretBytes = 65536
 )
 
@@ -96,10 +101,10 @@ func (s SecretSource) resolve(ctx context.Context, dir, label string, logger *sl
 }
 
 type boundedOutput struct {
+	cancel    context.CancelFunc
 	data      []byte
 	remaining int
 	keep      bool
-	cancel    context.CancelFunc
 	exceeded  bool
 }
 
@@ -115,6 +120,7 @@ func (b *boundedOutput) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
 func runHelper(parent context.Context, dir string, argv []string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(parent, HelperTimeout)
 	defer cancel()
@@ -125,7 +131,7 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 	// Kill the helper's process group, so its children and their pipes go too.
 	cmd.Cancel = func() error {
 		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-		if err == syscall.ESRCH {
+		if errors.Is(err, syscall.ESRCH) {
 			return os.ErrProcessDone
 		}
 		return err
@@ -139,7 +145,9 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 	// A helper can exit while a child still holds its pipes. Kill the group
 	// again. WaitDelay limits how long Run waited for those pipes.
 	if cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if e := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL); e != nil && !errors.Is(e, syscall.ESRCH) {
+			return nil, errors.New("credential helper processes could not be stopped")
+		}
 	}
 	if out.exceeded || stderr.exceeded {
 		return nil, errors.New("credential helper output exceeds 65536 bytes")
@@ -155,20 +163,19 @@ func runHelper(parent context.Context, dir string, argv []string) ([]byte, error
 
 func readFile(path, label string, limit int64, secret bool, logger *slog.Logger) ([]byte, error) {
 	// Nonblocking open lets us reject FIFOs without waiting for a writer.
-	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return nil, errors.New(label + " file could not be opened")
 	}
-	defer f.Close()
 	info, err := f.Stat()
 	if err != nil || !info.Mode().IsRegular() {
-		return nil, errors.New(label + " file must be a readable regular file")
+		return nil, errors.Join(errors.New(label+" file must be a readable regular file"), f.Close())
 	}
 	if secret {
 		warnPermissions(info, label, logger)
 	}
 	data, err := io.ReadAll(io.LimitReader(f, limit+1))
-	if err != nil {
+	if err = errors.Join(err, f.Close()); err != nil {
 		return nil, errors.New(label + " file could not be read")
 	}
 	if int64(len(data)) > limit {
@@ -176,18 +183,20 @@ func readFile(path, label string, limit int64, secret bool, logger *slog.Logger)
 	}
 	return data, nil
 }
+
 func warnPermissions(info os.FileInfo, label string, logger *slog.Logger) {
-	allowed := info.Mode().Perm() == 0400 || info.Mode().Perm() == 0600
+	allowed := info.Mode().Perm() == 0o400 || info.Mode().Perm() == 0o600
 	if info.IsDir() {
-		allowed = info.Mode().Perm() == 0700
+		allowed = info.Mode().Perm() == 0o700
 	}
 	if !allowed {
 		logger.Warn("existing file permissions are not private; continuing without chmod", "setting", label, "mode", info.Mode().Perm().String())
 	}
-	if stat, ok := info.Sys().(*syscall.Stat_t); ok && stat.Uid != uint32(os.Geteuid()) {
+	if stat, ok := info.Sys().(*syscall.Stat_t); ok && int(stat.Uid) != os.Geteuid() {
 		logger.Warn("existing file has a different owner; continuing without chown", "setting", label)
 	}
 }
+
 func warnExisting(path, label string, logger *slog.Logger) {
 	if path == "" {
 		return

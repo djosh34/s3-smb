@@ -16,17 +16,22 @@ import (
 // in logs.
 type Resolved struct {
 	*Config
+	TLSConfig    *tls.Config
 	AccessKey    string
 	SecretKey    string
 	SessionToken string
 	Passphrase   string
-	TLSConfig    *tls.Config
 }
 
-func (*Resolved) String() string       { return "[redacted resolved configuration]" }
+func (*Resolved) String() string { return "[redacted resolved configuration]" }
+
+// LogValue keeps the resolved secrets out of logs.
 func (*Resolved) LogValue() slog.Value { return slog.StringValue("[redacted resolved configuration]") }
-func (*Config) String() string         { return "[redacted configuration]" }
-func (*Config) LogValue() slog.Value   { return slog.StringValue("[redacted configuration]") }
+
+func (*Config) String() string { return "[redacted configuration]" }
+
+// LogValue keeps the configuration out of logs.
+func (*Config) LogValue() slog.Value { return slog.StringValue("[redacted configuration]") }
 
 // Resolve runs once at startup, after the logger is configured. It reads the
 // secrets and TLS files and warns about loose permissions. A configured CA file
@@ -60,6 +65,7 @@ func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, e
 	}
 	return r, nil
 }
+
 func (c TLSConfig) load(logger *slog.Logger) (*tls.Config, error) {
 	roots, err := x509.SystemCertPool()
 	if err != nil {
