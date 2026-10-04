@@ -81,6 +81,42 @@ Tested on macOS 15.7.9 (24G830) on Intel, on GitHub's `macos-15` runner image
 installed v0.1.0-rc.9, which is the same commit. The test also restored the
 backup on a second Mac that had only the bucket.
 
+## Restart after a crash on a Mac
+
+Install the checked-in [launchd plist](docs/com.s3-smb.plist) once to keep
+s3-smb running while you are logged in. `KeepAlive` restarts it after an exit,
+including a crash. There is no service-install command.
+
+First run `s3-smb serve` in a terminal and type `yes` to initialize the bucket.
+Recovery also needs a foreground run and a typed `yes`: it replaces local
+metadata with a backup from S3. launchd has no terminal for either prompt.
+Later starts with the existing local database do not ask, including restarts
+after a crash.
+
+Stop the foreground process with Ctrl-C before loading the job. Copy
+`docs/com.s3-smb.plist` to `~/Library/LaunchAgents/com.s3-smb.plist`, creating
+that directory if needed. Edit the binary, config, working directory and log
+paths to absolute paths for your account. launchd does not expand `~` or shell
+variables. Keep the same config and state directory you initialized. Create
+`~/Library/Logs` if it does not exist, then load the job:
+
+```sh
+plutil -lint ~/Library/LaunchAgents/com.s3-smb.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.s3-smb.plist
+```
+
+Logs go to the plist's `StandardOutPath` and `StandardErrorPath`, by default
+`~/Library/Logs/s3-smb.out.log` and `~/Library/Logs/s3-smb.err.log`. To stop the
+job, or before editing its plist or recovering metadata, unload it:
+
+```sh
+launchctl bootout "gui/$(id -u)" ~/Library/LaunchAgents/com.s3-smb.plist
+```
+
+After recovery, stop the foreground process and load the job again. A crash
+can lose writes still in memory and interrupt the current backup. Restarting
+the server does not make that backup complete; start another backup.
+
 ## What is stored and how recovery works
 
 The bucket holds the file data in blocks, a metadata backup every hour and,
@@ -109,6 +145,7 @@ bucket layout are in [recovery](docs/recovery.md).
   about 1.3 to 1.8 GB.
 - The S3 provider must support `PutObject` with `If-None-Match: *`.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
+  On a Mac, the [launchd plist](docs/com.s3-smb.plist) can keep it running.
 - The Time Machine tests kill the application and the Time Machine client
   during a backup. They do not cover power loss or lost S3 objects. A Linux test
   deletes data objects and checks that reading the file fails over SMB.
