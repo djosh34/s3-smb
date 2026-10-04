@@ -106,21 +106,31 @@ func TestDurableLockSequenceRawOpenIsolation(t *testing.T) {
 }
 
 func TestDurableLockSequenceRawLifetime(t *testing.T) {
-	for _, expire := range []bool{false, true} {
-		name := "close"
-		if expire {
-			name = "expiry"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		expire          bool
+		expireOnAdvance bool
+	}{
+		{name: "close"},
+		{name: "expiry", expire: true},
+		{name: "cleanup during advance", expire: true, expireOnAdvance: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
 			fixture := newReconnectFixture(t, smb.CipherAES128GCM)
+			if test.expireOnAdvance {
+				fixture.clock.afterAdvance = func() {
+					fixture.server.expire(fixture.ctx)
+					fixture.server.scavengerCleanup.Wait()
+				}
+			}
 			client, session, transport := fixture.client(t, fixture.login.ClientGUID)
 			open := fixture.durable(t, client, &session, smb.LeaseRead|smb.LeaseHandle, 7, 0)
 			held := wire.LockElement{Length: 10, Flags: lockExclusive}
 			requireLockSequenceStatus(t, fixture.lockSequence(t, client, &session, open.ID, 16, held), smb.StatusSuccess)
-			if expire {
+			if test.expire {
 				fixture.cut(t, transport)
-				fixture.clock.advance(121 * time.Second)
 				closed, _ := fixture.storage.observeCleanup()
+				fixture.clock.advance(121 * time.Second)
 				fixture.server.expire(fixture.ctx)
 				awaitReconnectEvent(fixture.ctx, t, closed)
 				fixture.refused(t, session, open)
