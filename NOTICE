@@ -11,6 +11,8 @@ This distribution incorporates modified copies of:
   https://github.com/macos-fuse-t/go-smb2
   AGPL-3.0; see internal/smb-old/smb2/LICENSE and internal/smb-old/smb2/Attributions.txt
   for original author and incorporated BSD/MIT/Apache notices.
+  The reviewed NTLMv2 port in internal/smb/auth also preserves these notices
+  in internal/smb/auth/LICENSE and internal/smb/auth/Attributions.txt.
 * AES-CMAC in internal/smb/crypt/cmac.go, ported from the go-smb2 copy above.
   Copyright 2009 The Go Authors; portions Copyright 2016 Hiroshi Ioka.
   BSD-3-Clause; the full notice is retained in that file.

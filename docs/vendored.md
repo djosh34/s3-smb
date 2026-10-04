@@ -60,6 +60,26 @@ Added files: `server/cleanup.go`, `server/request_validation.go`, `server/status
 
 Deleted: `internal/msrpc`, `stats`.
 
+### New SMB authentication
+
+`internal/smb/auth/ntlm.go` and `crypto.go` port the reviewed NTLMv2 constants
+and authentication formulas from the SMB version above. They keep the upstream
+AGPL licence and attribution in `internal/smb/auth/LICENSE` and
+`internal/smb/auth/Attributions.txt`. The new decoders, SPNEGO wrapper and exchange
+state are written here, not copied from the old server. No old package is changed
+or imported.
+
+The review found wrapping uint32 offset sums, unchecked short response slices,
+unchecked MIC layouts, input mutation while checking the MIC and nonconstant
+proof comparisons in the old server half. The port uses widened bounds checks,
+validated AV pairs, verification of each supplied MIC, private transcript copies
+and constant-time proof comparisons. SPNEGO selects NTLM anywhere in the client
+list and requires a mechanism-list MIC when NTLM is not the first choice, as
+RFC 4178 requires. It removes guest, anonymous, NTLMv1 and NTLM
+session sealing. MD4, HMAC-MD5 and RC4 remain only where MS-NLMP requires them.
+`auth_test.go` checks the MS-NLMP section 4.2.4 proof and key vectors and the test
+initiator exchange. Decoder tests and fuzz targets cover malformed tokens.
+
 ### New SMB crypt package
 
 `internal/smb/crypt/cmac.go` ports the AES-CMAC algorithm from
