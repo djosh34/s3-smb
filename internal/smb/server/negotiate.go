@@ -87,10 +87,12 @@ func selectAlgorithms(contexts []wire.NegotiateContext, policy EncryptionPolicy)
 	selected := algorithms{signing: smb.SigningCMAC}
 	seen := make(map[uint16]bool)
 	for _, context := range contexts {
-		if seen[context.Type] {
-			return algorithms{}, smb.StatusInvalidParameter, "duplicate negotiate context"
+		if uniqueNegotiateContext(context.Type) {
+			if seen[context.Type] {
+				return algorithms{}, smb.StatusInvalidParameter, "duplicate negotiate context"
+			}
+			seen[context.Type] = true
 		}
-		seen[context.Type] = true
 		switch context.Type {
 		case wire.ContextPreauth:
 			preauth, err := wire.DecodePreauthContext(context)
@@ -115,7 +117,7 @@ func selectAlgorithms(contexts []wire.NegotiateContext, policy EncryptionPolicy)
 			selected.signingOffered = true
 			selected.signing = prefer(signing.Algorithms, smb.SigningGMAC, smb.SigningCMAC)
 			if selected.signing == 0 {
-				return algorithms{}, smb.StatusNotSupported, "client must offer AES-GMAC or AES-CMAC signing"
+				selected.signing = smb.SigningCMAC
 			}
 		}
 	}
@@ -126,6 +128,16 @@ func selectAlgorithms(contexts []wire.NegotiateContext, policy EncryptionPolicy)
 		return algorithms{}, smb.StatusNotSupported, "client offers no AES-GCM; turn encryption off or update macOS"
 	}
 	return selected, smb.StatusSuccess, ""
+}
+
+func uniqueNegotiateContext(contextType uint16) bool {
+	switch contextType {
+	// MS-SMB2 3.3.5.4 also forbids duplicate compression (3) and RDMA (7) contexts.
+	case wire.ContextPreauth, wire.ContextEncryption, wire.ContextSigning, 3, 7:
+		return true
+	default:
+		return false
+	}
 }
 
 func prefer(offered []uint16, first, second uint16) uint16 {

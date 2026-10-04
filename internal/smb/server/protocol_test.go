@@ -11,16 +11,32 @@ import (
 
 func TestNegotiateContextValidation(t *testing.T) {
 	for _, test := range []struct {
-		alter func(*wire.NegotiateRequest)
-		name  string
-		want  smb.Status
+		alter       func(*wire.NegotiateRequest)
+		name        string
+		want        smb.Status
+		wantSigning uint16
 	}{
 		{name: "missing preauth", alter: func(r *wire.NegotiateRequest) { r.Contexts = r.Contexts[1:] }, want: smb.StatusInvalidParameter},
 		{name: "duplicate preauth", alter: func(r *wire.NegotiateRequest) { r.Contexts = append(r.Contexts, r.Contexts[0]) }, want: smb.StatusInvalidParameter},
 		{name: "malformed preauth", alter: func(r *wire.NegotiateRequest) { r.Contexts[0].Data = []byte{1} }, want: smb.StatusInvalidParameter},
 		{name: "no SHA-512 overlap", alter: func(r *wire.NegotiateRequest) { r.Contexts[0].Data = []byte{1, 0, 0, 0, 2, 0} }, want: smb.StatusSMBNoPreauthIntegrityHashOverlap},
 		{name: "missing GCM context", alter: func(r *wire.NegotiateRequest) { r.Contexts = []wire.NegotiateContext{r.Contexts[0], r.Contexts[2]} }, want: smb.StatusNotSupported},
-		{name: "no signing overlap", alter: func(r *wire.NegotiateRequest) { r.Contexts[2].Data = []byte{1, 0, 0, 0} }, want: smb.StatusNotSupported},
+		{name: "no signing overlap", alter: func(r *wire.NegotiateRequest) { r.Contexts[2].Data = []byte{1, 0, 0, 0} }, want: smb.StatusSuccess, wantSigning: smb.SigningCMAC},
+		{name: "empty signing offer", alter: func(r *wire.NegotiateRequest) { r.Contexts[2].Data = []byte{0, 0} }, want: smb.StatusInvalidParameter},
+		{name: "duplicate encryption", alter: func(r *wire.NegotiateRequest) { r.Contexts = append(r.Contexts, r.Contexts[1]) }, want: smb.StatusInvalidParameter},
+		{name: "duplicate signing", alter: func(r *wire.NegotiateRequest) { r.Contexts = append(r.Contexts, r.Contexts[2]) }, want: smb.StatusInvalidParameter},
+		{name: "duplicate compression", alter: func(r *wire.NegotiateRequest) {
+			r.Contexts = append(r.Contexts, wire.NegotiateContext{Type: 3}, wire.NegotiateContext{Type: 3})
+		}, want: smb.StatusInvalidParameter},
+		{name: "duplicate RDMA", alter: func(r *wire.NegotiateRequest) {
+			r.Contexts = append(r.Contexts, wire.NegotiateContext{Type: 7}, wire.NegotiateContext{Type: 7})
+		}, want: smb.StatusInvalidParameter},
+		{name: "duplicate NETNAME", alter: func(r *wire.NegotiateRequest) {
+			r.Contexts = append(r.Contexts, wire.NegotiateContext{Type: 5}, wire.NegotiateContext{Type: 5})
+		}, want: smb.StatusSuccess},
+		{name: "duplicate unknown", alter: func(r *wire.NegotiateRequest) {
+			r.Contexts = append(r.Contexts, wire.NegotiateContext{Type: 65535, Data: []byte{1}}, wire.NegotiateContext{Type: 65535, Data: []byte{2}})
+		}, want: smb.StatusSuccess},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, err := New(testOptions(t))
@@ -40,9 +56,29 @@ func TestNegotiateContextValidation(t *testing.T) {
 			}
 			messages := exchange(ctx, t, client, message)
 			if messages[0].Header.Status != test.want {
-				t.Fatalf("context refusal: %+v", messages[0].Header)
+				t.Fatalf("context status: %+v", messages[0].Header)
+			}
+			if test.want == smb.StatusSuccess {
+				assertSelectedContexts(t, messages[0], test.wantSigning)
 			}
 		})
+	}
+}
+
+func assertSelectedContexts(t *testing.T, message wire.Message, wantSigning uint16) {
+	t.Helper()
+	response, err := wire.DecodeNegotiateResponse(message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Contexts) != 3 {
+		t.Fatalf("ignored contexts were echoed: %+v", response.Contexts)
+	}
+	if wantSigning != 0 {
+		signing, err := wire.DecodeSigningContext(response.Contexts[2])
+		if err != nil || len(signing.Algorithms) != 1 || signing.Algorithms[0] != wantSigning {
+			t.Fatalf("default signing: %+v, %v", signing, err)
+		}
 	}
 }
 
