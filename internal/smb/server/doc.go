@@ -6,7 +6,9 @@
 // NTLMv2 sessions, disk-share trees, ECHO, signing and GCM encryption. File
 // handlers are registered in handlers.go, one line per command. They resolve
 // request IDs with RequestContext.FileID and report the ID used or created in
-// reply.fileID. Compounds save that ID for the next related member.
+// reply.fileID. Compounds save that ID for the next related member. Handlers run
+// open-table CloseActions through RequestContext.Cleanup. A related command that
+// needs a FileId gets its failed predecessor's status without running its handler.
 // The server never closes the storage runtime. Tests use ServeConn over net.Pipe
 // without a listener or main wiring.
 package server
@@ -61,14 +63,17 @@ type Options struct {
 type Server struct {
 	shutdownErr   error
 	activeOpens   map[uint64]*openUses
+	parents       map[smb.Inode]*parentGuard
 	handlers      map[wire.Command]handler
 	connections   map[*connection]struct{}
+	sessions      map[uint64]*connection
 	listeners     map[*ownedListener]struct{}
 	shutdownDone  chan struct{}
 	options       Options
 	workers       sync.WaitGroup
 	mu            sync.Mutex
 	openMu        sync.Mutex
+	namespaceMu   sync.Mutex
 	nextSessionID uint64
 	nextTreeID    uint32
 	stopping      bool
