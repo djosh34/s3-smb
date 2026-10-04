@@ -71,7 +71,6 @@ func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Messag
 	done := make(chan error, 1)
 	go func() { done <- server.ServeConn(ctx, local) }()
 	t.Cleanup(func() {
-		cancel()
 		select {
 		case err := <-done:
 			// Protocol rejection is an expected outcome for mutated inputs.
@@ -81,6 +80,7 @@ func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Messag
 		case <-time.After(streamBound):
 			t.Error("ServeConn did not stop within the bound")
 		}
+		cancel()
 		shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(t.Context()), streamBound)
 		defer stop()
 		if err := server.Shutdown(shutdownCtx); err != nil {
