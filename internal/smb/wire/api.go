@@ -10,7 +10,7 @@ package wire
 // Framing functions validate the complete compound before returning any member.
 // Join writes eight-byte padding and NextCommand links. EncodeHeader writes
 // exactly 64 bytes and validates the selected synchronous or asynchronous layout.
-// DecodeSMB1Negotiate accepts only an opening negotiate that offers SMB2.
+// DecodeSMB1Negotiate accepts only an opening negotiate that offers SMB 2.???.
 //
 //	func DecodeHeader(packet []byte) (Header, error)
 //	func EncodeHeader(header Header) ([]byte, error)

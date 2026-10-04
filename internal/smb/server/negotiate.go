@@ -23,17 +23,18 @@ func (connection *connection) refuse(status smb.Status, reason string) reply {
 }
 
 func (connection *connection) sendWildcard() error {
-	body, err := wire.EncodeNegotiateResponse(wire.NegotiateResponse{Dialect: smb.DialectWildcard})
+	body, err := connection.negotiateResponse(smb.DialectWildcard, nil, nil)
 	if err != nil {
 		return err
 	}
-	return connection.send([]wire.Message{{Header: wire.Header{Command: wire.Negotiate, Flags: wire.FlagResponse, Credit: 1}, Body: body}})
+	request := wire.Header{Command: wire.Negotiate, Credit: 1}
+	if err := connection.credits.consume([]wire.Message{{Header: request}}); err != nil {
+		return err
+	}
+	return connection.send([]wire.Message{{Header: wire.Header{Command: wire.Negotiate, Flags: wire.FlagResponse, Credit: connection.credits.grant(request)}, Body: body}})
 }
 
 func (connection *connection) negotiate(message wire.Message) (reply, error) {
-	if connection.negotiated {
-		return connection.refuse(smb.StatusInvalidParameter, "connection already negotiated"), nil
-	}
 	request, err := wire.DecodeNegotiateRequest(message)
 	if err != nil {
 		return reply{}, fmt.Errorf("decode validated NEGOTIATE: %w", err)
@@ -58,15 +59,7 @@ func (connection *connection) negotiate(message wire.Message) (reply, error) {
 	if err != nil {
 		return reply{}, err
 	}
-	now, err := wire.EncodeFiletime(options.Now())
-	if err != nil {
-		return reply{}, fmt.Errorf("negotiate clock: %w", err)
-	}
-	body, err := wire.EncodeNegotiateResponse(wire.NegotiateResponse{
-		Token: token, Contexts: contexts,
-		Dialect: smb.Dialect311, SecurityMode: smb.AdvertisedSecurityMode, ServerGUID: options.ServerGUID,
-		Capabilities: smb.AdvertisedCapabilities, MaxTransact: smb.MaxTransactSize, MaxRead: smb.MaxReadSize, MaxWrite: smb.MaxWriteSize, SystemTime: uint64(now),
-	})
+	body, err := connection.negotiateResponse(smb.Dialect311, contexts, token)
 	if err != nil {
 		return reply{}, err
 	}
@@ -75,6 +68,19 @@ func (connection *connection) negotiate(message wire.Message) (reply, error) {
 	connection.cipher, connection.signing = selected.cipher, selected.signing
 	connection.preauth.Update(message.Raw)
 	return reply{body: body}, nil
+}
+
+func (connection *connection) negotiateResponse(dialect uint16, contexts []wire.NegotiateContext, token []byte) ([]byte, error) {
+	options := connection.server.options
+	now, err := wire.EncodeFiletime(options.Now())
+	if err != nil {
+		return nil, fmt.Errorf("negotiate clock: %w", err)
+	}
+	return wire.EncodeNegotiateResponse(wire.NegotiateResponse{
+		Token: token, Contexts: contexts, Dialect: dialect,
+		SecurityMode: smb.AdvertisedSecurityMode, ServerGUID: options.ServerGUID, Capabilities: smb.AdvertisedCapabilities,
+		MaxTransact: smb.MaxTransactSize, MaxRead: smb.MaxReadSize, MaxWrite: smb.MaxWriteSize, SystemTime: uint64(now),
+	})
 }
 
 func selectAlgorithms(contexts []wire.NegotiateContext, policy EncryptionPolicy) (algorithms, smb.Status, string) {

@@ -116,10 +116,27 @@ func (connection *connection) receive(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if err := connection.checkNegotiationState(messages); err != nil {
+			return err
+		}
 		if err := connection.process(ctx, messages); err != nil {
 			return err
 		}
 	}
+}
+
+func (connection *connection) checkNegotiationState(messages []wire.Message) error {
+	if !connection.negotiated && (len(messages) != 1 || messages[0].Header.Command != wire.Negotiate) {
+		return errors.New("request before NEGOTIATE")
+	}
+	if connection.negotiated {
+		for _, message := range messages {
+			if message.Header.Command == wire.Negotiate {
+				return errors.New("connection already negotiated")
+			}
+		}
+	}
+	return nil
 }
 
 func (connection *connection) send(messages []wire.Message) error {
@@ -130,7 +147,7 @@ func (connection *connection) send(messages []wire.Message) error {
 	if err != nil {
 		return err
 	}
-	if connection.negotiated && len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess {
+	if len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess && connection.negotiated {
 		connection.preauth.Update(payload)
 	}
 	return <-connection.sender.enqueue(payload)

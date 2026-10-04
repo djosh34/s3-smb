@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -71,7 +72,9 @@ func TestNegotiateSelects311AndOfferedAlgorithms(t *testing.T) {
 }
 
 func TestOpeningSMB1NegotiateGetsWildcard(t *testing.T) {
-	server, err := New(testOptions(t))
+	options := testOptions(t)
+	options.Now = func() time.Time { return time.Date(2026, 10, 4, 8, 0, 0, 0, time.UTC) }
+	server, err := New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,14 +97,27 @@ func TestOpeningSMB1NegotiateGetsWildcard(t *testing.T) {
 	if err != nil || response.Dialect != smb.DialectWildcard {
 		t.Fatalf("wildcard response: %+v, %v", response, err)
 	}
-	if reply.Messages[0].Header.Credit < 1 {
-		t.Fatal("wildcard granted no credits")
+	if reply.Messages[0].Header.Credit != 1 {
+		t.Fatal("wildcard must grant one credit")
 	}
-	// The wildcard does not consume the initial SMB2 sequence number.
+	assertNegotiateFields(t, response, options)
+	// The wildcard consumes MessageId 0. The SMB2 exchange starts at 1.
 	request := negotiateMessage(t, 1)
+	request.Header.MessageID = 1
 	messages := exchange(ctx, t, client, request)
 	if messages[0].Header.Status != smb.StatusSuccess {
 		t.Fatalf("SMB2 after wildcard: %+v", messages[0].Header)
+	}
+	negotiated, err := wire.DecodeNegotiateResponse(messages[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertNegotiateFields(t, negotiated, options)
+	if messages[0].Header.Credit != 1 {
+		t.Fatal("SMB2 NEGOTIATE lost its credit grant")
+	}
+	if response := exchange(ctx, t, client, echo(t, 2)); response[0].Header.Status != smb.StatusSuccess {
+		t.Fatal("wildcard left an invalid credit window")
 	}
 	requestBytes, err := wire.Join([]wire.Message{request})
 	if err != nil {
