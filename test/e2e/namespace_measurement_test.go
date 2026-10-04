@@ -23,6 +23,31 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 )
 
+type namespaceMeasurement struct {
+	Bands                     int     `json:"bands"`
+	SnapshotBytes             int64   `json:"snapshot_bytes"`
+	BackupReceiptWriteSeconds float64 `json:"backup_receipt_write_seconds"`
+	BackupStartupSeconds      float64 `json:"backup_startup_seconds"`
+	RecoverySeconds           float64 `json:"recovery_seconds"`
+	BackupPeakRSSBytes        int64   `json:"backup_peak_rss_bytes"`
+	RecoveryPeakRSSBytes      int64   `json:"recovery_peak_rss_bytes"`
+	BackupStagingBytes        *int64  `json:"backup_staging_bytes"`
+	RecoveryStagingBytes      *int64  `json:"recovery_staging_bytes"`
+}
+
+func (m namespaceMeasurement) checkBounds() error {
+	var err error
+	if m.BackupPeakRSSBytes > 1<<30 || m.RecoveryPeakRSSBytes > 1<<30 {
+		err = fmt.Errorf("daemon peak RSS exceeds 1 GiB: backup=%d recovery=%d", m.BackupPeakRSSBytes, m.RecoveryPeakRSSBytes)
+	}
+	// SMB readiness follows every attempt, receipt sync, rename and directory
+	// sync. The last attempt's receipt timestamp omits those earlier costs.
+	if m.BackupStartupSeconds > 60 || m.RecoverySeconds > 60 {
+		err = errors.Join(err, fmt.Errorf("backup startup or recovery exceeds 60s: backup=%.3fs recovery=%.3fs", m.BackupStartupSeconds, m.RecoverySeconds))
+	}
+	return err
+}
+
 // 524,288 eight-MiB bands describe a fully allocated four-TiB sparsebundle.
 // Seed metadata, not four TiB of content. A real SMB sentinel checks recovery.
 func TestNamespaceBackupMeasurements(t *testing.T) {
@@ -54,7 +79,7 @@ func TestNamespaceBackupMeasurements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backupTime := receiptStat.ModTime().Sub(r.Snapshot)
+	receiptWriteTime := receiptStat.ModTime().Sub(r.Snapshot)
 	head, err := f.store.HeadObject(context.Background(), &s3.HeadObjectInput{Bucket: aws.String(f.bucket), Key: aws.String("s3-smb/" + r.Key)})
 	if err != nil {
 		t.Fatal(err)
@@ -83,17 +108,12 @@ func TestNamespaceBackupMeasurements(t *testing.T) {
 	}
 	closeShare()
 	d.stop()
-	measurement := struct {
-		Bands                int     `json:"bands"`
-		SnapshotBytes        int64   `json:"snapshot_bytes"`
-		BackupSeconds        float64 `json:"backup_seconds"`
-		BackupStartupSeconds float64 `json:"backup_startup_seconds"`
-		RecoverySeconds      float64 `json:"recovery_seconds"`
-		BackupPeakRSSBytes   int64   `json:"backup_peak_rss_bytes"`
-		RecoveryPeakRSSBytes int64   `json:"recovery_peak_rss_bytes"`
-		BackupStagingBytes   int64   `json:"backup_staging_bytes"`
-		RecoveryStagingBytes int64   `json:"recovery_staging_bytes"`
-	}{bands, aws.ToInt64(head.ContentLength), backupTime.Seconds(), startupTime.Seconds(), recoveryTime.Seconds(), backupRSS, recoveryRSS, backupDisk, recoveryDisk}
+	measurement := namespaceMeasurement{
+		Bands: bands, SnapshotBytes: aws.ToInt64(head.ContentLength),
+		BackupReceiptWriteSeconds: receiptWriteTime.Seconds(), BackupStartupSeconds: startupTime.Seconds(),
+		RecoverySeconds: recoveryTime.Seconds(), BackupPeakRSSBytes: backupRSS, RecoveryPeakRSSBytes: recoveryRSS,
+		BackupStagingBytes: backupDisk, RecoveryStagingBytes: recoveryDisk,
+	}
 	data, err := json.MarshalIndent(measurement, "", "  ")
 	if err != nil {
 		t.Fatal(err)
@@ -105,11 +125,8 @@ func TestNamespaceBackupMeasurements(t *testing.T) {
 		}
 	}
 	// Both modes enforce the same ceilings. Gate mode supplies the scale.
-	if backupRSS > 1<<30 || recoveryRSS > 1<<30 {
-		t.Errorf("daemon peak RSS exceeds 1 GiB: backup=%d recovery=%d", backupRSS, recoveryRSS)
-	}
-	if backupTime > time.Minute || recoveryTime > time.Minute {
-		t.Errorf("snapshot or recovery exceeds 60s: backup=%s recovery=%s", backupTime, recoveryTime)
+	if err = measurement.checkBounds(); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -317,34 +334,42 @@ func stagingBytes(root string) (int64, error) {
 	return total, nil
 }
 
-func measuredStart(t *testing.T, f *fixture) (*daemon, int64) {
+func sampleStaging(root string, done <-chan struct{}) (*int64, error) {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	var peak int64
+	for {
+		bytes, err := stagingBytes(root)
+		if err != nil {
+			return nil, err
+		}
+		if bytes > peak {
+			peak = bytes
+		}
+		select {
+		case <-done:
+			if peak == 0 {
+				// A short staging lifetime can fall between every sample.
+				// Record unavailable, not zero disk use or a daemon failure.
+				return nil, nil
+			}
+			return &peak, nil
+		case <-ticker.C:
+		}
+	}
+}
+
+func measuredStart(t *testing.T, f *fixture) (*daemon, *int64) {
 	t.Helper()
 	done := make(chan struct{})
 	type observation struct {
-		peak int64
+		peak *int64
 		err  error
 	}
 	result := make(chan observation, 1)
 	go func() {
-		ticker := time.NewTicker(5 * time.Millisecond)
-		defer ticker.Stop()
-		var peak int64
-		for {
-			bytes, err := stagingBytes(f.root)
-			if err != nil {
-				result <- observation{peak, err}
-				return
-			}
-			if bytes > peak {
-				peak = bytes
-			}
-			select {
-			case <-done:
-				result <- observation{peak, nil}
-				return
-			case <-ticker.C:
-			}
-		}
+		peak, err := sampleStaging(f.root, done)
+		result <- observation{peak, err}
 	}()
 	joined := false
 	defer func() {
@@ -359,9 +384,6 @@ func measuredStart(t *testing.T, f *fixture) (*daemon, int64) {
 	joined = true
 	if got.err != nil {
 		t.Fatal(got.err)
-	}
-	if got.peak == 0 {
-		t.Fatal("no staging disk use observed")
 	}
 	return d, got.peak
 }
