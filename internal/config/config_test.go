@@ -71,23 +71,17 @@ func TestStrictYAML(t *testing.T) {
 		})
 	}
 }
-func TestFreshDatasetCompressionSelector(t *testing.T) {
-	if mustConfig(t).Storage.Compression != nil {
-		t.Fatal("omission must adopt the stored codec on recovery")
-	}
+func TestStorageCompressionIsUnknown(t *testing.T) {
 	for _, codec := range []string{"none", "zstd"} {
-		c, err := loadText(t, validYAML+fmt.Sprintf("storage: {compression: %q}\n", codec))
-		if err != nil {
-			t.Fatalf("supported creation codec %s rejected: %v", codec, err)
-		}
-		if c.Storage.Compression == nil || *c.Storage.Compression != codec {
-			t.Fatal("explicit codec selection lost")
-		}
-	}
-	for _, value := range []string{`""`, `lz4`, `zstd:3`, `invalid`, `null`, `[zstd]`} {
-		if _, err := loadText(t, validYAML+"storage: {compression: "+value+"}\n"); err == nil {
-			t.Fatalf("accepted unsupported compression selector %s", value)
-		}
+		t.Run(codec, func(t *testing.T) {
+			_, err := loadText(t, validYAML+fmt.Sprintf("storage: {compression: %q}\n", codec))
+			if err == nil {
+				t.Fatal("accepted unknown storage.compression field")
+			}
+			if err.Error() != "invalid configuration YAML: unknown, duplicate or incorrectly typed field" {
+				t.Fatalf("expected the unknown-field error, got %v", err)
+			}
+		})
 	}
 }
 

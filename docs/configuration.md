@@ -28,7 +28,6 @@ storage:
   cache_dir: ./cache
   cache_size: "10 GB"
   capacity: "2 TB"
-  compression: zstd
 
 s3:
   bucket: your-existing-bucket
@@ -67,7 +66,6 @@ logging:
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
 | `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
 | `storage.capacity` | `0` (no limit) |
-| `storage.compression` | `none` for a new dataset; the stored value for an existing one |
 | `s3.bucket` | Required, must exist |
 | `s3.region` | `us-east-1`. Set the bucket's real region. |
 | `s3.endpoint` | AWS S3 for the region; otherwise an `http://` or `https://` origin |
@@ -107,14 +105,6 @@ of encrypted objects or metadata backups in S3. This is not a bucket quota.
 
 The current SMB adapter reports at most 1 TiB of free space. When the capacity
 leaves less free space than that, the share reports the capacity as its size.
-
-## Compression
-
-`storage.compression` is `none` or `zstd`. It applies to a new dataset and
-compresses each data block before encryption. For an existing dataset, leave it
-out and s3-smb uses the value stored in the bucket, including `lz4` from older
-JuiceFS formats. A value that differs from the stored one stops startup. There is
-no way to convert an existing dataset.
 
 ## Retention
 
