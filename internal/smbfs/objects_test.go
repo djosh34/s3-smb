@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"math"
 	"strconv"
 	"strings"
@@ -202,6 +203,11 @@ func TestReadOnlyRejectsAllMutations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if shutdownErr := ro.Shutdown(); shutdownErr != nil {
+			t.Error(shutdownErr)
+		}
+	})
 	for _, r := range []smb.Resolved{base, stream} {
 		_, err = ro.Open(t.Context(), r.Object, smb.AccessWrite)
 		requireError(t, err, smb.ErrReadOnly)
@@ -422,7 +428,7 @@ func TestAccessCancellationAndInvalidRanges(t *testing.T) {
 	_, err = f.fs.WriteAt(t.Context(), writer, []byte("x"), math.MaxUint64)
 	requireError(t, err, smb.ErrFileTooLarge)
 	_, err = f.fs.ReadAt(t.Context(), readOnly, make([]byte, 1), math.MaxUint64)
-	requireError(t, err, smb.ErrFileTooLarge)
+	requireError(t, err, io.EOF)
 	requireError(t, f.fs.Truncate(t.Context(), writer, math.MaxUint64), smb.ErrFileTooLarge)
 	requireError(t, f.fs.Flush(t.Context(), writer, smb.SyncMode(9)), smb.ErrInvalidParameter)
 	ctx, cancel := context.WithCancel(t.Context())

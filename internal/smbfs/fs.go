@@ -2,6 +2,7 @@ package smbfs
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -28,25 +29,27 @@ const (
 // lock, so metadata queries never wait for an inode's upload or cold read.
 // The map mutex only pins state; the rename mutex protects directory ancestry.
 type FS struct {
-	filesystem   *jfs.FileSystem
-	metadata     meta.Meta
-	barrier      MetadataBarrier
-	reader       vfs.DataReader
-	writer       vfs.DataWriter
-	inodes       map[smb.Inode]*inodeState
-	parents      map[smb.Inode]*parentGuard
-	metadataPath string
-	mu           sync.Mutex
-	renameMu     sync.Mutex
-	capacity     uint64
-	volumeID     uint64
-	readOnly     bool
+	filesystem *jfs.FileSystem
+	metadata   meta.Meta
+	barrier    MetadataBarrier
+	reader     vfs.DataReader
+	writer     vfs.DataWriter
+	inodes     map[smb.Inode]*inodeState
+	parents    map[smb.Inode]*parentGuard
+	directory  *sql.DB
+	mu         sync.Mutex
+	renameMu   sync.Mutex
+	commits    atomic.Uint64
+	capacity   uint64
+	volumeID   uint64
+	readOnly   bool
 }
 
 type liveState struct {
 	modified time.Time
 	size     uint64
 	dirty    bool
+	valid    bool // size is authoritative while the native reference is retained
 }
 
 type inodeState struct {
@@ -73,16 +76,18 @@ func (h *handle) Key() smb.ObjectKey { return h.key }
 
 var _ smb.Storage = (*FS)(nil)
 
-// New constructs an adapter. The caller owns the JuiceFS runtime and chunk store.
+// New constructs an adapter. The caller owns the JuiceFS runtime and chunk store,
+// and calls Shutdown after draining requests and closing storage references.
 func New(options Options) (*FS, error) {
 	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil {
 		return nil, smb.ErrInvalidParameter
 	}
-	if err := prepareDirectoryPages(options.MetadataPath, options.ReadOnly); err != nil {
-		return nil, storageError(err)
-	}
 	m := options.Filesystem.Meta()
 	volumeID, err := volumeIdentity(m.GetFormat().UUID)
+	if err != nil {
+		return nil, storageError(err)
+	}
+	directory, err := prepareDirectoryPages(options.MetadataPath, options.ReadOnly)
 	if err != nil {
 		return nil, storageError(err)
 	}
@@ -90,7 +95,7 @@ func New(options Options) (*FS, error) {
 	writer := vfs.NewDataWriter(options.Config, m, options.Store, reader)
 	return &FS{
 		filesystem: options.Filesystem, metadata: m, barrier: options.Barrier, reader: reader, writer: writer,
-		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), metadataPath: options.MetadataPath,
+		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), directory: directory,
 		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly,
 	}, nil
 }
@@ -238,7 +243,7 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 		if err = backendError(s.metadata.Open(storageContext(ctx), meta.Ino(key.Inode), flags, &raw)); err != nil {
 			return nil, err
 		}
-		st.publish(liveState{size: raw.Length})
+		st.publish(liveState{size: raw.Length, valid: true})
 	}
 	st.refs.Add(1)
 	if key.Stream != "" {
@@ -256,11 +261,16 @@ func (s *FS) flush(ctx context.Context, st *inodeState) error {
 	live := st.snapshot()
 	live.dirty = false
 	st.publish(live)
+	s.commits.Add(1)
 	return ctx.Err()
 }
 
+// Shutdown closes the directory connection after the server has drained work
+// and closed all storage references. It does not close the caller's runtime.
+func (s *FS) Shutdown() error { return storageError(s.directory.Close()) }
+
 // Close always releases its reference, including when ctx is already canceled.
-// Cancellation may abort the requested flush, but not native reference cleanup.
+// Flush and native cleanup run to completion; cancellation is returned afterward.
 func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	cleanup := context.WithoutCancel(ctx)
 	h, release, err := s.selected(cleanup, ref, false)
@@ -269,7 +279,7 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	}
 	defer release()
 	h.closed = true
-	flushErr := s.flush(ctx, h.state)
+	flushErr := s.flush(cleanup, h.state)
 	if h.state.refs.Add(-1) != 0 {
 		return errors.Join(flushErr, ctx.Err())
 	}
@@ -282,8 +292,12 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 		h.state.reader.Close(storageContext(cleanup))
 		h.state.reader = nil
 	}
+	xattrErr := s.clearUnlinkedXattrs(cleanup, h.key.Inode)
 	closeErr := backendError(s.metadata.Close(storageContext(cleanup), meta.Ino(h.key.Inode)))
-	return errors.Join(flushErr, writerErr, closeErr, ctx.Err())
+	live := h.state.snapshot()
+	live.valid = false
+	h.state.publish(live)
+	return errors.Join(flushErr, writerErr, xattrErr, closeErr, ctx.Err())
 }
 
 // Flush covers the shared writer, then commits the requested metadata barrier.
@@ -312,9 +326,6 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 	if h.access&smb.AccessRead == 0 {
 		return 0, smb.ErrAccessDenied
 	}
-	if offset >= maxFileSize || uint64(len(dst)) >= maxFileSize-offset {
-		return 0, smb.ErrFileTooLarge
-	}
 	if h.kind == smb.KindDirectory {
 		return 0, smb.ErrIsDirectory
 	}
@@ -335,12 +346,12 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 		}
 		return n, nil
 	}
-	if err = s.flush(ctx, h.state); err != nil {
-		return 0, err
-	}
 	size := h.state.snapshot().size
 	if offset >= size {
 		return 0, io.EOF
+	}
+	if err = s.flush(ctx, h.state); err != nil {
+		return 0, err
 	}
 	requested := len(dst)
 	if uint64(len(dst)) > size-offset {
@@ -466,7 +477,8 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 	}
 	s.writer.Truncate(meta.Ino(key.Inode), size)
 	s.reader.Truncate(meta.Ino(key.Inode), size)
-	st.publish(liveState{size: size})
+	st.publish(liveState{size: size, valid: st.refs.Load() > 0})
+	s.commits.Add(1)
 	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
 	return nil
 }

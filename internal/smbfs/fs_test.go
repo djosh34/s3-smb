@@ -131,30 +131,36 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool, trash
 		t.Fatal(err)
 	}
 	f := &fixture{fs: adapter, metadata: m, native: native, store: store, path: database, config: config, chunks: chunks}
-	t.Cleanup(func() {
-		store.slow.Store(false)
-		store.fail.Store(false)
-		store.cold.Store(false)
-		for _, h := range f.handles {
-			nativeHandle, ok := h.(*handle)
-			if !ok {
-				t.Error("unexpected handle type")
-				continue
-			}
-			if !nativeHandle.closed {
-				if err := adapter.Close(context.Background(), h); err != nil {
-					t.Logf("close after fault: %v", err)
-				}
-			}
-		}
-		if err := native.Close(); err != nil {
-			t.Error(err)
-		}
-		if err := m.Shutdown(); err != nil {
-			t.Error(err)
-		}
-	})
+	t.Cleanup(func() { f.cleanup(t) })
 	return f
+}
+
+func (f *fixture) cleanup(t *testing.T) {
+	t.Helper()
+	f.store.slow.Store(false)
+	f.store.fail.Store(false)
+	f.store.cold.Store(false)
+	for _, h := range f.handles {
+		nativeHandle, ok := h.(*handle)
+		if !ok {
+			t.Error("unexpected handle type")
+			continue
+		}
+		if !nativeHandle.closed {
+			if err := f.fs.Close(context.Background(), h); err != nil {
+				t.Logf("close after fault: %v", err)
+			}
+		}
+	}
+	if err := f.fs.Shutdown(); err != nil {
+		t.Error(err)
+	}
+	if err := f.native.Close(); err != nil {
+		t.Error(err)
+	}
+	if err := f.metadata.Shutdown(); err != nil {
+		t.Error(err)
+	}
 }
 
 func (f *fixture) create(t *testing.T, p string, kind smb.Kind) smb.Resolved {

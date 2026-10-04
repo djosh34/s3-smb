@@ -44,34 +44,39 @@ func directoryDB(path string, readOnly bool) (*sql.DB, error) {
 		mode = "ro"
 	}
 	uri := url.URL{Scheme: "file", Path: path}
-	query := url.Values{"mode": {mode}, "cache": {"private"}, "_busy_timeout": {"5000"}}
+	query := url.Values{"mode": {mode}, "cache": {"private"}, "_busy_timeout": {"5000"}, "_synchronous": {"FULL"}, "_journal_mode": {"WAL"}}
 	uri.RawQuery = query.Encode()
-	return sql.Open("sqlite3", uri.String())
+	// Use the runtime hook on every physical connection, including replacements.
+	db, err := sql.Open("sqlite3_fullfsync", uri.String())
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	return db, nil
 }
 
-func prepareDirectoryPages(path string, readOnly bool) error {
+func prepareDirectoryPages(path string, readOnly bool) (*sql.DB, error) {
 	db, err := directoryDB(path, readOnly)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if readOnly {
 		err = db.PingContext(context.Background())
 	} else {
 		_, err = db.ExecContext(context.Background(), `CREATE INDEX IF NOT EXISTS IDX_jfs_edge_smbfs_directory_page ON jfs_edge(parent,id)`)
 	}
-	return errors.Join(err, db.Close())
+	if err != nil {
+		return nil, errors.Join(err, db.Close())
+	}
+	return db, nil
 }
 
 func (s *FS) directoryPage(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limit uint32) (entries []directoryEntry, err error) {
 	if uint64(cookie) > math.MaxInt64 {
 		return nil, nil
 	}
-	db, err := directoryDB(s.metadataPath, true)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { err = errors.Join(err, db.Close()) }()
-	rows, err := db.QueryContext(ctx, directoryQuery, birthKey, attributesKey, accessedKey, modifiedKey, changedKey, ino, cookie, limit)
+	rows, err := s.directory.QueryContext(ctx, directoryQuery, birthKey, attributesKey, accessedKey, modifiedKey, changedKey, ino, cookie, limit)
 	if err != nil {
 		return nil, err
 	}

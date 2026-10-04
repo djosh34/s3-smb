@@ -11,7 +11,8 @@
 // handle or open registries. Handles retain an inode reference, immutable object
 // key, kind and access mode. Private per-inode coordination is allowed and must not
 // serialize unrelated inode I/O. New rejects a missing filesystem or barrier.
-// The caller owns and closes JuiceFS only after server shutdown closes all opens.
+// After server shutdown drains requests and closes all opens, the caller calls
+// FS.Shutdown to close its directory connection, then closes the JuiceFS runtime.
 package smbfs
 
 import (
@@ -43,7 +44,8 @@ type Options struct {
 	Config     *vfs.Config
 	Filesystem *jfs.FileSystem
 	// MetadataPath names the runtime SQLite database. Directory pages use a
-	// stateless indexed query because Meta has no stable paged enumeration API.
+	// indexed queries on one long-lived connection because Meta has no stable
+	// paged enumeration API.
 	MetadataPath string
 	Capacity     uint64
 	ReadOnly     bool

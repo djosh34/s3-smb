@@ -253,6 +253,7 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 	defer release()
 	var out []smb.DirEntry
 	for uint64(len(out)) < uint64(limit) {
+		generation := s.commits.Load()
 		entries, err := s.directoryPage(ctx, ino, cookie, min(limit, 512))
 		if err != nil {
 			return nil, storageError(err)
@@ -268,9 +269,7 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 			if err := admitted(entry.inode, &entry.attr); err != nil {
 				continue
 			}
-			st, unpin := s.pin(entry.inode)
-			a, err := decorateAttr(entry.inode, &entry.attr, entry.values, st.snapshot())
-			unpin()
+			a, err := s.directoryAttr(ctx, entry, generation)
 			if errors.Is(err, smb.ErrNameNotFound) {
 				continue
 			}
@@ -284,6 +283,18 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 		}
 	}
 	return out, nil
+}
+
+func (s *FS) directoryAttr(ctx context.Context, entry directoryEntry, generation uint64) (smb.Attr, error) {
+	st, unpin := s.pin(entry.inode)
+	live := st.snapshot()
+	unpin()
+	// Open references retain the authoritative length across flushes. If a
+	// reference closed after the SQL snapshot, reread its committed attributes.
+	if !live.valid && s.commits.Load() != generation {
+		return s.GetAttr(ctx, smb.ObjectKey{Inode: entry.inode})
+	}
+	return decorateAttr(entry.inode, &entry.attr, entry.values, live)
 }
 
 func (s *FS) expected(ctx context.Context, name smb.Name, expect smb.Inode) (meta.Attr, error) {

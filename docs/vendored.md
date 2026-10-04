@@ -43,6 +43,14 @@ Added files: `pkg/meta/protection.go` (`NewSQLite`, `ClearOrphanLocks`, the main
 
 Deleted: `pkg/sync`, `pkg/fs/http.go`.
 
+### New SMB adapter schema dependency
+
+`internal/smbfs` reads the pinned JuiceFS SQLite layout directly for bounded directory pages. `Meta` exposes no stable stateless paging API. The adapter joins `jfs_edge` (`id`, `parent`, `name`, `inode`), `jfs_node` (inode, kind, length, parent and timestamps) and `jfs_xattr` (inode, name and value). Edge names are blobs. Node timestamps use microseconds plus nanosecond remainders. Private xattr encodings are owned by the adapter. Edge IDs serve as cookies within a running adapter; cookies do not survive recovery.
+
+The adapter creates `IDX_jfs_edge_smbfs_directory_page` on `(parent,id)` with `CREATE INDEX IF NOT EXISTS`. SQLite snapshots preserve it, and writable startup recreates it if JuiceFS schema setup removes it during recovery. Read-only startup does not create indexes. The adapter owns one long-lived, single-connection pool, using JuiceFS's `sqlite3_fullfsync` hook, `synchronous=FULL`, WAL, private cache and a 5000 ms busy timeout. The hook enables `fullfsync` and `checkpoint_fullfsync` on replacements too. After draining requests and closing references, the owner calls `FS.Shutdown` before closing JuiceFS.
+
+`internal/smbfs/directory_contract_test.go` pins the queried column types and keys, timestamp and xattr decoding, connection settings and reuse, idempotent index creation, and index preservation through a native SQLite snapshot and runtime recovery. `TestDirectoryPagesUseBoundedIndexedQueries` checks the query plan. Run these tests when updating JuiceFS, and revisit the query if its schema or metadata encodings change. No JuiceFS source changes were needed for this dependency.
+
 ### SMB server
 
 | File | Change and reason | Test |

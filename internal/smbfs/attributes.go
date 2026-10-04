@@ -6,6 +6,7 @@ import (
 	"errors"
 	"hash/fnv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
@@ -58,6 +59,7 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 	if ino == 0 {
 		return smb.Attr{}, smb.ErrInvalidParameter
 	}
+	live := st.snapshot()
 	var a meta.Attr
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &a)); err != nil {
 		return smb.Attr{}, err
@@ -75,7 +77,7 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 			return smb.Attr{}, backendError(eno)
 		}
 	}
-	return decorateAttr(ino, &a, values, st.snapshot())
+	return decorateAttr(ino, &a, values, live)
 }
 
 type privateAttrs [5][]byte
@@ -121,6 +123,9 @@ func decorateAttr(ino smb.Inode, a *meta.Attr, values privateAttrs, live liveSta
 	if err != nil {
 		return smb.Attr{}, err
 	}
+	if live.valid && out.Kind == smb.KindFile {
+		out.Size = live.size
+	}
 	if live.dirty && out.Kind == smb.KindFile {
 		out.Size = live.size
 		out.Modified = live.modified
@@ -150,6 +155,37 @@ func explicitTime(value []byte, actual time.Time) (time.Time, error) {
 		return actual, nil
 	}
 	return wanted.UTC(), nil
+}
+
+// JuiceFS drops xattrs at unlink, not when a sustained inode is finally closed.
+// Retained-reference writes may restore them, so remove them before that close.
+func (s *FS) clearUnlinkedXattrs(ctx context.Context, ino smb.Inode) error {
+	var attr meta.Attr
+	eno := s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &attr)
+	if eno == syscall.ENOENT {
+		return nil
+	}
+	if eno != 0 {
+		return backendError(eno)
+	}
+	if attr.Nlink != 0 || attr.Parent.IsTrash() {
+		return nil
+	}
+	var names []byte
+	if err := backendError(s.metadata.ListXattr(storageContext(ctx), meta.Ino(ino), &names)); err != nil {
+		return err
+	}
+	var result error
+	for _, name := range strings.Split(strings.TrimSuffix(string(names), "\x00"), "\x00") {
+		if name == "" {
+			continue
+		}
+		eno = s.metadata.RemoveXattr(storageContext(ctx), meta.Ino(ino), name)
+		if eno != 0 && !errors.Is(eno, meta.ENOATTR) {
+			result = errors.Join(result, backendError(eno))
+		}
+	}
+	return result
 }
 
 func (s *FS) storeTime(ctx context.Context, ino smb.Inode, key string, wanted, actual time.Time) error {
