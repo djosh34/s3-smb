@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"reflect"
 	"testing"
 	"time"
@@ -14,11 +13,10 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
-	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
 type queryInfoFixture struct {
-	storage *smbfs.FS
+	storage smb.Storage
 	server  *Server
 	client  *smbtest.Client
 	ctx     context.Context
@@ -28,43 +26,7 @@ type queryInfoFixture struct {
 
 func newQueryInfoFixture(t *testing.T) *queryInfoFixture {
 	t.Helper()
-	storage := newFilesMetaStorage(t)
-	options := testOptions(t)
-	options.Storage = storage
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	local, remote := net.Pipe()
-	client, err := smbtest.NewClient(remote)
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- server.ServeConn(ctx, local) }()
-	t.Cleanup(func() {
-		if closeErr := client.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-		cancel()
-		select {
-		case serveErr := <-done:
-			if serveErr != nil && ctx.Err() == nil {
-				t.Error(serveErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("ServeConn did not stop")
-		}
-		if shutdownErr := server.Shutdown(context.WithoutCancel(ctx)); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
-	})
-	session, err := client.Login(ctx, smbtest.LoginOptions{Share: options.ShareName, Account: options.Account, Cipher: smb.CipherAES128GCM, Signing: smb.SigningGMAC, ClientGUID: [16]byte{2}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &queryInfoFixture{storage: storage, server: server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
+	return newQueryInfoFixtureWithStorage(t, newFilesMetaStorage(t))
 }
 
 func (f *queryInfoFixture) create(t *testing.T, path string, kind smb.Kind) (smb.Resolved, state.Open) {
