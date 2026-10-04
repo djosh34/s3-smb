@@ -80,7 +80,9 @@ logging:
 `storage.cache_dir` is one directory, not a list or glob pattern. Its path must
 not contain `:`, `,`, `*`, `?`, `[` or a backslash. This also applies to paths
 inherited from `XDG_CACHE_HOME` or the config file's directory. Recovery deletes
-only the volume UUID directory under this root.
+only the volume UUID directory under this root. The volume cache and
+`storage.state_dir` must be separate directories, with neither inside the other.
+Recovery refuses to wipe overlapping directories.
 
 ## Sizes
 

@@ -96,15 +96,88 @@ func TestWipeVolumeCacheInsideState(t *testing.T) {
 	if err := os.WriteFile(keep, []byte("state file"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := WipeVolumeCache(state, cacheTestUUID, state); err != nil {
+	alias := filepath.Join(t.TempDir(), "state-alias")
+	if err := os.Symlink(state, alias); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Lstat(volume); !os.IsNotExist(err) {
-		t.Fatalf("volume cache remains: %v", err)
+	for _, stateDir := range []string{state, alias} {
+		if err := WipeVolumeCache(state, cacheTestUUID, stateDir); err == nil {
+			t.Fatalf("accepted a cache inside state directory %s", stateDir)
+		}
+	}
+	if _, err := os.Stat(volume); err != nil {
+		t.Fatalf("volume cache was touched: %v", err)
 	}
 	got, err := os.ReadFile(keep)
 	if err != nil || string(got) != "state file" {
 		t.Fatalf("state file changed: %q, %v", got, err)
+	}
+}
+
+func TestDirectoryContainsAliases(t *testing.T) {
+	state := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "state-alias")
+	if err := os.Symlink(state, alias); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(state, "child"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{alias, filepath.Join(alias, "child")} {
+		contains, err := directoryContains(info, path)
+		if err != nil || !contains {
+			t.Fatalf("directory alias %s not recognized: %v", path, err)
+		}
+	}
+	if _, err := directoryContains(info, filepath.Join(state, "missing")); err == nil {
+		t.Fatal("ignored directory lookup error")
+	}
+}
+
+func TestWipeVolumeCacheCaseInsensitiveState(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "cache")
+	state := filepath.Join(root, cacheTestUUID, "state")
+	if err := os.MkdirAll(state, 0700); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(base, "Cache", cacheTestUUID, "state")
+	if _, err := os.Stat(alias); os.IsNotExist(err) {
+		t.Skip("needs a case-insensitive filesystem")
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if err := WipeVolumeCache(root, cacheTestUUID, alias); err == nil {
+		t.Fatal("accepted a second spelling of the state directory")
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Fatalf("state directory was touched: %v", err)
+	}
+}
+
+func TestWipeVolumeCacheUnlinksVolumeSymlink(t *testing.T) {
+	root, state := t.TempDir(), t.TempDir()
+	keep := filepath.Join(state, "keep")
+	if err := os.WriteFile(keep, []byte("state file"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	volume := filepath.Join(root, cacheTestUUID)
+	if err := os.Symlink(state, volume); err != nil {
+		t.Fatal(err)
+	}
+	if err := WipeVolumeCache(root, cacheTestUUID, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(volume); !os.IsNotExist(err) {
+		t.Fatalf("volume symlink remains: %v", err)
+	}
+	got, err := os.ReadFile(keep)
+	if err != nil || string(got) != "state file" {
+		t.Fatalf("symlink target was touched: %q, %v", got, err)
 	}
 }
 
