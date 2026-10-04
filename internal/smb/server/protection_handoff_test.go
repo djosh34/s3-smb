@@ -89,7 +89,7 @@ func checkProtectionHandoff(t *testing.T, encrypted, required, denied bool) {
 	for _, message := range messages {
 		result := reply{status: status}
 		if !denied {
-			result = owner.execute(ctx, message)
+			result = owner.execute(ctx, message, compoundState{})
 		}
 		response, responseErr := makeResponse(message.Header, result, 1)
 		if responseErr != nil {
@@ -105,7 +105,7 @@ func checkProtectionHandoff(t *testing.T, encrypted, required, denied bool) {
 	if len(owner.replyProtection) != 0 {
 		t.Fatal("final replies retained keys")
 	}
-	if result := owner.execute(ctx, requests[0]); result.status != smb.StatusUserSessionDeleted {
+	if result := owner.execute(ctx, requests[0], compoundState{}); result.status != smb.StatusUserSessionDeleted {
 		t.Fatal("saved reply key restored removed identity")
 	}
 	if response := exchange(ctx, t, client, sessionEcho(t, fresh, fresh.NextMessageID))[0]; response.Header.Status != smb.StatusSuccess {

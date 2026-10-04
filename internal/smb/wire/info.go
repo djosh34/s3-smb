@@ -55,6 +55,10 @@ type DirectoryInfoClass uint8
 
 // Directory class numbers from MS-FSCC.
 const (
+	ClassDirectory       DirectoryInfoClass = 1
+	ClassDirectoryFull   DirectoryInfoClass = 2
+	ClassDirectoryBoth   DirectoryInfoClass = 3
+	ClassDirectoryNames  DirectoryInfoClass = 12
 	ClassDirectoryIDBoth DirectoryInfoClass = 37
 	ClassDirectoryIDFull DirectoryInfoClass = 38
 )
@@ -237,7 +241,15 @@ type FilesystemAttributeInformation struct {
 	MaxComponentLength int32
 }
 
-// DirectoryMetadata is the fixed data shared by both supported entry layouts.
+// DirectoryEntry contains names and metadata for classes 1, 2, 3 and 12.
+// Each codec uses only the fields present in its class layout.
+type DirectoryEntry struct {
+	Name      string
+	ShortName string
+	Metadata  DirectoryMetadata
+}
+
+// DirectoryMetadata is the fixed data shared by directory entry layouts.
 // Basic.Attributes supplies FileAttributes; the other Basic fields supply times.
 type DirectoryMetadata struct {
 	Basic          FileBasicInformation
