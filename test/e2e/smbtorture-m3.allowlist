@@ -1,0 +1,36 @@
+# Samba 4.17.12-Debian M3 candidates, not the default gate.
+# No pass or dependency-readiness claim. See smbtorture-m3.md.
+smb2.getinfo.granted.granted
+smb2.read.eof.eof
+smb2.read.dir.dir
+smb2.read.access.access
+smb2.dir.find.find
+smb2.dir.fixed.fixed
+smb2.dir.many.many
+smb2.dir.modify.modify
+smb2.dir.sorted.sorted
+smb2.dir.large-files.large-files
+smb2.compound.related1.related1
+smb2.compound.related2.related2
+smb2.compound.related5.related5
+smb2.compound.unrelated1.unrelated1
+smb2.compound.invalid1.invalid1
+smb2.compound.invalid2.invalid2
+smb2.compound.invalid3.invalid3
+smb2.compound.invalid4.invalid4
+smb2.compound.create-write-close.create-write-close
+smb2.compound_find.compound_find_related.compound_find_related
+smb2.compound_find.compound_find_unrelated.compound_find_unrelated
+smb2.compound_find.compound_find_close.compound_find_close
+smb2.compound_async.flush_close.flush_close
+smb2.compound_async.flush_flush.flush_flush
+smb2.rename.simple.simple
+smb2.rename.simple_nodelete.simple_nodelete
+smb2.rename.no_sharing.no_sharing
+smb2.rename.msword.msword
+smb2.rename.rename_dir_openfile.rename_dir_openfile
+smb2.rename.rename_dir_bench.rename_dir_bench
+smb2.rename.close-full-information.close-full-information
+smb2.rw.rw1.rw1
+smb2.rw.rw2.rw2
+smb2.rw.invalid.invalid

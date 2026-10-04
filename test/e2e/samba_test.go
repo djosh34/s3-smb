@@ -20,7 +20,7 @@ const sambaVersion = "4.17.12-Debian"
 //go:embed smbtorture.allowlist
 var tortureAllowlist string
 
-func runSamba(ctx context.Context, run integrationCommand, addr, share, authFile, allowlist string) error {
+func runSamba(ctx context.Context, run integrationCommand, addr, share, authFile, allowlist, clientCommand string) error {
 	for _, tool := range []string{"smbclient", "smbtorture"} {
 		output, err := run(ctx, tool, "--version")
 		if err != nil {
@@ -51,10 +51,17 @@ func runSamba(ctx context.Context, run integrationCommand, addr, share, authFile
 		"--use-kerberos=off", "--client-protection=encrypt",
 		"--option=client min protocol=SMB3_11", "--option=client max protocol=SMB3_11",
 	}
-	// quit still authenticates and tree-connects, but sends no file requests.
-	output, err := run(ctx, "smbclient", append(args, "-c", "quit")...)
+	output, err := run(ctx, "smbclient", append(args, "-c", clientCommand)...)
 	if err != nil {
-		return fmt.Errorf("smbclient connect: %w\n%s", err, output)
+		return fmt.Errorf("smbclient %s: %w\n%s", clientCommand, err, output)
+	}
+	if clientCommand == "ls" {
+		// Some smbclient listing errors still exit with status zero.
+		for _, line := range strings.Split(output, "\n") {
+			if strings.HasPrefix(line, "NT_STATUS_") && strings.Contains(line, " listing ") {
+				return fmt.Errorf("smbclient listing failed:\n%s", output)
+			}
+		}
 	}
 	for _, name := range names {
 		output, err := run(ctx, "smbtorture", append(args, "--fullname", "--format=subunit", name)...)
@@ -94,6 +101,11 @@ func requireRaceSmbnextBuild(settings []debug.BuildSetting) error {
 }
 
 func TestSambaInterop(t *testing.T) {
+	testSambaInterop(t, tortureAllowlist, "quit")
+}
+
+func testSambaInterop(t *testing.T, allowlist, clientCommand string) {
+	t.Helper()
 	binary := os.Getenv("S3_SMB_SAMBA_BINARY")
 	if binary == "" {
 		t.Skip("needs the smbnext daemon and Samba in the Linux integration run")
@@ -124,8 +136,8 @@ func TestSambaInterop(t *testing.T) {
 		}
 		return string(output), err
 	}
-	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, tortureAllowlist); err != nil {
+	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, allowlist, clientCommand); err != nil {
 		t.Fatal(err)
 	}
-	t.Log("Samba connected with encryption; the M2 credit allowlist is empty by the decision on #188")
+	t.Log("Samba connected with encryption and ran the selected exact tests")
 }
