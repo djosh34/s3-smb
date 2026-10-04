@@ -32,11 +32,12 @@ type Options struct {
 	ServerName string
 }
 
-// Result is one handshake step. Done is true only after proof verification.
-// SessionKey is the exported session key, never the password or NT hash. For
-// AES-256 SMB encryption, crypt derives a 256-bit key from this exported key.
-// User and SessionKey are empty before completion. Failed steps return errors,
-// never a partial authenticated result.
+// Result is one handshake step. Done means the exchange is complete. Acceptor
+// returns User and SessionKey only after verifying the client's proof. Initiator
+// supplies its key when emitting Authenticate, before Done, so the test client
+// can verify the final SESSION_SETUP signature before accepting the session.
+// SessionKey is the exported key, never the password or NT hash. crypt derives
+// the cipher key from it. Failed steps return errors, never an authenticated result.
 type Result struct {
 	Token      []byte
 	SessionKey []byte
@@ -54,8 +55,8 @@ type Acceptor interface {
 	Step(token []byte) (Result, error)
 }
 
-// Initiator supplies the minimal NTLMv2 exchange for tests. It uses the same
-// Result contract and server proof/key validation as the protocol requires.
+// Initiator supplies the minimal NTLMv2 exchange for tests. It validates SPNEGO
+// acceptance; the SMB test client separately verifies the final setup signature.
 type Initiator interface {
 	// Start consumes the server's SPNEGO mechanism list and emits a negotiate token.
 	Start(serverToken []byte) (Result, error)
