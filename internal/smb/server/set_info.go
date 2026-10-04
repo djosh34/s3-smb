@@ -9,6 +9,12 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
+// Matches smbfs allocation accounting and the filesystem information replies.
+const setInfoAllocationUnit uint64 = 4096
+
+// MS-FSA permits basic information to change only these file attribute bits.
+const setInfoAttributeMask uint32 = 0x3127
+
 func handleSetInfo(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	info, err := wire.DecodeSetInfoRequest(message)
 	if err != nil {
@@ -69,7 +75,7 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		{&change.Changed, info.Changed},
 	} {
 		update, decodeErr := wire.DecodeTimeUpdate(field.value)
-		if decodeErr != nil {
+		if decodeErr != nil || update.Action == wire.TimeSet && field.value >= 1<<63 {
 			return smb.StatusInvalidParameter
 		}
 		if update.Action == wire.TimeSet {
@@ -81,7 +87,10 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		if attrErr != nil {
 			return setInfoStorageStatus(ctx, request, attrErr)
 		}
-		attributes := normalizeFileAttributes(info.Attributes, attr.Kind == smb.KindDirectory)
+		if attr.Kind == smb.KindFile && info.Attributes&0x10 != 0 || attr.Kind == smb.KindDirectory && info.Attributes&0x100 != 0 {
+			return smb.StatusInvalidParameter
+		}
+		attributes := attr.Attributes&^setInfoAttributeMask | info.Attributes&setInfoAttributeMask
 		change.Attributes = &attributes
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, change))
@@ -98,6 +107,13 @@ func setEndOfFileInfo(ctx context.Context, request RequestContext, open state.Op
 	if info.EndOfFile >= 1<<63 {
 		return smb.StatusInvalidParameter
 	}
+	attr, err := request.Storage.GetAttr(ctx, open.Object)
+	if err != nil {
+		return setInfoStorageStatus(ctx, request, err)
+	}
+	if attr.Kind == smb.KindDirectory {
+		return smb.StatusInvalidParameter
+	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &info.EndOfFile}))
 }
 
@@ -109,17 +125,22 @@ func setAllocationInfo(ctx context.Context, request RequestContext, open state.O
 	if err != nil {
 		return smb.StatusInfoLengthMismatch
 	}
-	if info.AllocationSize >= 1<<63 {
+	// The rounded allocation must still fit the signed protocol size field.
+	if info.AllocationSize > 1<<63-setInfoAllocationUnit {
 		return smb.StatusInvalidParameter
 	}
+	allocation := (info.AllocationSize + setInfoAllocationUnit - 1) / setInfoAllocationUnit * setInfoAllocationUnit
 	attr, err := request.Storage.GetAttr(ctx, open.Object)
 	if err != nil {
 		return setInfoStorageStatus(ctx, request, err)
 	}
-	if info.AllocationSize >= attr.Size {
+	if attr.Kind == smb.KindDirectory {
+		return smb.StatusInvalidParameter
+	}
+	if allocation >= attr.Size {
 		return smb.StatusSuccess
 	}
-	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &info.AllocationSize}))
+	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &allocation}))
 }
 
 func setInfoStorageStatus(ctx context.Context, request RequestContext, err error) smb.Status {
