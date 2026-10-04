@@ -66,7 +66,7 @@ func decodeSPNEGO(data []byte) (spnegoToken, error) {
 			return result, oidErr
 		}
 		var mechanism asn1.ObjectIdentifier
-		if err := unmarshalDER(oid.FullBytes, &mechanism); err != nil || !mechanism.Equal(spnegoOID) {
+		if oidErr = unmarshalDER(oid.FullBytes, &mechanism); oidErr != nil || !mechanism.Equal(spnegoOID) {
 			return result, errToken
 		}
 		outer, rest, err = readDER(remaining)
@@ -192,7 +192,17 @@ func decodeResponseField(field asn1.RawValue, result *spnegoToken) error {
 }
 
 func wrapDER(class, tag int, data []byte) ([]byte, error) {
-	return asn1.Marshal(asn1.RawValue{Class: class, Tag: tag, IsCompound: true, Bytes: data})
+	if len(data) > maxTokenSize {
+		return nil, errToken
+	}
+	encoded, err := asn1.Marshal(asn1.RawValue{Class: class, Tag: tag, IsCompound: true, Bytes: data})
+	if err != nil {
+		return nil, err
+	}
+	if len(encoded) > maxTokenSize {
+		return nil, errToken
+	}
+	return encoded, nil
 }
 
 func encodeInitial(token []byte) ([]byte, error) {

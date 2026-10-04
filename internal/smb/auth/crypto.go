@@ -11,7 +11,7 @@ import (
 	"hash"
 	"strings"
 
-	"golang.org/x/crypto/md4"
+	"golang.org/x/crypto/md4" //nolint:gosec,staticcheck // MS-NLMP requires MD4 to derive the NT password hash.
 )
 
 func hashParts(h hash.Hash, parts ...[]byte) ([]byte, error) {
@@ -24,7 +24,7 @@ func hashParts(h hash.Hash, parts ...[]byte) ([]byte, error) {
 }
 
 func responseKey(account Account, user, domain string) ([]byte, error) {
-	ntHash, err := hashParts(md4.New(), encodeUTF16(account.Password))
+	ntHash, err := hashParts(md4.New(), encodeUTF16(account.Password)) //nolint:gosec // MS-NLMP requires MD4 to derive the NT password hash.
 	if err != nil {
 		return nil, err
 	}
@@ -79,7 +79,15 @@ func mechanismMIC(key, mechList []byte, flags uint32, client bool) ([]byte, erro
 	}
 	checksum = checksum[:8]
 	if flags&flagKeyExch != 0 {
-		sealingKey, err := hashParts(md5.New(), key, []byte("session key to "+direction+" sealing key magic constant\x00")) //nolint:gosec // MS-NLMP defines MD5-derived NTLM mechanism sealing keys.
+		sealingInput := key
+		if flags&flag128 == 0 {
+			length := 5
+			if flags&flag56 != 0 {
+				length = 7
+			}
+			sealingInput = key[:length]
+		}
+		sealingKey, err := hashParts(md5.New(), sealingInput, []byte("session key to "+direction+" sealing key magic constant\x00")) //nolint:gosec // MS-NLMP defines MD5-derived NTLM mechanism sealing keys.
 		if err != nil {
 			return nil, err
 		}

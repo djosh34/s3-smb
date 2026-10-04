@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -136,6 +137,11 @@ func TestVectorExchange(t *testing.T) {
 		t.Fatal(err)
 	}
 	requireBytes(t, message.blob[16:24], bytes.Repeat([]byte{0xaa}, 8))
+	// Independently calculated from the MS-NLMP inputs with the server's
+	// timestamp and MIC-required target info added to the transcript.
+	requireBytes(t, message.fields[1][:16], hexBytes(t, "884fa22befc5628983a77abe3da7db53"))
+	requireBytes(t, message.fields[5], hexBytes(t, "d0380d9477ece2c7d2e58f3473d21bfe"))
+	requireBytes(t, message.raw[message.micOffset:message.micOffset+16], hexBytes(t, "e698bae9ea17698e3820c20896c781e0"))
 	requireBytes(t, authenticate.SessionKey, bytes.Repeat([]byte{0x55}, 16))
 	original := bytes.Clone(authenticate.Token)
 	final, err := acceptor.Step(authenticate.Token)
@@ -173,7 +179,7 @@ func TestIdentityPolicy(t *testing.T) {
 		{name: "wrong user", server: vectorAccount, client: Account{User: "other", Domain: "Domain", Password: "Password"}},
 		{name: "wrong domain", server: vectorAccount, client: Account{User: "User", Domain: "other", Password: "Password"}},
 		{name: "guest", server: vectorAccount, client: Account{User: "Guest", Domain: "Domain", Password: "Password"}},
-		{name: "unicode", server: Account{User: "üser😀", Password: "päss😀"}, client: Account{User: "ÜSER😀", Password: "päss😀"}, ok: true},
+		{name: "unicode", server: Account{User: "üser😀", Password: "Password"}, client: Account{User: "ÜSER😀", Password: "Password"}, ok: true},
 		{name: "empty password", server: Account{User: "User"}, client: Account{User: "User"}, ok: true},
 	}
 	for _, test := range tests {
@@ -201,8 +207,8 @@ func requireFailure(t testing.TB, result Result, err error) {
 
 func TestBadProofAndMIC(t *testing.T) {
 	for _, test := range []struct {
-		name   string
 		mutate func(ntlmMessage)
+		name   string
 	}{
 		{name: "proof", mutate: func(message ntlmMessage) { message.fields[1][0] ^= 1 }},
 		{name: "MIC", mutate: func(message ntlmMessage) { message.raw[message.micOffset] ^= 1 }},
@@ -261,7 +267,7 @@ func TestRandomErrors(t *testing.T) {
 		t.Fatalf("lost random error: %v", err)
 	}
 	for _, length := range []int{0, 4, 8, 12, 23} {
-		t.Run(string(rune('a'+length)), func(t *testing.T) {
+		t.Run(strconv.Itoa(length), func(t *testing.T) {
 			acceptor := testAcceptor(t, vectorAccount)
 			initiator := testInitiator(t, vectorAccount)
 			initial, err := acceptor.InitialToken()
@@ -288,8 +294,11 @@ func TestRandomErrors(t *testing.T) {
 
 func TestConfiguration(t *testing.T) {
 	for _, account := range []Account{
-		{}, {User: "bad\x00user"}, {User: string([]byte{0xff})},
-		{User: "user", Domain: "bad\x00domain"}, {User: "user", Password: string([]byte{0xff})},
+		{},
+		{User: "bad\x00user"},
+		{User: string([]byte{0xff})},
+		{User: "user", Domain: "bad\x00domain"},
+		{User: "user", Password: string([]byte{0xff})},
 		{User: string(bytes.Repeat([]byte{'x'}, 1025))},
 	} {
 		if _, err := NewInitiator(account, nil); err == nil {

@@ -165,15 +165,17 @@ func (acceptor *Acceptor) makeChallenge(flags uint32) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	info := appendAV(nil, avComputer, encodeUTF16(acceptor.options.ServerName))
+	pairs := []avPair{{id: avComputer, value: encodeUTF16(acceptor.options.ServerName)}}
 	if acceptor.options.Account.Domain != "" {
-		info = appendAV(info, avDomain, encodeUTF16(acceptor.options.Account.Domain))
+		pairs = append(pairs, avPair{id: avDomain, value: encodeUTF16(acceptor.options.Account.Domain)})
 	}
-	info = appendAV(info, avTimestamp, stamp)
 	var micFlags [4]byte
 	littleEndian.PutUint32(micFlags[:], micPresent)
-	info = appendAV(info, avFlags, micFlags[:])
-	info = appendAV(info, avEnd, nil)
+	pairs = append(pairs, avPair{id: avTimestamp, value: stamp}, avPair{id: avFlags, value: micFlags[:]})
+	info, err := encodeAV(pairs)
+	if err != nil {
+		return nil, err
+	}
 	target := encodeUTF16(acceptor.options.ServerName)
 	floor := 48
 	if flags&flagVersion != 0 {
@@ -181,23 +183,29 @@ func (acceptor *Acceptor) makeChallenge(flags uint32) ([]byte, error) {
 	}
 	data := newNTLM(2, floor+len(target)+len(info))
 	littleEndian.PutUint32(data[20:], flags)
-	if _, err := io.ReadFull(acceptor.options.Random, data[24:32]); err != nil {
-		return nil, fmt.Errorf("read NTLM server challenge: %w", err)
+	if _, randomErr := io.ReadFull(acceptor.options.Random, data[24:32]); randomErr != nil {
+		return nil, fmt.Errorf("read NTLM server challenge: %w", randomErr)
 	}
 	if flags&flagVersion != 0 {
 		copy(data[48:56], ntlmVersion)
 	}
-	start := putField(data, 12, floor, target)
-	putField(data, 40, start, info)
+	start, err := putField(data, 12, floor, target)
+	if err != nil {
+		return nil, err
+	}
+	if _, fieldErr := putField(data, 40, start, info); fieldErr != nil {
+		return nil, fieldErr
+	}
 	return data, nil
 }
 
 func ntlmTimestamp(now time.Time) ([]byte, error) {
-	if now.Year() < 1601 || now.Year() > 9999 {
+	seconds := now.Unix() + 11644473600
+	if seconds < 0 || seconds > 265046774399 {
 		return nil, errors.New("NTLM clock is outside the FILETIME range")
 	}
 	stamp := make([]byte, 8)
-	ticks := uint64(now.Unix()+11644473600)*10000000 + uint64(now.Nanosecond()/100)
+	ticks := uint64(seconds)*10000000 + uint64(now.Nanosecond()/100) //nolint:gosec // time.Time.Nanosecond is in [0, 999999999].
 	littleEndian.PutUint64(stamp, ticks)
 	return stamp, nil
 }
@@ -219,9 +227,9 @@ func (acceptor *Acceptor) finish(wrapped spnegoToken) (Result, error) {
 	}
 	var serverMIC []byte
 	if len(wrapped.mic) != 0 {
-		clientMIC, err := mechanismMIC(key, acceptor.mechList, authenticate.flags, true)
-		if err != nil {
-			return Result{}, err
+		clientMIC, micErr := mechanismMIC(key, acceptor.mechList, authenticate.flags, true)
+		if micErr != nil {
+			return Result{}, micErr
 		}
 		if !hmac.Equal(clientMIC, wrapped.mic) {
 			return Result{}, errLogin
@@ -260,8 +268,8 @@ func (acceptor *Acceptor) verify(message ntlmMessage) ([]byte, error) {
 		return nil, errLogin
 	}
 	for _, offset := range []int{12, 20, 28, 36, 44, 52} {
-		if _, err := field(message.raw, offset, message.micOffset+16); err != nil {
-			return nil, err
+		if _, fieldErr := field(message.raw, offset, message.micOffset+16); fieldErr != nil {
+			return nil, fieldErr
 		}
 	}
 	challenge, err := decodeNTLM(acceptor.challenge)
@@ -400,8 +408,8 @@ func (initiator *Initiator) authenticate(token []byte) (Result, error) {
 		return Result{}, errLogin
 	}
 	var nonce [8]byte
-	if _, err := io.ReadFull(initiator.random, nonce[:]); err != nil {
-		return Result{}, fmt.Errorf("read NTLM client challenge: %w", err)
+	if _, randomErr := io.ReadFull(initiator.random, nonce[:]); randomErr != nil {
+		return Result{}, fmt.Errorf("read NTLM client challenge: %w", randomErr)
 	}
 	info := bytes.Clone(challenge.fields[1][:len(challenge.fields[1])-4])
 	if flags, exists := challenge.av[avFlags]; exists {
@@ -411,9 +419,15 @@ func (initiator *Initiator) authenticate(token []byte) (Result, error) {
 	} else {
 		var flags [4]byte
 		littleEndian.PutUint32(flags[:], micPresent)
-		info = appendAV(info, avFlags, flags[:])
+		info, err = appendAV(info, avFlags, flags[:])
+		if err != nil {
+			return Result{}, err
+		}
 	}
-	info = appendAV(info, avEnd, nil)
+	info, err = appendAV(info, avEnd, nil)
+	if err != nil {
+		return Result{}, err
+	}
 	blob := responseBlob(challenge.av[avTimestamp], nonce[:], info)
 	responseKey, err := responseKey(initiator.account, initiator.account.User, initiator.account.Domain)
 	if err != nil {
@@ -432,7 +446,10 @@ func (initiator *Initiator) authenticate(token []byte) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	authenticate := initiator.makeAuthenticate(flags, append(proof, blob...), encryptedKey)
+	authenticate, err := initiator.makeAuthenticate(flags, append(proof, blob...), encryptedKey)
+	if err != nil {
+		return Result{}, err
+	}
 	micOffset := 64
 	if flags&flagVersion != 0 {
 		micOffset += 8
@@ -465,21 +482,37 @@ func (initiator *Initiator) exportKey(baseKey []byte, flags uint32) ([]byte, []b
 	return key, encrypted, nil
 }
 
-func (initiator *Initiator) makeAuthenticate(flags uint32, response, encryptedKey []byte) []byte {
+func (initiator *Initiator) makeAuthenticate(flags uint32, response, encryptedKey []byte) ([]byte, error) {
 	floor := 64 + 16
 	if flags&flagVersion != 0 {
 		floor += 8
 	}
 	domain, user := encodeUTF16(initiator.account.Domain), encodeUTF16(initiator.account.User)
-	data := newNTLM(3, floor+24+len(response)+len(domain)+len(user)+len(encryptedKey))
+	size := floor + 24 + len(response) + len(domain) + len(user) + len(encryptedKey)
+	if size > maxTokenSize {
+		return nil, errToken
+	}
+	data := newNTLM(3, size)
 	littleEndian.PutUint32(data[60:], flags)
 	if flags&flagVersion != 0 {
 		copy(data[64:72], ntlmVersion)
 	}
-	start := putField(data, 12, floor, make([]byte, 24))
-	start = putField(data, 20, start, response)
-	start = putField(data, 28, start, domain)
-	start = putField(data, 36, start, user)
-	putField(data, 52, start, encryptedKey)
-	return data
+	start := floor
+	for _, payload := range []struct {
+		value  []byte
+		offset int
+	}{
+		{offset: 12, value: make([]byte, 24)},
+		{offset: 20, value: response},
+		{offset: 28, value: domain},
+		{offset: 36, value: user},
+		{offset: 52, value: encryptedKey},
+	} {
+		var err error
+		start, err = putField(data, payload.offset, start, payload.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return data, nil
 }

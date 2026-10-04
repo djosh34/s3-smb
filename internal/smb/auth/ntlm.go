@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"math"
 	"unicode/utf16"
 	"unicode/utf8"
 )
@@ -28,9 +29,9 @@ const (
 	flagKeyExch    uint32 = 1 << 30
 	flag56         uint32 = 1 << 31
 
-	requiredFlags = flagUnicode | flagNTLM | flagExtended | flagSign | flag128
-	offeredFlags  = requiredFlags | flagTarget | flagAlwaysSign | flagTargetInfo | flagVersion | flagKeyExch | flag56
-	securityFlags = requiredFlags | flagSeal | flagVersion | flagKeyExch | flag56
+	requiredFlags = flagUnicode | flagNTLM | flagExtended | flagSign
+	offeredFlags  = requiredFlags | flagTarget | flagAlwaysSign | flagTargetInfo | flagVersion | flagKeyExch | flag128 | flag56
+	securityFlags = requiredFlags | flagSeal | flagVersion | flagKeyExch | flag128 | flag56
 
 	avEnd       uint16 = 0
 	avComputer  uint16 = 1
@@ -59,7 +60,7 @@ type ntlmMessage struct {
 // field reads a security buffer with widened offset arithmetic. Zero-length
 // fields do not reference a buffer. MaxLen is ignored as MS-NLMP requires.
 func field(data []byte, offset, floor int) ([]byte, error) {
-	if offset < 0 || offset > len(data)-8 {
+	if offset < 0 || floor < 0 || offset > len(data)-8 {
 		return nil, errToken
 	}
 	length := uint64(littleEndian.Uint16(data[offset:]))
@@ -71,7 +72,7 @@ func field(data []byte, offset, floor int) ([]byte, error) {
 	if start < uint64(floor) || end > uint64(len(data)) {
 		return nil, errToken
 	}
-	return data[int(start):int(end)], nil
+	return data[start:end], nil
 }
 
 func decodeNTLM(data []byte) (ntlmMessage, error) {
@@ -103,17 +104,44 @@ func decodeNTLM(data []byte) (ntlmMessage, error) {
 		return result, errToken
 	}
 	result.micOffset = floor
-	for _, offset := range offsets {
-		value, err := field(data, offset, floor)
-		if err != nil {
-			return result, err
-		}
-		result.fields = append(result.fields, value)
+	fields, err := readNTLMFields(data, offsets, floor)
+	if err != nil {
+		return result, err
 	}
+	result.fields = fields
 	if err := validateNTLMFields(&result); err != nil {
 		return result, err
 	}
+	if result.kind == 3 && len(result.av[avFlags]) == 4 && littleEndian.Uint32(result.av[avFlags])&micPresent != 0 {
+		if len(data) < floor+16 {
+			return result, errToken
+		}
+		if _, err := readNTLMFields(data, offsets, floor+16); err != nil {
+			return result, err
+		}
+	}
 	return result, nil
+}
+
+func readNTLMFields(data []byte, offsets []int, floor int) ([][]byte, error) {
+	values := make([][]byte, 0, len(offsets))
+	for _, offset := range offsets {
+		value, err := field(data, offset, floor)
+		if err != nil {
+			return nil, err
+		}
+		if len(value) != 0 {
+			start := uint64(littleEndian.Uint32(data[offset+4:]))
+			for earlier, previous := range values {
+				previousStart := uint64(littleEndian.Uint32(data[offsets[earlier]+4:]))
+				if len(previous) != 0 && start < previousStart+uint64(len(previous)) && previousStart < start+uint64(len(value)) {
+					return nil, errToken
+				}
+			}
+		}
+		values = append(values, value)
+	}
+	return values, nil
 }
 
 func validateNTLMFields(result *ntlmMessage) error {
@@ -129,6 +157,12 @@ func validateNTLMFields(result *ntlmMessage) error {
 		result.av = av
 		return err
 	case 3:
+		if len(result.fields[0]) != 0 && len(result.fields[0]) != 24 {
+			return errToken
+		}
+		if (result.flags&flagKeyExch != 0 && len(result.fields[5]) != 16) || (result.flags&flagKeyExch == 0 && len(result.fields[5]) != 0) {
+			return errToken
+		}
 		for _, value := range result.fields[2:5] {
 			if _, err := decodeUTF16(value); err != nil {
 				return err
@@ -251,19 +285,44 @@ func validateText(value string) error {
 	return nil
 }
 
-func putField(data []byte, offset, start int, value []byte) int {
-	littleEndian.PutUint16(data[offset:], uint16(len(value)))
-	littleEndian.PutUint16(data[offset+2:], uint16(len(value)))
+func putField(data []byte, offset, start int, value []byte) (int, error) {
+	size := len(value)
+	if offset < 0 || offset > len(data)-8 || start < 0 || start > math.MaxUint32 || start > len(data) || size > len(data)-start || size > math.MaxUint16 {
+		return 0, errToken
+	}
+	littleEndian.PutUint16(data[offset:], uint16(size))
+	littleEndian.PutUint16(data[offset+2:], uint16(size))
 	littleEndian.PutUint32(data[offset+4:], uint32(start))
-	return start + copy(data[start:], value)
+	return start + copy(data[start:], value), nil
 }
 
-func appendAV(data []byte, id uint16, value []byte) []byte {
+func appendAV(data []byte, id uint16, value []byte) ([]byte, error) {
+	size := len(value)
+	if size > math.MaxUint16 || len(data)+4+size > maxTokenSize {
+		return nil, errToken
+	}
 	var header [4]byte
 	littleEndian.PutUint16(header[:], id)
-	littleEndian.PutUint16(header[2:], uint16(len(value)))
+	littleEndian.PutUint16(header[2:], uint16(size))
 	data = append(data, header[:]...)
-	return append(data, value...)
+	return append(data, value...), nil
+}
+
+type avPair struct {
+	value []byte
+	id    uint16
+}
+
+func encodeAV(pairs []avPair) ([]byte, error) {
+	var data []byte
+	for _, pair := range pairs {
+		var err error
+		data, err = appendAV(data, pair.id, pair.value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return appendAV(data, avEnd, nil)
 }
 
 func newNTLM(kind uint32, size int) []byte {
