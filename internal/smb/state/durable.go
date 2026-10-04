@@ -29,7 +29,7 @@ func (table *Table) closeMatching(match func(Open) bool) []CloseAction {
 	var actions []CloseAction
 	for _, id := range table.openIDs() {
 		open := table.opens[id]
-		if match(*open) {
+		if match(open.Open) {
 			actions = append(actions, table.closeOpen(open))
 		}
 	}
@@ -46,18 +46,13 @@ func (table *Table) Disconnect(sessionID uint64) []CloseAction {
 	}
 	table.abortMatching(func(binding Binding) bool { return binding.SessionID == sessionID })
 	now := table.now()
-	return table.closeMatching(func(open Open) bool {
-		if open.Binding.SessionID != sessionID {
-			return false
+	for _, open := range table.opens {
+		if open.Binding.SessionID == sessionID && open.Durable {
+			open.Binding = Binding{}
+			open.DurableDeadline = now.Add(open.DurableTimeout)
 		}
-		if open.Durable {
-			entry := table.opens[open.ID.Persistent]
-			entry.Binding = Binding{}
-			entry.DurableDeadline = now.Add(open.DurableTimeout)
-			return false
-		}
-		return true
-	})
+	}
+	return table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
 }
 
 // CloseSession closes attached session opens, including durable opens, on LOGOFF.
@@ -102,7 +97,7 @@ func (table *Table) Reconnect(request ReconnectRequest) (Open, smb.Status) {
 	open.ID.Volatile = table.nextVolatile
 	open.Binding = request.Binding
 	open.DurableDeadline = time.Time{}
-	return *open, smb.StatusSuccess
+	return open.Open, smb.StatusSuccess
 }
 
 // Expire closes detached opens at their granted deadline, returning cleanup.

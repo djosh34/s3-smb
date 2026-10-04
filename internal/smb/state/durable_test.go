@@ -43,12 +43,13 @@ func reconnectRequest(open state.Open) state.ReconnectRequest {
 func TestDisconnectAndReconnectPreserveDurableState(t *testing.T) {
 	table, now := clockTable(t)
 	req := durableRequest(1, 2)
-	req.SharingIntent = state.RightWrite
+	req.SharingIntent = state.RightWrite | state.RightDelete
 	req.GrantedAccess |= 0x10000
 	grant := durableGrant(req)
 	grant.DeleteOnClose, grant.DeleteName = true, deleteName("")
 	open := commit(t, table, req, grant)
 	ordinary := commit(t, table, request(2), state.Grant{})
+	statusIs(t, table.SetDelete(open.ID, binding, grant.DeleteName, true), smb.StatusSuccess)
 	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Offset: 10, Length: 10, Exclusive: true}}, false), smb.StatusSuccess)
 	actions := table.Disconnect(binding.SessionID)
 	if len(actions) != 1 || actions[0].Handle != ordinary.Handle || actions[0].Remove {

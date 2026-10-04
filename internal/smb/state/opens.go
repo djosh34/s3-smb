@@ -21,7 +21,7 @@ func New(now func() time.Time) (*Table, error) {
 	}
 	return &Table{
 		now:          now,
-		opens:        make(map[uint64]*Open),
+		opens:        make(map[uint64]*openEntry),
 		reservations: make(map[Reservation]OpenRequest),
 		objects:      make(map[smb.ObjectKey]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
@@ -41,6 +41,19 @@ func openRequest(open Open) OpenRequest {
 	}
 }
 
+func sharingIntent(request OpenRequest) OpenRequest {
+	if request.GrantedAccess&0x00000021 != 0 { // FILE_READ_DATA or FILE_EXECUTE.
+		request.SharingIntent |= RightRead
+	}
+	if request.GrantedAccess&0x00000006 != 0 { // FILE_WRITE_DATA or FILE_APPEND_DATA.
+		request.SharingIntent |= RightWrite
+	}
+	if request.GrantedAccess&deleteAccess != 0 {
+		request.SharingIntent |= RightDelete
+	}
+	return request
+}
+
 func validBinding(binding Binding) bool {
 	return binding.SessionID != 0 && binding.TreeID != 0
 }
@@ -49,13 +62,15 @@ func availableID(id uint64) bool {
 	return id < math.MaxUint64-1
 }
 
-// Reserve checks sharing and deletion before acquiring a CREATE reservation.
+// Reserve adds the granted mask's minimum sharing intent, then checks sharing
+// and deletion before acquiring a CREATE reservation.
 func (table *Table) Reserve(request OpenRequest) (Reservation, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	if request.Object.Inode == 0 || !validBinding(request.Binding) || request.SharingIntent & ^allRights != 0 || Rights(request.Sharing) & ^allRights != 0 {
 		return 0, smb.StatusInvalidParameter
 	}
+	request = sharingIntent(request)
 	if request.CreateGUID != (GUID{}) {
 		if _, exists := table.creates[identity(request)]; exists {
 			return 0, smb.StatusDuplicateObjectID
@@ -96,7 +111,7 @@ func sharingCompatible(left, right OpenRequest) bool {
 
 func (table *Table) sharingAllowed(request OpenRequest, except uint64, reservation Reservation) bool {
 	for id, open := range table.opens {
-		if id != except && !sharingCompatible(request, openRequest(*open)) {
+		if id != except && !sharingCompatible(request, openRequest(open.Open)) {
 			return false
 		}
 	}
@@ -173,15 +188,9 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		table.commitLease(request.Object, grant.Lease)
 	}
 	table.releaseReservation(reservation, request)
-	table.opens[open.ID.Persistent] = &open
+	table.opens[open.ID.Persistent] = &openEntry{Open: open, deleteName: grant.DeleteName}
 	record := table.object(request.Object)
 	record.Opens = append(record.Opens, open.ID.Persistent)
-	if grant.DeleteOnClose {
-		if !record.DeletePending {
-			record.DeleteName = grant.DeleteName
-		}
-		record.DeletePending = true
-	}
 	if request.CreateGUID != (GUID{}) {
 		table.creates[identity(request)] = createEntry{persistent: open.ID.Persistent}
 	}
@@ -224,18 +233,19 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 func (table *Table) Replay(request OpenRequest) (Open, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
+	request = sharingIntent(request)
 	entry, exists := table.creates[identity(request)]
 	if !exists || entry.persistent == 0 {
 		return Open{}, smb.StatusObjectNameNotFound
 	}
 	open := table.opens[entry.persistent]
-	if openRequest(*open) != request || !validBinding(request.Binding) {
+	if openRequest(open.Open) != request || !validBinding(request.Binding) {
 		return Open{}, smb.StatusInvalidParameter
 	}
-	return *open, smb.StatusSuccess
+	return open.Open, smb.StatusSuccess
 }
 
-func (table *Table) find(id FileID, binding Binding) (*Open, smb.Status) {
+func (table *Table) find(id FileID, binding Binding) (*openEntry, smb.Status) {
 	open := table.opens[id.Persistent]
 	if open == nil || open.ID != id || open.Binding != binding || !validBinding(binding) {
 		return nil, smb.StatusFileClosed
@@ -251,7 +261,7 @@ func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status) {
 	if status != smb.StatusSuccess {
 		return Open{}, status
 	}
-	return *open, smb.StatusSuccess
+	return open.Open, smb.StatusSuccess
 }
 
 // SetDirectory saves a cursor, reusing the search pattern on continuation.
@@ -285,7 +295,7 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 		if !validName(name, open.Object) {
 			return smb.StatusInvalidParameter
 		}
-		request := openRequest(*open)
+		request := openRequest(open.Open)
 		request.SharingIntent |= RightDelete
 		if !table.sharingAllowed(request, id.Persistent, 0) {
 			return smb.StatusSharingViolation
@@ -295,7 +305,7 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 	if pending && !record.DeletePending {
 		record.DeleteName = name
 	}
-	open.DeleteOnClose = pending
+	open.dispositionPending = pending
 	table.refreshDelete(record)
 	return smb.StatusSuccess
 }
@@ -303,7 +313,7 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 func (table *Table) refreshDelete(record *objectEntry) {
 	record.DeletePending = record.deleteCommitted
 	for _, id := range record.Opens {
-		if table.opens[id].DeleteOnClose {
+		if table.opens[id].dispositionPending {
 			record.DeletePending = true
 		}
 	}
@@ -336,16 +346,19 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 	return table.closeOpen(open), smb.StatusSuccess
 }
 
-func (table *Table) closeOpen(open *Open) CloseAction {
+func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
 	action := CloseAction{Handle: open.Handle, Object: key}
-	if open.DeleteOnClose {
+	if open.DeleteOnClose || open.dispositionPending {
+		if !record.DeletePending {
+			record.DeleteName = open.deleteName
+		}
 		record.deleteCommitted = true
 	}
 	delete(table.opens, open.ID.Persistent)
 	if open.CreateGUID != (GUID{}) {
-		delete(table.creates, identity(openRequest(*open)))
+		delete(table.creates, identity(openRequest(open.Open)))
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
 	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })

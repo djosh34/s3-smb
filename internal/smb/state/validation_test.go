@@ -95,17 +95,15 @@ func TestStaleBindingCannotChangeAnOpen(t *testing.T) {
 	}
 }
 
-func TestCommitDeleteOnCloseChecksSharing(t *testing.T) {
+func TestDeleteGrantChecksSharingBeforeReservation(t *testing.T) {
 	table := newTable(t)
 	deny := requestWithStream(1, "xattr")
 	deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	commit(t, table, deny, state.Grant{})
 	req := request(1)
 	req.GrantedAccess = 0x10000
-	token := reserve(t, table, req)
-	_, status := table.Commit(token, state.Grant{Handle: &handle{key: req.Object}, DeleteOnClose: true, DeleteName: deleteName("")})
+	_, status := table.Reserve(req)
 	statusIs(t, status, smb.StatusSharingViolation)
-	statusIs(t, table.Abort(token), smb.StatusSuccess)
 	reserve(t, table, request(1))
 }
 

@@ -57,7 +57,9 @@ type ShareMode Rights
 // close, expiry and shutdown release them. CloseSession and CloseTree also close
 // durable opens on logoff and tree disconnect. A transport drop does not.
 // GrantedAccess retains the full expanded SMB mask through replay and reconnect.
-// SharingIntent is only the read, write and delete intent used for share checks.
+// SharingIntent includes the minimum read, write and delete intent from the
+// granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
+// is tracked separately and makes the object delete-pending at once.
 // This table is never persisted across restart.
 type Open struct {
 	DurableDeadline  time.Time
@@ -135,6 +137,8 @@ type ObjectRecord struct {
 // creates an identity, then reserves it before releasing that guard. For an
 // existing file Reserve precedes truncate, supersede or any other mutation.
 // GrantedAccess includes append and metadata rights, not just SharingIntent.
+// Reserve adds the mask's minimum sharing intent; callers may add delete for
+// supersede even when the mask does not contain DELETE.
 // CreateParameters is the server's SHA-256 of canonical CREATE parameters,
 // including name, disposition, options and requested contexts, for replay checks.
 type OpenRequest struct {
@@ -218,7 +222,7 @@ type Break struct {
 // The zero value is not usable; callers must use New.
 type Table struct {
 	now             func() time.Time
-	opens           map[uint64]*Open
+	opens           map[uint64]*openEntry
 	reservations    map[Reservation]OpenRequest
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
@@ -227,6 +231,12 @@ type Table struct {
 	nextReservation uint64
 	nextPersistent  uint64
 	nextVolatile    uint64
+}
+
+type openEntry struct {
+	deleteName smb.Name
+	Open
+	dispositionPending bool
 }
 
 type objectEntry struct {

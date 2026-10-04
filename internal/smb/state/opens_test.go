@@ -150,14 +150,47 @@ func TestFullGrantedAccessSurvivesReplay(t *testing.T) {
 	}
 }
 
-func TestMetadataOnlyDoesNotAcquireReadSharing(t *testing.T) {
+func TestSharingIntentComesFromGrantedAccess(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		mask uint32
+		deny state.Rights
+		want smb.Status
+	}{
+		{name: "metadata only", mask: 0x00120080, deny: state.RightRead, want: smb.StatusSuccess},
+		{name: "read data", mask: 0x00120089, deny: state.RightRead, want: smb.StatusSharingViolation},
+		{name: "execute", mask: 0x20, deny: state.RightRead, want: smb.StatusSharingViolation},
+		{name: "write data", mask: 0x00120102, deny: state.RightWrite, want: smb.StatusSharingViolation},
+		{name: "append data", mask: 0x00120104, deny: state.RightWrite, want: smb.StatusSharingViolation},
+		{name: "delete", mask: 0x10000, deny: state.RightDelete, want: smb.StatusSharingViolation},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			table := newTable(t)
+			deny := request(1)
+			deny.Sharing = state.ShareMode(state.Rights(shareAll) & ^test.deny)
+			commit(t, table, deny, state.Grant{})
+			req := request(1)
+			req.GrantedAccess = test.mask
+			_, status := table.Reserve(req)
+			statusIs(t, status, test.want)
+		})
+	}
+}
+
+func TestDerivedIntentIsStoredAndReplayed(t *testing.T) {
 	table := newTable(t)
-	denyRead := request(1)
-	denyRead.Sharing = state.ShareMode(state.RightWrite | state.RightDelete)
-	commit(t, table, denyRead, state.Grant{})
-	metadata := request(1)
-	metadata.GrantedAccess = 0x80
-	commit(t, table, metadata, state.Grant{})
+	req := request(1)
+	req.CreateGUID = state.GUID{2}
+	req.GrantedAccess = 0x00120104
+	open := commit(t, table, req, state.Grant{})
+	if open.SharingIntent != state.RightWrite || open.GrantedAccess != req.GrantedAccess {
+		t.Fatalf("normalized grant: %+v", open)
+	}
+	found, status := table.Replay(req)
+	statusIs(t, status, smb.StatusSuccess)
+	if found != open {
+		t.Fatal("replay changed normalized intent")
+	}
 }
 
 func TestFindAndDirectorySnapshots(t *testing.T) {

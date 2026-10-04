@@ -53,9 +53,43 @@ func TestDeletePendingAndClearingIndependentIntent(t *testing.T) {
 	commit(t, table, request(1), state.Grant{})
 }
 
-func TestClearingLastDeleteIntentAllowsOpens(t *testing.T) {
+func TestCreateDeleteOnCloseBecomesPendingOnlyAtClose(t *testing.T) {
+	table := newTable(t)
+	first := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
+	second := commit(t, table, request(1), state.Grant{})
+	denyDelete := request(1)
+	denyDelete.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
+	_, status := table.Reserve(denyDelete)
+	statusIs(t, status, smb.StatusSharingViolation)
+	if action := closeOpen(t, table, first); action.Remove {
+		t.Fatal("CREATE delete-on-close removed a live file")
+	}
+	_, status = table.Reserve(request(1))
+	statusIs(t, status, smb.StatusDeletePending)
+	action := closeOpen(t, table, second)
+	if !action.Remove || action.Name != deleteName("") {
+		t.Fatalf("CREATE delete-on-close cleanup: %+v", action)
+	}
+}
+
+func TestClearingDispositionDoesNotClearCreateDeleteOnClose(t *testing.T) {
 	table := newTable(t)
 	open := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusSuccess)
+	_, status := table.Reserve(request(1))
+	statusIs(t, status, smb.StatusDeletePending)
+	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{}, false), smb.StatusSuccess)
+	other := commit(t, table, request(1), state.Grant{})
+	closeOpen(t, table, other)
+	if action := closeOpen(t, table, open); !action.Remove || action.Name != deleteName("") {
+		t.Fatalf("clearing disposition lost CREATE deletion: %+v", action)
+	}
+}
+
+func TestClearingLastDeleteIntentAllowsOpens(t *testing.T) {
+	table := newTable(t)
+	open := commit(t, table, deleteRequest(1, ""), state.Grant{})
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusSuccess)
 	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{}, false), smb.StatusSuccess)
 	commit(t, table, request(1), state.Grant{})
 	if action := closeOpen(t, table, open); action.Remove {
@@ -157,10 +191,11 @@ func TestDeleteRequiresAccessAndCompatibleSharing(t *testing.T) {
 	open := commit(t, table, req, state.Grant{})
 	deny := requestWithStream(2, "xattr")
 	deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
-	reserve(t, table, deny)
-	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusSharingViolation)
+	_, status := table.Reserve(deny)
+	statusIs(t, status, smb.StatusSharingViolation)
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusSuccess)
 	token := reserve(t, table, request(3))
-	_, status := table.Commit(token, state.Grant{Handle: &handle{key: smb.ObjectKey{Inode: 3}}, DeleteOnClose: true, DeleteName: deleteName("")})
+	_, status = table.Commit(token, state.Grant{Handle: &handle{key: smb.ObjectKey{Inode: 3}}, DeleteOnClose: true, DeleteName: deleteName("")})
 	statusIs(t, status, smb.StatusAccessDenied)
 	statusIs(t, table.Abort(token), smb.StatusSuccess)
 }
