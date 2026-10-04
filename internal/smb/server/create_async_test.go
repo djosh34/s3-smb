@@ -150,6 +150,32 @@ func sendCreateTestBreak(request RequestContext, key [16]byte) error {
 	return connection.send([]wire.Message{{Header: wire.Header{Command: wire.OplockBreak, MessageID: ^uint64(0), SessionID: request.Session.SessionID, Flags: wire.FlagResponse}, Body: body}})
 }
 
+func TestLocalCreateGetsOneSynchronousReply(t *testing.T) {
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := wire.FileID{Persistent: 30, Volatile: 40}
+	result := createTestReply(t, id)
+	server.handlers[wire.Create] = func(context.Context, RequestContext, wire.Message) (reply, error) {
+		return result, nil
+	}
+	client, ctx := corePipeClient(t, server)
+	exchange(ctx, t, client, negotiateMessage(t, 1))
+	request := asyncMessage(t, wire.Create, 1)
+	responses := exchange(ctx, t, client, request)
+	if len(responses) != 1 {
+		t.Fatalf("local CREATE replies: %+v", responses)
+	}
+	response := responses[0]
+	header := response.Header
+	if header.Command != wire.Create || header.Status != smb.StatusSuccess || header.Flags&wire.FlagAsync != 0 || header.MessageID != 1 || header.SessionID != 77 || header.TreeID != 12 || header.Credit != 16 || header.CreditCharge != 1 {
+		t.Fatalf("local CREATE identity/credits: %+v", header)
+	}
+	assertCreatedFileID(t, response, id)
+	assertCreateTestEcho(ctx, t, client, smbtest.Session{SessionID: 77}, 2)
+}
+
 func createTestReply(t *testing.T, id wire.FileID) reply {
 	t.Helper()
 	body, err := wire.EncodeCreateResponse(wire.CreateResponse{ID: id})
