@@ -1,0 +1,6 @@
+# Staged M4 selection, not the default M2/M3 list or the M5 selection.
+# Pinned Samba 4.17.12-Debian. Proof and remaining blockers: smbtorture-m4.md.
+# These three IDs passed on PR #415 at bc71cfdef9ca013192b80ff1c741a3e9ff177aa1.
+smb2.sharemode.sharemode-access.sharemode-access
+smb2.sharemode.access-sharemode.access-sharemode
+smb2.create.multi.multi
