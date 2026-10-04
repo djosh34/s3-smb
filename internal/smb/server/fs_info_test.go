@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
 	"testing"
 
@@ -173,6 +175,17 @@ func TestFilesystemVolumeOutputLength(t *testing.T) {
 	}
 }
 
+// This wrapper injects only a StatFS fault. All object operations use the real adapter.
+type statFSFaultStorage struct {
+	smb.Storage
+	err error
+}
+
+func (storage statFSFaultStorage) StatFS(context.Context) (smb.Space, error) {
+	// Nonzero data on failure must never reach the reply.
+	return smb.Space{Capacity: 1 << 40, Free: 1 << 39, Available: 1 << 38}, storage.err
+}
+
 func TestFilesystemStatFSError(t *testing.T) {
 	storage := newFilesMetaStorage(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -181,6 +194,20 @@ func TestFilesystemStatFSError(t *testing.T) {
 		data, status := queryFilesystemInfo(ctx, RequestContext{Storage: storage}, uint8(class), 1024)
 		if status != smb.StatusCancelled || data != nil {
 			t.Fatalf("class %d: data/status = %x/%x", class, data, status)
+		}
+		for _, fault := range []struct {
+			err    error
+			status smb.Status
+		}{
+			{fmt.Errorf("metadata statfs: %w", smb.ErrIO), smb.StatusIODeviceError},
+			{context.DeadlineExceeded, smb.StatusIOTimeout},
+			{errors.New("unknown backend failure"), smb.StatusInternalError},
+		} {
+			request := RequestContext{Storage: statFSFaultStorage{Storage: storage, err: fault.err}}
+			data, status := queryFilesystemInfo(t.Context(), request, uint8(class), 1024)
+			if status != fault.status || data != nil {
+				t.Fatalf("class %d error %v: data/status = %x/%x, want nil/%x", class, fault.err, data, status, fault.status)
+			}
 		}
 	}
 }
