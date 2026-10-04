@@ -22,14 +22,13 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
-	storage := fuzzStorage(f)
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		// Bound total work as well as individual frame allocations.
 		if len(stream) > 64<<10 {
 			t.Skip("stream exceeds corpus limit")
 		}
 		options := testOptions(t)
-		options.Storage = storage
+		options.Storage = fuzzStorage(t)
 		server, err := New(options)
 		if err != nil {
 			t.Fatal(err)

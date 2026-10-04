@@ -66,11 +66,20 @@ func serveLateAsyncPipe(t *testing.T, server *Server, local, remote net.Conn) *l
 		t.Fatal(errors.Join(err, local.Close(), remote.Close()))
 	}
 	ctx, stop := context.WithTimeout(t.Context(), 3*time.Second)
-	// Keep ServeConn alive independently of test cleanup cancellation.
+	// Keep the connection alive independently of test cleanup cancellation.
 	serverCtx := context.WithoutCancel(t.Context())
+	connCtx, cancel := context.WithCancel(serverCtx)
+	connection, err := server.addConnection(connCtx, cancel, local)
+	if err != nil {
+		cancel()
+		stop()
+		t.Fatal(errors.Join(err, client.Close(), local.Close()))
+	}
+	// These controlled handlers isolate async plumbing, not authentication.
+	connection.sessions[77] = &sessionEntry{identity: Session{SessionID: 77}, active: true, trees: map[uint32]Tree{12: {TreeID: 12, Share: "backup"}}}
 	peer := &lateAsyncPeer{client: client, ctx: ctx, done: make(chan struct{})}
 	go func() {
-		peer.err = server.ServeConn(serverCtx, local)
+		peer.err = server.runConnection(connCtx, connection)
 		close(peer.done)
 	}()
 	t.Cleanup(func() {
@@ -137,7 +146,7 @@ func testLateAsyncShutdown(t *testing.T, deadline bool) {
 	}
 	release := newAsyncGate()
 	canceled := make(chan struct{})
-	server.handlers[wire.Read] = func(ctx context.Context, _ wire.Message) (reply, error) {
+	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		<-ctx.Done()
 		close(canceled)
 		<-release.done
@@ -205,7 +214,7 @@ func TestLateAsyncCompletionAfterConnectionClose(t *testing.T) {
 	}
 	release := newAsyncGate()
 	canceled := make(chan struct{})
-	server.handlers[wire.Read] = func(ctx context.Context, _ wire.Message) (reply, error) {
+	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		<-ctx.Done()
 		close(canceled)
 		<-release.done // Deliberately ignore cancellation until the test releases work.
