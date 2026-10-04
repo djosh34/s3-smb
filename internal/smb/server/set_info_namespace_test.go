@@ -160,16 +160,26 @@ func (f *namespaceClient) name(t *testing.T, path string, inode smb.Inode) {
 	}
 }
 
-// Until the CLOSE handler lands, exercise its guarded close helper.
 func (f *namespaceClient) close(t *testing.T, open state.Open) {
 	t.Helper()
-	request := RequestContext{
-		server: f.server, Storage: f.server.options.Storage, Opens: f.server.options.State,
-		Session: Session{SessionID: f.session.SessionID}, Tree: Tree{TreeID: f.session.TreeID},
-	}
-	if err := closeOpen(f.ctx, request, open.ID); err != nil {
+	body, err := wire.EncodeCloseRequest(wire.CloseRequest{ID: wire.FileID(open.ID)})
+	if err != nil {
 		t.Fatal(err)
 	}
+	response := exchange(f.ctx, t, f.client, wire.Message{Header: wire.Header{
+		Command: wire.Close, MessageID: f.nextID, SessionID: f.session.SessionID,
+		TreeID: f.session.TreeID, CreditCharge: 1, Credit: 1,
+	}, Body: body})
+	f.nextID++
+	if len(response) != 1 {
+		t.Fatalf("CLOSE replies = %d", len(response))
+	}
+	namespaceStatus(t, response[0].Header.Status, smb.StatusSuccess)
+	if _, err := wire.DecodeCloseResponse(response[0]); err != nil {
+		t.Fatal(err)
+	}
+	_, status := f.server.options.State.Find(open.ID, f.binding())
+	namespaceStatus(t, status, smb.StatusFileClosed)
 }
 
 func TestBaseRenameAndDeletePreserveUnrelatedData(t *testing.T) {
@@ -231,11 +241,7 @@ func TestRenameReplacementRules(t *testing.T) {
 			dest := f.open(t, "destination", smb.KindFile, 3, 7)
 			f.write(t, dest, "destination bytes")
 			if test.dest != "open" {
-				action, status := f.server.options.State.Close(dest.ID, f.binding())
-				namespaceStatus(t, status, smb.StatusSuccess)
-				if err := f.server.cleanup(f.ctx, []state.CloseAction{action}); err != nil {
-					t.Fatal(err)
-				}
+				f.close(t, dest)
 			}
 			if test.dest == "stream" {
 				f.open(t, "destination:resource", smb.KindFile, 3, 7)

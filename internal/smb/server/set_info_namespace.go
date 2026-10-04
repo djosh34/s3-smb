@@ -43,7 +43,10 @@ func setRenameInfo(ctx context.Context, request RequestContext, open state.Open,
 		if source.Name.Parent == 0 || destination.Name.Parent == 0 {
 			return smb.StatusAccessDenied
 		}
-		unlock := lockParents(request, source.Name.Parent, destination.Name.Parent)
+		unlock, err := lockParents(ctx, request, source.Name.Parent, destination.Name.Parent)
+		if err != nil {
+			return smb.StatusFromError(err)
+		}
 		status, retry := renameUnderGuard(ctx, request, open, sourcePath, path, source, destination, info.ReplaceIfExists)
 		unlock()
 		if !retry {
@@ -118,7 +121,10 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 			return smb.StatusAccessDenied
 		}
 		// The inode guard also keeps child CREATE out of an emptiness check.
-		unlock := lockParents(request, discovered.Name.Parent, open.Object.Inode)
+		unlock, err := lockParents(ctx, request, discovered.Name.Parent, open.Object.Inode)
+		if err != nil {
+			return smb.StatusFromError(err)
+		}
 		status, retry := dispositionUnderGuard(ctx, request, open, path, discovered)
 		unlock()
 		if !retry {
