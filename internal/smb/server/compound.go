@@ -21,8 +21,8 @@ func (previous compoundState) after(result reply) compoundState {
 	return previous
 }
 
-// The server does not decode handler bodies. These commands need a FileId;
-// CREATE does not. MS-SMB2 3.3.5.2.7.2 requires the failed predecessor's status.
+// Dispatch does not read FileIds from bodies. These commands need a FileId;
+// CREATE does not. Related members inherit error-severity predecessor statuses.
 func needsFileID(command wire.Command) bool {
 	switch uint16(command) {
 	case uint16(wire.Close), uint16(wire.Read), uint16(wire.Write), uint16(wire.Flush), uint16(wire.Lock), uint16(wire.IOCTL),

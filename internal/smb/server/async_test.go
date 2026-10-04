@@ -22,8 +22,6 @@ func asyncMessage(t *testing.T, command wire.Command, id uint64) wire.Message {
 		body, err = wire.EncodeWriteRequest(wire.WriteRequest{Data: []byte("data")})
 	case uint16(wire.Flush):
 		body, err = wire.EncodeFlushRequest(wire.FlushRequest{})
-	case uint16(wire.SetInfo):
-		body, err = wire.EncodeSetInfoRequest(wire.SetInfoRequest{InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileEndOfFile), Input: make([]byte, 8)})
 	default:
 		t.Fatalf("not an async command: %d", command)
 	}

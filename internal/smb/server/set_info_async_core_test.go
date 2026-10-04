@@ -27,7 +27,7 @@ func TestPendingSetInfoAllowsEcho(t *testing.T) {
 					server.options.Encryption = AllowPlaintext
 				}
 				client, ctx, session := loginClient(t, server, cipher, smb.SigningGMAC)
-				request := asyncMessage(t, wire.SetInfo, session.NextMessageID)
+				request := setInfoAsyncMessage(t, session.NextMessageID)
 				request.Header.SessionID, request.Header.TreeID = session.SessionID, session.TreeID
 				if err := client.Send(ctx, []wire.Message{request}); err != nil {
 					t.Fatal(err)
@@ -63,7 +63,7 @@ func TestLocalSetInfoGetsOneSynchronousReply(t *testing.T) {
 	}
 	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 1))
-	request := asyncMessage(t, wire.SetInfo, 1)
+	request := setInfoAsyncMessage(t, 1)
 	if err := client.Send(ctx, []wire.Message{request}); err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +84,7 @@ func TestCancelAffectsOnlyItsPendingSetInfo(t *testing.T) {
 			server, release := controlledAsync(t, wire.SetInfo, setInfoTestReply(t), nil)
 			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 2))
-			first, second := asyncMessage(t, wire.SetInfo, 1), asyncMessage(t, wire.SetInfo, 2)
+			first, second := setInfoAsyncMessage(t, 1), setInfoAsyncMessage(t, 2)
 			if err := client.Send(ctx, []wire.Message{first}); err != nil {
 				t.Fatal(err)
 			}
@@ -123,6 +123,15 @@ func TestCancelAffectsOnlyItsPendingSetInfo(t *testing.T) {
 			assertSetInfoEcho(ctx, t, client, session, 4)
 		})
 	}
+}
+
+func setInfoAsyncMessage(t *testing.T, id uint64) wire.Message {
+	t.Helper()
+	body, err := wire.EncodeSetInfoRequest(wire.SetInfoRequest{InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileEndOfFile), Input: make([]byte, 8)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire.Message{Header: wire.Header{Command: wire.SetInfo, MessageID: id, SessionID: 77, TreeID: 12, CreditCharge: 1, Credit: 16}, Body: body}
 }
 
 func setInfoTestReply(t *testing.T) reply {
