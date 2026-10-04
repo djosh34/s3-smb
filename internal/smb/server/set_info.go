@@ -77,7 +77,7 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		}
 	}
 	if info.Attributes != 0 {
-		attributes := normalizeFileAttributes(info.Attributes)
+		attributes := normalizeFileAttributes(info.Attributes, open.Directory)
 		change.Attributes = &attributes
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, change))

@@ -47,25 +47,28 @@ func TestFilesystemClientSettableAttributes(t *testing.T) {
 	type attributeCase struct {
 		attributes uint32
 		want       uint32
+		options    uint32
 	}
 	cases := []attributeCase{
-		{0x200, 0x80},
-		{0x400, 0x80},
-		{0x800, 0x80},
-		{0x4000, 0x80},
-		{unsupported, 0x80},
-		{unsupported | 0x3127, 0x3127}, // All seven client-settable bits.
+		{0x200, 0x80, 0},
+		{0x400, 0x80, 0},
+		{0x800, 0x80, 0},
+		{0x4000, 0x80, 0},
+		{unsupported, 0x80, 0},
+		{unsupported | 0x3127, 0x3127, 0}, // All seven client-settable bits.
+		{unsupported, 0x10, fileDirectoryFile},
+		{unsupported | 0x3127, 0x3137, fileDirectoryFile},
 	}
 	for _, bit := range []uint32{1, 2, 4, 0x20, 0x100, 0x1000, 0x2000} {
-		cases = append(cases, attributeCase{unsupported | bit, bit})
+		cases = append(cases, attributeCase{unsupported | bit, bit, 0})
 	}
 	for _, test := range cases {
-		t.Run(fmt.Sprintf("%x", test.attributes), func(t *testing.T) {
+		t.Run(fmt.Sprintf("%x_options_%x", test.attributes, test.options), func(t *testing.T) {
 			server := newCapabilityServer(t)
 			client := capabilityConnection(t, server)
 			created := client.create(t, wire.CreateRequest{
 				Name: "attributes", Disposition: fileCreateDisposition, DesiredAccess: fileAllAccess,
-				ShareAccess: 7, FileAttributes: test.attributes,
+				ShareAccess: 7, FileAttributes: test.attributes, Options: test.options,
 			}, smb.StatusSuccess)
 			if created.Attributes != test.want {
 				t.Fatalf("CREATE attributes = %#x, want %#x", created.Attributes, test.want)
@@ -96,6 +99,9 @@ func TestFilesystemClientSettableAttributes(t *testing.T) {
 				want := test.want
 				if attributes == 0x80 {
 					want = 0x80
+					if test.options == fileDirectoryFile {
+						want = 0x10
+					}
 				}
 				assertBasic(want)
 			}
