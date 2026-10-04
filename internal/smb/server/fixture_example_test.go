@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"fmt"
 	"testing"
 	"time"
 
@@ -94,71 +93,6 @@ func TestFixtureSlowS3UploadRepliesAsync(t *testing.T) {
 				t.Fatalf("READ after upload = %d bytes, %#x", len(got), status)
 			}
 		})
-	}
-}
-
-func TestFixtureSetInfoAllocationBelowEOFShrinks(t *testing.T) {
-	for _, allocation := range []uint64{0, 3, 7, 8192} {
-		t.Run(fmt.Sprint(allocation), func(t *testing.T) {
-			client := newTestServer(t).connect(t)
-			id := client.open(t, "file")
-			if status := client.write(t, wire.WriteRequest{ID: id, Data: []byte("1234567")}); status != smb.StatusSuccess {
-				t.Fatalf("WRITE status %#x", status)
-			}
-			input := encode(t, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: allocation})
-			if status := client.setInfo(t, wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileAllocation), Input: input}); status != smb.StatusSuccess {
-				t.Fatalf("SET_INFO status %#x", status)
-			}
-			// Allocation rounds up to whole clusters, so only zero is below EOF.
-			want := uint64(7)
-			if allocation == 0 {
-				want = 0
-			}
-			endOfFile := func() uint64 {
-				data, status := client.queryInfo(t, wire.QueryInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileStandard), OutputLength: 1024})
-				if status != smb.StatusSuccess {
-					t.Fatalf("QUERY_INFO status %#x", status)
-				}
-				standard, err := wire.DecodeFileStandardInformation(data)
-				if err != nil {
-					t.Fatal(err)
-				}
-				return standard.EndOfFile
-			}
-			if got := endOfFile(); got != want {
-				t.Fatalf("EOF = %d, want %d", got, want)
-			}
-			if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusSuccess {
-				t.Fatalf("FLUSH status %#x", status)
-			}
-			if got := endOfFile(); got != want {
-				t.Fatalf("EOF after flush = %d, want %d", got, want)
-			}
-		})
-	}
-}
-
-func TestFixtureDirectoryEmptyRootListsDots(t *testing.T) {
-	client := newTestServer(t).connect(t)
-	root, status := client.create(t, smbtest.CreateOptions{Request: wire.CreateRequest{DesiredAccess: fileGenericRead, ShareAccess: 7, Disposition: fileOpen, Options: fileDirectoryFile}})
-	if status != smb.StatusSuccess {
-		t.Fatalf("root CREATE status %#x", status)
-	}
-	query := wire.QueryDirectoryRequest{ID: root.Reply.ID, Pattern: "*", Flags: directoryReopen, InfoClass: wire.ClassDirectoryNames, OutputLength: 4096}
-	data, status := client.queryDirectory(t, query)
-	if status != smb.StatusSuccess {
-		t.Fatalf("QUERY_DIRECTORY status %#x", status)
-	}
-	entries, err := wire.DecodeDirectoryNamesEntries(data)
-	if err != nil || len(entries) != 2 || entries[0].Name != "." || entries[1].Name != ".." {
-		t.Fatalf("empty root lists %+v, %v", entries, err)
-	}
-	query.Pattern, query.Flags = "", 0
-	if _, status = client.queryDirectory(t, query); status != smb.StatusNoMoreFiles {
-		t.Fatalf("continuation status %#x", status)
-	}
-	if status = client.close(t, root.Reply.ID); status != smb.StatusSuccess {
-		t.Fatalf("CLOSE status %#x", status)
 	}
 }
 

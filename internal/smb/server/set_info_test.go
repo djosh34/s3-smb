@@ -2,367 +2,389 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func TestSetInfoTimestampSentinelsWithoutOverflowIssue111(t *testing.T) {
+// queryClass returns a file information class of id, failing the test unless
+// the query succeeds.
+func queryClass[T any](t *testing.T, client *testClient, id wire.FileID, class wire.FileInfoClass, decoder func([]byte) (T, error)) T {
+	t.Helper()
+	data, status := client.queryInfo(t, wire.QueryInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(class), OutputLength: 4096})
+	if status != smb.StatusSuccess {
+		t.Fatalf("QUERY_INFO class %d: status %#x", class, status)
+	}
+	value, err := decoder(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return value
+}
+
+func basicInfo(t *testing.T, client *testClient, id wire.FileID) wire.FileBasicInformation {
+	t.Helper()
+	return queryClass(t, client, id, wire.ClassFileBasic, wire.DecodeFileBasicInformation)
+}
+
+func endOfFile(t *testing.T, client *testClient, id wire.FileID) uint64 {
+	t.Helper()
+	return queryClass(t, client, id, wire.ClassFileStandard, wire.DecodeFileStandardInformation).EndOfFile
+}
+
+func setBasic(t *testing.T, client *testClient, id wire.FileID, info wire.FileBasicInformation) smb.Status {
+	t.Helper()
+	return setFileInfo(t, client, id, wire.ClassFileBasic, wire.EncodeFileBasicInformation, info)
+}
+
+func setAllocation(t *testing.T, client *testClient, id wire.FileID, size uint64) smb.Status {
+	t.Helper()
+	return setFileInfo(t, client, id, wire.ClassFileAllocation, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: size})
+}
+
+func setEndOfFile(t *testing.T, client *testClient, id wire.FileID, size uint64) smb.Status {
+	t.Helper()
+	return setFileInfo(t, client, id, wire.ClassFileEndOfFile, wire.EncodeFileEndOfFileInformation, wire.FileEndOfFileInformation{EndOfFile: size})
+}
+
+func toFiletime(t *testing.T, value time.Time) wire.Filetime {
+	t.Helper()
+	converted, err := wire.EncodeFiletime(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return converted
+}
+
+// writeFile writes data at the start of id.
+func writeFile(t *testing.T, client *testClient, id wire.FileID, data []byte) {
+	t.Helper()
+	if status := client.write(t, wire.WriteRequest{ID: id, Data: data}); status != smb.StatusSuccess {
+		t.Fatalf("WRITE status %#x", status)
+	}
+}
+
+// Regression for #111: the FILETIME sentinels leave stored times alone and
+// do not stop later writes from updating them.
+func TestSetInfoTimeSentinels(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	explicit := toFiletime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
+	if status := setBasic(t, client, id, wire.FileBasicInformation{Created: explicit, Accessed: explicit, Modified: explicit, Changed: explicit, Attributes: 0x20}); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
+	}
+	before := basicInfo(t, client, id)
 	for _, sentinel := range []wire.Filetime{wire.FiletimeUnchanged, wire.FiletimeSuppress, wire.FiletimeResume} {
-		t.Run(fmt.Sprintf("%016x", sentinel), func(t *testing.T) {
-			f := newSetInfoFixture(t, 0x100)
-			created := time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC)
-			accessed := created.Add(time.Hour)
-			modified := created.Add(2 * time.Hour)
-			changed := created.Add(3 * time.Hour)
-			attributes := uint32(0x20)
-			if err := f.storage.SetAttr(f.ctx, f.open.Object, smb.AttrChange{Created: &created, Accessed: &accessed, Modified: &modified, Changed: &changed, Attributes: &attributes}); err != nil {
-				t.Fatal(err)
+		if status := setBasic(t, client, id, wire.FileBasicInformation{Created: sentinel, Accessed: sentinel, Modified: sentinel, Changed: sentinel}); status != smb.StatusSuccess {
+			t.Fatalf("sentinel %#x: status %#x", sentinel, status)
+		}
+		if after := basicInfo(t, client, id); after != before {
+			t.Fatalf("sentinel %#x changed %+v to %+v", sentinel, before, after)
+		}
+	}
+	writeFile(t, client, id, []byte("later"))
+	if after := basicInfo(t, client, id); after.Modified <= before.Modified || after.Changed <= before.Changed {
+		t.Fatalf("WRITE after sentinels left times at %+v", after)
+	}
+}
+
+// Regression for #111: a negative time in any field fails the whole request.
+func TestSetInfoNegativeTimeChangesNothing(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	valid := toFiletime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
+	before := basicInfo(t, client, id)
+	for _, invalid := range []wire.Filetime{1 << 63, wire.FiletimeResume - 1} {
+		for field := range 4 {
+			times := [4]wire.Filetime{valid, valid, valid, valid}
+			times[field] = invalid
+			info := wire.FileBasicInformation{Created: times[0], Accessed: times[1], Modified: times[2], Changed: times[3], Attributes: 0x20}
+			if status := setBasic(t, client, id, info); status != smb.StatusInvalidParameter {
+				t.Fatalf("time %#x in field %d: status %#x", invalid, field, status)
 			}
-			before := f.attr(t)
-			f.basic(t, wire.FileBasicInformation{Created: sentinel, Accessed: sentinel, Modified: sentinel, Changed: sentinel}, smb.StatusSuccess)
-			after := f.attr(t)
-			if !after.Created.Equal(before.Created) || !after.Accessed.Equal(before.Accessed) || !after.Modified.Equal(before.Modified) || !after.Changed.Equal(before.Changed) || after.Attributes != before.Attributes {
-				t.Fatalf("sentinel changed stored metadata: before %+v, after %+v", before, after)
+		}
+	}
+	if after := basicInfo(t, client, id); after != before {
+		t.Fatalf("refused requests changed %+v to %+v", before, after)
+	}
+}
+
+func TestSetInfoBasicFields(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	// The Unix epoch is an ordinary time, not a sentinel.
+	epoch := toFiletime(t, time.Unix(0, 0))
+	if status := setBasic(t, client, id, wire.FileBasicInformation{Created: epoch, Accessed: epoch, Modified: epoch, Changed: epoch}); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
+	}
+	created := toFiletime(t, time.Date(1985, 3, 4, 5, 6, 7, 800, time.UTC))
+	if status := setBasic(t, client, id, wire.FileBasicInformation{Created: created}); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
+	}
+	if got := basicInfo(t, client, id); got.Created != created || got.Accessed != epoch || got.Modified != epoch || got.Changed != epoch {
+		t.Fatalf("times = %+v", got)
+	}
+
+	// Clients set only the seven settable attributes; NORMAL stands alone
+	// and zero leaves the attributes as they are.
+	for _, step := range []struct{ set, want uint32 }{
+		{0x3127, 0x3127}, {0, 0x3127}, {0x620, 0x20}, {0x600, 0x80}, {0x80, 0x80}, {0x2, 0x2},
+	} {
+		if status := setBasic(t, client, id, wire.FileBasicInformation{Attributes: step.set}); status != smb.StatusSuccess {
+			t.Fatalf("attributes %#x: status %#x", step.set, status)
+		}
+		if got := basicInfo(t, client, id).Attributes; got != step.want {
+			t.Fatalf("attributes %#x stored as %#x, want %#x", step.set, got, step.want)
+		}
+	}
+	closeOK(t, client, id)
+	if reopened := mustCreate(t, client, smbtest.CreateOptions{Request: wire.CreateRequest{Name: "file", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen}}); reopened.Reply.Attributes != 0x2 {
+		t.Fatalf("reopened attributes %#x", reopened.Reply.Attributes)
+	}
+
+	directory := openAs(t, client, "directory", fileAllAccess, 7, fileDirectoryFile)
+	if status := setBasic(t, client, directory, wire.FileBasicInformation{Attributes: 0x3027}); status != smb.StatusSuccess {
+		t.Fatalf("directory attributes: status %#x", status)
+	}
+	if got := basicInfo(t, client, directory).Attributes; got != 0x3037 {
+		t.Fatalf("directory attributes %#x", got)
+	}
+	// DIRECTORY on a file and TEMPORARY on a directory are refused.
+	file := client.open(t, "file")
+	for _, test := range []struct {
+		id         wire.FileID
+		attributes uint32
+	}{{file, 0x10}, {directory, 0x100}} {
+		before := basicInfo(t, client, test.id)
+		if status := setBasic(t, client, test.id, wire.FileBasicInformation{Created: created, Attributes: test.attributes}); status != smb.StatusInvalidParameter {
+			t.Fatalf("attributes %#x: status %#x", test.attributes, status)
+		}
+		if after := basicInfo(t, client, test.id); after != before {
+			t.Fatalf("refused request changed %+v to %+v", before, after)
+		}
+	}
+}
+
+// Regression for #108: allocation rounds up to whole 4 KiB clusters and
+// shrinks a longer file to that size. A larger allocation is only a hint
+// and changes nothing.
+func TestSetInfoAllocation(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	data := bytes.Repeat([]byte("123456789"), 1000)
+	for _, test := range []struct{ allocation, want uint64 }{
+		{0, 0}, {1, 4096}, {4095, 4096}, {4096, 4096}, {4097, 8192}, {8193, 9000}, {1<<63 - 4096, 9000},
+	} {
+		t.Run(fmt.Sprint(test.allocation), func(t *testing.T) {
+			id := client.open(t, fmt.Sprint(test.allocation))
+			writeFile(t, client, id, data)
+			before := basicInfo(t, client, id)
+			if status := setAllocation(t, client, id, test.allocation); status != smb.StatusSuccess {
+				t.Fatalf("SET_INFO status %#x", status)
 			}
-			// The sentinels affect only SET_INFO, never later automatic I/O updates.
-			f.write(t, "later I/O")
-			after = f.attr(t)
-			if !after.Modified.After(before.Modified) || !after.Changed.After(before.Changed) {
-				t.Fatalf("sentinel suppressed write timestamps: before %+v, after %+v", before, after)
+			if test.want == uint64(len(data)) && basicInfo(t, client, id) != before {
+				t.Fatal("an allocation hint changed the file times")
+			}
+			if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusSuccess {
+				t.Fatalf("FLUSH status %#x", status)
+			}
+			if got := endOfFile(t, client, id); got != test.want {
+				t.Fatalf("EOF = %d, want %d", got, test.want)
+			}
+			read, status := client.read(t, wire.ReadRequest{ID: id, Length: 1 << 16})
+			if test.want == 0 && status == smb.StatusEndOfFile {
+				return
+			}
+			if status != smb.StatusSuccess || !bytes.Equal(read, data[:test.want]) {
+				t.Fatalf("READ = %d bytes, %#x", len(read), status)
 			}
 		})
 	}
 }
 
-func TestSetInfoNegativeTimesDoNotMutateIssue111(t *testing.T) {
-	valid := filetime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
-	for _, invalid := range []wire.Filetime{1 << 63, ^wire.Filetime(0) - 2} {
-		for _, test := range []struct {
-			name string
-			info wire.FileBasicInformation
-		}{
-			{"created", wire.FileBasicInformation{Created: invalid, Accessed: valid, Modified: valid, Changed: valid, Attributes: 0x20}},
-			{"accessed", wire.FileBasicInformation{Created: valid, Accessed: invalid, Modified: valid, Changed: valid, Attributes: 0x20}},
-			{"modified", wire.FileBasicInformation{Created: valid, Accessed: valid, Modified: invalid, Changed: valid, Attributes: 0x20}},
-			{"changed", wire.FileBasicInformation{Created: valid, Accessed: valid, Modified: valid, Changed: invalid, Attributes: 0x20}},
-		} {
-			t.Run(fmt.Sprintf("%016x/%s", invalid, test.name), func(t *testing.T) {
-				f := newSetInfoFixture(t, 0x100)
-				before := f.attr(t)
-				f.basic(t, test.info, smb.StatusInvalidParameter)
-				if after := f.attr(t); after != before {
-					t.Fatalf("invalid timestamp changed metadata: before %+v, after %+v", before, after)
+func TestSetInfoEndOfFile(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	writeFile(t, client, id, []byte("1234567"))
+	for _, size := range []uint64{3, 9} {
+		if status := setEndOfFile(t, client, id, size); status != smb.StatusSuccess {
+			t.Fatalf("EOF %d: status %#x", size, status)
+		}
+	}
+	if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusSuccess {
+		t.Fatalf("FLUSH status %#x", status)
+	}
+	if data, status := client.read(t, wire.ReadRequest{ID: id, Length: 64}); status != smb.StatusSuccess || string(data) != "123\x00\x00\x00\x00\x00\x00" {
+		t.Fatalf("READ = %q, %#x", data, status)
+	}
+}
+
+func TestSetInfoChecksGrantedAccess(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	writeFile(t, client, client.open(t, "file"), []byte("1234567"))
+	attributes := wire.FileBasicInformation{Attributes: 0x20}
+	for _, test := range []struct {
+		name         string
+		access       uint32
+		basic, sizes smb.Status
+	}{
+		{"write attributes", 0x100, smb.StatusSuccess, smb.StatusAccessDenied},
+		{"append data", fileAppendData, smb.StatusAccessDenied, smb.StatusAccessDenied},
+		{"write data", fileWriteData, smb.StatusAccessDenied, smb.StatusSuccess},
+	} {
+		id := openAs(t, client, "file", test.access, 7, 0)
+		if status := setBasic(t, client, id, attributes); status != test.basic {
+			t.Errorf("%s: basic status %#x", test.name, status)
+		}
+		if status := setEndOfFile(t, client, id, 7); status != test.sizes {
+			t.Errorf("%s: EOF status %#x", test.name, status)
+		}
+		if status := setAllocation(t, client, id, 8192); status != test.sizes {
+			t.Errorf("%s: allocation status %#x", test.name, status)
+		}
+	}
+}
+
+func TestSetInfoRefusals(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	file := client.open(t, "file")
+	writeFile(t, client, file, []byte("1234567"))
+	directory := openAs(t, client, "directory", fileAllAccess, 7, fileDirectoryFile)
+	closed := file
+	closed.Volatile++
+	size := func(value uint64) []byte {
+		return encode(t, wire.EncodeFileEndOfFileInformation, wire.FileEndOfFileInformation{EndOfFile: value})
+	}
+	for _, test := range []struct {
+		name     string
+		input    []byte
+		id       wire.FileID
+		want     smb.Status
+		infoType wire.InfoType
+		class    wire.FileInfoClass
+	}{
+		{"directory EOF", size(0), directory, smb.StatusInvalidParameter, wire.InfoFile, wire.ClassFileEndOfFile},
+		{"directory allocation", size(0), directory, smb.StatusInvalidParameter, wire.InfoFile, wire.ClassFileAllocation},
+		{"negative EOF", size(1 << 63), file, smb.StatusInvalidParameter, wire.InfoFile, wire.ClassFileEndOfFile},
+		{"allocation past the largest cluster", size(1<<63 - 4095), file, smb.StatusInvalidParameter, wire.InfoFile, wire.ClassFileAllocation},
+		{"EOF beyond storage", size(1 << 62), file, smb.StatusFileTooLarge, wire.InfoFile, wire.ClassFileEndOfFile},
+		{"short basic", []byte{1}, file, smb.StatusInfoLengthMismatch, wire.InfoFile, wire.ClassFileBasic},
+		{"short EOF", []byte{1}, file, smb.StatusInfoLengthMismatch, wire.InfoFile, wire.ClassFileEndOfFile},
+		{"hard link", []byte{1}, file, smb.StatusNotSupported, wire.InfoFile, 11},
+		{"read-only class", []byte{1}, file, smb.StatusNotSupported, wire.InfoFile, wire.ClassFileStandard},
+		{"filesystem", nil, file, smb.StatusNotSupported, wire.InfoFilesystem, 0},
+		{"security", nil, file, smb.StatusNotSupported, wire.InfoSecurity, 0},
+		{"quota", nil, file, smb.StatusNotSupported, 4, 0},
+		{"closed file", size(0), closed, smb.StatusFileClosed, wire.InfoFile, wire.ClassFileEndOfFile},
+	} {
+		if status := client.setInfo(t, wire.SetInfoRequest{ID: test.id, InfoType: test.infoType, InfoClass: uint8(test.class), Input: test.input}); status != test.want {
+			t.Errorf("%s: status %#x, want %#x", test.name, status, test.want)
+		}
+	}
+	if got := endOfFile(t, client, file); got != 7 {
+		t.Fatalf("refused requests left EOF %d", got)
+	}
+}
+
+// Regression for #428: a SET_INFO that waits on storage replies
+// STATUS_PENDING and lets the connection serve other requests meanwhile.
+func TestSetInfoWaitingOnStorageRepliesAsync(t *testing.T) {
+	explicit := toFiletime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
+	data := bytes.Repeat([]byte("123456789"), 1000)
+	for _, test := range []struct {
+		name  string
+		input []byte
+		eof   uint64
+		class wire.FileInfoClass
+	}{
+		{"basic", encode(t, wire.EncodeFileBasicInformation, wire.FileBasicInformation{Accessed: explicit, Modified: explicit, Changed: explicit}), 9000, wire.ClassFileBasic},
+		{"end of file", encode(t, wire.EncodeFileEndOfFileInformation, wire.FileEndOfFileInformation{EndOfFile: 5000}), 5000, wire.ClassFileEndOfFile},
+		{"allocation", encode(t, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: 4096}), 4096, wire.ClassFileAllocation},
+	} {
+		for _, failure := range []error{nil, smb.ErrIO} {
+			t.Run(fmt.Sprintf("%s/%v", test.name, failure), func(t *testing.T) {
+				srv := newTestServer(t)
+				client := srv.connect(t)
+				id := client.open(t, "file")
+				writeFile(t, client, id, data)
+				want, wantEOF := smb.StatusSuccess, test.eof
+				if failure != nil {
+					want, wantEOF = smb.StatusIODeviceError, uint64(len(data))
 				}
-				if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-					t.Fatal("invalid timestamp dropped connection")
+				request := wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(test.class), Input: test.input}
+				if status := setInfoBlockedInStorage(t, srv, client, request, failure); status != want {
+					t.Fatalf("final status %#x, want %#x", status, want)
+				}
+				// A later flush keeps the new size and explicit times.
+				if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusSuccess {
+					t.Fatalf("FLUSH status %#x", status)
+				}
+				if got := endOfFile(t, client, id); got != wantEOF {
+					t.Fatalf("EOF = %d, want %d", got, wantEOF)
+				}
+				if test.class == wire.ClassFileBasic && failure == nil && basicInfo(t, client, id).Modified != explicit {
+					t.Fatal("FLUSH overwrote the explicit times")
 				}
 			})
 		}
 	}
 }
 
-func TestSetInfoBasicAttributeMask(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		path       string
-		stored     uint32
-		attributes uint32
-		want       uint32
-	}{
-		{"all supported file flags", "data", 0x80, 0x3127, 0x3127},
-		{"unsupported flags ignored", "data", 0x87, 0x620, 0x20},
-		{"unsupported flags alone clear supported flags", "data", 0x87, 0x600, 0x80},
-		{"normal clears supported flags", "data", 0x87, 0x80, 0x80},
-		{"normal after archive", "data", 0x20, 0x80, 0x80},
-		{"server-owned flags preserved", "data", 0x402, 0x620, 0x420},
-		{"zero leaves attributes unchanged", "data", 0x87, 0, 0x87},
-		{"directory kind preserved", "", 0x13, 0x3027, 0x3037},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newSetInfoFixtureForPath(t, test.path, 0x100)
-			if err := f.storage.SetAttr(f.ctx, f.open.Object, smb.AttrChange{Attributes: &test.stored}); err != nil {
-				t.Fatal(err)
+// setInfoBlockedInStorage sends request while storage holds SetAttr. It
+// checks the interim reply, that the connection still answers and that
+// nothing changed, then lets SetAttr finish with failure, or pass through
+// when failure is nil, and returns the final status.
+func setInfoBlockedInStorage(t *testing.T, srv *testServer, client *testClient, request wire.SetInfoRequest, failure error) smb.Status {
+	t.Helper()
+	before := basicInfo(t, client, request.ID)
+	entered, release := make(chan struct{}, 1), make(chan struct{})
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.SetAttr = func(ctx context.Context, object smb.ObjectKey, change smb.AttrChange) error {
+			entered <- struct{}{}
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			before := f.attr(t)
-			f.basic(t, wire.FileBasicInformation{Attributes: test.attributes}, smb.StatusSuccess)
-			after := f.attr(t)
-			if after.Attributes != test.want || after.Kind != before.Kind {
-				t.Fatalf("attributes = %#x, kind = %d; want %#x, kind %d", after.Attributes, after.Kind, test.want, before.Kind)
+			if failure != nil {
+				return failure
 			}
-			if !after.Created.Equal(before.Created) || !after.Accessed.Equal(before.Accessed) || !after.Modified.Equal(before.Modified) {
-				t.Fatalf("attribute-only request changed file times: before %+v, after %+v", before, after)
-			}
-		})
-	}
-}
-
-func TestSetInfoBasicRejectsAttributeKindMismatchWithoutMutation(t *testing.T) {
-	for _, test := range []struct {
-		name       string
-		path       string
-		attributes uint32
-	}{
-		{"directory bit on file", "data", 0x10},
-		{"temporary directory", "", 0x100},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newSetInfoFixtureForPath(t, test.path, 0x100)
-			before := f.attr(t)
-			value := filetime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
-			f.basic(t, wire.FileBasicInformation{Created: value, Accessed: value, Modified: value, Changed: value, Attributes: test.attributes}, smb.StatusInvalidParameter)
-			if after := f.attr(t); after != before {
-				t.Fatalf("invalid attributes changed metadata: before %+v, after %+v", before, after)
-			}
-			if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-				t.Fatal("invalid attributes dropped connection")
-			}
-		})
-	}
-}
-
-func TestSetInfoUnixEpochIsAnExplicitTime(t *testing.T) {
-	f := newSetInfoFixture(t, 0x100)
-	epoch := time.Unix(0, 0).UTC()
-	value := filetime(t, epoch)
-	f.basic(t, wire.FileBasicInformation{Created: value, Accessed: value, Modified: value, Changed: value, Attributes: 0x20}, smb.StatusSuccess)
-	attr := f.attr(t)
-	if !attr.Created.Equal(epoch) || !attr.Accessed.Equal(epoch) || !attr.Modified.Equal(epoch) || !attr.Changed.Equal(epoch) || attr.Attributes != 0x20 {
-		t.Fatalf("epoch or attributes not stored: %+v", attr)
-	}
-}
-
-func TestSetInfoBasicFieldsAreIndependent(t *testing.T) {
-	f := newSetInfoFixture(t, 0x100)
-	before := f.attr(t)
-	created := time.Date(1985, 3, 4, 5, 6, 7, 800, time.UTC)
-	accessed := created.Add(time.Hour)
-	modified := created.Add(2 * time.Hour)
-	changed := created.Add(3 * time.Hour)
-	f.basic(t, wire.FileBasicInformation{Created: filetime(t, created), Accessed: filetime(t, accessed), Modified: filetime(t, modified), Changed: filetime(t, changed)}, smb.StatusSuccess)
-	after := f.attr(t)
-	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != before.Attributes {
-		t.Fatalf("basic fields not stored independently: %+v", after)
-	}
-	// Omitted times still stay unchanged when another field is present.
-	created = created.Add(time.Minute)
-	f.basic(t, wire.FileBasicInformation{Created: filetime(t, created), Accessed: wire.FiletimeSuppress, Modified: wire.FiletimeResume, Attributes: 0x20}, smb.StatusSuccess)
-	after = f.attr(t)
-	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != 0x20 {
-		t.Fatalf("mixed sentinel update changed other fields: %+v", after)
-	}
-}
-
-func TestSetInfoAllocationBelowEOFShrinksIssue108(t *testing.T) {
-	for _, allocation := range []uint64{0, 3, 7, 8192} {
-		t.Run(fmt.Sprint(allocation), func(t *testing.T) {
-			f := newSetInfoFixture(t, 2)
-			f.write(t, "1234567")
-			before := f.attr(t)
-			f.size(t, wire.ClassFileAllocation, allocation, smb.StatusSuccess)
-			want := uint64(7)
-			if allocation == 0 {
-				want = 0
-			}
-			after := f.attr(t)
-			if after.Size != want {
-				t.Fatalf("allocation %d: EOF = %d, want %d", allocation, after.Size, want)
-			}
-			if want == 7 && (!after.Modified.Equal(before.Modified) || !after.Changed.Equal(before.Changed) || after.AllocationSize != before.AllocationSize) {
-				t.Fatalf("allocation growth hint changed metadata: before %+v, after %+v", before, after)
-			}
-			if err := f.storage.Flush(f.ctx, f.open.Handle, smb.SyncData); err != nil {
-				t.Fatal(err)
-			}
-			if after = f.attr(t); after.Size != want {
-				t.Fatalf("flush restored old EOF: %+v", after)
-			}
-		})
-	}
-}
-
-func TestSetInfoAllocationRoundsBeforeShrinkingIssue108(t *testing.T) {
-	for _, test := range []struct {
-		allocation uint64
-		want       uint64
-	}{
-		{0, 0},
-		{1, 4096},
-		{4095, 4096},
-		{4096, 4096},
-		{4097, 8192},
-		{8191, 8192},
-		{8192, 8192},
-		{8193, 9000},
-		{12288, 9000},
-	} {
-		t.Run(fmt.Sprint(test.allocation), func(t *testing.T) {
-			f := newSetInfoFixture(t, 2)
-			data := bytes.Repeat([]byte("123456789"), 1000)
-			f.write(t, string(data))
-			before := f.attr(t)
-			f.size(t, wire.ClassFileAllocation, test.allocation, smb.StatusSuccess)
-			after := f.attr(t)
-			if after.Size != test.want {
-				t.Fatalf("allocation %d: EOF = %d, want %d", test.allocation, after.Size, test.want)
-			}
-			if test.want == 9000 && after != before {
-				t.Fatalf("allocation growth hint changed metadata: before %+v, after %+v", before, after)
-			}
-			if err := f.storage.Flush(f.ctx, f.open.Handle, smb.SyncData); err != nil {
-				t.Fatal(err)
-			}
-			if attr := f.attr(t); attr.Size != test.want {
-				t.Fatalf("flush restored old EOF: %+v", attr)
-			}
-			if test.want != 0 {
-				got := make([]byte, test.want)
-				count, err := f.storage.ReadAt(f.ctx, f.open.Handle, got, 0)
-				if err != nil || count != len(got) || !bytes.Equal(got, data[:test.want]) {
-					t.Fatalf("retained data: count %d, error %v, matches %t", count, err, bytes.Equal(got, data[:test.want]))
-				}
-			}
-		})
-	}
-}
-
-func TestSetInfoAllocationRoundingOverflowKeepsConnection(t *testing.T) {
-	f := newSetInfoFixture(t, 2)
-	f.write(t, "1234567")
-	before := f.attr(t)
-	for _, test := range []struct {
-		allocation uint64
-		status     smb.Status
-	}{
-		{1<<63 - 4096, smb.StatusSuccess},
-		{1<<63 - 4095, smb.StatusInvalidParameter},
-		{1<<63 - 1, smb.StatusInvalidParameter},
-		{1 << 63, smb.StatusInvalidParameter},
-		{^uint64(0), smb.StatusInvalidParameter},
-	} {
-		f.size(t, wire.ClassFileAllocation, test.allocation, test.status)
-		if after := f.attr(t); after != before {
-			t.Fatalf("allocation %d changed metadata: before %+v, after %+v", test.allocation, before, after)
+			return srv.adapter.SetAttr(ctx, object, change)
 		}
-		if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-			t.Fatal("allocation boundary request dropped connection")
+	})
+	defer srv.faults.set(func(hooks *storageHooks) { hooks.SetAttr = nil })
+	header := client.send(t, wire.SetInfo, encode(t, wire.EncodeSetInfoRequest, request), 1)
+	<-entered
+	client.interim(t, header)
+	client.echo(t)
+	if after := basicInfo(t, client, request.ID); after != before {
+		t.Fatalf("waiting SET_INFO changed %+v to %+v", before, after)
+	}
+	close(release)
+	return client.receive(t, header).Header.Status
+}
+
+// Regression for #428: an allocation hint needs no storage call, so it gets
+// one synchronous reply.
+func TestSetInfoAllocationHintRepliesAtOnce(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	writeFile(t, client, id, []byte("buffered data"))
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.SetAttr = func(context.Context, smb.ObjectKey, smb.AttrChange) error {
+			t.Error("allocation hint reached storage")
+			return smb.ErrIO
 		}
-		f.nextID++
+	})
+	body := encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileAllocation), Input: encode(t, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: 4096})})
+	request := client.send(t, wire.SetInfo, body, 1)
+	if reply := client.next(t, request).Header; reply.Status != smb.StatusSuccess || reply.Flags&wire.FlagAsync != 0 {
+		t.Fatalf("reply %+v", reply)
 	}
-}
-
-func TestSetInfoDirectorySizeRequestsKeepConnection(t *testing.T) {
-	f := newSetInfoFixtureForPath(t, "", 2)
-	before := f.attr(t)
-	if before.Kind != smb.KindDirectory {
-		t.Fatalf("fixture is not a directory: %+v", before)
-	}
-	for _, class := range []wire.FileInfoClass{wire.ClassFileEndOfFile, wire.ClassFileAllocation} {
-		for _, size := range []uint64{0, 1, 8192} {
-			f.size(t, class, size, smb.StatusInvalidParameter)
-			if after := f.attr(t); after != before {
-				t.Fatalf("directory size request changed metadata: before %+v, after %+v", before, after)
-			}
-			if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-				t.Fatal("directory size request dropped connection")
-			}
-			f.nextID++
-		}
-	}
-}
-
-func TestSetInfoEndOfFileTruncatesAndExtends(t *testing.T) {
-	f := newSetInfoFixture(t, 2)
-	f.write(t, "1234567")
-	f.size(t, wire.ClassFileEndOfFile, 3, smb.StatusSuccess)
-	f.size(t, wire.ClassFileEndOfFile, 9, smb.StatusSuccess)
-	if err := f.storage.Flush(f.ctx, f.open.Handle, smb.SyncData); err != nil {
-		t.Fatal(err)
-	}
-	data := make([]byte, 9)
-	count, err := f.storage.ReadAt(f.ctx, f.open.Handle, data, 0)
-	if err != nil || count != len(data) || !bytes.Equal(data, []byte{'1', '2', '3', 0, 0, 0, 0, 0, 0}) {
-		t.Fatalf("truncate/extend read = %q, %d, %v", data, count, err)
-	}
-	f.size(t, wire.ClassFileEndOfFile, 0, smb.StatusSuccess)
-	if attr := f.attr(t); attr.Size != 0 {
-		t.Fatalf("EOF = %d", attr.Size)
-	}
-}
-
-func TestSetInfoChecksGrantedAccessPerClass(t *testing.T) {
-	for _, access := range []uint32{0, 4, 2, 0x100} {
-		t.Run(fmt.Sprintf("%x", access), func(t *testing.T) {
-			f := newSetInfoFixture(t, access)
-			f.write(t, "1234567")
-			before := f.attr(t)
-			want := smb.StatusAccessDenied
-			if access&0x100 != 0 {
-				want = smb.StatusSuccess
-			}
-			f.basic(t, wire.FileBasicInformation{Attributes: 0x20}, want)
-			if access&0x100 == 0 && f.attr(t).Attributes != before.Attributes {
-				t.Fatal("denied basic update changed attributes")
-			}
-			want = smb.StatusAccessDenied
-			if access&2 != 0 {
-				want = smb.StatusSuccess
-			}
-			f.size(t, wire.ClassFileEndOfFile, 3, want)
-			f.size(t, wire.ClassFileAllocation, 0, want)
-			if access&2 == 0 && f.attr(t).Size != 7 {
-				t.Fatal("denied size update changed EOF")
-			}
-		})
-	}
-}
-
-func TestSetInfoUnsupportedClassesAndTypesKeepConnection(t *testing.T) {
-	f := newSetInfoFixture(t, 0x102)
-	before := f.attr(t)
-	for _, class := range []uint8{11, uint8(wire.ClassFileStandard), 255} {
-		f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: wire.InfoFile, InfoClass: class, Input: []byte{1}}, smb.StatusNotSupported)
-	}
-	for _, infoType := range []wire.InfoType{0, wire.InfoFilesystem, wire.InfoSecurity, 4, 255} {
-		f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: infoType, InfoClass: uint8(wire.ClassFileBasic)}, smb.StatusNotSupported)
-	}
-	if after := f.attr(t); after != before {
-		t.Fatalf("unsupported request changed metadata: before %+v, after %+v", before, after)
-	}
-	if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-		t.Fatal("unsupported SET_INFO dropped connection")
-	}
-}
-
-func TestSetInfoInvalidBuffersAndFileIDsKeepConnection(t *testing.T) {
-	f := newSetInfoFixture(t, 0x102)
-	before := f.attr(t)
-	for _, class := range []wire.FileInfoClass{wire.ClassFileBasic, wire.ClassFileEndOfFile, wire.ClassFileAllocation} {
-		f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: wire.InfoFile, InfoClass: uint8(class), Input: []byte{1}}, smb.StatusInfoLengthMismatch)
-	}
-	for _, class := range []wire.FileInfoClass{wire.ClassFileEndOfFile, wire.ClassFileAllocation} {
-		f.size(t, class, ^uint64(0), smb.StatusInvalidParameter)
-	}
-	f.set(t, wire.SetInfoRequest{ID: wire.FileID{Persistent: f.open.ID.Persistent, Volatile: f.open.ID.Volatile + 1}, InfoType: wire.InfoFile}, smb.StatusFileClosed)
-	f.set(t, wire.SetInfoRequest{ID: wire.FileID{Persistent: ^uint64(0), Volatile: ^uint64(0)}, InfoType: wire.InfoFile}, smb.StatusFileClosed)
-	if after := f.attr(t); after != before {
-		t.Fatalf("invalid request changed metadata: before %+v, after %+v", before, after)
-	}
-	if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-		t.Fatal("invalid SET_INFO dropped connection")
-	}
-}
-
-func TestSetInfoStorageErrorsReturnStatus(t *testing.T) {
-	f := newSetInfoFixture(t, 2)
-	f.size(t, wire.ClassFileEndOfFile, 1<<62, smb.StatusFileTooLarge)
-	if f.attr(t).Size != 0 {
-		t.Fatal("failed size update changed EOF")
-	}
-	if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
-		t.Fatal("storage error dropped connection")
-	}
+	client.echo(t)
 }

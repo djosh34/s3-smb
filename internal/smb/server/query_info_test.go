@@ -2,298 +2,291 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
-	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func TestQueryInfoClassesMatchLiveAttributes(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	for _, kind := range []smb.Kind{smb.KindFile, smb.KindDirectory} {
-		path := fmt.Sprintf("object-%d", kind)
-		_, open := f.create(t, path, kind)
-		if kind == smb.KindFile {
-			data := []byte("buffered length")
-			if n, err := f.storage.WriteAt(f.ctx, open.Handle, data, 4096); err != nil || n != len(data) {
-				t.Fatalf("WriteAt = %d, %v", n, err)
-			}
-		}
-		attr, err := f.storage.GetAttr(f.ctx, open.Object)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if kind == smb.KindFile && attr.Size != 4096+uint64(len("buffered length")) {
-			t.Fatalf("live size = %d", attr.Size)
-		}
-		for _, class := range queryFileClasses {
-			t.Run(fmt.Sprintf("kind_%d/class_%d", kind, class), func(t *testing.T) {
-				data := queryData(t, f.query(t, open, wire.InfoFile, uint8(class), 4096), smb.StatusSuccess)
-				checkQueryClass(t, f, open, attr, "\\"+path, class, data)
-			})
-		}
+func expectInfo[T comparable](t *testing.T, client *testClient, id wire.FileID, class wire.FileInfoClass, decoder func([]byte) (T, error), want T) {
+	t.Helper()
+	if got := queryClass(t, client, id, class, decoder); got != want {
+		t.Errorf("class %d = %+v, want %+v", class, got, want)
 	}
 }
 
-func TestQueryInfoNamedStreamOpen(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	_, base := f.create(t, "stream-file", smb.KindFile)
-	_, stream := f.create(t, "stream-file:fork", smb.KindFile)
-	for _, write := range []struct {
-		data   string
-		open   state.Open
-		offset uint64
-	}{
-		{"base-file", base, 4096},
-		{"fork", stream, 0},
-	} {
-		if n, err := f.storage.WriteAt(f.ctx, write.open.Handle, []byte(write.data), write.offset); err != nil || n != len(write.data) {
-			t.Fatalf("WriteAt = %d, %v", n, err)
-		}
+func TestQueryInfoFileClasses(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	directory := openDirectory(t, client, "directory")
+	file := client.open(t, "directory/file")
+	stream := client.open(t, "directory/file:fork")
+	// The file's data is still buffered; queries must report it.
+	if status := client.write(t, wire.WriteRequest{ID: file, Offset: 4096, Data: []byte("buffered length")}); status != smb.StatusSuccess {
+		t.Fatalf("WRITE status %#x", status)
 	}
-	baseAttr, err := f.storage.GetAttr(f.ctx, base.Object)
+	writeFile(t, client, stream, []byte("fork"))
+	inode := uint64(srv.object(t, "directory/file").Inode)
+	basic := basicInfo(t, client, file)
+	standard := wire.FileStandardInformation{AllocationSize: 8192, EndOfFile: 4111, Links: 1}
+	name := wire.FileNameInformation{Name: "\\directory\\file"}
+	expectInfo(t, client, file, wire.ClassFileStandard, wire.DecodeFileStandardInformation, standard)
+	expectInfo(t, client, file, wire.ClassFileInternal, wire.DecodeFileInternalInformation, wire.FileInternalInformation{Index: inode})
+	expectInfo(t, client, file, wire.ClassFileAccess, wire.DecodeFileAccessInformation, wire.FileAccessInformation{Access: fileAllAccess})
+	expectInfo(t, client, file, wire.ClassFileName, wire.DecodeFileNameInformation, name)
+	expectInfo(t, client, file, wire.ClassFileEA, wire.DecodeFileEAInformation, wire.FileEAInformation{})
+	expectInfo(t, client, file, wire.ClassFilePosition, wire.DecodeFilePositionInformation, wire.FilePositionInformation{})
+	expectInfo(t, client, file, wire.ClassFileMode, wire.DecodeFileModeInformation, wire.FileModeInformation{})
+	expectInfo(t, client, file, wire.ClassFileAlignment, wire.DecodeFileAlignmentInformation, wire.FileAlignmentInformation{})
+	expectInfo(t, client, file, wire.ClassFileAttributeTag, wire.DecodeFileAttributeTagInformation, wire.FileAttributeTagInformation{Attributes: basic.Attributes})
+	expectInfo(t, client, file, wire.ClassFileNetworkOpen, wire.DecodeFileNetworkOpenInformation, wire.FileNetworkOpenInformation{
+		Created: basic.Created, Accessed: basic.Accessed, Modified: basic.Modified, Changed: basic.Changed,
+		AllocationSize: standard.AllocationSize, EndOfFile: standard.EndOfFile, Attributes: basic.Attributes,
+	})
+	expectInfo(t, client, file, wire.ClassFileAll, wire.DecodeFileAllInformation, wire.FileAllInformation{
+		Name: name, Basic: basic, Standard: standard, Internal: wire.FileInternalInformation{Index: inode}, Access: wire.FileAccessInformation{Access: fileAllAccess},
+	})
+	space, err := srv.adapter.StatFS(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	streamAttr, err := f.storage.GetAttr(f.ctx, stream.Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	wantStreams := wire.FileStreamInformation{Entries: []wire.FileStreamEntry{
-		{Name: "::$DATA", Size: 4105, AllocationSize: baseAttr.AllocationSize},
-		{Name: ":fork:$DATA", Size: 4, AllocationSize: streamAttr.AllocationSize},
-	}}
-	for _, selected := range []struct {
-		name string
-		open state.Open
-		size uint64
-	}{
-		{"\\stream-file", base, 4105},
-		{"\\stream-file:fork:$DATA", stream, 4},
-	} {
-		t.Run(selected.name, func(t *testing.T) {
-			data := queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileStream), 4096), smb.StatusSuccess)
-			decodeQueryClass(t, data, wire.DecodeFileStreamInformation, wantStreams)
-			data = queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileName), 4096), smb.StatusSuccess)
-			decodeQueryClass(t, data, wire.DecodeFileNameInformation, wire.FileNameInformation{Name: selected.name})
-			data = queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileStandard), 24), smb.StatusSuccess)
-			info, err := wire.DecodeFileStandardInformation(data)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if info.EndOfFile != selected.size {
-				t.Fatalf("EndOfFile = %d, want %d", info.EndOfFile, selected.size)
-			}
-			f.echo(t)
-		})
-	}
-}
+	fileID := wire.FileIDInformation{VolumeSerial: space.VolumeID}
+	binary.LittleEndian.PutUint64(fileID.ID[:8], inode)
+	expectInfo(t, client, file, wire.ClassFileID, wire.DecodeFileIDInformation, fileID)
+	expectInfo(t, client, client.open(t, "directory/file"), wire.ClassFileID, wire.DecodeFileIDInformation, fileID)
 
-func TestQueryInfoShortOutputBuffers(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	_, open := f.create(t, "long-file-name", smb.KindFile)
-	for _, class := range queryFileClasses {
-		if class == wire.ClassFileStream {
-			continue // Stream entries have separate boundary tests below.
+	// A stream open names the stream and reports its own length, but lists
+	// the same streams as the file.
+	expectInfo(t, client, stream, wire.ClassFileName, wire.DecodeFileNameInformation, wire.FileNameInformation{Name: "\\directory\\file:fork:$DATA"})
+	if got := endOfFile(t, client, stream); got != 4 {
+		t.Errorf("stream EOF %d", got)
+	}
+	streams := []wire.FileStreamEntry{{Name: "::$DATA", Size: 4111, AllocationSize: 8192}, {Name: ":fork:$DATA", Size: 4, AllocationSize: 4096}}
+	for _, id := range []wire.FileID{file, stream} {
+		if got := queryClass(t, client, id, wire.ClassFileStream, wire.DecodeFileStreamInformation); !reflect.DeepEqual(got.Entries, streams) {
+			t.Errorf("streams = %+v", got.Entries)
 		}
-		t.Run(fmt.Sprintf("class_%d", class), func(t *testing.T) {
-			full := queryData(t, f.query(t, open, wire.InfoFile, uint8(class), 4096), smb.StatusSuccess)
-			length := len(full)
-			if length < 0 || length > 4096 {
-				t.Fatal("output exceeds requested length")
-				return
-			}
-			fullLength := uint32(length)
-			fixed := fileInfoFixedSize(class)
-			for _, length := range []uint32{0, fixed - 1} {
-				message := f.query(t, open, wire.InfoFile, uint8(class), length)
-				if message.Header.Status != smb.StatusInfoLengthMismatch {
-					t.Fatalf("length %d: status = %#x", length, message.Header.Status)
-				}
-				if _, err := wire.DecodeErrorResponse(message); err != nil {
-					t.Fatal(err)
-				}
-			}
-			for _, length := range []uint32{fixed, fullLength} {
-				checkQueryPrefix(t, f, open, class, length, full)
-			}
-			if fullLength > fixed {
-				length := fullLength - 1
-				got := queryData(t, f.query(t, open, wire.InfoFile, uint8(class), length), smb.StatusBufferOverflow)
-				if !bytes.Equal(got, full[:length]) {
-					t.Fatal("variable prefix changed")
-				}
-			}
-		})
+	}
+
+	if got := queryClass(t, client, directory, wire.ClassFileStandard, wire.DecodeFileStandardInformation); !got.Directory {
+		t.Errorf("directory standard information %+v", got)
+	}
+	if got := queryClass(t, client, directory, wire.ClassFileStream, wire.DecodeFileStreamInformation); len(got.Entries) != 0 {
+		t.Errorf("directory streams %+v", got.Entries)
 	}
 }
 
-func TestQueryInfoStreamBufferBoundaries(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	_, open := f.create(t, "stream-buffers", smb.KindFile)
-	f.create(t, "stream-buffers:fork", smb.KindFile)
-	// The entries occupy 38 and 46 bytes; the first aligns to 40 when linked.
-	entries := []wire.FileStreamEntry{{Name: "::$DATA"}, {Name: ":fork:$DATA"}}
+func TestQueryInfoFollowsRenameAndDelete(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "before")
+	if status := rename(t, client, id, "after", false); status != smb.StatusSuccess {
+		t.Fatalf("rename status %#x", status)
+	}
+	if status := setDeletePending(t, client, id, true); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
+	}
+	all := queryClass(t, client, id, wire.ClassFileAll, wire.DecodeFileAllInformation)
+	if all.Name.Name != "\\after" || !all.Standard.DeletePending {
+		t.Fatalf("all information %+v", all)
+	}
+	if !queryClass(t, client, id, wire.ClassFileStandard, wire.DecodeFileStandardInformation).DeletePending {
+		t.Fatal("standard information without the pending delete")
+	}
+}
+
+// Fixed-size classes need their whole size; the variable part of a name is
+// cut short with STATUS_BUFFER_OVERFLOW; a stream list keeps whole entries.
+func TestQueryInfoShortBuffers(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "a-long-file-name")
+	client.open(t, "a-long-file-name:fork")
+	query := func(class wire.FileInfoClass, length uint32) ([]byte, smb.Status) {
+		return client.queryInfo(t, wire.QueryInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(class), OutputLength: length})
+	}
 	for _, test := range []struct {
-		count  int
+		class  wire.FileInfoClass
 		length uint32
-		status smb.Status
+		want   smb.Status
 	}{
-		{0, 0, smb.StatusInfoLengthMismatch},
-		{0, 23, smb.StatusInfoLengthMismatch},
-		{0, 24, smb.StatusBufferOverflow},
-		{0, 37, smb.StatusBufferOverflow},
-		{1, 38, smb.StatusBufferOverflow},
-		{1, 39, smb.StatusBufferOverflow},
-		{1, 40, smb.StatusBufferOverflow},
-		{1, 85, smb.StatusBufferOverflow},
-		{2, 86, smb.StatusSuccess},
-		{2, 87, smb.StatusSuccess},
+		{wire.ClassFileBasic, 39, smb.StatusInfoLengthMismatch},
+		{wire.ClassFileBasic, 40, smb.StatusSuccess},
+		{wire.ClassFileStandard, 23, smb.StatusInfoLengthMismatch},
+		{wire.ClassFileName, 3, smb.StatusInfoLengthMismatch},
+		{wire.ClassFileName, 4, smb.StatusBufferOverflow},
+		{wire.ClassFileName, 37, smb.StatusBufferOverflow},
+		{wire.ClassFileName, 38, smb.StatusSuccess},
+		{wire.ClassFileAll, 99, smb.StatusInfoLengthMismatch},
+		{wire.ClassFileAll, 100, smb.StatusBufferOverflow},
 	} {
-		t.Run(fmt.Sprintf("length_%d", test.length), func(t *testing.T) {
-			message := f.query(t, open, wire.InfoFile, uint8(wire.ClassFileStream), test.length)
-			if message.Header.Status != test.status {
-				t.Fatalf("status = %#x, want %#x", message.Header.Status, test.status)
-			}
-			if test.status == smb.StatusInfoLengthMismatch {
-				if _, err := wire.DecodeErrorResponse(message); err != nil {
-					t.Fatal(err)
-				}
-			} else {
-				data := queryData(t, message, test.status)
-				want := wire.FileStreamInformation{}
-				if test.count > 0 {
-					want.Entries = entries[:test.count]
-				}
-				decodeQueryClass(t, data, wire.DecodeFileStreamInformation, want)
-				if uint64(len(data)) > uint64(test.length) {
-					t.Fatalf("output length = %d, buffer = %d", len(data), test.length)
-				}
-				if test.count > 0 {
-					last := []int{0, 40}[test.count-1]
-					if next := binary.LittleEndian.Uint32(data[last : last+4]); next != 0 {
-						t.Fatalf("final NextEntryOffset = %d", next)
-					}
-				}
-			}
-			f.echo(t)
-		})
+		full, status := query(test.class, 4096)
+		if status != smb.StatusSuccess {
+			t.Fatalf("class %d: status %#x", test.class, status)
+		}
+		data, status := query(test.class, test.length)
+		if status != test.want || status != smb.StatusInfoLengthMismatch && !bytes.Equal(data, full[:test.length]) {
+			t.Errorf("class %d in %d bytes = %x, %#x; want %#x", test.class, test.length, data, status, test.want)
+		}
 	}
-}
-
-func TestUnsupportedQueryInfoAndObjectIDKeepConnection(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	_, open := f.create(t, "unsupported", smb.KindFile)
-	for class := 0; class <= 255; class++ {
-		if fileInfoFixedSize(wire.FileInfoClass(class)) != 0 {
+	// The entries take 38 and 46 bytes; linking them pads the first to 40.
+	for _, test := range []struct {
+		length  uint32
+		want    smb.Status
+		entries int
+	}{
+		{23, smb.StatusInfoLengthMismatch, 0},
+		{37, smb.StatusBufferOverflow, 0},
+		{38, smb.StatusBufferOverflow, 1},
+		{85, smb.StatusBufferOverflow, 1},
+		{86, smb.StatusSuccess, 2},
+	} {
+		data, status := query(wire.ClassFileStream, test.length)
+		if status != test.want {
+			t.Errorf("streams in %d bytes: status %#x", test.length, status)
 			continue
 		}
-		message := f.query(t, open, wire.InfoFile, uint8(class), 4096)
-		want := smb.StatusInvalidInfoClass
-		if class == 48 { // FileNormalizedNameInformation.
-			want = smb.StatusNotSupported
+		if status == smb.StatusInfoLengthMismatch {
+			continue
 		}
-		if message.Header.Status != want {
-			t.Fatalf("unsupported file class %d: status = %#x, want %#x", class, message.Header.Status, want)
+		decoded, err := wire.DecodeFileStreamInformation(data)
+		if err != nil || len(decoded.Entries) != test.entries {
+			t.Errorf("streams in %d bytes = %+v, %v", test.length, decoded, err)
 		}
-		if _, err := wire.DecodeErrorResponse(message); err != nil {
-			t.Fatal(err)
-		}
-		f.echo(t)
 	}
+}
+
+func TestQueryInfoRefusals(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	closed := id
+	closed.Volatile++
 	for _, test := range []struct {
+		name     string
+		id       wire.FileID
 		infoType wire.InfoType
 		class    uint8
-		status   smb.Status
+		length   uint32
+		want     smb.Status
 	}{
-		{wire.InfoFilesystem, 8, smb.StatusNotSupported},       // FileFsObjectIdInformation (#87).
-		{wire.InfoFilesystem, 100, smb.StatusInvalidInfoClass}, // FileFsPosixInformation.
-		{wire.InfoSecurity, 0, smb.StatusNotSupported},
-		{4, 0, smb.StatusNotSupported}, // Quota.
-		{0, 0, smb.StatusInvalidParameter},
-		{5, 0, smb.StatusInvalidParameter},
-		{255, 0, smb.StatusInvalidParameter},
+		{"normalized name", id, wire.InfoFile, 48, 4096, smb.StatusNotSupported},
+		{"set-only class", id, wire.InfoFile, uint8(wire.ClassFileRename), 4096, smb.StatusInvalidInfoClass},
+		{"unknown file class", id, wire.InfoFile, 200, 4096, smb.StatusInvalidInfoClass},
+		{"object ID", id, wire.InfoFilesystem, 8, 4096, smb.StatusNotSupported},
+		{"unknown filesystem class", id, wire.InfoFilesystem, 100, 4096, smb.StatusInvalidInfoClass},
+		{"security", id, wire.InfoSecurity, 0, 4096, smb.StatusNotSupported},
+		{"quota", id, 4, 0, 4096, smb.StatusNotSupported},
+		{"unknown type", id, 5, 0, 4096, smb.StatusInvalidParameter},
+		{"buffer too large", id, wire.InfoFile, uint8(wire.ClassFileBasic), smb.MaxTransactSize + 1, smb.StatusInvalidParameter},
+		{"closed file", closed, wire.InfoFile, uint8(wire.ClassFileBasic), 4096, smb.StatusFileClosed},
 	} {
-		message := f.query(t, open, test.infoType, test.class, 4096)
-		if message.Header.Status != test.status {
-			t.Fatalf("unsupported type %d class %d: status = %#x, want %#x", test.infoType, test.class, message.Header.Status, test.status)
+		if _, status := client.queryInfo(t, wire.QueryInfoRequest{ID: test.id, InfoType: test.infoType, InfoClass: test.class, OutputLength: test.length}); status != test.want {
+			t.Errorf("%s: status %#x, want %#x", test.name, status, test.want)
 		}
-		if _, err := wire.DecodeErrorResponse(message); err != nil {
-			t.Fatal(err)
-		}
-		f.echo(t)
 	}
+	client.echo(t)
 }
 
-func TestQueryInfoFileIDIndependentOfOpenID(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	_, first := f.create(t, "identity", smb.KindFile)
-	second := f.open(t, first.Object)
-	if first.ID == second.ID {
-		t.Fatal("two opens have the same ID")
-	}
-	one := queryData(t, f.query(t, first, wire.InfoFile, uint8(wire.ClassFileID), 24), smb.StatusSuccess)
-	two := queryData(t, f.query(t, second, wire.InfoFile, uint8(wire.ClassFileID), 24), smb.StatusSuccess)
-	if !bytes.Equal(one, two) {
-		t.Fatal("FileIdInformation depends on the open ID")
-	}
-	attr, err := f.storage.GetAttr(f.ctx, first.Object)
+func queryFilesystem(t *testing.T, client *testClient, id wire.FileID, class wire.FilesystemInfoClass, length uint32) ([]byte, smb.Status) {
+	t.Helper()
+	return client.queryInfo(t, wire.QueryInfoRequest{ID: id, InfoType: wire.InfoFilesystem, InfoClass: uint8(class), OutputLength: length})
+}
+
+// Finder and Time Machine size a backup from these replies: space in 4 KiB
+// units of 8 sectors of 512 bytes, rounded down.
+func TestFilesystemInfo(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	actual, err := srv.adapter.StatFS(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	checkQueryClass(t, f, first, attr, "\\identity", wire.ClassFileID, one)
-}
+	if data, status := queryFilesystem(t, client, id, wire.ClassFilesystemVolume, 1024); status != smb.StatusSuccess {
+		t.Fatalf("volume status %#x", status)
+	} else if volume, err := wire.DecodeFilesystemVolumeInformation(data); err != nil || volume != (wire.FilesystemVolumeInformation{Label: "backup", Serial: uint32(actual.VolumeID & 0xffffffff)}) {
+		t.Fatalf("volume = %+v, %v", volume, err)
+	}
+	if data, status := queryFilesystem(t, client, id, wire.ClassFilesystemDevice, 1024); status != smb.StatusSuccess {
+		t.Fatalf("device status %#x", status)
+	} else if device, err := wire.DecodeFilesystemDeviceInformation(data); err != nil || device != (wire.FilesystemDeviceInformation{Type: 7, Characteristics: 0x10}) {
+		t.Fatalf("device = %+v, %v", device, err)
+	}
+	if data, status := queryFilesystem(t, client, id, wire.ClassFilesystemAttribute, 1024); status != smb.StatusSuccess {
+		t.Fatalf("attribute status %#x", status)
+	} else if attribute, err := wire.DecodeFilesystemAttributeInformation(data); err != nil || attribute != (wire.FilesystemAttributeInformation{Name: "s3-smb", Attributes: smb.AdvertisedFilesystemAttributes, MaxComponentLength: 255}) {
+		t.Fatalf("attribute = %+v, %v", attribute, err)
+	}
 
-func TestQueryInfoDeletePendingAndCurrentName(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	resolved, open := f.create(t, "before", smb.KindFile)
-	missing, err := f.storage.Lookup(f.ctx, "after")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := f.storage.Rename(f.ctx, smb.RenameRequest{Source: resolved.Name, Destination: missing.Name, SourceInode: open.Object.Inode}); err != nil {
-		t.Fatal(err)
-	}
-	data := queryData(t, f.query(t, open, wire.InfoFile, uint8(wire.ClassFileName), 4096), smb.StatusSuccess)
-	decodeQueryClass(t, data, wire.DecodeFileNameInformation, wire.FileNameInformation{Name: "\\after"})
-	if status := f.server.options.State.SetDelete(open.ID, open.Binding, missing.Name, true); status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	for _, class := range []wire.FileInfoClass{wire.ClassFileStandard, wire.ClassFileAll} {
-		data := queryData(t, f.query(t, open, wire.InfoFile, uint8(class), 4096), smb.StatusSuccess)
-		if class == wire.ClassFileStandard {
-			info, err := wire.DecodeFileStandardInformation(data)
-			if err != nil || !info.DeletePending {
-				t.Fatalf("Standard deletion = %+v, %v", info, err)
+	expectSpace := func(space smb.Space) {
+		t.Helper()
+		units := func(size uint64) []byte { return binary.LittleEndian.AppendUint64(nil, size/4096) }
+		geometry := []byte{8, 0, 0, 0, 0, 2, 0, 0}
+		for _, test := range []struct {
+			want  [][]byte
+			class wire.FilesystemInfoClass
+		}{
+			{[][]byte{units(space.Capacity), units(space.Available), geometry}, wire.ClassFilesystemSize},
+			{[][]byte{units(space.Capacity), units(space.Available), units(space.Free), geometry}, wire.ClassFilesystemFullSize},
+		} {
+			data, status := queryFilesystem(t, client, id, test.class, 1024)
+			if want := bytes.Join(test.want, nil); status != smb.StatusSuccess || !bytes.Equal(data, want) {
+				t.Fatalf("class %d = %x, %#x; want %x", test.class, data, status, want)
 			}
-		} else {
-			info, err := wire.DecodeFileAllInformation(data)
-			if err != nil || !info.Standard.DeletePending || info.Name.Name != "\\after" {
-				t.Fatalf("All deletion/name = %+v, %v", info, err)
-			}
+		}
+	}
+	expectSpace(actual)
+	configured := smb.Space{Capacity: 3<<30 + 1023, Free: 2<<30 + 4095, Available: 1<<30 + 1}
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.StatFS = func(context.Context) (smb.Space, error) { return configured, nil }
+	})
+	expectSpace(configured)
+
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.StatFS = func(context.Context) (smb.Space, error) { return smb.Space{}, smb.ErrIO }
+	})
+	for _, class := range []wire.FilesystemInfoClass{wire.ClassFilesystemVolume, wire.ClassFilesystemSize, wire.ClassFilesystemFullSize} {
+		if _, status := queryFilesystem(t, client, id, class, 1024); status != smb.StatusIODeviceError {
+			t.Fatalf("class %d without StatFS: status %#x", class, status)
+		}
+	}
+	// These classes need no space figures.
+	for _, class := range []wire.FilesystemInfoClass{wire.ClassFilesystemDevice, wire.ClassFilesystemAttribute} {
+		if _, status := queryFilesystem(t, client, id, class, 1024); status != smb.StatusSuccess {
+			t.Fatalf("class %d without StatFS: status %#x", class, status)
 		}
 	}
 }
 
-func TestQueryInfoInvalidOpenAndStorageErrorKeepConnection(t *testing.T) {
-	f := newQueryInfoFixture(t)
-	resolved, open := f.create(t, "removed", smb.KindFile)
-	invalid := open
-	invalid.ID.Volatile++
-	message := f.query(t, invalid, wire.InfoFile, uint8(wire.ClassFileBasic), 40)
-	if message.Header.Status != smb.StatusFileClosed {
-		t.Fatalf("invalid open: %#x", message.Header.Status)
+func TestFilesystemInfoOutputLengths(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	for _, test := range []struct {
+		class         wire.FilesystemInfoClass
+		minimum, full uint32
+	}{
+		{wire.ClassFilesystemVolume, 18, 30},
+		{wire.ClassFilesystemSize, 24, 24},
+		{wire.ClassFilesystemFullSize, 32, 32},
+		{wire.ClassFilesystemDevice, 8, 8},
+		{wire.ClassFilesystemAttribute, 12, 24},
+	} {
+		full, status := queryFilesystem(t, client, id, test.class, 1024)
+		if status != smb.StatusSuccess || len(full) != int(test.full) {
+			t.Fatalf("class %d = %d bytes, %#x", test.class, len(full), status)
+		}
+		if _, status := queryFilesystem(t, client, id, test.class, test.minimum-1); status != smb.StatusInfoLengthMismatch {
+			t.Errorf("class %d below its minimum: status %#x", test.class, status)
+		}
+		for length := test.minimum; length <= test.full; length++ {
+			want := smb.StatusBufferOverflow
+			if length == test.full {
+				want = smb.StatusSuccess
+			}
+			if data, status := queryFilesystem(t, client, id, test.class, length); status != want || !bytes.Equal(data, full[:length]) {
+				t.Errorf("class %d in %d bytes = %x, %#x", test.class, length, data, status)
+			}
+		}
 	}
-	f.echo(t)
-	if err := f.storage.Remove(f.ctx, resolved.Name, open.Object.Inode); err != nil {
-		t.Fatal(err)
-	}
-	message = f.query(t, open, wire.InfoFile, uint8(wire.ClassFileName), 4096)
-	if message.Header.Status != smb.StatusObjectNameNotFound {
-		t.Fatalf("unlinked name: %#x", message.Header.Status)
-	}
-	f.echo(t)
 }
