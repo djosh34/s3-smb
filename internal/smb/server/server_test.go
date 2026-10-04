@@ -69,7 +69,7 @@ func exchange(ctx context.Context, t *testing.T, client *smbtest.Client, message
 	return reply.Messages
 }
 
-func echo(t *testing.T, id uint64) wire.Message {
+func echo(t testing.TB, id uint64) wire.Message {
 	t.Helper()
 	body, err := wire.EncodeEchoRequest(wire.EmptyRequest{})
 	if err != nil {
