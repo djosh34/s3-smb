@@ -28,6 +28,7 @@ type Tree struct {
 // run under an open-table lock. File handlers must drain active handle users
 // before executing cleanup returned by Opens.
 type RequestContext struct {
+	server  *Server
 	Storage smb.Storage
 	Opens   *state.Table
 	Tree    Tree
@@ -40,5 +41,5 @@ func (request RequestContext) Binding() state.Binding {
 }
 
 func (connection *connection) requestContext() RequestContext {
-	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State}
+	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State, server: connection.server}
 }
