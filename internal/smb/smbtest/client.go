@@ -29,12 +29,10 @@ type Reply struct {
 
 // Client preserves supplied headers, credits and compound flags. Send computes
 // NextCommand links and padding; SendRaw bypasses all encoding. Receive checks
-// pending and final async identities. ReceiveRaw bypasses that check, so callers
-// must not mix it with Receive for a pending request.
-// Send and Receive may run concurrently, with only one receiver across Receive,
-// WaitLeaseBreak and ReceiveRaw. Receive queues lease breaks instead of returning
-// them as replies; WaitLeaseBreak queues normal replies instead. Do not mix
-// ReceiveRaw with either decoded receiver. Context
+// pending and final async identities.
+// Send and Receive may run concurrently, with only one receiver across Receive
+// and WaitLeaseBreak. Receive queues lease breaks instead of returning them as
+// replies; WaitLeaseBreak queues normal replies instead. Context
 // cancellation interrupts I/O. An I/O error closes the connection; requests are
 // never retried. Callers must use NewClient and close the client when done.
 // Login enables protection. Send changes signing flags and signatures, but

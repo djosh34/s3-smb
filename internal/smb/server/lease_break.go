@@ -68,8 +68,8 @@ func (server *Server) sendLeaseBreak(notification state.Break) <-chan error {
 func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte, error) {
 	connection.sessionMu.RLock()
 	defer connection.sessionMu.RUnlock()
-	session := connection.sessions[notification.Binding.SessionID]
-	if session == nil || !session.active {
+	session, _, status := connection.identify(wire.Header{Command: wire.OplockBreak, SessionID: notification.Binding.SessionID})
+	if status != smb.StatusSuccess {
 		return nil, errors.New("lease holder session is gone")
 	}
 	flags := uint32(0)

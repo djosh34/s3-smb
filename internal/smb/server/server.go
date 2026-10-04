@@ -30,7 +30,7 @@ func New(options Options) (*Server, error) {
 		return nil, fmt.Errorf("server account: %w", err)
 	}
 	return &Server{
-		options: options, handlers: commandHandlers(),
+		options: options, handlers: commandHandlers(), activeOpens: make(map[uint64]*openUses),
 		connections: make(map[*connection]struct{}), sessions: make(map[uint64]*connection), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }
@@ -48,9 +48,6 @@ func (listener *ownedListener) close() error {
 
 // Serve owns listener. Cancellation or an accept error shuts down the server.
 func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
-	if listener == nil {
-		return errors.New("nil listener")
-	}
 	owned := &ownedListener{Listener: listener}
 	server.mu.Lock()
 	if server.stopping {
@@ -94,9 +91,6 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 // ServeConn owns conn and serves framed requests until EOF, cancellation or error.
 func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error {
-	if conn == nil {
-		return errors.New("nil connection")
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	connection, err := server.addConnection(ctx, cancel, conn)
 	if err != nil {

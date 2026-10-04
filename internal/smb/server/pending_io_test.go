@@ -220,10 +220,5 @@ func TestS3OutageInCompound(t *testing.T) {
 	if status := client.receive(t, related.Header).Header.Status; status != smb.StatusSuccess {
 		t.Fatalf("related status %#x", status)
 	}
-	client.echo(t)
-	for messageID, replies := range client.replies {
-		if len(replies) != 0 {
-			t.Fatalf("message %d answered again: %+v", messageID, replies)
-		}
-	}
+	client.noExtraReplies(t)
 }

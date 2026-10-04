@@ -137,6 +137,24 @@ func needsTree(command wire.Command) bool {
 	}
 }
 
+// identify finds the session and, for commands that need one, the tree that
+// header names. Only LOGOFF may name a session that is still authenticating.
+// The caller holds sessionMu.
+func (connection *connection) identify(header wire.Header) (*sessionEntry, Tree, smb.Status) {
+	session := connection.sessions[header.SessionID]
+	if session == nil || !session.active && (header.Command != wire.Logoff || session.acceptor == nil) {
+		return nil, Tree{}, smb.StatusUserSessionDeleted
+	}
+	if !needsTree(header.Command) {
+		return session, Tree{}, smb.StatusSuccess
+	}
+	tree, exists := session.trees[header.TreeID]
+	if !exists {
+		return nil, Tree{}, smb.StatusNetworkNameDeleted
+	}
+	return session, tree, smb.StatusSuccess
+}
+
 func (connection *connection) resolveRequest(header wire.Header, cancel context.CancelFunc) (RequestContext, *sessionRequest, smb.Status) {
 	request := connection.requestContext()
 	if header.Command == wire.Echo && header.SessionID == 0 {
@@ -144,22 +162,12 @@ func (connection *connection) resolveRequest(header wire.Header, cancel context.
 	}
 	connection.sessionMu.Lock()
 	defer connection.sessionMu.Unlock()
-	session := connection.sessions[header.SessionID]
-	if session == nil || !session.active && (header.Command != wire.Logoff || session.acceptor == nil) {
-		return request, nil, smb.StatusUserSessionDeleted
+	session, tree, status := connection.identify(header)
+	if status != smb.StatusSuccess {
+		return request, nil, status
 	}
-	request.Session = session.identity
-	if needsTree(header.Command) {
-		tree, exists := session.trees[header.TreeID]
-		if !exists {
-			return request, nil, smb.StatusNetworkNameDeleted
-		}
-		request.Tree = tree
-	}
+	request.Session, request.Tree = session.identity, tree
 	operation := &sessionRequest{header: header, cancel: cancel, done: make(chan struct{})}
-	if connection.inflight == nil {
-		connection.inflight = make(map[*sessionRequest]struct{})
-	}
 	connection.inflight[operation] = struct{}{}
 	return request, operation, smb.StatusSuccess
 }
@@ -184,10 +192,10 @@ func (connection *connection) treeConnect(message wire.Message) (reply, error) {
 		return reply{}, err
 	}
 	connection.sessionMu.Lock()
-	session := connection.sessions[message.Header.SessionID]
-	if session == nil || !session.active {
+	session, _, status := connection.identify(message.Header)
+	if status != smb.StatusSuccess {
 		connection.sessionMu.Unlock()
-		return reply{status: smb.StatusUserSessionDeleted}, nil
+		return reply{status: status}, nil
 	}
 	session.trees[id] = Tree{TreeID: id, Share: connection.server.options.ShareName}
 	connection.sessionMu.Unlock()
@@ -195,11 +203,12 @@ func (connection *connection) treeConnect(message wire.Message) (reply, error) {
 	return reply{body: body, treeID: id}, err
 }
 
-// stopRequests cancels and drains identity holders and pending work, not sender completions. A completion
-// can wait for the client to read while the client is awaiting LOGOFF's reply.
-// The cleanup request itself may be an async related member; it must not wait
-// for its own completion. Other cleanup requests are canceled but not waited
-// on, since two cleanups could otherwise wait on each other.
+// stopRequests cancels the session's or tree's requests and waits for them,
+// but not for their replies to be sent: a reply can wait for the client to
+// read while the client waits for the LOGOFF reply. The cleanup request itself
+// may be an async related member and must not wait for its own completion.
+// Other cleanup requests are cancelled but not waited on, since two cleanups
+// could otherwise wait on each other.
 func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exceptMessageID uint64) {
 	connection.sessionMu.Lock()
 	var holders []*sessionRequest
@@ -250,14 +259,10 @@ func (connection *connection) logoff(ctx context.Context, message wire.Message) 
 func (connection *connection) treeDisconnect(ctx context.Context, message wire.Message) (reply, error) {
 	id, treeID := message.Header.SessionID, message.Header.TreeID
 	connection.sessionMu.Lock()
-	session := connection.sessions[id]
-	if session == nil || !session.active {
+	session, _, status := connection.identify(message.Header)
+	if status != smb.StatusSuccess {
 		connection.sessionMu.Unlock()
-		return reply{status: smb.StatusUserSessionDeleted}, nil
-	}
-	if _, exists := session.trees[treeID]; !exists {
-		connection.sessionMu.Unlock()
-		return reply{status: smb.StatusNetworkNameDeleted}, nil
+		return reply{status: status}, nil
 	}
 	delete(session.trees, treeID)
 	connection.sessionMu.Unlock()

@@ -1,139 +1,169 @@
 package server
 
 import (
-	"context"
 	"encoding/binary"
-	"sync/atomic"
+	"slices"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func TestEchoCompoundFraming(t *testing.T) {
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, ctx := pipeClient(t, server)
-	exchange(ctx, t, client, negotiateMessage(t, 3))
-	second := echo(t, 2)
-	second.Header.Flags = wire.FlagRelated
-	second.Header.SessionID, second.Header.TreeID = ^uint64(0), ^uint32(0)
-	messages := exchange(ctx, t, client, echo(t, 1), second, echo(t, 3))
-	if len(messages) != 3 {
-		t.Fatalf("reply members: %d", len(messages))
-	}
-	for index, message := range messages {
-		if message.Header.Status != smb.StatusSuccess || message.Header.MessageID != uint64(index+1) || message.Header.SessionID != 0 || message.Header.TreeID != 0 {
-			t.Fatalf("member %d: %+v", index, message.Header)
-		}
-		if index < 2 && message.Header.NextCommand != 72 || index == 2 && message.Header.NextCommand != 0 {
-			t.Fatalf("NextCommand: %d", message.Header.NextCommand)
-		}
-		if _, err := wire.DecodeEchoResponse(message); err != nil {
-			t.Fatal(err)
-		}
-	}
+func createMessage(t *testing.T, client *testClient, name string, disposition uint32) wire.Message {
+	t.Helper()
+	request := wire.CreateRequest{Name: name, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: disposition}
+	return message(t, client, wire.Create, wire.EncodeCreateRequest, request)
 }
 
-func TestBadCompoundBodyDoesNotDispatchPrefix(t *testing.T) {
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls atomic.Int32
-	server.handlers[wire.Echo] = func(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
-		calls.Add(1)
-		return handleEcho(ctx, request, message)
-	}
-	client, ctx := pipeClient(t, server)
-	exchange(ctx, t, client, negotiateMessage(t, 2))
-	bad := echo(t, 2)
-	bad.Body = []byte{0, 0, 0, 0}
-	messages := exchange(ctx, t, client, echo(t, 1), bad)
-	if len(messages) != 2 || calls.Load() != 0 {
-		t.Fatalf("bad compound dispatched %d handlers", calls.Load())
-	}
-	for _, message := range messages {
-		if message.Header.Status != smb.StatusInvalidParameter {
-			t.Fatalf("bad member: %+v", message.Header)
-		}
-	}
-	messages = exchange(ctx, t, client, echo(t, 3))
-	if messages[0].Header.Status != smb.StatusSuccess {
-		t.Fatal("bad body dropped the connection")
-	}
+func closeMessage(t *testing.T, client *testClient, id wire.FileID) wire.Message {
+	t.Helper()
+	return message(t, client, wire.Close, wire.EncodeCloseRequest, wire.CloseRequest{ID: id})
 }
 
-func TestMalformedCompoundLinkClosesConnection(t *testing.T) {
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, ctx := pipeClient(t, server)
-	exchange(ctx, t, client, negotiateMessage(t, 2))
-	payload, err := wire.Join([]wire.Message{echo(t, 1), echo(t, 2)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	binary.LittleEndian.PutUint32(payload[20:], 73)
-	frame := make([]byte, 4)
-	binary.BigEndian.PutUint32(frame, 140)
-	if err := client.SendRaw(ctx, append(frame, payload...)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := client.Receive(ctx); err == nil {
-		t.Fatal("malformed compound received a reply")
-	}
-}
-
-func TestAsyncRelatedSuffixGetsSeparatePendingIdentities(t *testing.T) {
-	server, release := controlledAsync(t, wire.Read, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := corePipeClient(t, server)
-	exchange(ctx, t, client, negotiateMessage(t, 4))
-	suffix := echo(t, 3)
-	suffix.Header.Flags, suffix.Header.SessionID, suffix.Header.TreeID = wire.FlagRelated, ^uint64(0), ^uint32(0)
-	if err := client.Send(ctx, []wire.Message{echo(t, 1), asyncMessage(t, wire.Read, 2), suffix, echo(t, 4)}); err != nil {
-		t.Fatal(err)
-	}
-	pendingIDs := make(map[uint64]uint64)
-	for index, wantID := range []uint64{1, 2, 3, 4} {
-		response, err := client.Receive(ctx)
-		if err != nil {
-			t.Fatal(err)
+// Related members use the file the CREATE before them opened, also when one
+// of them waits on storage and the next has to wait for it.
+func TestCompoundRelatedFileID(t *testing.T) {
+	for _, held := range []bool{false, true} {
+		srv := newTestServer(t)
+		client := srv.connect(t)
+		messages := []wire.Message{
+			createMessage(t, client, "file", fileOpenIf),
+			related(message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: placeholder, Data: []byte("data")})),
+			related(closeMessage(t, client, placeholder)),
 		}
-		if len(response.Messages) != 1 || response.Messages[0].Header.MessageID != wantID {
-			t.Fatalf("prefix resent or response order changed: %+v", response.Messages)
-		}
-		header := response.Messages[0].Header
-		if index == 1 || index == 2 {
-			if header.Status != smb.StatusPending || header.SessionID != 77 {
-				t.Fatalf("dependent pending: %+v", header)
+		var statuses []smb.Status
+		if held {
+			entered, release := srv.holdWrites()
+			if err := client.raw.Send(t.Context(), messages); err != nil {
+				t.Fatal(err)
 			}
-			pendingIDs[wantID] = header.AsyncID
-		} else if header.Status != smb.StatusSuccess {
-			t.Fatalf("independent ECHO: %+v", header)
+			<-entered
+			client.interim(t, messages[1].Header)
+			client.interim(t, messages[2].Header)
+			close(release)
+			statuses = finalStatuses(t, client, messages)
+		} else {
+			statuses = sendCompound(t, client, messages...)
+		}
+		if want := []smb.Status{smb.StatusSuccess, smb.StatusSuccess, smb.StatusSuccess}; !slices.Equal(statuses, want) {
+			t.Fatalf("statuses %#x", statuses)
+		}
+		srv.expectContent(t, map[string]string{"file": "data"})
+		client.noExtraReplies(t)
+	}
+}
+
+// A related member that needs a file fails with the error of the member
+// before it, but not with a warning.
+func TestCompoundErrors(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	queryAll := func(length uint32) wire.Message {
+		request := wire.QueryInfoRequest{ID: placeholder, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileAll), OutputLength: length}
+		return related(message(t, client, wire.QueryInfo, wire.EncodeQueryInfoRequest, request))
+	}
+	for _, test := range []struct {
+		name     string
+		messages []wire.Message
+		want     []smb.Status
+	}{
+		{
+			"failed CREATE",
+			[]wire.Message{createMessage(t, client, "missing", fileOpen), queryAll(4096), related(closeMessage(t, client, placeholder))},
+			[]smb.Status{smb.StatusObjectNameNotFound, smb.StatusObjectNameNotFound, smb.StatusObjectNameNotFound},
+		},
+		{
+			"truncated QUERY_INFO",
+			[]wire.Message{createMessage(t, client, "file", fileOpenIf), queryAll(100), related(closeMessage(t, client, placeholder))},
+			[]smb.Status{smb.StatusSuccess, smb.StatusBufferOverflow, smb.StatusSuccess},
+		},
+		{
+			"no file before",
+			[]wire.Message{echoMessage(t, client), related(closeMessage(t, client, placeholder))},
+			[]smb.Status{smb.StatusSuccess, smb.StatusInvalidParameter},
+		},
+	} {
+		if statuses := sendCompound(t, client, test.messages...); !slices.Equal(statuses, test.want) {
+			t.Errorf("%s: statuses %#x, want %#x", test.name, statuses, test.want)
 		}
 	}
-	if pendingIDs[2] == pendingIDs[3] {
-		t.Fatal("related members share an async identity")
+}
+
+// A compound the server cannot run as a whole is refused before any member
+// runs, and the connection goes on.
+func TestCompoundRefusals(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.dial(t, smbtest.LoginOptions{Signing: smb.SigningGMAC})
+	invalid := []smb.Status{smb.StatusInvalidParameter, smb.StatusInvalidParameter}
+	for name, last := range map[string]func() wire.Message{
+		"body does not decode": func() wire.Message {
+			bad := echoMessage(t, client)
+			bad.Body = []byte{0, 0, 0, 0}
+			return bad
+		},
+		"SESSION_SETUP inside": func() wire.Message {
+			return wire.Message{Header: client.header(wire.SessionSetup, 1), Body: loginStart(t)}
+		},
+		"credit charge below size": func() wire.Message {
+			return message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{Data: make([]byte, 64<<10+1)})
+		},
+	} {
+		if statuses := sendCompound(t, client, createMessage(t, client, "made", fileCreateDisposition), last()); !slices.Equal(statuses, invalid) {
+			t.Errorf("%s: statuses %#x", name, statuses)
+		}
 	}
-	close(release)
-	seen := make(map[uint64]bool)
-	for range 2 {
-		response, err := client.Receive(ctx)
-		if err != nil {
-			t.Fatal(err)
+	if srv.exists(t, "made") {
+		t.Error("a refused compound created a file")
+	}
+	// A related first member has nothing to relate to: its chain fails, the
+	// unrelated member after it runs.
+	first := echoMessage(t, client)
+	first.Header.Flags |= wire.FlagRelated
+	statuses := sendCompound(t, client, first, related(echoMessage(t, client)), echoMessage(t, client))
+	if want := []smb.Status{smb.StatusInvalidParameter, smb.StatusInvalidParameter, smb.StatusSuccess}; !slices.Equal(statuses, want) {
+		t.Fatalf("statuses %#x", statuses)
+	}
+}
+
+// Replies in a compound start on 8-byte boundaries, and an error reply has
+// the 9-byte error body (MS-SMB2 2.2.2, 3.3.4.1.3).
+func TestReplyFraming(t *testing.T) {
+	client := newTestServer(t).accept(t)
+	negotiate(t, client)
+	// Without a session CREATE fails.
+	if err := client.raw.Send(t.Context(), []wire.Message{echoMessage(t, client), createMessage(t, client, "file", fileOpenIf)}); err != nil {
+		t.Fatal(err)
+	}
+	reply, err := client.raw.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw := reply.Raw
+	if len(raw) != 72+64+9 {
+		t.Fatalf("compound reply of %d bytes", len(raw))
+	}
+	for _, field := range []struct {
+		name         string
+		offset, size int
+		want         uint32
+	}{
+		{"next command", 20, 4, 72},
+		{"padding", 68, 4, 0},
+		{"CREATE status", 72 + 8, 4, uint32(smb.StatusUserSessionDeleted)},
+		{"last next command", 72 + 20, 4, 0},
+		{"error structure size", 72 + 64, 2, 9},
+		{"error context count and reserved", 72 + 66, 2, 0},
+		{"error byte count", 72 + 68, 4, 0},
+	} {
+		var got uint32
+		if field.size == 2 {
+			got = uint32(binary.LittleEndian.Uint16(raw[field.offset:]))
+		} else {
+			got = binary.LittleEndian.Uint32(raw[field.offset:])
 		}
-		header := response.Messages[0].Header
-		want := smb.StatusFileLockConflict
-		if header.MessageID == 3 {
-			want = smb.StatusSuccess
+		if got != field.want {
+			t.Errorf("%s at %d = %#x, want %#x", field.name, field.offset, got, field.want)
 		}
-		if header.MessageID != 2 && header.MessageID != 3 || seen[header.MessageID] || header.Status != want || header.Credit != 0 {
-			t.Fatalf("dependent completion: %+v", header)
-		}
-		seen[header.MessageID] = true
 	}
 }

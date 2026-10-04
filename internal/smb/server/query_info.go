@@ -32,7 +32,9 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	var data []byte
 	switch query.InfoType {
 	case wire.InfoFile:
-		data, result.status = queryFileInfo(ctx, request, open, wire.FileInfoClass(query.InfoClass), query.OutputLength)
+		if data, result.status, err = queryFileInfo(ctx, request, open, wire.FileInfoClass(query.InfoClass), query.OutputLength); err != nil {
+			return result, err
+		}
 	case wire.InfoFilesystem:
 		if data, result.status, err = queryFilesystemInfo(ctx, request, query.InfoClass, query.OutputLength); err != nil {
 			return result, err
@@ -72,32 +74,32 @@ func fileInfoFixedSize(class wire.FileInfoClass) uint32 {
 	}
 }
 
-func queryFileInfo(ctx context.Context, request RequestContext, open state.Open, class wire.FileInfoClass, outputLength uint32) ([]byte, smb.Status) {
+func queryFileInfo(ctx context.Context, request RequestContext, open state.Open, class wire.FileInfoClass, outputLength uint32) ([]byte, smb.Status, error) {
 	if class == 48 { // FileNormalizedNameInformation, MS-SMB2 3.3.5.20.1.
-		return nil, smb.StatusNotSupported
+		return nil, smb.StatusNotSupported, nil
 	}
 	fixed := fileInfoFixedSize(class)
 	if fixed == 0 {
-		return nil, smb.StatusInvalidInfoClass
+		return nil, smb.StatusInvalidInfoClass, nil
 	}
 	if outputLength < fixed {
-		return nil, smb.StatusInfoLengthMismatch
+		return nil, smb.StatusInfoLengthMismatch, nil
 	}
 	attr, err := request.Storage.GetAttr(ctx, open.Object)
 	if err != nil {
-		return nil, smb.StatusFromError(err)
+		return nil, smb.StatusFromError(err), nil
 	}
 	data, err := encodeFileInfo(ctx, request, open, attr, class)
 	if err != nil {
-		return nil, smb.StatusFromError(err)
+		return nil, smb.StatusSuccess, err
 	}
 	if uint64(len(data)) > uint64(outputLength) {
 		if class == wire.ClassFileStream {
-			return streamInfoPrefix(data, outputLength), smb.StatusBufferOverflow
+			return streamInfoPrefix(data, outputLength), smb.StatusBufferOverflow, nil
 		}
-		return data[:outputLength], smb.StatusBufferOverflow
+		return data[:outputLength], smb.StatusBufferOverflow, nil
 	}
-	return data, smb.StatusSuccess
+	return data, smb.StatusSuccess, nil
 }
 
 // streamInfoPrefix receives an encoded list and keeps only complete entries.

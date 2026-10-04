@@ -10,8 +10,7 @@
 // open-table CloseActions through RequestContext.Cleanup. A related command that
 // needs a FileId inherits an error-severity predecessor status without running;
 // warning statuses allow it to run.
-// The server never closes the storage runtime. Tests use ServeConn over net.Pipe
-// without a listener or main wiring.
+// The server never closes the storage runtime.
 package server
 
 import (
@@ -36,7 +35,7 @@ const (
 	AllowPlaintext
 )
 
-// Options joins the independent M1 modules. ShareName is the only disk share.
+// Options joins the storage, open table, logger and clock. ShareName is the only disk share.
 // State must be constructed with Now so authentication and expiry share a clock.
 // ServerGUID is stable for the running daemon. Now drives deadlines; Logger logs
 // rejected frames and negotiation reasons without passwords, tokens or keys.

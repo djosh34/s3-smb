@@ -59,15 +59,3 @@ func (client *Client) WaitLeaseBreak(ctx context.Context) (wire.LeaseBreakNotifi
 	client.leaseBreaks = client.leaseBreaks[1:]
 	return notification, nil
 }
-
-// SendLeaseBreakAcknowledgment sends a lease acknowledgment with the supplied
-// session, tree, message ID and credits. Receive returns its normal reply.
-// The acknowledgment has no epoch. Raw fields remain available for invalid tests.
-func (client *Client) SendLeaseBreakAcknowledgment(ctx context.Context, header wire.Header, acknowledgment wire.LeaseBreakRequest) error {
-	body, err := wire.EncodeLeaseBreakRequest(acknowledgment)
-	if err != nil {
-		return err
-	}
-	header.Command = wire.OplockBreak
-	return client.Send(ctx, []wire.Message{{Header: header, Body: body}})
-}

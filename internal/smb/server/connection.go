@@ -52,7 +52,7 @@ type connection struct {
 }
 
 func newConnection(ctx context.Context, cancel context.CancelFunc, server *Server, conn net.Conn) *connection {
-	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), sessions: make(map[uint64]*sessionEntry), replyProtection: make(map[uint64]savedProtection), nextAsyncID: 1}
+	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), sessions: make(map[uint64]*sessionEntry), replyProtection: make(map[uint64]savedProtection), inflight: make(map[*sessionRequest]struct{}), nextAsyncID: 1}
 }
 
 func (connection *connection) close() error {
@@ -173,24 +173,12 @@ func (connection *connection) checkNegotiationState(messages []wire.Message) err
 	return nil
 }
 
+// send protects messages as one frame and waits until it is written. A
+// compound whose replies would need two encrypted sessions fails.
 func (connection *connection) send(messages []wire.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
-	if connection.mixedEncryption(messages) {
-		// One transform belongs to one session. Policy-error replies to a
-		// plaintext compound spanning encrypted sessions need separate frames.
-		for _, message := range messages {
-			if err := connection.sendFrame([]wire.Message{message}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-	return connection.sendFrame(messages)
-}
-
-func (connection *connection) sendFrame(messages []wire.Message) error {
 	payload, err := connection.encodePayload(messages)
 	if err != nil {
 		return err

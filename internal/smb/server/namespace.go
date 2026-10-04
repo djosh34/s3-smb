@@ -114,14 +114,6 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 	return smb.Resolved{}, nil, fmt.Errorf("parent of %q kept changing: %w", path, smb.ErrIdentityChanged)
 }
 
-func closeOpen(ctx context.Context, request RequestContext, id state.FileID) error {
-	action, err := removeOpen(ctx, request, id)
-	if action.FileID == (state.FileID{}) {
-		return err
-	}
-	return errors.Join(err, request.Cleanup(ctx, []state.CloseAction{action}))
-}
-
 // removeOpen transfers cleanup after table removal and namespace unlock. A
 // discovery error can accompany a valid action; the caller must still clean it.
 // Callers release their own useOpen reference before removing the open.

@@ -25,9 +25,6 @@ func useOpen(request RequestContext, id wire.FileID) (open state.Open, release f
 	if status != smb.StatusSuccess {
 		return state.Open{}, nil, status
 	}
-	if server.activeOpens == nil {
-		server.activeOpens = make(map[uint64]*openUses)
-	}
 	uses := server.activeOpens[open.ID.Persistent]
 	if uses == nil {
 		uses = &openUses{drained: make(chan struct{})}

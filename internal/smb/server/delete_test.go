@@ -100,15 +100,6 @@ func rename(t *testing.T, client *testClient, id wire.FileID, name string, repla
 	return setFileInfo(t, client, id, wire.ClassFileRename, wire.EncodeFileRenameInformation, wire.FileRenameInformation{Name: name, ReplaceIfExists: replace})
 }
 
-// cancelAsync sends CANCEL for the request behind an interim reply.
-func cancelAsync(t *testing.T, client *testClient, interim wire.Header) {
-	t.Helper()
-	header := wire.Header{Command: wire.Cancel, Flags: wire.FlagAsync, AsyncID: interim.AsyncID, SessionID: client.session.SessionID}
-	if err := client.raw.Send(t.Context(), []wire.Message{{Header: header, Body: encode(t, wire.EncodeCancelRequest, wire.EmptyRequest{})}}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestDeleteOnCloseNeedsDeleteAccess(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
@@ -558,7 +549,7 @@ func TestNamespaceWaitCanBeCancelled(t *testing.T) {
 		{encode(t, wire.EncodeFileDispositionInformation, wire.FileDispositionInformation{DeletePending: true}), wire.ClassFileDisposition},
 	} {
 		request := client.send(t, wire.SetInfo, setInfoBody(input.class, waiting, input.data), 1)
-		cancelAsync(t, client, client.interim(t, request))
+		client.cancelAsync(t, client.interim(t, request))
 		if status := client.receive(t, request).Header.Status; status != smb.StatusCancelled {
 			t.Fatalf("cancelled SET_INFO status %#x", status)
 		}

@@ -1,6 +1,7 @@
 package state_test
 
 import (
+	"sync"
 	"testing"
 	"time"
 
@@ -73,6 +74,35 @@ func TestDisconnectAndReconnectPreserveDurableState(t *testing.T) {
 	statusIs(t, table.Lock(reattached.ID, reattached.Binding, []state.Range{{Offset: 10, Length: 10}}, true), smb.StatusSuccess)
 	if action := closeOpen(t, table, reattached); !action.Remove || action.Name != grant.DeleteName {
 		t.Fatalf("close after reconnect: %+v", action)
+	}
+}
+
+// Two connections of the Mac may race to reclaim the same open; one wins.
+func TestReconnectWinsOnce(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	open := commit(t, table, req, durableGrant(req))
+	table.Disconnect(binding.SessionID)
+	statuses := make(chan smb.Status, 8)
+	var workers sync.WaitGroup
+	for range 8 {
+		workers.Go(func() {
+			_, status := table.Reconnect(reconnectRequest(open))
+			statuses <- status
+		})
+	}
+	workers.Wait()
+	close(statuses)
+	successes := 0
+	for status := range statuses {
+		if status == smb.StatusSuccess {
+			successes++
+		} else {
+			statusIs(t, status, smb.StatusObjectNameNotFound)
+		}
+	}
+	if successes != 1 || len(table.CloseAll()) != 1 {
+		t.Fatalf("%d reconnects won", successes)
 	}
 }
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"log/slog"
 	"math"
@@ -93,11 +94,26 @@ func (s *testServer) connect(t *testing.T) *testClient {
 
 // dial logs a new client in over its own TCP connection. Share and Account
 // are filled in; Cipher 0 gives a signed plaintext session and a zero
-// ClientGUID a random one. Dial from the test goroutine only. Cleanup closes
-// the client and reports any error from the server side of the connection.
+// ClientGUID a random one. Dial from the test goroutine only.
 func (s *testServer) dial(t *testing.T, login smbtest.LoginOptions) *testClient {
 	t.Helper()
 	login.Share, login.Account = s.server.options.ShareName, s.server.options.Account
+	client := s.accept(t)
+	client.login = login
+	var err error
+	client.session, err = client.raw.Login(t.Context(), login)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return client
+}
+
+// accept opens a new TCP connection to the server without logging in. Its
+// requests go out unprotected, starting at message ID 0. Cleanup closes the
+// client and reports any error from the server side of the connection; a test
+// that expects the server to end the connection reads that error with ended.
+func (s *testServer) accept(t *testing.T) *testClient {
+	t.Helper()
 	var dialer net.Dialer
 	dialed, err := dialer.DialContext(t.Context(), "tcp", s.listener.Addr().String())
 	if err != nil {
@@ -117,16 +133,12 @@ func (s *testServer) dial(t *testing.T, login smbtest.LoginOptions) *testClient 
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &testClient{server: s, raw: raw, conn: conn, served: served, login: login, replies: make(map[uint64][]wire.Message), interims: make(map[uint64]wire.Header)}
+	client := &testClient{server: s, raw: raw, conn: conn, served: served, replies: make(map[uint64][]wire.Message), interims: make(map[uint64]wire.Header)}
 	t.Cleanup(func() {
 		if closeErr := errors.Join(client.disconnect(), raw.Close()); closeErr != nil {
 			t.Error(closeErr)
 		}
 	})
-	client.session, err = raw.Login(t.Context(), login)
-	if err != nil {
-		t.Fatal(err)
-	}
 	return client
 }
 
@@ -164,6 +176,14 @@ func (c *testClient) disconnect() error {
 		return nil
 	}
 	err := errors.Join(c.conn.CloseWrite(), <-c.served)
+	c.served = nil
+	return err
+}
+
+// ended waits for the server to end the connection on its own and returns
+// the server's error.
+func (c *testClient) ended() error {
+	err := <-c.served
 	c.served = nil
 	return err
 }
@@ -356,6 +376,36 @@ func (c *testClient) echo(t *testing.T) {
 	}
 }
 
+// cancelAsync sends CANCEL for the request behind an interim reply.
+func (c *testClient) cancelAsync(t *testing.T, interim wire.Header) {
+	t.Helper()
+	header := wire.Header{Command: wire.Cancel, Flags: wire.FlagAsync, AsyncID: interim.AsyncID, SessionID: c.session.SessionID}
+	if err := c.raw.Send(t.Context(), []wire.Message{{Header: header, Body: encode(t, wire.EncodeCancelRequest, wire.EmptyRequest{})}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sendUnprotected sends messages as one compound without signing or
+// encrypting it, whatever the session requires.
+func (c *testClient) sendUnprotected(t *testing.T, messages ...wire.Message) {
+	t.Helper()
+	if err := c.raw.SendRaw(t.Context(), frame(t, messages...)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// noExtraReplies fails the test if the server sent a reply that no receive
+// call took, such as a reply to CANCEL or a second final reply.
+func (c *testClient) noExtraReplies(t *testing.T) {
+	t.Helper()
+	c.echo(t)
+	for messageID, replies := range c.replies {
+		if len(replies) != 0 {
+			t.Fatalf("message %d answered again: %+v", messageID, replies)
+		}
+	}
+}
+
 // leaseBreak waits for the next lease break notification to this client.
 func (c *testClient) leaseBreak(t *testing.T) wire.LeaseBreakNotification {
 	t.Helper()
@@ -384,13 +434,104 @@ func creditsFor(size int) uint16 {
 	return uint16(min(max(1, (size+unit-1)/unit), math.MaxUint16))
 }
 
-func encode[T any](t *testing.T, encoder func(T) ([]byte, error), request T) []byte {
+func encode[T any](t testing.TB, encoder func(T) ([]byte, error), request T) []byte {
 	t.Helper()
 	body, err := encoder(request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return body
+}
+
+// frame joins messages into one direct TCP frame, unprotected.
+func frame(t testing.TB, messages ...wire.Message) []byte {
+	t.Helper()
+	payload, err := wire.Join(messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return append(binary.BigEndian.AppendUint32(nil, uint32(len(payload)&0xffffff)), payload...)
+}
+
+// negotiateRequest is the NEGOTIATE a Mac sends: SMB 3.1.1 with SHA-512
+// preauth, both GCM ciphers and both signing algorithms.
+func negotiateRequest(t testing.TB) []byte {
+	t.Helper()
+	contexts := make([]wire.NegotiateContext, 3)
+	var errs [3]error
+	contexts[0], errs[0] = wire.EncodePreauthContext(wire.PreauthContext{Hashes: []uint16{smb.PreauthSHA512}, Salt: make([]byte, 32)})
+	contexts[1], errs[1] = wire.EncodeEncryptionContext(wire.EncryptionContext{Ciphers: []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM}})
+	contexts[2], errs[2] = wire.EncodeSigningContext(wire.SigningContext{Algorithms: []uint16{smb.SigningCMAC, smb.SigningGMAC}})
+	if err := errors.Join(errs[:]...); err != nil {
+		t.Fatal(err)
+	}
+	return encode(t, wire.EncodeNegotiateRequest, wire.NegotiateRequest{
+		Dialects: []uint16{smb.Dialect311}, SecurityMode: smb.AdvertisedSecurityMode, Contexts: contexts, ClientGUID: [16]byte{2},
+	})
+}
+
+// loginStart is the body of the first SESSION_SETUP of an NTLMv2 login.
+func loginStart(t testing.TB) []byte {
+	t.Helper()
+	account := auth.Account{User: "backup", Password: "password"}
+	acceptor, err := auth.NewAcceptor(auth.Options{Account: account, ServerName: "s3-smb", Now: time.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := acceptor.InitialToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator, err := auth.NewInitiator(account, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, err := initiator.Start(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encode(t, wire.EncodeSessionSetupRequest, wire.SessionSetupRequest{Token: start.Token, SecurityMode: 3})
+}
+
+// message builds a one-credit request with the client's next message ID.
+func message[T any](t *testing.T, client *testClient, command wire.Command, encoder func(T) ([]byte, error), request T) wire.Message {
+	t.Helper()
+	return wire.Message{Header: client.header(command, 1), Body: encode(t, encoder, request)}
+}
+
+func echoMessage(t *testing.T, client *testClient) wire.Message {
+	t.Helper()
+	return message(t, client, wire.Echo, wire.EncodeEchoRequest, wire.EmptyRequest{})
+}
+
+// finalStatuses returns the status of the final reply to each message.
+func finalStatuses(t *testing.T, client *testClient, messages []wire.Message) []smb.Status {
+	t.Helper()
+	statuses := make([]smb.Status, len(messages))
+	for index, message := range messages {
+		statuses[index] = client.receive(t, message.Header).Header.Status
+	}
+	return statuses
+}
+
+// sendCompound sends messages as one compound and returns their final statuses.
+func sendCompound(t *testing.T, client *testClient, messages ...wire.Message) []smb.Status {
+	t.Helper()
+	if err := client.raw.Send(t.Context(), messages); err != nil {
+		t.Fatal(err)
+	}
+	return finalStatuses(t, client, messages)
+}
+
+// placeholder is the file ID by which a related compound member names the
+// file of the member before it.
+var placeholder = wire.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}
+
+// related makes message a related member of the compound it is sent in.
+func related(message wire.Message) wire.Message {
+	message.Header.Flags |= wire.FlagRelated
+	message.Header.SessionID, message.Header.TreeID = math.MaxUint64, math.MaxUint32
+	return message
 }
 
 // decodeReply decodes a reply that carries a response body: success, or
@@ -426,6 +567,28 @@ func (c *fakeClock) advance(duration time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(duration)
+}
+
+// holdWrites makes storage WriteAt wait until the test closes release or the
+// request is cancelled. Each call first signals on entered.
+func (s *testServer) holdWrites() (entered <-chan struct{}, release chan<- struct{}) {
+	enteredCh, releaseCh := make(chan struct{}), make(chan struct{})
+	s.faults.set(func(hooks *storageHooks) {
+		hooks.WriteAt = func(ctx context.Context, handle smb.Handle, src []byte, offset uint64) (int, error) {
+			select {
+			case enteredCh <- struct{}{}:
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+			select {
+			case <-releaseCh:
+				return s.adapter.WriteAt(ctx, handle, src, offset)
+			case <-ctx.Done():
+				return 0, ctx.Err()
+			}
+		}
+	})
+	return enteredCh, releaseCh
 }
 
 // faultStorage passes every call to the real adapter unless the test sets a

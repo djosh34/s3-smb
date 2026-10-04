@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -100,9 +99,6 @@ func asyncResponse(request wire.Header, result reply, asyncID uint64, credits ui
 }
 
 func (connection *connection) sendPending(header wire.Header, operation *work) error {
-	if connection.nextAsyncID == math.MaxUint64 {
-		return errors.New("async ID space exhausted")
-	}
 	pending := &pendingRequest{work: operation, header: header, asyncID: connection.nextAsyncID}
 	connection.nextAsyncID++
 	connection.pendingMu.Lock()

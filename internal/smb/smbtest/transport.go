@@ -70,7 +70,7 @@ func (client *Client) SendRaw(ctx context.Context, framed []byte) error {
 // its final reply comes from a later call. An async final must keep the pending
 // reply's MessageID, AsyncID and SessionID.
 // A correlation error returns the decoded reply as well, for test assertions.
-// Callers must use only one receiver, including ReceiveRaw.
+// Callers must use only one receiver.
 func (client *Client) Receive(ctx context.Context) (Reply, error) {
 	if err := ctx.Err(); err != nil {
 		return Reply{}, err
@@ -90,7 +90,7 @@ func (client *Client) Receive(ctx context.Context) (Reply, error) {
 }
 
 func (client *Client) receiveRouted(ctx context.Context) (Reply, error) {
-	payload, err := client.ReceiveRaw(ctx)
+	payload, err := client.receiveRaw(ctx)
 	if err != nil {
 		return Reply{}, err
 	}
@@ -128,9 +128,9 @@ func (client *Client) receiveRouted(ctx context.Context) (Reply, error) {
 	return reply, nil
 }
 
-// ReceiveRaw reads a direct TCP frame and returns its exact payload. It does not
-// decode SMB headers or track pending replies. It may run concurrently with Send.
-func (client *Client) ReceiveRaw(ctx context.Context) ([]byte, error) {
+// receiveRaw reads a direct TCP frame and returns its exact payload. It may run
+// concurrently with Send.
+func (client *Client) receiveRaw(ctx context.Context) ([]byte, error) {
 	var payload []byte
 	err := client.transfer(ctx, func() error {
 		var header [4]byte

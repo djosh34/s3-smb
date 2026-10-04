@@ -110,19 +110,6 @@ func (connection *connection) rememberProtection(messages []wire.Message, encryp
 	}
 }
 
-func (connection *connection) mixedEncryption(messages []wire.Message) bool {
-	connection.sessionMu.RLock()
-	defer connection.sessionMu.RUnlock()
-	var mixed, encrypted bool
-	for _, message := range messages {
-		mixed = mixed || message.Header.SessionID != messages[0].Header.SessionID
-		saved := connection.replyProtection[message.Header.MessageID]
-		session := saved.session
-		encrypted = encrypted || session != nil && (saved.encrypted || session.identity.Encrypted && message.Header.Command != wire.SessionSetup)
-	}
-	return mixed && encrypted
-}
-
 func (connection *connection) encodePayload(messages []wire.Message) ([]byte, error) {
 	connection.sessionMu.Lock()
 	defer connection.sessionMu.Unlock()
