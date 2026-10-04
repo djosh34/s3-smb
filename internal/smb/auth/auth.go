@@ -3,8 +3,8 @@
 // Tokens are bounds checked and responses compared in constant time. No NTLMv1,
 // guest, anonymous or Kerberos. Reviewed ports keep their attribution.
 //
-// M1 provides NewAcceptor(options Options) (Acceptor, error) and
-// NewInitiator(account Account, random io.Reader) (Initiator, error). Each instance
+// M1 provides NewAcceptor(options Options) (*Acceptor, error) and
+// NewInitiator(account Account, random io.Reader) (*Initiator, error). Each instance
 // serves one authentication exchange and is not shared by concurrent sessions.
 // Initiator exists only for the raw test client, not as a public SMB client.
 package auth
@@ -48,18 +48,20 @@ type Result struct {
 // Acceptor handles SPNEGO wrapping and the NTLMv2 server exchange. Bad token
 // syntax and bad credentials return errors for SESSION_SETUP to map to failure.
 // InitialToken lists only NTLMSSP's OID. Authenticate verifies MIC where required.
-type Acceptor interface {
-	// InitialToken builds the NEGOTIATE security blob without starting an exchange.
-	InitialToken() ([]byte, error)
-	// Step accepts the client's negotiate, then authenticate token, in that order.
-	Step(token []byte) (Result, error)
-}
+// M1 adds private state and these methods. Callers must use NewAcceptor.
+// InitialToken builds the NEGOTIATE blob without starting an exchange.
+// Step accepts the negotiate token, then the authenticate token.
+//
+//	func (acceptor *Acceptor) InitialToken() ([]byte, error)
+//	func (acceptor *Acceptor) Step(token []byte) (Result, error)
+type Acceptor struct{}
 
 // Initiator supplies the minimal NTLMv2 exchange for tests. It validates SPNEGO
 // acceptance; the SMB test client separately verifies the final setup signature.
-type Initiator interface {
-	// Start consumes the server's SPNEGO mechanism list and emits a negotiate token.
-	Start(serverToken []byte) (Result, error)
-	// Step consumes a challenge or final token and emits the next token if any.
-	Step(serverToken []byte) (Result, error)
-}
+// M1 adds private state and these methods. Callers must use NewInitiator.
+// Start consumes the mechanism list and emits a negotiate token.
+// Step consumes a challenge or final token and emits the next token if needed.
+//
+//	func (initiator *Initiator) Start(serverToken []byte) (Result, error)
+//	func (initiator *Initiator) Step(serverToken []byte) (Result, error)
+type Initiator struct{}

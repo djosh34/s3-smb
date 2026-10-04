@@ -23,39 +23,37 @@ const (
 	AdvertisedShareFlags        uint32 = 0
 )
 
-// Exact NEGOTIATE capability masks at each feature stage. No DFS, multichannel,
-// persistent handles, directory leases, compression or RDMA. The server chooses
-// the stage compiled into its handlers, not a user setting. GCM support remains
-// advertised when the policy allows an unencrypted session.
+// NEGOTIATE advertises only capabilities implemented by the current handlers.
+// M5 adds CapabilityLeasing to AdvertisedCapabilities. SMB 3.1.1 negotiates GCM
+// only through its encryption context, not SMB2_GLOBAL_CAP_ENCRYPTION. No DFS,
+// multichannel, persistent handles, directory leases, compression or RDMA.
 const (
 	CapabilityLeasing      uint32 = 0x00000002
 	CapabilityLargeMTU     uint32 = 0x00000004
-	CapabilityEncryption   uint32 = 0x00000040
-	CapabilitiesM2                = CapabilityLargeMTU | CapabilityEncryption
-	CapabilitiesM5                = CapabilitiesM2 | CapabilityLeasing
-	AdvertisedCapabilities        = CapabilitiesM5
+	AdvertisedCapabilities        = CapabilityLargeMTU
 )
 
 // Exact FileFsAttributeInformation and AAPL masks. Storage is case-sensitive and
 // preserves spelling. Do not advertise ACL fidelity, object IDs, sparse files,
 // hard links, open-by-ID, quotas, reparse points or server-side copy. M3 omits
-// named streams; M4 enables them and answers AAPL on every connection.
+// named streams. M4 adds FileNamedStreams to AdvertisedFilesystemAttributes
+// and enables AAPLVolumeCapabilities when its AAPL handler is ready.
 const (
 	FileCaseSensitiveSearch        uint32 = 0x00000001
 	FileCasePreservedNames         uint32 = 0x00000002
 	FileUnicodeOnDisk              uint32 = 0x00000004
 	FileNamedStreams               uint32 = 0x00040000
-	FilesystemAttributesM3                = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk
-	AdvertisedFilesystemAttributes        = FilesystemAttributesM3 | FileNamedStreams
+	AdvertisedFilesystemAttributes        = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk
 	AAPLServerCapabilities         uint64 = 0
-	AAPLCaseSensitive              uint64 = 0x00000001
+	AAPLCaseSensitive              uint64 = 0x00000002
 	AAPLFullSync                   uint64 = 0x00000004
-	AAPLVolumeCapabilities                = AAPLCaseSensitive | AAPLFullSync
+	AAPLVolumeCapabilities         uint64 = 0
 )
 
 // Feature and resource limits. Durable v2 is only for regular unnamed files
-// holding an H lease. Requests above MaxDurableTimeout receive no durable grant,
-// rather than silently granting a shorter value. Durable v1 and persistent
+// holding an H lease. Requests above MaxDurableTimeout receive that maximum,
+// reported in the reply. A zero request receives DefaultDurableTimeout.
+// Durable v1 and persistent
 // contexts receive no grant. Classic oplocks receive level none.
 const (
 	LeaseVersion          uint16 = 2

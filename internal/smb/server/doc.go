@@ -2,16 +2,14 @@
 // requests and SMB handlers. It joins wire, auth, crypt, state and smb.Storage.
 // It must not reach into JuiceFS, reparse stream names or keep a second lock table.
 //
-// M2 provides New(options Options) (Server, error). It validates all inputs,
-// constructs wire/auth/crypt instances through their M1 constructors and uses the
+// M2 provides New(options Options) (*Server, error). It validates all inputs,
+// calls wire functions, constructs auth and crypt instances, and uses the
 // supplied state table and storage. The server never closes the storage runtime.
 // Tests use ServeConn over net.Pipe without a listener or main wiring.
 package server
 
 import (
-	"context"
 	"log/slog"
-	"net"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -35,7 +33,7 @@ const (
 // rejected frames and negotiation reasons without passwords, tokens or keys.
 type Options struct {
 	Storage    smb.Storage
-	State      state.Table
+	State      *state.Table
 	Logger     *slog.Logger
 	Now        func() time.Time
 	Account    auth.Account
@@ -46,16 +44,17 @@ type Options struct {
 }
 
 // Server serves independent connections against one shared open table.
-type Server interface {
-	// Serve accepts until cancellation or listener failure. It owns and closes
-	// the listener, drains requests, closes all opens and waits for cleanup.
-	Serve(ctx context.Context, listener net.Listener) error
-	// ServeConn owns one connection, including its ordered sender. Each queued
-	// frame has its own completion channel. Any partial write error closes the
-	// connection and fails all queued work, without sending another frame.
-	ServeConn(ctx context.Context, conn net.Conn) error
-	// Shutdown stops accepting, drains requests, closes attached and detached
-	// opens with delete-on-close, and returns all cleanup errors. The app may
-	// close JuiceFS only after this returns. It is safe to call more than once.
-	Shutdown(ctx context.Context) error
-}
+// M2 adds private state and these methods. Callers must use New.
+// Serve owns the listener and accepts until cancellation or listener failure.
+// It then drains requests, closes every open and waits for cleanup.
+// ServeConn owns one connection and its ordered sender. Each queued frame has
+// its own completion channel. A partial write error closes the connection and
+// fails queued work without sending another frame.
+// Shutdown stops accepting and drains requests. It closes every attached and
+// detached open, applies pending deletion, and returns all cleanup errors.
+// The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
+//
+//	func (server *Server) Serve(ctx context.Context, listener net.Listener) error
+//	func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error
+//	func (server *Server) Shutdown(ctx context.Context) error
+type Server struct{}

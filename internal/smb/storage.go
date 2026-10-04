@@ -132,7 +132,8 @@ type Space struct {
 // RenameRequest identifies both names, including expected source and destination
 // identities. DestinationInode zero requires an absent destination. Replace may
 // replace only DestinationInode; a changed identity fails without any mutation.
-// Source and Destination streams are selected by the adapter, like file names.
+// Source and Destination must name base entries. A nonempty Stream on either
+// name returns ErrNotSupported without changing data or namespace identity.
 type RenameRequest struct {
 	Source           Name
 	Destination      Name
@@ -149,10 +150,10 @@ type RenameRequest struct {
 // Flush, Truncate and SetAttr coordinate with the shared writer. Lookup, GetAttr
 // and ReadDir include buffered size without uploading data. A later flush cannot
 // undo an acknowledged truncate or explicit timestamp change (#84, #89, #96,
-// #113). No storage or network I/O runs under a share-wide/global lock (#59).
+// #113). No storage or network I/O runs under a global share lock (#59).
 // Namespace mutations may serialize by parent; unrelated inodes must progress.
 //
-// The server owns SMB opens and guards namespace lookup/check/mutate sequences
+// The server owns SMB opens and guards namespace lookup, checks and mutations
 // by parent before reserving share access. Storage never enforces SMB sharing.
 // Methods must not call back into state or the server while holding inode locks.
 type Storage interface {
@@ -202,12 +203,11 @@ type Storage interface {
 	Remove(ctx context.Context, name Name, expect Inode) error
 	// Rename moves exactly the expected identities, atomically. It does not
 	// rewrite handle paths; identities and open-table keys stay unchanged.
+	// Named-stream rename returns ErrNotSupported, mapped to STATUS_NOT_SUPPORTED.
 	Rename(ctx context.Context, request RenameRequest) error
 	// PathOf returns the current share-relative base path. No hard links are
 	// supported, so a linked inode has one path. An unlinked inode is not found.
 	PathOf(ctx context.Context, inode Inode) (string, error)
 	// StatFS reports volume identity and configured capacity, independent of handles.
 	StatFS(ctx context.Context) (Space, error)
-	// RootAttr returns live root attributes, independent of handles.
-	RootAttr(ctx context.Context) (Attr, error)
 }

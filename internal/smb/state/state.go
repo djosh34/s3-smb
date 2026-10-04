@@ -3,7 +3,7 @@
 // Time is injected. Methods are atomic and safe for concurrent callers; storage
 // I/O and break delivery occur after they return, never under a table lock.
 //
-// M1 provides New(now func() time.Time) (Table, error). It rejects a nil clock
+// M1 provides New(now func() time.Time) (*Table, error). It rejects a nil clock
 // and allocates empty indexes. M1 implements every pure table transition; M5
 // connects lease breaks and durable transitions to the server's protocol handlers.
 package state
@@ -32,7 +32,7 @@ type Binding struct {
 	TreeID    uint32
 }
 
-// Rights is the normalized read/write/delete sharing intent. Metadata-only
+// Rights is the normalized read, write and delete sharing intent. Metadata-only
 // access does not imply data read. Generic rights are expanded by the server.
 type Rights uint8
 
@@ -46,16 +46,19 @@ const (
 )
 
 // ShareMode uses the same bits as Rights. New rights must be allowed by every
-// existing share mode AND existing rights must be allowed by the new share mode.
+// existing share mode, and existing rights must be allowed by the new share mode.
 // Check and reservation occur before any create disposition can destroy bytes.
 // Base-file delete access also checks deny-delete opens on every named stream.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;
 // Nonzero CreateGUID is also indexed by (client, user, share) for duplicate CREATE.
-// Its handle, ranges, deletion intent and lease survive detachment. Only an
-// explicitly closed, expired or shutdown open releases them. Logoff closes its
-// opens, unlike a transport drop. This table is never persisted across restart.
+// Its handle, ranges, deletion intent and lease survive detachment. Explicit
+// close, expiry and shutdown release them. CloseSession and CloseTree also close
+// durable opens on logoff and tree disconnect. A transport drop does not.
+// GrantedAccess retains the full expanded SMB mask through replay and reconnect.
+// SharingIntent is only the read, write and delete intent used for share checks.
+// This table is never persisted across restart.
 type Open struct {
 	DurableDeadline  time.Time
 	Handle           smb.Handle
@@ -70,7 +73,8 @@ type Open struct {
 	CreateParameters [32]byte
 	LeaseKey         GUID
 	DurableTimeout   time.Duration
-	Access           Rights
+	GrantedAccess    uint32
+	SharingIntent    Rights
 	Sharing          ShareMode
 	DeleteOnClose    bool
 	Durable          bool
@@ -129,7 +133,8 @@ type ObjectRecord struct {
 // OpenRequest contains everything needed for an atomic sharing reservation.
 // Object.Inode must be nonzero. For a new file the server holds its parent guard,
 // creates an identity, then reserves it before releasing that guard. For an
-// existing file Reserve precedes truncate/supersede or any other mutation.
+// existing file Reserve precedes truncate, supersede or any other mutation.
+// GrantedAccess includes append and metadata rights, not just SharingIntent.
 // CreateParameters is the server's SHA-256 of canonical CREATE parameters,
 // including name, disposition, options and requested contexts, for replay checks.
 type OpenRequest struct {
@@ -140,13 +145,14 @@ type OpenRequest struct {
 	ClientGUID       GUID
 	CreateGUID       GUID
 	CreateParameters [32]byte
-	Access           Rights
+	GrantedAccess    uint32
+	SharingIntent    Rights
 	Sharing          ShareMode
 }
 
 // Reservation is an opaque token. It participates in share checks until Commit
 // or Abort, exactly once. It prevents another open from slipping between the
-// share check and adapter Open/Truncate. No table mutex is held by the caller.
+// share check and adapter Open or Truncate. No table mutex is held by the caller.
 type Reservation uint64
 
 // Grant supplies storage and CREATE results for Commit. A durable grant requires
@@ -190,13 +196,16 @@ type ReconnectRequest struct {
 }
 
 // Break is work for the server's sender after the state lock is released.
+// The table captures CurrentState and AckRequired when it starts the break.
 // The server waits asynchronously before committing a conflicting CREATE.
 type Break struct {
-	Binding    Binding
-	ClientGUID GUID
-	LeaseKey   GUID
-	NewState   uint32
-	Epoch      uint16
+	Binding      Binding
+	ClientGUID   GUID
+	LeaseKey     GUID
+	CurrentState uint32
+	NewState     uint32
+	Epoch        uint16
+	AckRequired  bool
 }
 
 // Table owns all indexes. Returned structs and slices are copies. Failed methods
@@ -204,51 +213,94 @@ type Break struct {
 // otherwise a command-specific status, such as SHARING_VIOLATION, DELETE_PENDING,
 // LOCK_NOT_GRANTED, FILE_LOCK_CONFLICT, RANGE_NOT_LOCKED or DUPLICATE_OBJECTID.
 // Detached durable opens still participate in every sharing and lock check.
-type Table interface {
-	// Reserve atomically checks both directions of sharing and delete-pending.
-	Reserve(request OpenRequest) (Reservation, smb.Status)
-	// Replay returns an already committed CREATE only when all request identity
-	// fields and CreateParameters match. The server calls it only with REPLAY
-	// set, reuses the same open ID and grant, and does not repeat storage mutation.
-	Replay(request OpenRequest) (Open, smb.Status)
-	// Commit converts a reservation into an open with a fresh FileID.
-	Commit(reservation Reservation, grant Grant) (Open, smb.Status)
-	// Abort releases a failed CREATE reservation, including its share rights.
-	Abort(reservation Reservation) smb.Status
-	// Find validates both ID halves and binding. Inode lookup is never sufficient.
-	Find(id FileID, binding Binding) (Open, smb.Status)
-	// Close removes an attached open and returns any required cleanup.
-	Close(id FileID, binding Binding) (CloseAction, smb.Status)
-	// SetDelete requires delete rights and compatible sharing. Clearing the flag
-	// cannot clear another open's deletion intent. Name is identity-checked later.
-	SetDelete(id FileID, binding Binding, name smb.Name, pending bool) smb.Status
-	// SetDirectory saves the cursor for this open, not in the adapter.
-	SetDirectory(id FileID, binding Binding, cursor DirectoryCursor) smb.Status
-	// Lock applies a whole LOCK vector atomically, or changes nothing. wait=true
-	// fails immediately with NOT_SUPPORTED; there is no blocking queue.
-	Lock(id FileID, binding Binding, ranges []Range, unlock bool, wait bool) smb.Status
-	// CheckIO checks ranges on this exact object. Own ranges do not conflict;
-	// other exclusive ranges block reads and other ranges block writes.
-	CheckIO(id FileID, binding Binding, offset, length uint64, write bool) smb.Status
-	// Disconnect detaches durable opens and sets now+granted timeout. It closes
-	// non-durable opens and returns their cleanup work. Transport IDs are absent.
-	Disconnect(sessionID uint64) []CloseAction
-	// CloseSession closes even durable opens on explicit LOGOFF.
-	CloseSession(sessionID uint64) []CloseAction
-	// Reconnect atomically reattaches one detached durable open, with a new
-	// volatile ID. An attached, expired or mismatched open cannot be stolen.
-	Reconnect(request ReconnectRequest) (Open, smb.Status)
-	// Expire closes detached opens at deadline <= now through the normal path.
-	Expire() []CloseAction
-	// CloseAll returns cleanup for all opens, including detached ones, at shutdown.
-	CloseAll() []CloseAction
-	// BreakLeases starts required breaks and returns sender work. No conflicting
-	// CREATE is committed until the affected leases lose the conflicting rights.
-	BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) []Break
-	// AckBreak verifies binding, key and epoch before reducing lease state.
-	AckBreak(binding Binding, key GUID, epoch uint16, leaseState uint32) smb.Status
-	// ExpireBreaks applies the target on timeout and closes detached opens whose
-	// H protection was lost. Attached opens remain usable but lose durability
-	// when H is lost. Uses the injected clock.
-	ExpireBreaks() []CloseAction
-}
+// M1 adds private indexes and implements the following method contracts.
+// The zero value is not usable; callers must use New.
+//
+// Reserve atomically checks sharing in both directions and delete-pending.
+//
+//	func (table *Table) Reserve(request OpenRequest) (Reservation, smb.Status)
+//
+// Replay requires matching identity, GrantedAccess, SharingIntent and parameters.
+// The server calls it only for a marked replay and does not repeat mutations.
+//
+//	func (table *Table) Replay(request OpenRequest) (Open, smb.Status)
+//
+// Commit converts a reservation into an open with a fresh FileID.
+//
+//	func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Status)
+//
+// Abort releases a failed CREATE reservation and its sharing intent.
+//
+//	func (table *Table) Abort(reservation Reservation) smb.Status
+//
+// Find validates both FileID halves and the binding.
+//
+//	func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status)
+//
+// Close removes one attached open and returns its cleanup work.
+//
+//	func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status)
+//
+// SetDelete requires delete access and compatible sharing. Clearing one open's
+// flag cannot clear another open's deletion intent.
+//
+//	func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending bool) smb.Status
+//
+// SetDirectory saves the cursor for one open.
+//
+//	func (table *Table) SetDirectory(id FileID, binding Binding, cursor DirectoryCursor) smb.Status
+//
+// Lock applies a whole vector atomically or changes nothing. It grants free
+// ranges and returns STATUS_LOCK_NOT_GRANTED on conflict. This rule also applies
+// when the request omits FAIL_IMMEDIATELY. No lock request waits.
+//
+//	func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool) smb.Status
+//
+// CheckIO follows MS-FSA 2.1.4.10. Shared ranges block overlapping writes by
+// every open, including their owner. Exclusive ranges block reads and writes by
+// other opens but allow their owner's I/O. Shared ranges allow overlapping reads.
+//
+//	func (table *Table) CheckIO(id FileID, binding Binding, offset, length uint64, write bool) smb.Status
+//
+// Disconnect detaches durable opens and starts their granted timeout. It closes
+// non-durable opens and returns their cleanup work.
+//
+//	func (table *Table) Disconnect(sessionID uint64) []CloseAction
+//
+// CloseSession closes every session open, including durable opens, on LOGOFF.
+//
+//	func (table *Table) CloseSession(sessionID uint64) []CloseAction
+//
+// CloseTree closes every open on the binding's tree, including durable opens.
+//
+//	func (table *Table) CloseTree(binding Binding) []CloseAction
+//
+// Reconnect changes the binding and volatile ID of a detached durable open.
+// It preserves GrantedAccess and SharingIntent. Attached or expired opens fail.
+//
+//	func (table *Table) Reconnect(request ReconnectRequest) (Open, smb.Status)
+//
+// Expire closes detached opens whose deadline has passed, using the normal path.
+//
+//	func (table *Table) Expire() []CloseAction
+//
+// CloseAll returns cleanup for every open, including detached opens.
+//
+//	func (table *Table) CloseAll() []CloseAction
+//
+// BreakLeases starts breaks and captures all notification fields atomically.
+// The server commits a conflicting CREATE only after the conflicting rights end.
+//
+//	func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) []Break
+//
+// AckBreak validates the binding, client and lease key against the pending break.
+// The acknowledged state must be a subset of its current target. There is no
+// acknowledgment epoch on the wire; the reserved field is ignored by wire.
+//
+//	func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) smb.Status
+//
+// ExpireBreaks applies the target when a break times out. Losing H closes detached
+// opens and removes durability from attached opens, which remain usable.
+//
+//	func (table *Table) ExpireBreaks() []CloseAction
+type Table struct{}

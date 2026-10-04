@@ -3,11 +3,10 @@
 // Decoders reject bad lengths, offsets, alignment, UTF-16 and context chains.
 // Every decoder gets a native Go fuzz target. Returned bytes do not alias input.
 //
-// M1 provides NewCodec() Codec. Body codecs use the concrete request types below
-// and matching response types added by M1. EncodeRequest/DecodeRequest support
-// exactly those types; an unsupported command returns a decode error. The server
-// distinguishes a well-framed unknown command (NOT_SUPPORTED) from malformed
-// framing. Raw test clients can bypass body codecs by supplying Message.Body.
+// M1 implements the plain typed functions documented in api.go and info_api.go.
+// No codec instance or type assertion is needed. The server distinguishes a
+// well-framed unknown command from malformed framing and returns NOT_SUPPORTED.
+// Raw test clients bypass body codecs by supplying Message.Body.
 package wire
 
 import "github.com/djosh34/s3-smb/internal/smb"
@@ -88,47 +87,6 @@ type Message struct {
 	Header Header
 }
 
-// Codec owns no session state and is safe for concurrent calls. Packet methods
-// take SMB payloads, without the four-byte direct-TCP length prefix. No packet
-// may exceed the server's negotiated limits. Errors describe invalid encoding,
-// not storage failures, and never index outside caller-provided bytes.
-type Codec interface {
-	// DecodeHeader validates a complete 64-byte SMB2 header.
-	DecodeHeader(packet []byte) (Header, error)
-	// EncodeHeader writes exactly 64 bytes, validating sync/async field selection.
-	EncodeHeader(header Header) ([]byte, error)
-	// Split validates the entire compound before returning any members.
-	Split(packet []byte) ([]Message, error)
-	// Join encodes members with eight-byte padding and correct NextCommand.
-	Join(messages []Message) ([]byte, error)
-	// DecodeRequest returns one of the request types declared in this package.
-	// Body offsets are relative to the member header, not the compound packet.
-	DecodeRequest(message Message) (any, error)
-	// EncodeRequest accepts only a matching concrete request type below.
-	EncodeRequest(command Command, request any) ([]byte, error)
-	// DecodeResponse validates response bodies, including error and pending bodies.
-	// M1 supplies NegotiateResponse, SessionSetupResponse, TreeConnectResponse,
-	// CreateResponse, CloseResponse, ReadResponse, WriteResponse, QueryResponse,
-	// IOCTLResponse, LeaseBreakResponse and EmptyResponse as concrete values.
-	DecodeResponse(message Message) (any, error)
-	// EncodeResponse accepts the corresponding response type or ErrorResponse.
-	EncodeResponse(command Command, response any) ([]byte, error)
-	// DecodeNegotiateContext returns PreauthContext, EncryptionContext or
-	// SigningContext for their known types; unknown types retain raw Data.
-	DecodeNegotiateContext(context NegotiateContext) (any, error)
-	// EncodeNegotiateContext encodes a matching known value, including its Type.
-	EncodeNegotiateContext(value any) (NegotiateContext, error)
-	// DecodeCreateContext decodes known tags into the types in contexts.go;
-	// response distinguishes request and reply layouts with identical lengths.
-	// Unknown tags remain CreateContext values for the handler to ignore/refuse.
-	DecodeCreateContext(context CreateContext, response bool) (any, error)
-	// EncodeCreateContext encodes a matching typed query, reply or reconnect.
-	EncodeCreateContext(value any) (CreateContext, error)
-	// DecodeSMB1Negotiate accepts only an opening SMB1 negotiate offering SMB2.
-	// The server responds with SMB2 wildcard 0x02ff; no other SMB1 command is valid.
-	DecodeSMB1Negotiate(packet []byte) error
-}
-
 // NegotiateContext contains one validated context's data, excluding its header.
 // Type identifies preauth, encryption, signing, compression or netname. Unknown
 // contexts are retained for the handler to ignore, never echoed by default.
@@ -169,7 +127,7 @@ type CreateContext struct {
 	Data []byte
 }
 
-// CreateRequest leaves path/stream interpretation to Storage.Lookup.
+// CreateRequest leaves path and stream interpretation to Storage.Lookup.
 type CreateRequest struct {
 	Name               string
 	Contexts           []CreateContext
@@ -237,7 +195,7 @@ type QueryDirectoryRequest struct {
 	ID           FileID
 	FileIndex    uint32
 	OutputLength uint32
-	InfoClass    uint8
+	InfoClass    DirectoryInfoClass
 	Flags        uint8
 }
 
@@ -248,18 +206,17 @@ type QueryInfoRequest struct {
 	OutputLength          uint32
 	AdditionalInformation uint32
 	Flags                 uint32
-	InfoType              uint8
+	InfoType              InfoType
 	InfoClass             uint8
 }
 
-// SetInfoRequest owns its validated info-class bytes. M1 supplies pure class
-// codecs for Basic, Disposition, EOF, Allocation, Rename and security. They
-// retain FILETIME sentinel values instead of converting them to overflowing time.
+// SetInfoRequest owns its validated info-class bytes. info.go and info_api.go
+// define their concrete types and codecs. Timestamp fields retain sentinel bits.
 type SetInfoRequest struct {
 	Input                 []byte
 	ID                    FileID
 	AdditionalInformation uint32
-	InfoType              uint8
+	InfoType              InfoType
 	InfoClass             uint8
 }
 
@@ -273,11 +230,13 @@ type IOCTLRequest struct {
 }
 
 // LeaseBreakRequest carries an acknowledgement, never a CREATE lease grant.
+// Its two-byte reserved field is ignored on decode and written as zero.
+// An acknowledgement has no epoch; Epoch belongs to the notification.
 type LeaseBreakRequest struct {
-	Key   [16]byte
-	State uint32
-	Flags uint32
-	Epoch uint16
+	Key      [16]byte
+	Duration uint64
+	State    uint32
+	Flags    uint32
 }
 
 // ChangeNotifyRequest is decoded even though the handler returns NOT_SUPPORTED.

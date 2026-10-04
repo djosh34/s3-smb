@@ -69,11 +69,8 @@ type WriteResponse struct {
 	Remaining uint32
 }
 
-// QueryResponse carries encoded info or directory entries. M1 supplies pure
-// info-class codecs for Basic, Standard, Internal, EA, Access, Position, Mode,
-// Alignment, All, Name, NetworkOpen, AttributeTag, Stream, ID; filesystem Volume,
-// Size, FullSize, Device and Attribute; directory IDBoth and IDFull; and security
-// descriptors. Unsupported classes are not decoded as another class.
+// QueryResponse carries class bytes or directory entries encoded by the typed
+// functions in info_api.go. Unsupported classes are not decoded as another class.
 type QueryResponse struct {
 	Data []byte
 }
@@ -87,15 +84,29 @@ type IOCTLResponse struct {
 	Flags       uint32
 }
 
-// LeaseBreakResponse is used for break notification and acknowledgement replies.
-type LeaseBreakResponse struct {
-	Key      [16]byte
-	State    uint32
-	NewState uint32
-	Flags    uint32
-	Epoch    uint16
+// LeaseBreakNotification is the server's V2 break message, not an acknowledgement.
+// CurrentState, NewState and AckRequired are captured by state when the break starts.
+// Epoch is the notification's new lease epoch. Flags contains the ack-required bit.
+type LeaseBreakNotification struct {
+	Key            [16]byte
+	CurrentState   uint32
+	NewState       uint32
+	Flags          uint32
+	AccessMaskHint uint32
+	ShareMaskHint  uint32
+	BreakReason    uint32
+	Epoch          uint16
 }
 
-// EmptyResponse represents ECHO, LOGOFF, TREE_DISCONNECT, FLUSH and LOCK success.
+// LeaseBreakResponse is an acknowledgement reply. Its reserved field is zero.
+// It has no epoch and uses the lease state accepted by the table.
+type LeaseBreakResponse struct {
+	Key      [16]byte
+	Duration uint64
+	State    uint32
+	Flags    uint32
+}
+
+// EmptyResponse represents ECHO, LOGOFF, TREE_DISCONNECT, FLUSH, LOCK and SET_INFO success.
 // Their structure sizes are command-specific. STATUS_PENDING uses ErrorResponse.
 type EmptyResponse struct{}
