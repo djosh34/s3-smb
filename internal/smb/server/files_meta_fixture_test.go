@@ -18,6 +18,11 @@ import (
 // Register server cleanup after this helper so opens close before storage.
 func newFilesMetaStorage(t *testing.T) *smbfs.FS {
 	t.Helper()
+	return newFilesMetaStorageWithCapacity(t, 0)
+}
+
+func newFilesMetaStorageWithCapacity(t *testing.T, capacity uint64) *smbfs.FS {
+	t.Helper()
 	dir := t.TempDir()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
 	if err != nil {
@@ -37,7 +42,7 @@ func newFilesMetaStorage(t *testing.T) *smbfs.FS {
 			t.Error(shutdownErr)
 		}
 	})
-	format := meta.Format{Name: "files-meta-test", UUID: "files-meta-fixture", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true}
+	format := meta.Format{Name: "files-meta-test", UUID: "files-meta-fixture", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true, Capacity: capacity}
 	if err = metadata.Init(&format, true); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +69,7 @@ func newFilesMetaStorage(t *testing.T) *smbfs.FS {
 	if err != nil {
 		t.Fatal(err)
 	}
-	storage, err := smbfs.New(smbfs.Options{Filesystem: filesystem, Barrier: barrier, MetadataPath: database, Config: config, Store: store})
+	storage, err := smbfs.New(smbfs.Options{Filesystem: filesystem, Barrier: barrier, MetadataPath: database, Config: config, Store: store, Capacity: capacity})
 	if err != nil {
 		t.Fatal(err)
 	}

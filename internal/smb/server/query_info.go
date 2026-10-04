@@ -34,8 +34,7 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	case wire.InfoFile:
 		data, result.status = queryFileInfo(ctx, request, open, wire.FileInfoClass(query.InfoClass), query.OutputLength)
 	case wire.InfoFilesystem:
-		// The filesystem worker wires queryFilesystemInfo here in #109.
-		result.status = smb.StatusInvalidInfoClass
+		data, result.status = queryFilesystemInfo(ctx, request, query.InfoClass, query.OutputLength)
 	case wire.InfoSecurity:
 		// The storage contract and #169 promise no ACL queries or ACL fidelity.
 		result.status = smb.StatusNotSupported
