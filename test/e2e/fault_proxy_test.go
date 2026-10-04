@@ -9,7 +9,7 @@ import (
 
 func newFaultProxy(t *testing.T, upstream string) *s3fault.Proxy {
 	t.Helper()
-	proxy, err := s3fault.New(upstream)
+	proxy, err := s3fault.New(t.Context(), upstream)
 	if err != nil {
 		t.Fatal(err)
 	}

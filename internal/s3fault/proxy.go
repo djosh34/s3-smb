@@ -64,19 +64,19 @@ type Proxy struct {
 	outageSeen   chan Event
 	done         chan struct{}
 	served       chan error
+	closeErr     error
 	address      string
 	fault        Fault
-	mu           sync.Mutex
-	closeOnce    sync.Once
-	closeErr     error
-	metadataFail atomic.Bool
 	chunkPuts    atomic.Int64
 	outageUntil  atomic.Int64
+	mu           sync.Mutex
+	closeOnce    sync.Once
+	metadataFail atomic.Bool
 }
 
 // New starts a proxy for an explicit HTTP backend. It is for test buckets only,
 // not production endpoints. Construction and listener errors are returned.
-func New(upstream string) (*Proxy, error) {
+func New(ctx context.Context, upstream string) (*Proxy, error) {
 	target, err := url.Parse(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("parse fault proxy upstream: %w", err)
@@ -84,7 +84,8 @@ func New(upstream string) (*Proxy, error) {
 	if target.Host == "" || target.Scheme != "http" || target.User != nil || target.RawQuery != "" || target.Fragment != "" {
 		return nil, errors.New("fault proxy requires an explicit disposable HTTP backend")
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	var config net.ListenConfig
+	listener, err := config.Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
 		return nil, fmt.Errorf("listen for fault proxy: %w", err)
 	}
@@ -171,11 +172,11 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			if err := p.holdChunkResponse(res); err != nil {
 				return err
 			}
-			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
+			if err := p.wait(res.Request.Context(), fault.HeaderDelay); err != nil {
 				return err
 			}
 			if fault.BodyDelay != 0 || fault.CutBody {
-				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: r.Context(), delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
+				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: res.Request.Context(), delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
 			}
 			return nil
 		}

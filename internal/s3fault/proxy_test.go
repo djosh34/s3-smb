@@ -22,7 +22,7 @@ func newProxy(t *testing.T, handler http.Handler) *s3fault.Proxy {
 	t.Helper()
 	upstream := httptest.NewServer(handler)
 	t.Cleanup(upstream.Close)
-	proxy, err := s3fault.New(upstream.URL)
+	proxy, err := s3fault.New(t.Context(), upstream.URL)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -34,22 +34,44 @@ func newProxy(t *testing.T, handler http.Handler) *s3fault.Proxy {
 	return proxy
 }
 
-func request(t *testing.T, ctx context.Context, proxy *s3fault.Proxy, method, path string) *http.Response {
-	t.Helper()
+type response struct {
+	err         error
+	header      http.Header
+	data        []byte
+	headerDelay time.Duration
+	bodyDelay   time.Duration
+	status      int
+}
+
+func fetch(ctx context.Context, proxy *s3fault.Proxy, method, path string) response {
 	req, err := http.NewRequestWithContext(ctx, method, proxy.URL()+path, nil)
 	if err != nil {
-		t.Fatal(err)
+		return response{err: err}
 	}
-	client := &http.Client{Timeout: 3 * time.Second}
-	res, err := client.Do(req)
+	return send(req)
+}
+
+func send(req *http.Request) response {
+	start := time.Now()
+	res, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
 	if err != nil {
-		t.Fatal(err)
+		return response{err: err}
 	}
-	t.Cleanup(func() {
-		if err := res.Body.Close(); err != nil {
-			t.Error(err)
-		}
-	})
+	headers := time.Now()
+	data, readErr := io.ReadAll(res.Body)
+	bodyDelay := time.Since(headers)
+	return response{
+		err: errors.Join(readErr, res.Body.Close()), header: res.Header, data: data,
+		headerDelay: headers.Sub(start), bodyDelay: bodyDelay, status: res.StatusCode,
+	}
+}
+
+func request(t *testing.T, proxy *s3fault.Proxy, method, path string) response {
+	t.Helper()
+	res := fetch(t.Context(), proxy, method, path)
+	if res.err != nil {
+		t.Fatal(res.err)
+	}
 	return res
 }
 
@@ -91,15 +113,9 @@ func TestForwardSignedRequest(t *testing.T) {
 	}
 	req.Host = "signed.test:1234"
 	req.Header.Set("Authorization", "test signature")
-	res, err := (&http.Client{Timeout: 3 * time.Second}).Do(req)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := res.Body.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if res.StatusCode != http.StatusCreated || res.Header.Get("ETag") != "test-etag" || proxy.ChunkPuts() != 1 {
-		t.Fatalf("forwarded status=%d etag=%q puts=%d", res.StatusCode, res.Header.Get("ETag"), proxy.ChunkPuts())
+	res := send(req)
+	if res.err != nil || res.status != http.StatusCreated || res.header.Get("ETag") != "test-etag" || proxy.ChunkPuts() != 1 {
+		t.Fatalf("forwarded status=%d etag=%q puts=%d error=%v", res.status, res.header.Get("ETag"), proxy.ChunkPuts(), res.err)
 	}
 }
 
@@ -115,21 +131,16 @@ func TestResponseDelays(t *testing.T) {
 				fault.BodyDelay = delay
 			}
 			setFault(t, proxy, fault)
-			start := time.Now()
-			res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key")
-			if phase == "headers" && time.Since(start) < delay {
+			res := request(t, proxy, http.MethodGet, "/bucket/chunks/key")
+			if phase == "headers" && res.headerDelay < delay {
 				t.Fatal("headers arrived before the configured delay")
 			}
-			bodyStart := time.Now()
-			data, err := io.ReadAll(res.Body)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if phase == "body" && time.Since(bodyStart) < delay {
+			// Allow scheduling between the server's header flush and client receipt.
+			if phase == "body" && res.bodyDelay < delay-10*time.Millisecond {
 				t.Fatal("body arrived before the configured delay")
 			}
-			if string(data) != "0123456789" {
-				t.Fatalf("delayed body = %q", data)
+			if string(res.data) != "0123456789" {
+				t.Fatalf("delayed body = %q", res.data)
 			}
 		})
 	}
@@ -148,25 +159,25 @@ func TestInjectedErrorsAndThrottling(t *testing.T) {
 		{Status: http.StatusServiceUnavailable},
 	} {
 		setFault(t, proxy, fault)
-		res := request(t, t.Context(), proxy, http.MethodPut, "/bucket/chunks/key")
+		res := request(t, proxy, http.MethodPut, "/bucket/chunks/key")
 		var body struct{ Code string }
-		if err := xml.NewDecoder(res.Body).Decode(&body); err != nil {
+		if err := xml.Unmarshal(res.data, &body); err != nil {
 			t.Fatal(err)
 		}
 		wantCode := fault.Code
 		if wantCode == "" {
 			wantCode = "ServiceUnavailable"
 		}
-		if res.StatusCode != fault.Status || body.Code != wantCode || res.Header.Get("Content-Type") != "application/xml" {
-			t.Fatalf("injected response status=%d code=%q", res.StatusCode, body.Code)
+		if res.status != fault.Status || body.Code != wantCode || res.header.Get("Content-Type") != "application/xml" {
+			t.Fatalf("injected response status=%d code=%q", res.status, body.Code)
 		}
 	}
 	if calls.Load() != 0 {
 		t.Fatal("injected requests reached S3")
 	}
 	setFault(t, proxy, s3fault.Fault{})
-	if res := request(t, t.Context(), proxy, http.MethodPut, "/bucket/chunks/key"); res.StatusCode != http.StatusNoContent {
-		t.Fatalf("reset status = %d", res.StatusCode)
+	if res := request(t, proxy, http.MethodPut, "/bucket/chunks/key"); res.status != http.StatusNoContent {
+		t.Fatalf("reset status = %d", res.status)
 	}
 }
 
@@ -189,8 +200,8 @@ func TestFaultMatchingAndValidation(t *testing.T) {
 		{http.MethodPut, "/bucket/chunks/key", http.StatusOK},
 		{http.MethodGet, "/bucket/meta/key", http.StatusOK},
 	} {
-		if res := request(t, t.Context(), proxy, test.method, test.path); res.StatusCode != test.status {
-			t.Fatalf("%s %s: status = %d", test.method, test.path, res.StatusCode)
+		if res := request(t, proxy, test.method, test.path); res.status != test.status {
+			t.Fatalf("%s %s: status = %d", test.method, test.path, res.status)
 		}
 	}
 }
@@ -199,20 +210,19 @@ func TestCutBodies(t *testing.T) {
 	proxy := newProxy(t, http.HandlerFunc(payload))
 	for _, cut := range []int64{0, 1, 4, 9, 10, 20} {
 		setFault(t, proxy, s3fault.Fault{CutBody: true, CutAfter: cut})
-		res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key")
-		data, err := io.ReadAll(res.Body)
+		res := fetch(t.Context(), proxy, http.MethodGet, "/bucket/chunks/key")
 		want := min(cut, 10)
-		if string(data) != "0123456789"[:want] {
-			t.Fatalf("cut %d: body = %q", cut, data)
+		if string(res.data) != "0123456789"[:want] {
+			t.Fatalf("cut %d: body = %q", cut, res.data)
 		}
-		if cut < 10 && !errors.Is(err, io.ErrUnexpectedEOF) {
-			t.Fatalf("cut %d: error = %v, want unexpected EOF", cut, err)
+		if cut < 10 && !errors.Is(res.err, io.ErrUnexpectedEOF) {
+			t.Fatalf("cut %d: error = %v, want unexpected EOF", cut, res.err)
 		}
-		if cut >= 10 && err != nil {
-			t.Fatalf("cut %d: %v", cut, err)
+		if cut >= 10 && res.err != nil {
+			t.Fatalf("cut %d: %v", cut, res.err)
 		}
-		if res.ContentLength != 10 {
-			t.Fatalf("cut changed content length to %d", res.ContentLength)
+		if res.header.Get("Content-Length") != "10" {
+			t.Fatal("cut changed content length")
 		}
 	}
 }
@@ -223,10 +233,10 @@ func TestTimedOutage(t *testing.T) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	start := proxy.FailS3For(100 * time.Millisecond)
+	start := proxy.FailS3For(time.Second)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		if res := request(t, t.Context(), proxy, method, "/bucket/chunks/key"); res.StatusCode != http.StatusServiceUnavailable {
-			t.Fatalf("outage status = %d", res.StatusCode)
+		if res := request(t, proxy, method, "/bucket/chunks/key"); res.status != http.StatusServiceUnavailable {
+			t.Fatalf("outage status = %d", res.status)
 		}
 		select {
 		case event := <-proxy.OutageSeen():
@@ -237,20 +247,20 @@ func TestTimedOutage(t *testing.T) {
 			t.Fatal("outage was not observed")
 		}
 	}
-	if res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/meta/key"); res.StatusCode != http.StatusServiceUnavailable || calls.Load() != 0 {
+	if res := request(t, proxy, http.MethodGet, "/bucket/meta/key"); res.status != http.StatusServiceUnavailable || calls.Load() != 0 {
 		t.Fatal("outage did not block all S3 requests")
 	}
-	time.Sleep(time.Until(start.Add(100 * time.Millisecond)))
-	if res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key"); res.StatusCode != http.StatusNoContent {
+	time.Sleep(time.Until(start.Add(time.Second)))
+	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != http.StatusNoContent {
 		t.Fatal("outage outlasted its deadline")
 	}
 	proxy.FailS3For(time.Minute)
 	proxy.RestoreS3()
-	if res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key"); res.StatusCode != http.StatusNoContent {
+	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != http.StatusNoContent {
 		t.Fatal("RestoreS3 did not end outage")
 	}
 	proxy.FailS3For(0)
-	if res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key"); res.StatusCode != http.StatusNoContent {
+	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != http.StatusNoContent {
 		t.Fatal("zero duration caused outage")
 	}
 }
@@ -259,7 +269,7 @@ func TestMetadataFailure(t *testing.T) {
 	proxy := newProxy(t, http.HandlerFunc(payload))
 	proxy.SetMetadataFailure(true)
 	for _, method := range []string{http.MethodGet, http.MethodPut} {
-		if res := request(t, t.Context(), proxy, method, "/bucket/meta/key"); res.StatusCode != http.StatusServiceUnavailable {
+		if res := request(t, proxy, method, "/bucket/meta/key"); res.status != http.StatusServiceUnavailable {
 			t.Fatal("metadata failure did not reach caller")
 		}
 		select {
@@ -274,12 +284,12 @@ func TestMetadataFailure(t *testing.T) {
 	for _, test := range []struct{ method, path string }{
 		{http.MethodHead, "/bucket/meta/key"}, {http.MethodGet, "/bucket/chunks/key"},
 	} {
-		if res := request(t, t.Context(), proxy, test.method, test.path); res.StatusCode != http.StatusOK {
+		if res := request(t, proxy, test.method, test.path); res.status != http.StatusOK {
 			t.Fatal("metadata failure affected an unrelated request")
 		}
 	}
 	proxy.SetMetadataFailure(false)
-	if res := request(t, t.Context(), proxy, http.MethodGet, "/bucket/meta/key"); res.StatusCode != http.StatusOK {
+	if res := request(t, proxy, http.MethodGet, "/bucket/meta/key"); res.status != http.StatusOK {
 		t.Fatal("metadata failure did not reset")
 	}
 }
@@ -293,11 +303,10 @@ func TestHeldChunkResponse(t *testing.T) {
 	if _, err := proxy.HoldNextChunkResponse(); err == nil {
 		t.Fatal("overwrote an armed hold")
 	}
-	// These requests must neither consume the hold nor count as chunk PUTs.
-	request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key")
-	request(t, t.Context(), proxy, http.MethodPut, "/bucket/meta/key")
-	done := make(chan *http.Response, 1)
-	go func() { done <- request(t, t.Context(), proxy, http.MethodPut, "/bucket/chunks/key") }()
+	request(t, proxy, http.MethodGet, "/bucket/chunks/key")
+	request(t, proxy, http.MethodPut, "/bucket/meta/key")
+	done := make(chan response, 1)
+	go func() { done <- fetch(t.Context(), proxy, http.MethodPut, "/bucket/chunks/key") }()
 	select {
 	case event := <-held:
 		if event.Method != http.MethodPut || event.Status != http.StatusOK || proxy.ChunkPuts() != 1 {
@@ -314,8 +323,8 @@ func TestHeldChunkResponse(t *testing.T) {
 	proxy.Release()
 	select {
 	case res := <-done:
-		if res.StatusCode != http.StatusOK {
-			t.Fatalf("released status = %d", res.StatusCode)
+		if res.err != nil || res.status != http.StatusOK {
+			t.Fatalf("released status=%d error=%v", res.status, res.err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("Release did not unblock caller")
@@ -327,9 +336,72 @@ func TestHeldChunkResponse(t *testing.T) {
 	proxy.Release()
 }
 
+func TestCancelAndClose(t *testing.T) {
+	for _, phase := range []string{"headers", "body", "hold"} {
+		for _, action := range []string{"cancel", "close"} {
+			t.Run(phase+"/"+action, func(t *testing.T) {
+				seen := make(chan struct{}, 1)
+				proxy := newProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					seen <- struct{}{}
+					payload(w, r)
+				}))
+				switch phase {
+				case "headers":
+					setFault(t, proxy, s3fault.Fault{HeaderDelay: time.Hour})
+				case "body":
+					setFault(t, proxy, s3fault.Fault{BodyDelay: time.Hour})
+				case "hold":
+					if _, err := proxy.HoldNextChunkResponse(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan response, 1)
+				go func() { done <- fetch(ctx, proxy, http.MethodPut, "/bucket/chunks/key") }()
+				select {
+				case <-seen:
+				case <-time.After(time.Second):
+					t.Fatal("request did not reach upstream")
+				}
+				if action == "cancel" {
+					cancel()
+				} else if err := proxy.Close(); err != nil {
+					t.Fatal(err)
+				}
+				select {
+				case res := <-done:
+					if res.err == nil && res.status != http.StatusBadGateway {
+						t.Fatal("interrupted request succeeded")
+					}
+				case <-time.After(time.Second):
+					t.Fatal("interrupted request remained blocked")
+				}
+			})
+		}
+	}
+}
+
+func TestUpstreamUnavailable(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(payload))
+	upstream.Close()
+	proxy, err := s3fault.New(t.Context(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := proxy.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != http.StatusBadGateway {
+		t.Fatalf("unavailable upstream status = %d", res.status)
+	}
+}
+
 func TestInvalidUpstream(t *testing.T) {
 	for _, upstream := range []string{"", "://", "http:///missing", "https://example.test", "http://user:secret@example.test", "http://example.test?token=secret", "http://example.test/#fragment"} {
-		proxy, err := s3fault.New(upstream)
+		proxy, err := s3fault.New(t.Context(), upstream)
 		if err == nil {
 			if err := proxy.Close(); err != nil {
 				t.Error(err)
@@ -345,13 +417,19 @@ func TestConcurrentFaultChanges(t *testing.T) {
 	for range 4 {
 		workers.Go(func() {
 			for range 20 {
-				setFault(t, proxy, s3fault.Fault{Status: http.StatusServiceUnavailable})
+				if err := proxy.SetFault(s3fault.Fault{Status: http.StatusServiceUnavailable}); err != nil {
+					t.Error(err)
+				}
 				proxy.SetMetadataFailure(true)
 				proxy.FailS3For(time.Millisecond)
-				request(t, t.Context(), proxy, http.MethodGet, "/bucket/chunks/key")
+				if res := fetch(t.Context(), proxy, http.MethodGet, "/bucket/chunks/key"); res.err != nil {
+					t.Error(res.err)
+				}
 				proxy.RestoreS3()
 				proxy.SetMetadataFailure(false)
-				setFault(t, proxy, s3fault.Fault{})
+				if err := proxy.SetFault(s3fault.Fault{}); err != nil {
+					t.Error(err)
+				}
 			}
 		})
 	}
