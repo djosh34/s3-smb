@@ -13,7 +13,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func negotiateMessage(t *testing.T, credit uint16) wire.Message {
+func negotiateMessage(t testing.TB, credit uint16) wire.Message {
 	t.Helper()
 	preauth, err := wire.EncodePreauthContext(wire.PreauthContext{Hashes: []uint16{smb.PreauthSHA512}})
 	if err != nil {
