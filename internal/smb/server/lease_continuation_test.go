@@ -1,12 +1,102 @@
 package server
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
+
+func TestQueuedLeaseBreakCancellationPreservesCapturedStage(t *testing.T) {
+	for _, cancelQueued := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original waiter", true: "queued waiter"}[cancelQueued], func(t *testing.T) {
+			checkQueuedLeaseBreakCancellation(t, cancelQueued)
+		})
+	}
+}
+
+func checkQueuedLeaseBreakCancellation(t *testing.T, cancelQueued bool) {
+	t.Helper()
+	server, holder, _ := newCreateLeaseClients(t)
+	created := holder.create(t, leaseCreateRequest("cancel-queued-break"), leaseV2(1, 7))
+	open, status := server.options.State.Find(state.FileID(created.Reply.ID), state.Binding{SessionID: holder.session.SessionID, TreeID: holder.session.TreeID})
+	if status != smb.StatusSuccess {
+		t.Fatalf("created lease open: %#x", status)
+	}
+	originalCtx, cancelOriginal := context.WithCancel(holder.ctx)
+	defer cancelOriginal()
+	originalDone := startServerBreak(originalCtx, server, open, 3)
+	first, err := holder.client.WaitLeaseBreak(holder.ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	captured, exists := server.options.State.LeaseFor(open.Object, open.ClientGUID, open.LeaseKey)
+	if !exists {
+		t.Fatal("captured lease missing")
+	}
+	changed := server.options.State.BreakChanges()
+	queuedCtx, cancelStronger := context.WithCancel(holder.ctx)
+	defer cancelStronger()
+	queuedDone := startServerBreak(queuedCtx, server, open, 0)
+	waitAsyncSignal(holder.ctx, t, changed)
+	canceled, survivor, cancel := originalDone, queuedDone, cancelOriginal
+	if cancelQueued {
+		canceled, survivor, cancel = queuedDone, originalDone, cancelStronger
+	}
+	cancel()
+	if waitErr := waitAsyncResult(holder.ctx, t, canceled); !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("canceled waiter: %v", waitErr)
+	}
+	current, exists := server.options.State.LeaseFor(open.Object, open.ClientGUID, open.LeaseKey)
+	if !exists || current.State != captured.State || current.BreakTo != captured.BreakTo || current.Epoch != captured.Epoch || current.Deadline != captured.Deadline || current.EffectiveState() != 0 {
+		t.Fatalf("cancellation changed captured stage or discarded queued revocation: %+v", current)
+	}
+	holder.ack(t, first)
+	second, err := holder.client.WaitLeaseBreak(holder.ctx)
+	if err != nil || second.CurrentState != 3 || second.NewState != 1 || second.Epoch != first.Epoch || second.Flags != 1 {
+		t.Fatalf("continuation after cancellation: %+v, error %v", second, err)
+	}
+	select {
+	case breakErr := <-survivor:
+		t.Fatalf("surviving waiter completed before the next ACK: %v", breakErr)
+	default:
+	}
+	holder.ack(t, second)
+	last, err := holder.client.WaitLeaseBreak(holder.ctx)
+	if err != nil || last.CurrentState != 1 || last.NewState != 0 || last.Epoch != first.Epoch || last.Flags != 0 {
+		t.Fatalf("final continuation after cancellation: %+v, error %v", last, err)
+	}
+	finishServerBreak(holder.ctx, t, survivor)
+	holder.close(t, wire.FileID(open.ID))
+}
+
+func TestQueuedLeaseBreakCloseCompletesBothWaiters(t *testing.T) {
+	server, holder, _ := newCreateLeaseClients(t)
+	created := holder.create(t, leaseCreateRequest("close-queued-break"), leaseV2(1, 7))
+	binding := state.Binding{SessionID: holder.session.SessionID, TreeID: holder.session.TreeID}
+	open, status := server.options.State.Find(state.FileID(created.Reply.ID), binding)
+	if status != smb.StatusSuccess {
+		t.Fatalf("created lease open: %#x", status)
+	}
+	originalDone := startServerBreak(holder.ctx, server, open, 3)
+	if _, err := holder.client.WaitLeaseBreak(holder.ctx); err != nil {
+		t.Fatal(err)
+	}
+	changed := server.options.State.BreakChanges()
+	queuedDone := startServerBreak(holder.ctx, server, open, 0)
+	waitAsyncSignal(holder.ctx, t, changed)
+	holder.close(t, wire.FileID(open.ID))
+	finishServerBreak(holder.ctx, t, originalDone)
+	finishServerBreak(holder.ctx, t, queuedDone)
+	_, status = server.options.State.Find(open.ID, binding)
+	if status != smb.StatusFileClosed || server.options.State.LeasesBreaking(open.Object, state.GUID{9}, state.GUID{9}) {
+		t.Fatal("CLOSE kept the open or queued revocation")
+	}
+}
 
 func TestQueuedLeaseBreakCreatesUseSameEpochContinuations(t *testing.T) {
 	for _, cipher := range []uint16{0, smb.CipherAES128GCM} {

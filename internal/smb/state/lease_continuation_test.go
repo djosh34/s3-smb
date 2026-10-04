@@ -8,6 +8,81 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
+func TestQueuedBreakTimeoutUsesCurrentStageDeadline(t *testing.T) {
+	for _, continuation := range []bool{false, true} {
+		t.Run(map[bool]string{false: "original", true: "continuation"}[continuation], func(t *testing.T) {
+			checkQueuedBreakTimeout(t, continuation)
+		})
+	}
+}
+
+func checkQueuedBreakTimeout(t *testing.T, continuation bool) {
+	t.Helper()
+	table, now := clockTable(t)
+	req := request(1)
+	grant := leaseGrant(req, 7)
+	commit(t, table, req, grant)
+	first := startBreak(t, table, req.Object, 3)
+	initialDeadline := now.Add(state.LeaseBreakTimeout)
+	*now = now.Add(10 * time.Second)
+	table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, 0)
+	deadline := initialDeadline
+	ackState := uint32(3)
+	if continuation {
+		breaks, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, ackState)
+		statusIs(t, status, smb.StatusSuccess)
+		if len(breaks) != 1 || breaks[0].Epoch != first.Epoch {
+			t.Fatalf("continuation: %+v", breaks)
+		}
+		deadline, ackState = now.Add(state.LeaseBreakTimeout), 1
+		*now = initialDeadline
+		table.ExpireBreaks()
+		if !table.LeasesBreaking(req.Object, state.GUID{9}, state.GUID{9}) {
+			t.Fatal("continuation expired at the previous stage's deadline")
+		}
+	}
+	*now = deadline.Add(-time.Nanosecond)
+	table.ExpireBreaks()
+	if !table.LeasesBreaking(req.Object, state.GUID{9}, state.GUID{9}) {
+		t.Fatal("current stage expired early")
+	}
+	*now = deadline
+	if actions := table.ExpireBreaks(); len(actions) != 0 {
+		t.Fatalf("attached nondurable lease timeout cleanup: %+v", actions)
+	}
+	current, exists := table.LeaseFor(req.Object, req.ClientGUID, grant.Lease.Key)
+	if !exists || current.State != 0 || current.BreakTo != 0 || current.Breaking || !current.Deadline.IsZero() || current.EffectiveState() != 0 {
+		t.Fatalf("timeout did not revoke the whole queued lease: %+v", current)
+	}
+	breaks, actions, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, ackState)
+	statusIs(t, status, smb.StatusUnsuccessful)
+	if len(breaks) != 0 || len(actions) != 0 {
+		t.Fatal("late acknowledgment revived queued work")
+	}
+}
+
+func TestQueuedBreakDetachedCompletionDiscardsContinuation(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	grant := durableGrant(req)
+	grant.Lease.State |= smb.LeaseWrite
+	open := commit(t, table, req, grant)
+	first := startBreak(t, table, req.Object, 3)
+	table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, 0)
+	if actions := table.Disconnect(binding.SessionID); len(actions) != 0 {
+		t.Fatalf("captured H lease closed before detached completion: %+v", actions)
+	}
+	actions := table.CompleteDetachedBreak(first)
+	if len(actions) != 1 || actions[0].Handle != open.Handle || table.BreakPending(first) {
+		t.Fatalf("queued detached completion: %+v", actions)
+	}
+	breaks, actions, status := table.AckBreak(state.Binding{SessionID: 2}, req.ClientGUID, grant.Lease.Key, 3)
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+	if len(breaks) != 0 || len(actions) != 0 || len(table.CompleteDetachedBreak(first)) != 0 {
+		t.Fatal("completed detached queue returned more work")
+	}
+}
+
 func TestLeaseSnapshotEffectiveStateIncludesQueuedRevocation(t *testing.T) {
 	table, _ := clockTable(t)
 	req := request(1)
