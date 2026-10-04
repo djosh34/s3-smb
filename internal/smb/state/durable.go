@@ -50,11 +50,9 @@ func (table *Table) Disconnect(sessionID uint64) []CloseAction {
 		if open.Binding.SessionID == sessionID && open.Durable {
 			open.Binding = Binding{}
 			open.DurableDeadline = now.Add(open.DurableTimeout)
-			table.signalBreakChanges()
 		}
 	}
-	actions := table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
-	return append(actions, table.closeDetachedBreaks()...)
+	return table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
 }
 
 // CloseSession closes attached session opens, including durable opens, on LOGOFF.
@@ -123,7 +121,6 @@ func (table *Table) Reconnect(request ReconnectRequest) (Open, smb.Status) {
 	open.ID.Volatile = table.nextVolatile
 	open.Binding = request.Binding
 	open.DurableDeadline = time.Time{}
-	table.signalBreakChanges()
 	return open.Open, smb.StatusSuccess
 }
 

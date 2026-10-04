@@ -269,15 +269,19 @@ func (connection *connection) treeDisconnect(ctx context.Context, message wire.M
 	return reply{body: body}, err
 }
 
-func (connection *connection) detachSessions() []state.CloseAction {
+// detachSessions ends every session of a dropped connection, detaching its
+// durable opens and closing the rest. It returns the session IDs it ended.
+func (connection *connection) detachSessions() ([]uint64, []state.CloseAction) {
 	connection.sessionMu.Lock()
 	defer connection.sessionMu.Unlock()
+	var ids []uint64
 	var actions []state.CloseAction
 	for id, session := range connection.sessions {
 		session.active, session.acceptor, session.trees = false, nil, nil
 		connection.server.unregisterSession(id)
+		ids = append(ids, id)
 		actions = append(actions, connection.server.options.State.Disconnect(id)...)
 	}
 	clear(connection.sessions)
-	return actions
+	return ids, actions
 }

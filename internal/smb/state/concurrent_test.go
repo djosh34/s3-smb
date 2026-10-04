@@ -56,9 +56,6 @@ func exerciseOpens(table *state.Table, worker uint64) error {
 		if _, status = table.Find(open.ID, open.Binding); status != smb.StatusSuccess {
 			return fmt.Errorf("find: %#x", status)
 		}
-		if replayed, replayStatus := table.Replay(req); replayStatus != smb.StatusSuccess || replayed.ID != open.ID {
-			return fmt.Errorf("replay: %#x", replayStatus)
-		}
 		offset := worker*10000 + iteration*100
 		if status = table.Lock(open.ID, open.Binding, []state.Range{{Offset: offset, Length: 10, Exclusive: true}}, false); status != smb.StatusSuccess {
 			return fmt.Errorf("lock: %#x", status)

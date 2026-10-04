@@ -7,37 +7,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
-func TestReplayChecksAllOriginalParameters(t *testing.T) {
-	for _, test := range []struct {
-		modify func(*state.OpenRequest)
-		name   string
-	}{
-		{name: "object", modify: func(req *state.OpenRequest) { req.Object.Inode++ }},
-		{name: "stream", modify: func(req *state.OpenRequest) { req.Object.Stream = "xattr" }},
-		{name: "sharing", modify: func(req *state.OpenRequest) { req.Sharing = 0 }},
-		{name: "intent", modify: func(req *state.OpenRequest) { req.SharingIntent = state.RightWrite }},
-		{name: "parameters", modify: func(req *state.OpenRequest) { req.CreateParameters[0]++ }},
-		{name: "session", modify: func(req *state.OpenRequest) { req.Binding.SessionID++ }},
-		{name: "tree", modify: func(req *state.OpenRequest) { req.Binding.TreeID++ }},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			table := newTable(t)
-			req := request(1)
-			req.CreateGUID = state.GUID{2}
-			open := commit(t, table, req, state.Grant{})
-			bad := req
-			test.modify(&bad)
-			_, status := table.Replay(bad)
-			statusIs(t, status, smb.StatusInvalidParameter)
-			found, status := table.Replay(req)
-			statusIs(t, status, smb.StatusSuccess)
-			if found != open {
-				t.Fatal("failed replay changed original")
-			}
-		})
-	}
-}
-
 func TestCreateIdentityIncludesClientUserAndShare(t *testing.T) {
 	table := newTable(t)
 	req := request(1)

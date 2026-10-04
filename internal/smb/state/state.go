@@ -58,33 +58,32 @@ type ShareMode Rights
 // Its handle, ranges, deletion intent and lease survive detachment. Explicit
 // close, expiry and shutdown release them. CloseSession and CloseTree also close
 // durable opens on logoff and tree disconnect. A transport drop does not.
-// GrantedAccess retains the full expanded SMB mask through replay and reconnect.
+// GrantedAccess retains the full expanded SMB mask through reconnect.
 // SharingIntent includes the minimum read, write and delete intent from the
 // granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
 // is tracked separately and makes the object delete-pending at once.
 // WriteThrough retains CREATE's durability mode for every WRITE on this open.
 // This table is never persisted across restart.
 type Open struct {
-	DurableDeadline  time.Time
-	Handle           smb.Handle
-	User             string
-	Share            string
-	Object           smb.ObjectKey
-	Directory        DirectoryCursor
-	ID               FileID
-	Binding          Binding
-	ClientGUID       GUID
-	CreateGUID       GUID
-	CreateParameters [32]byte
-	LeaseKey         GUID
-	DurableTimeout   time.Duration
-	GrantedAccess    uint32
-	CreateAction     uint32
-	SharingIntent    Rights
-	Sharing          ShareMode
-	DeleteOnClose    bool
-	WriteThrough     bool
-	Durable          bool
+	DurableDeadline time.Time
+	Handle          smb.Handle
+	User            string
+	Share           string
+	Object          smb.ObjectKey
+	Directory       DirectoryCursor
+	ID              FileID
+	Binding         Binding
+	ClientGUID      GUID
+	CreateGUID      GUID
+	LeaseKey        GUID
+	DurableTimeout  time.Duration
+	GrantedAccess   uint32
+	CreateAction    uint32
+	SharingIntent   Rights
+	Sharing         ShareMode
+	DeleteOnClose   bool
+	WriteThrough    bool
+	Durable         bool
 }
 
 // DirectoryCursor belongs to one SMB open. Empty continuation patterns reuse
@@ -111,24 +110,20 @@ type Range struct {
 	Exclusive bool
 }
 
-// Lease tracks a V2 lease shared by opens of the same client and key on one
-// object. State and BreakTo describe held rights and the captured pending stage.
-// Stronger revocations queue without changing that stage's epoch or deadline.
-// EffectiveState includes all pending revocations. Timeout revokes the whole
-// lease. H is required for durability. Directories and streams receive neither.
-// A client's lease key identifies only one object; reuse on another is rejected.
+// Lease is the one V2 lease on a regular file. All opens of the file with the
+// same client GUID and lease key share it; other opens of the file get none.
+// While Breaking, the holder keeps State until it acknowledges BreakTo or
+// Deadline passes, which revokes the whole lease. Durable opens need H, counted
+// as BreakTo while a break is pending. A lease key names only one file.
 type Lease struct {
-	Deadline      time.Time
-	readDelivery  *readDeliveryTicket
-	ClientGUID    GUID
-	Key           GUID
-	ParentKey     GUID
-	State         uint32
-	BreakTo       uint32
-	queuedTo      uint32
-	Epoch         uint16
-	Breaking      bool
-	readDelivered bool
+	Deadline   time.Time
+	ClientGUID GUID
+	Key        GUID
+	ParentKey  GUID
+	State      uint32
+	BreakTo    uint32
+	Epoch      uint16
+	Breaking   bool
 }
 
 // ObjectRecord describes the per-(inode, stream) record. Opens, locks and leases
@@ -138,12 +133,11 @@ type Lease struct {
 // DeletePending remains set until CompleteDelete reports the cleanup outcome.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
-// Records are removed only after opens, reservations, locks, leases and active
-// mutation tokens are gone.
+// Records are removed only after opens, reservations, locks and the lease are
+// gone.
 type ObjectRecord struct {
 	Opens         []uint64
 	Locks         []Range
-	Leases        []Lease
 	Key           smb.ObjectKey
 	DeleteName    smb.Name
 	DeletePending bool
@@ -156,19 +150,16 @@ type ObjectRecord struct {
 // GrantedAccess includes append and metadata rights, not just SharingIntent.
 // Reserve adds the mask's minimum sharing intent; callers may add delete for
 // supersede even when the mask does not contain DELETE.
-// CreateParameters is the server's SHA-256 of canonical CREATE parameters,
-// including name, disposition, options and requested contexts, for replay checks.
 type OpenRequest struct {
-	User             string
-	Share            string
-	Object           smb.ObjectKey
-	Binding          Binding
-	ClientGUID       GUID
-	CreateGUID       GUID
-	CreateParameters [32]byte
-	GrantedAccess    uint32
-	SharingIntent    Rights
-	Sharing          ShareMode
+	User          string
+	Share         string
+	Object        smb.ObjectKey
+	Binding       Binding
+	ClientGUID    GUID
+	CreateGUID    GUID
+	GrantedAccess uint32
+	SharingIntent Rights
+	Sharing       ShareMode
 }
 
 // Reservation is an opaque token. It participates in share checks until Commit
@@ -176,17 +167,17 @@ type OpenRequest struct {
 // share check and adapter Open or Truncate. No table mutex is held by the caller.
 type Reservation uint64
 
-// Grant supplies storage and CREATE results for Commit. A durable grant requires
-// an H lease on a regular unnamed file and a timeout in (0, MaxDurableTimeout].
-// Zero timeout means no durable grant. The handler normalizes a client's requested
-// timeout to the default or maximum before Commit; this is a granted timeout.
+// Grant supplies storage and CREATE results for Commit. Lease is the lease the
+// client asked for, with State R, RH or RWH, or zero to join only an existing
+// lease of the same key. The caller asks for no lease on directories and named
+// streams. DurableTimeout is the timeout to grant, at most MaxDurableTimeout;
+// Commit grants it only to an open with a nonzero CreateGUID that keeps H.
 type Grant struct {
 	Handle         smb.Handle
 	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
 	CreateAction   uint32
-	Directory      bool
 	DeleteOnClose  bool
 	WriteThrough   bool
 }
@@ -224,11 +215,9 @@ type ReconnectRequest struct {
 	LeaseKey   GUID
 }
 
-// Break is work for the server's sender after the state lock is released.
-// The table captures CurrentState and AckRequired when it starts the break.
-// The server waits asynchronously before committing a conflicting CREATE.
+// Break is a lease break notification for the server to send to Binding's
+// session after the table lock is released.
 type Break struct {
-	readDelivery *readDeliveryTicket
 	Binding      Binding
 	ClientGUID   GUID
 	LeaseKey     GUID
@@ -252,11 +241,9 @@ type Table struct {
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
-	mutations       map[Mutation]mutationEntry
 	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64
-	nextMutation    uint64
 	nextPersistent  uint64
 	nextVolatile    uint64
 }
@@ -269,6 +256,7 @@ type openEntry struct {
 }
 
 type objectEntry struct {
+	lease *Lease
 	ObjectRecord
 	deleteCommitted bool
 	removalPending  bool

@@ -118,39 +118,6 @@ func TestReservationRollback(t *testing.T) {
 	reserve(t, table, first)
 }
 
-func TestFullGrantedAccessSurvivesReplay(t *testing.T) {
-	for _, access := range []struct {
-		name   string
-		mask   uint32
-		intent state.Rights
-	}{
-		{name: "append only", mask: 0x00120104, intent: state.RightWrite},
-		{name: "write data", mask: 0x00120102, intent: state.RightWrite},
-		{name: "metadata only", mask: 0x00120080},
-	} {
-		t.Run(access.name, func(t *testing.T) {
-			table := newTable(t)
-			req := request(1)
-			req.CreateGUID = state.GUID{2}
-			req.GrantedAccess, req.SharingIntent = access.mask, access.intent
-			original := commit(t, table, req, state.Grant{})
-			if original.GrantedAccess != access.mask || original.SharingIntent != access.intent {
-				t.Fatalf("grant changed access: %+v", original)
-			}
-			replayed, status := table.Replay(req)
-			statusIs(t, status, smb.StatusSuccess)
-			if replayed != original {
-				t.Fatalf("replay changed open: %+v", replayed)
-			}
-			_, status = table.Reserve(req)
-			statusIs(t, status, smb.StatusDuplicateObjectID)
-			req.GrantedAccess ^= 2
-			_, status = table.Replay(req)
-			statusIs(t, status, smb.StatusInvalidParameter)
-		})
-	}
-}
-
 func TestSharingIntentComesFromGrantedAccess(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -187,11 +154,6 @@ func TestDerivedIntentIsStoredAndReplayed(t *testing.T) {
 	open := commit(t, table, req, state.Grant{})
 	if open.SharingIntent != state.RightWrite || open.GrantedAccess != req.GrantedAccess {
 		t.Fatalf("normalized grant: %+v", open)
-	}
-	found, status := table.Replay(req)
-	statusIs(t, status, smb.StatusSuccess)
-	if found != open {
-		t.Fatal("replay changed normalized intent")
 	}
 }
 

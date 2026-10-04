@@ -30,28 +30,31 @@ const (
 	fileReserveOpfilter  uint32 = 0x00100000
 )
 
-func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
+func decodeCreate(message wire.Message) (wire.CreateRequest, createContexts, smb.Status) {
 	create, err := wire.DecodeCreateRequest(message)
 	if err != nil {
-		return create, smb.StatusInvalidParameter
+		return create, createContexts{}, smb.StatusInvalidParameter
 	}
 	if create.ImpersonationLevel > 3 {
-		return create, smb.StatusBadImpersonationLevel
+		return create, createContexts{}, smb.StatusBadImpersonationLevel
 	}
 	if strings.HasPrefix(create.Name, "\\") || strings.HasPrefix(create.Name, "/") {
-		return create, smb.StatusInvalidParameter
+		return create, createContexts{}, smb.StatusInvalidParameter
 	}
 	if create.Options&(fileOpenByFileID|fileReserveOpfilter) != 0 {
-		return create, smb.StatusNotSupported
+		return create, createContexts{}, smb.StatusNotSupported
 	}
 	if create.Disposition > fileOverwriteIf || create.ShareAccess & ^uint32(7) != 0 || create.Options&(fileDirectoryFile|fileNonDirectoryFile) == fileDirectoryFile|fileNonDirectoryFile {
-		return create, smb.StatusInvalidParameter
+		return create, createContexts{}, smb.StatusInvalidParameter
 	}
 	if create.Options&fileDirectoryFile != 0 && create.Disposition != fileCreateDisposition && create.Disposition != fileOpen && create.Disposition != fileOpenIf {
-		return create, smb.StatusInvalidParameter
+		return create, createContexts{}, smb.StatusInvalidParameter
 	}
-	_, status := decodeCreateLease(create)
-	return create, status
+	contexts, err := decodeCreateContexts(create)
+	if err != nil {
+		return create, contexts, smb.StatusInvalidParameter
+	}
+	return create, contexts, smb.StatusSuccess
 }
 
 // expandCreateAccess removes generic bits before storing the granted mask.
@@ -120,20 +123,19 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	}
 }
 
-func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status, error) {
-	open, err := openRequestForCreate(request, create, resolved.Object, granted)
-	if err != nil {
-		return 0, smb.StatusInvalidParameter, errors.Join(smb.ErrInvalidParameter, err)
+func openRequestForCreate(request RequestContext, create wire.CreateRequest, contexts createContexts, object smb.ObjectKey, granted uint32) state.OpenRequest {
+	open := state.OpenRequest{
+		Object: object, Binding: request.Binding(), User: request.Session.User,
+		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
+		GrantedAccess: granted, Sharing: state.ShareMode(create.ShareAccess & 7),
 	}
-	return reserveCreateLease(request, create, resolved, open)
-}
-
-func createGrant(create wire.CreateRequest, resolved smb.Resolved, handle smb.Handle) state.Grant {
-	return state.Grant{
-		Handle: handle, Directory: resolved.Attr.Kind == smb.KindDirectory,
-		DeleteOnClose: create.Options&fileDeleteOnClose != 0, DeleteName: resolved.Name,
-		WriteThrough: create.Options&fileWriteThrough != 0,
+	if create.Disposition == fileSupersede || create.Options&fileDeleteOnClose != 0 {
+		open.SharingIntent |= state.RightDelete
 	}
+	if contexts.durable != nil {
+		open.CreateGUID = contexts.durable.CreateGUID
+	}
+	return open
 }
 
 func createStorageAccess(granted uint32, destructive bool) smb.Access {
@@ -151,43 +153,50 @@ func createStorageAccess(granted uint32, destructive bool) smb.Access {
 	return access
 }
 
+// handleCreate refuses a DH2Q whose CREATE GUID is in use before it touches
+// the namespace. A marked replay gets the same answer: without multichannel,
+// macOS does not replay a CREATE.
 func handleCreate(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
-	create, status := decodeCreate(message)
+	create, contexts, status := decodeCreate(message)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	granted := expandCreateAccess(create.DesiredAccess)
-	if result, handled, err := replayCreate(ctx, request, message, create); handled {
-		return result, err
+	if contexts.reconnect != nil || contexts.legacyReconnect {
+		return reconnectCreate(ctx, request, create, contexts)
 	}
+	granted := expandCreateAccess(create.DesiredAccess)
 	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	return runCreateWithLeases(ctx, request, create, granted)
+	if contexts.durable != nil {
+		if _, status = request.Opens.LookupCreate(openRequestForCreate(request, create, contexts, smb.ObjectKey{}, granted)); status != smb.StatusObjectNameNotFound {
+			return reply{status: smb.StatusDuplicateObjectID}, nil
+		}
+	}
+	return runCreate(ctx, request, create, contexts, granted)
 }
 
-// createLocked holds the parent from selection through grant publication. The
-// caller releases unlock even on a sharing violation, before waiting or retrying.
-func createLocked(ctx context.Context, request RequestContext, create wire.CreateRequest, granted uint32) (reply, func(), error) {
+// createOnce holds the parent guard from name selection through publication.
+func createOnce(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, granted uint32) (reply, *leaseBreak, error) {
 	resolved, unlock, err := lookupLocked(ctx, request, create.Name)
 	if err != nil {
 		return reply{}, nil, err
 	}
-	result, err := createSelected(ctx, request, create, resolved, granted)
-	return result, unlock, err
+	defer unlock()
+	return createSelected(ctx, request, create, contexts, resolved, granted)
 }
 
-func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (result reply, resultErr error) {
-	contexts, validAAPLQuery, err := createAAPLContexts(create.Contexts)
+func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, resolved smb.Resolved, granted uint32) (result reply, conflict *leaseBreak, resultErr error) {
+	aapl, validAAPLQuery, err := createAAPLContexts(create.Contexts)
 	if err != nil {
-		return reply{status: smb.StatusInvalidParameter}, nil
+		return reply{status: smb.StatusInvalidParameter}, nil, nil
 	}
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
+		return reply{status: status}, nil, nil
 	}
 	if status = streamOpenStatus(request.aaplNegotiated() || validAAPLQuery, create, resolved); status != smb.StatusSuccess {
-		return reply{status: status}, nil
+		return reply{status: status}, nil, nil
 	}
 	if !resolved.Exists {
 		kind := smb.KindFile
@@ -196,12 +205,14 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 		}
 		resolved, err = request.Storage.Create(ctx, resolved.Name, kind)
 		if err != nil {
-			return reply{}, err
+			return reply{}, nil, err
 		}
 	}
-	reservation, status, err := reserveCreate(request, create, resolved, granted)
-	if status != smb.StatusSuccess || err != nil {
-		return reply{status: status}, err
+	lease := contexts.leaseRequest(request, create, resolved)
+	open := openRequestForCreate(request, create, contexts, resolved.Object, granted)
+	reservation, conflict, status, err := reserveCreate(request, open, lease, createLeaseTarget(create, granted))
+	if conflict != nil || status != smb.StatusSuccess || err != nil {
+		return reply{status: status}, conflict, err
 	}
 	var handle smb.Handle
 	committed := false
@@ -218,47 +229,45 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	}()
 	handle, err = request.Storage.Open(ctx, resolved.Object, createStorageAccess(granted, destructive))
 	if err != nil {
-		return reply{}, err
+		return reply{}, nil, err
 	}
 	if destructive {
 		if truncateErr := request.Storage.Truncate(ctx, handle, 0); truncateErr != nil {
-			return reply{}, truncateErr
+			return reply{}, nil, truncateErr
 		}
 	}
 	if attrErr := setCreateAttributes(ctx, request.Storage, create, resolved, action); attrErr != nil {
-		return reply{}, attrErr
+		return reply{}, nil, attrErr
 	}
 	attr, err := request.Storage.GetAttr(ctx, resolved.Object)
 	if err != nil {
-		return reply{}, err
+		return reply{}, nil, err
 	}
 	response, err := createResponse(attr, action)
 	if err != nil {
-		return reply{}, err
+		return reply{}, nil, err
 	}
-	grant := createGrant(create, resolved, handle)
-	if leaseStatus := grantCreateLease(request, create, resolved, reservation, &grant); leaseStatus != smb.StatusSuccess {
-		return reply{status: leaseStatus}, nil
-	}
-	grant.CreateAction = action
-	if durableErr := grantCreateDurable(request, create, reservation, &grant); durableErr != nil {
-		return reply{}, errors.Join(smb.ErrInvalidParameter, durableErr)
-	}
-	open, status := request.Opens.CommitLease(reservation, grant, createLeaseRequest(request, create, resolved))
+	created, status := request.Opens.Commit(reservation, state.Grant{
+		Handle: handle, DeleteName: resolved.Name, Lease: lease, DurableTimeout: contexts.durableTimeout(resolved),
+		CreateAction: action, DeleteOnClose: create.Options&fileDeleteOnClose != 0, WriteThrough: create.Options&fileWriteThrough != 0,
+	})
 	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
+		return reply{status: status}, nil, nil
 	}
 	committed = true
-	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
-	response.Contexts = contexts
-	body, err := encodeGrantedCreate(request, create, resolved, open, response)
+	response.ID = wire.FileID(created.ID)
+	response.Contexts = aapl
+	if err = appendCreateContexts(request, created, lease, &response); err != nil {
+		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
+	}
+	body, err := wire.EncodeCreateResponse(response)
 	if err != nil {
-		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
+		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
 	}
 	if validAAPLQuery {
 		request.markAAPL()
 	}
-	return reply{body: body, fileID: response.ID}, nil
+	return reply{body: body, fileID: response.ID}, nil, nil
 }
 
 // A failed reply has never exposed this grant to a client. Its parent is still

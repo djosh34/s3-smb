@@ -2,10 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/sha256"
-	"errors"
-	"slices"
-	"strings"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -13,164 +9,31 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-type durableContexts struct {
-	request         *wire.DurableRequest
-	reconnect       *wire.DurableReconnect
-	lease           *wire.LeaseContext
-	legacyRequest   bool
-	legacyReconnect bool
-}
-
-func decodeDurableContexts(create wire.CreateRequest) (durableContexts, error) {
-	var result durableContexts
-	for _, c := range create.Contexts {
-		switch c.Name {
-		case "DH2Q":
-			if result.request != nil || result.reconnect != nil {
-				return result, errors.New("duplicate durable context")
-			}
-			value, err := wire.DecodeDurableRequest(c)
-			if err != nil {
-				return result, err
-			}
-			if value.CreateGUID == ([16]byte{}) {
-				return result, errors.New("durable request has no CREATE GUID")
-			}
-			result.request = &value
-		case "DH2C":
-			if result.request != nil || result.reconnect != nil {
-				return result, errors.New("duplicate durable context")
-			}
-			value, err := wire.DecodeDurableReconnect(c)
-			if err != nil {
-				return result, err
-			}
-			result.reconnect = &value
-		case "DHnQ":
-			result.legacyRequest = true
-		case "DHnC":
-			result.legacyReconnect = true
-		case "RqLs":
-			if result.lease != nil {
-				return result, errors.New("duplicate lease context")
-			}
-			value, err := wire.DecodeLeaseContext(c)
-			if err != nil {
-				return result, err
-			}
-			result.lease = &value
-		}
+// durableTimeout is the timeout to grant a DH2Q on a regular unnamed file: the
+// requested one up to 16 minutes, or 120 s for a request of 0. The open table
+// grants it only with an H lease. Persistent handles are never granted.
+func (contexts createContexts) durableTimeout(resolved smb.Resolved) time.Duration {
+	if contexts.durable == nil || resolved.Attr.Kind != smb.KindFile || resolved.Object.Stream != "" {
+		return 0
 	}
-	if result.request != nil && (result.legacyRequest || result.legacyReconnect) {
-		return result, errors.New("durable v2 request conflicts with a durable v1 context")
-	}
-	return result, nil
-}
-
-// Both reservation and replay use this fingerprint, before any disposition can
-// change the selected file. Context order is not a CREATE parameter.
-func openRequestForCreate(request RequestContext, create wire.CreateRequest, object smb.ObjectKey, granted uint32) (state.OpenRequest, error) {
-	open := state.OpenRequest{
-		Object: object, Binding: request.Binding(), User: request.Session.User,
-		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
-		GrantedAccess: granted, Sharing: state.ShareMode(create.ShareAccess & 7),
-	}
-	if create.Disposition == fileSupersede || create.Options&fileDeleteOnClose != 0 {
-		open.SharingIntent |= state.RightDelete
-	}
-	contexts, err := decodeDurableContexts(create)
-	if err != nil {
-		return open, err
-	}
-	if contexts.request != nil {
-		open.CreateGUID = contexts.request.CreateGUID
-	}
-	create.Contexts = slices.Clone(create.Contexts)
-	slices.SortFunc(create.Contexts, func(a, b wire.CreateContext) int { return strings.Compare(a.Name, b.Name) })
-	body, err := wire.EncodeCreateRequest(create)
-	if err != nil {
-		return open, err
-	}
-	open.CreateParameters = sha256.Sum256(body)
-	return open, nil
-}
-
-func grantCreateDurable(request RequestContext, create wire.CreateRequest, reservation state.Reservation, grant *state.Grant) error {
-	contexts, err := decodeDurableContexts(create)
-	if err != nil {
-		return err
-	}
-	if contexts.request == nil || grant.Directory || grant.DeleteName.Stream != "" || !request.Opens.DurableEligible(reservation, grant.Lease) {
-		return nil
-	}
-	timeout := time.Duration(contexts.request.Timeout) * time.Millisecond
+	timeout := time.Duration(contexts.durable.Timeout) * time.Millisecond
 	if timeout == 0 {
-		timeout = smb.DefaultDurableTimeout
+		return smb.DefaultDurableTimeout
 	}
-	grant.DurableTimeout = min(timeout, smb.MaxDurableTimeout)
-	return nil
+	return min(timeout, smb.MaxDurableTimeout)
 }
 
-func appendCreateDurable(open state.Open, response *wire.CreateResponse) error {
-	if !open.Durable {
-		return nil
+// reconnectCreate hands a detached durable open back on DH2C. The client must
+// match the open's identities and lease key, and the name must still lead to
+// the open's file unless it is being deleted on close. Durable v1 and
+// persistent reconnects find nothing.
+func reconnectCreate(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts) (reply, error) {
+	if contexts.reconnect == nil || contexts.legacyRequest || contexts.legacyReconnect ||
+		contexts.lease == nil || contexts.lease.Version != 2 || create.OplockLevel != leaseOplockLevel {
+		return reply{status: smb.StatusObjectNameNotFound}, nil
 	}
-	milliseconds := open.DurableTimeout / time.Millisecond
-	if milliseconds <= 0 || milliseconds > 960000 {
-		return errors.New("invalid retained durable timeout")
-	}
-	c, err := wire.EncodeDurableReply(wire.DurableReply{Timeout: uint32(milliseconds)})
-	if err != nil {
-		return err
-	}
-	response.Contexts = append(response.Contexts, c)
-	return nil
-}
-
-// replayCreate intercepts duplicate GUIDs and DH2C before namespace selection.
-// The ordinary CREATE path never sees a reconnect and never repeats a replay's
-// truncation, creation, sharing reservation or lease grant.
-func replayCreate(ctx context.Context, request RequestContext, message wire.Message, create wire.CreateRequest) (reply, bool, error) {
-	contexts, err := decodeDurableContexts(create)
-	if err != nil {
-		return reply{}, true, errors.Join(smb.ErrInvalidParameter, err)
-	}
-	if contexts.legacyReconnect && contexts.reconnect == nil {
-		return reply{status: smb.StatusObjectNameNotFound}, true, nil
-	}
-	if contexts.reconnect != nil {
-		result, reconnectErr := reconnectCreate(ctx, request, create, contexts)
-		return result, true, reconnectErr
-	}
-	if contexts.request == nil {
-		return reply{}, false, nil
-	}
-	candidate, err := openRequestForCreate(request, create, smb.ObjectKey{}, expandCreateAccess(create.DesiredAccess))
-	if err != nil {
-		return reply{}, true, errors.Join(smb.ErrInvalidParameter, err)
-	}
-	original, status := request.Opens.LookupCreate(candidate)
-	if status == smb.StatusObjectNameNotFound {
-		return reply{}, false, nil
-	}
-	if message.Header.Flags&wire.FlagReplay == 0 || status == smb.StatusDuplicateObjectID {
-		return reply{status: smb.StatusDuplicateObjectID}, true, nil
-	}
-	candidate.Object = original.Object
-	open, status := request.Opens.Replay(candidate)
-	if status != smb.StatusSuccess {
-		return reply{status: status}, true, nil
-	}
-	result, err := retainedCreateReply(ctx, request, open, open.CreateAction)
-	return result, true, err
-}
-
-func reconnectCreate(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts durableContexts) (reply, error) {
 	if contexts.reconnect.Flags&2 != 0 {
 		return reply{status: smb.StatusInvalidParameter}, nil
-	}
-	if contexts.legacyRequest || contexts.legacyReconnect || contexts.lease == nil || contexts.lease.Version != 2 || create.OplockLevel != leaseOplockLevel {
-		return reply{status: smb.StatusObjectNameNotFound}, nil
 	}
 	reconnect := state.ReconnectRequest{
 		ID: state.FileID(contexts.reconnect.ID), Binding: request.Binding(),
@@ -191,38 +54,12 @@ func reconnectCreate(ctx context.Context, request RequestContext, create wire.Cr
 			return reply{status: smb.StatusObjectNameNotFound}, nil
 		}
 	}
-	open, status := reconnectBoundOpen(request, reconnect)
+	open, status := request.Opens.Reconnect(reconnect)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	return retainedCreateReply(ctx, request, open, 1) // FILE_OPENED.
-}
-
-// Session invalidation and this table publication share the owner's session
-// lock. No storage call, network call or wait belongs inside that lock.
-func reconnectBoundOpen(request RequestContext, reconnect state.ReconnectRequest) (state.Open, smb.Status) {
-	server := request.server
-	server.mu.Lock()
-	owner := server.sessions[request.Session.SessionID]
-	server.mu.Unlock()
-	if owner == nil {
-		return state.Open{}, smb.StatusUserSessionDeleted
-	}
-	owner.sessionMu.RLock()
-	defer owner.sessionMu.RUnlock()
-	session := owner.sessions[request.Session.SessionID]
-	if session == nil || !session.active || session.identity != request.Session {
-		return state.Open{}, smb.StatusUserSessionDeleted
-	}
-	if tree, exists := session.trees[request.Tree.TreeID]; !exists || tree != request.Tree {
-		return state.Open{}, smb.StatusNetworkNameDeleted
-	}
-	return request.Opens.Reconnect(reconnect)
-}
-
-func retainedCreateReply(ctx context.Context, request RequestContext, open state.Open, action uint32) (reply, error) {
-	// Cleanup cannot close the retained storage reference while attributes are
-	// being read. Find also rejects a binding removed after replay or reconnect.
+	// The open's handle stays in use until the attributes are read, so a
+	// concurrent close cannot release it under this reply.
 	open, release, status := useOpen(request, wire.FileID(open.ID))
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
@@ -232,27 +69,14 @@ func retainedCreateReply(ctx context.Context, request RequestContext, open state
 	if err != nil {
 		return reply{}, err
 	}
-	response, err := createResponse(attr, action)
+	response, err := createResponse(attr, 1) // FILE_OPENED.
 	if err != nil {
 		return reply{}, err
 	}
 	response.ID = wire.FileID(open.ID)
-	if _, cachingErr := appendCreateCaching(request, open, &response); cachingErr != nil {
-		return reply{}, cachingErr
+	if err = appendCreateContexts(request, open, state.Lease{}, &response); err != nil {
+		return reply{}, err
 	}
 	body, err := wire.EncodeCreateResponse(response)
 	return reply{body: body, fileID: response.ID}, err
-}
-
-func encodeGrantedCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, open state.Open, response wire.CreateResponse) ([]byte, error) {
-	current, err := appendCreateCaching(request, open, &response)
-	if err != nil {
-		return nil, err
-	}
-	if current.LeaseKey == (state.GUID{}) {
-		if err := declinedCreateLeaseResponse(create, resolved, &response); err != nil {
-			return nil, err
-		}
-	}
-	return wire.EncodeCreateResponse(response)
 }

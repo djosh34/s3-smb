@@ -4,43 +4,37 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"fmt"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// BreakLeases is the CREATE seam: start other leases' breaks for the selected
-// object, deliver their captured notifications, and wait for acknowledgment or
-// revocation by ExpireBreaks. It runs cleanup through the normal close path.
-// Cancellation stops the wait, not the breaks. No table lock spans I/O or a wait.
-// An earlier pending break on the same object is also awaited.
-func (server *Server) BreakLeases(ctx context.Context, object smb.ObjectKey, clientGUID, leaseKey state.GUID, target uint32) error {
-	if err := ctx.Err(); err != nil {
+// breakLease starts the break, sends its notification and waits until the
+// holder acknowledges it, closes its last open of the file, or the scavenger
+// revokes the lease after LeaseBreakTimeout. Cancellation ends the wait, not
+// the break.
+func (server *Server) breakLease(ctx context.Context, pending leaseBreak) error {
+	notifications, actions := server.options.State.BreakLease(pending.object, pending.client, pending.key, pending.target)
+	if err := server.cleanup(ctx, actions); err != nil {
 		return err
 	}
-	notifications, actions := server.options.State.BreakLeases(object, clientGUID, leaseKey, target)
-	return server.deliverAndWaitLeaseBreaks(ctx, object, clientGUID, leaseKey, notifications, actions)
-}
-
-// deliverAndWaitLeaseBreaks reuses captured work selected under the table mutex.
-func (server *Server) deliverAndWaitLeaseBreaks(ctx context.Context, object smb.ObjectKey, clientGUID, leaseKey state.GUID, notifications []state.Break, actions []state.CloseAction) error {
-	if err := server.deliverLeaseBreaks(ctx, notifications, actions); err != nil {
-		return err
+	var sent <-chan error
+	for _, notification := range notifications {
+		sent = server.sendLeaseBreak(notification)
 	}
 	for {
 		changed := server.options.State.BreakChanges()
-		if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreaks(object, clientGUID, leaseKey)); err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !server.options.State.LeasesBreaking(object, clientGUID, leaseKey) {
+		if !server.options.State.LeaseBreaking(pending.object, pending.client, pending.key) {
 			return nil
 		}
 		select {
+		case err := <-sent:
+			// A holder that cannot be told still times out.
+			if err != nil {
+				server.options.Logger.Info("send lease break", "error", err)
+			}
+			sent = nil
 		case <-changed:
 		case <-ctx.Done():
 			return ctx.Err()
@@ -48,79 +42,35 @@ func (server *Server) deliverAndWaitLeaseBreaks(ctx context.Context, object smb.
 	}
 }
 
-// deliverLeaseBreaks sends captured stages but never waits for their next ACK.
-func (server *Server) deliverLeaseBreaks(ctx context.Context, notifications []state.Break, actions []state.CloseAction) error {
-	if err := server.cleanup(context.WithoutCancel(ctx), actions); err != nil {
-		return err
-	}
-	for _, notification := range notifications {
-		if notification.Binding.SessionID == 0 {
-			if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreak(notification)); err != nil {
-				return err
-			}
-			continue
-		}
-		actions, err := server.sendLeaseBreak(ctx, notification)
-		if cleanupErr := server.cleanup(context.WithoutCancel(ctx), actions); cleanupErr != nil {
-			return cleanupErr
-		}
-		if err != nil {
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			// A dropped holder cannot fail another client's CREATE. Its break
-			// still needs acknowledgment, detached completion, or timer expiry.
-			server.options.Logger.Debug("send lease break", "session_id", notification.Binding.SessionID, "error", err)
-		}
-	}
-	return nil
-}
-
-func (server *Server) sessionConnection(id uint64) *connection {
+// sendLeaseBreak queues the notification on the holder's connection and
+// returns the result of sending it.
+func (server *Server) sendLeaseBreak(notification state.Break) <-chan error {
+	result := make(chan error, 1)
 	server.mu.Lock()
-	defer server.mu.Unlock()
-	return server.sessions[id]
-}
-
-// sendLeaseBreak leaves queued bytes with the ordered sender. Detached completion
-// can end this wait before delivery; its caller owns the returned cleanup.
-func (server *Server) sendLeaseBreak(ctx context.Context, notification state.Break) ([]state.CloseAction, error) {
-	owner := server.sessionConnection(notification.Binding.SessionID)
+	owner := server.sessions[notification.Binding.SessionID]
+	server.mu.Unlock()
 	if owner == nil {
-		return nil, errors.New("lease holder has no connection")
+		result <- errors.New("lease holder has no connection")
+		return result
 	}
 	payload, err := owner.encodeLeaseBreak(notification)
 	if err != nil {
-		return nil, err
+		result <- err
+		return result
 	}
-	completed := owner.sender.enqueue(payload)
-	for {
-		changed := server.options.State.BreakChanges()
-		if notification.AckRequired {
-			actions := server.options.State.CompleteDetachedBreak(notification)
-			if len(actions) != 0 || !server.options.State.BreakPending(notification) {
-				return actions, nil
-			}
-		}
-		select {
-		case err := <-completed:
-			return nil, err
-		case <-changed:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
+	return owner.sender.enqueue(payload)
 }
 
-// Notifications have SessionId zero. Encrypted sessions use the holder's keys;
-// plaintext notifications stay unsigned per MS-SMB2 3.3.4.7. Signing their fixed
-// MessageId with GMAC would reuse a nonce. They do not use replyProtection.
+// encodeLeaseBreak protects the notification for the holder's session.
+// Notifications have SessionId zero. Plaintext ones stay unsigned
+// (MS-SMB2 3.3.4.7): signing their fixed MessageId with GMAC would reuse a
+// nonce.
 func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte, error) {
 	connection.sessionMu.RLock()
 	defer connection.sessionMu.RUnlock()
 	session := connection.sessions[notification.Binding.SessionID]
-	if session == nil || !session.active || session.protector == nil || session.identity.ClientGUID != notification.ClientGUID {
-		return nil, errors.New("lease holder session is unavailable")
+	if session == nil || !session.active {
+		return nil, errors.New("lease holder session is gone")
 	}
 	flags := uint32(0)
 	if notification.AckRequired {
@@ -144,6 +94,8 @@ func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte
 	return payload, nil
 }
 
+// classicOplockBreak tells an oplock acknowledgment (24 bytes) from a lease
+// acknowledgment (36 bytes).
 func classicOplockBreak(message wire.Message) bool {
 	return len(message.Body) >= 2 && binary.LittleEndian.Uint16(message.Body[:2]) == 24
 }
@@ -159,53 +111,21 @@ func validateOplockBreak(message wire.Message) error {
 
 func handleOplockBreak(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	if classicOplockBreak(message) {
-		return handleClassicOplockBreak(request, message)
+		// Oplocks are never granted, so no open has an oplock break to
+		// acknowledge (MS-SMB2 3.3.5.22.1).
+		return reply{status: smb.StatusInvalidDeviceState}, nil
 	}
 	ack, err := wire.DecodeLeaseBreakRequest(message)
 	if err != nil {
 		return reply{}, err
 	}
-	notifications, actions, status, err := acknowledgeBoundLease(ctx, request, ack)
-	if err != nil {
+	actions, status := request.Opens.AckBreak(request.Session.ClientGUID, state.GUID(ack.Key), ack.State)
+	if err = request.Cleanup(ctx, actions); err != nil {
 		return reply{}, err
 	}
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
-	}
-	if deliveryErr := request.server.deliverLeaseBreaks(ctx, notifications, actions); deliveryErr != nil {
-		return reply{}, fmt.Errorf("lease acknowledgment follow-up: %w", deliveryErr)
 	}
 	body, err := wire.EncodeLeaseBreakResponse(wire.LeaseBreakResponse{Key: ack.Key, State: ack.State})
 	return reply{body: body}, err
-}
-
-func handleClassicOplockBreak(request RequestContext, message wire.Message) (reply, error) {
-	ack, err := wire.DecodeOplockBreakRequest(message)
-	if err != nil {
-		return reply{}, err
-	}
-	id, status := request.FileID(ack.ID)
-	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
-	}
-	owner := request.server.sessionConnection(request.Session.SessionID)
-	if owner == nil {
-		return reply{status: smb.StatusUserSessionDeleted}, nil
-	}
-	owner.sessionMu.RLock()
-	session := owner.sessions[request.Session.SessionID]
-	treeExists := false
-	if session != nil && session.active {
-		_, treeExists = session.trees[message.Header.TreeID]
-	}
-	owner.sessionMu.RUnlock()
-	if !treeExists {
-		return reply{status: smb.StatusNetworkNameDeleted}, nil
-	}
-	_, status = request.Opens.Find(state.FileID{Persistent: id.Persistent, Volatile: id.Volatile}, state.Binding{SessionID: request.Session.SessionID, TreeID: message.Header.TreeID})
-	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
-	}
-	// No open holds a classic oplock, so its state is never Breaking.
-	return reply{status: smb.StatusInvalidDeviceState, fileID: id}, nil
 }

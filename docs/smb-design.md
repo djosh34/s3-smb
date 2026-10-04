@@ -163,14 +163,16 @@ drain. Old requests cannot publish grants or replies on the new connection.
 Durable v2 handles are granted only for regular unnamed files that hold a lease
 with H. A zero timeout gets 120 seconds; requests above 16 minutes get 16
 minutes, reported in the reply. DH2C checks the file ID, CreateGuid, client
-GUID, user, share and lease key, and the open gets a new volatile ID. An
-unmarked duplicate CREATE returns DUPLICATE_OBJECTID; a marked replay must
-match the original open. Expiry and shutdown use the normal close path and
-apply pending deletes.
+GUID, user, share and lease key, and the open gets a new volatile ID. A
+CREATE whose CreateGuid is in use returns DUPLICATE_OBJECTID, also when marked
+as a replay. Expiry and shutdown use the normal close path and apply pending
+deletes.
 
-A conflicting open breaks the lease, waits for the acknowledgment or a
-35-second timeout, and checks sharing again. A timed-out break revokes the
-whole lease.
+A file has at most one lease. A conflicting open breaks it, waits for the
+acknowledgment or a 35-second timeout, and tries once more; a lease still in
+the way gives SHARING_VIOLATION. A timed-out break revokes the whole lease. A
+lease whose opens are all detached drops at once, closing durable opens that
+lose H.
 
 ## What survives a failure
 

@@ -77,9 +77,14 @@ func (connection *connection) serve(ctx context.Context) error {
 		connection.server.options.Logger.Info("connection closed", "reason", err)
 	}
 	closeErr := connection.close()
-	actions := connection.detachSessions()
+	sessions, actions := connection.detachSessions()
 	<-connection.sender.done
 	connection.workers.Wait()
+	// Requests still running at the drop can have attached opens to these
+	// sessions since; detach those too.
+	for _, id := range sessions {
+		actions = append(actions, connection.server.options.State.Disconnect(id)...)
+	}
 	cleanupErr := connection.server.cleanup(context.WithoutCancel(ctx), actions)
 	return errors.Join(err, ctxErr, closeErr, cleanupErr)
 }

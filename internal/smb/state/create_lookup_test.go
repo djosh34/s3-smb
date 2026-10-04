@@ -35,12 +35,6 @@ func TestLookupCreateIdentityAndReservation(t *testing.T) {
 		_, status = table.LookupCreate(bad)
 		statusIs(t, status, smb.StatusObjectNameNotFound)
 	}
-	bad := req
-	bad.CreateParameters[0]++
-	_, status = table.LookupCreate(bad)
-	statusIs(t, status, smb.StatusSuccess)
-	_, status = table.Replay(bad)
-	statusIs(t, status, smb.StatusInvalidParameter)
 	closeOpen(t, table, open)
 	_, status = table.LookupCreate(req)
 	statusIs(t, status, smb.StatusObjectNameNotFound)
