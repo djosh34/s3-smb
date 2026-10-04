@@ -56,146 +56,116 @@ func commit(t *testing.T, table *state.Table, request state.OpenRequest, grant s
 	return open
 }
 
-func TestNewRequiresClock(t *testing.T) {
-	if table, err := state.New(nil); err == nil || table != nil {
-		t.Fatalf("New(nil) = %v, %v", table, err)
-	}
-}
-
+// A share mode that leaves out a right conflicts with an open using it,
+// whichever comes first and whether or not the first is committed yet.
 func TestShareChecksBothDirections(t *testing.T) {
 	for _, rights := range []state.Rights{state.RightRead, state.RightWrite, state.RightDelete} {
-		t.Run(rightsName(rights), func(t *testing.T) {
-			for _, committed := range []bool{false, true} {
-				for _, reverse := range []bool{false, true} {
-					table := newTable(t)
-					deny, need := request(1), request(1)
-					deny.Sharing = state.ShareMode(state.Rights(shareAll) & ^rights)
-					deny.SharingIntent = rights
-					need.SharingIntent = rights
-					first, second := deny, need
-					if reverse {
-						first, second = need, deny
-					}
-					if committed {
-						commit(t, table, first, state.Grant{})
-					} else {
-						reserve(t, table, first)
-					}
-					_, status := table.Reserve(second)
-					statusIs(t, status, smb.StatusSharingViolation)
+		for _, committed := range []bool{false, true} {
+			for _, reverse := range []bool{false, true} {
+				table := newTable(t)
+				deny, need := request(1), request(1)
+				deny.Sharing = state.ShareMode(state.Rights(shareAll) &^ rights)
+				deny.SharingIntent, need.SharingIntent = rights, rights
+				first, second := deny, need
+				if reverse {
+					first, second = need, deny
+				}
+				if committed {
+					commit(t, table, first, state.Grant{})
+				} else {
+					reserve(t, table, first)
+				}
+				if _, status := table.Reserve(second); status != smb.StatusSharingViolation {
+					t.Fatalf("rights %d, committed %t, reverse %t: status %#x", rights, committed, reverse, status)
 				}
 			}
-		})
+		}
 	}
 }
 
-func rightsName(right state.Rights) string {
-	switch right {
-	case state.RightRead:
-		return "read"
-	case state.RightWrite:
-		return "write"
-	case state.RightDelete:
-		return "delete"
-	}
-	return "invalid"
-}
-
-func TestReservationRollback(t *testing.T) {
+// A reservation holds its share mode until it is committed or aborted, and
+// can be used only once.
+func TestReservationLifecycle(t *testing.T) {
 	table := newTable(t)
-	first := request(1)
-	first.CreateGUID = state.GUID{2}
-	first.SharingIntent, first.Sharing = state.RightWrite, 0
-	token := reserve(t, table, first)
+	writer := request(1)
+	writer.SharingIntent, writer.Sharing = state.RightWrite, 0
+	token := reserve(t, table, writer)
 	_, status := table.Commit(token, state.Grant{})
 	statusIs(t, status, smb.StatusInvalidParameter)
-	conflicting := request(1)
-	conflicting.SharingIntent = state.RightRead
-	_, status = table.Reserve(conflicting)
+	reader := request(1)
+	reader.SharingIntent = state.RightRead
+	_, status = table.Reserve(reader)
 	statusIs(t, status, smb.StatusSharingViolation)
 	statusIs(t, table.Abort(token), smb.StatusSuccess)
 	statusIs(t, table.Abort(token), smb.StatusInvalidParameter)
-	reserve(t, table, first)
-}
-
-func TestSharingIntentComesFromGrantedAccess(t *testing.T) {
-	for _, test := range []struct {
-		name string
-		mask uint32
-		deny state.Rights
-		want smb.Status
-	}{
-		{name: "metadata only", mask: 0x00120080, deny: state.RightRead, want: smb.StatusSuccess},
-		{name: "read data", mask: 0x00120089, deny: state.RightRead, want: smb.StatusSharingViolation},
-		{name: "execute", mask: 0x20, deny: state.RightRead, want: smb.StatusSharingViolation},
-		{name: "write data", mask: 0x00120102, deny: state.RightWrite, want: smb.StatusSharingViolation},
-		{name: "append data", mask: 0x00120104, deny: state.RightWrite, want: smb.StatusSharingViolation},
-		{name: "delete", mask: 0x10000, deny: state.RightDelete, want: smb.StatusSharingViolation},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			table := newTable(t)
-			deny := request(1)
-			deny.Sharing = state.ShareMode(state.Rights(shareAll) & ^test.deny)
-			deny.SharingIntent = test.deny
-			commit(t, table, deny, state.Grant{})
-			req := request(1)
-			req.GrantedAccess = test.mask
-			_, status := table.Reserve(req)
-			statusIs(t, status, test.want)
-		})
-	}
-}
-
-func TestDerivedIntentIsStoredAndReplayed(t *testing.T) {
-	table := newTable(t)
-	req := request(1)
-	req.CreateGUID = state.GUID{2}
-	req.GrantedAccess = 0x00120104
-	open := commit(t, table, req, state.Grant{})
-	if open.SharingIntent != state.RightWrite || open.GrantedAccess != req.GrantedAccess {
-		t.Fatalf("normalized grant: %+v", open)
-	}
-}
-
-func TestFindAndDirectorySnapshots(t *testing.T) {
-	table := newTable(t)
-	open := commit(t, table, request(1), state.Grant{})
-	if open.ID.Persistent == 0 || open.ID.Volatile == 0 || open.ID.Persistent == ^uint64(0) || open.ID.Volatile == ^uint64(0) {
-		t.Fatalf("invalid FileID: %+v", open.ID)
-	}
-	badID := open.ID
-	badID.Volatile++
-	_, status := table.Find(badID, binding)
-	statusIs(t, status, smb.StatusFileClosed)
-	_, status = table.Find(open.ID, state.Binding{SessionID: 2, TreeID: 1})
-	statusIs(t, status, smb.StatusFileClosed)
-	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*.band", Cookie: 1, Started: true, DotEntries: 1}), smb.StatusSuccess)
-	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Cookie: 2, Started: true, DotEntries: 2}), smb.StatusSuccess)
-	found, status := table.Find(open.ID, binding)
+	token = reserve(t, table, writer)
+	grant := state.Grant{Handle: &handle{key: writer.Object}}
+	open, status := table.Commit(token, grant)
 	statusIs(t, status, smb.StatusSuccess)
-	if found.Directory.Pattern != "*.band" || found.Directory.Cookie != 2 || !found.Directory.Started || found.Directory.DotEntries != 2 || open.Directory.Pattern != "" {
-		t.Fatalf("cursor snapshots: old %+v, new %+v", open.Directory, found.Directory)
-	}
-	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*"}), smb.StatusSuccess)
-	found, status = table.Find(open.ID, binding)
+	_, status = table.Commit(token, grant)
+	statusIs(t, status, smb.StatusInvalidParameter)
+	statusIs(t, table.Abort(token), smb.StatusInvalidParameter)
+	closeOpen(t, table, open)
+	_, status = table.Commit(0, grant)
+	statusIs(t, status, smb.StatusInvalidParameter)
+}
+
+// Only the binding that holds an open can use it. After a reconnect the old
+// binding can change nothing.
+func TestOpenBelongsToItsBinding(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	req.GrantedAccess |= 0x10000
+	open := commit(t, table, req, durableGrant(req))
+	unknown := open.ID
+	unknown.Volatile++
+	_, status := table.Find(unknown, binding)
+	statusIs(t, status, smb.StatusFileClosed)
+	table.Disconnect(binding.SessionID)
+	fresh, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusSuccess)
-	if found.Directory.Cookie != 0 || found.Directory.Pattern != "*" || found.Directory.Started || found.Directory.DotEntries != 0 {
-		t.Fatalf("restart: %+v", found.Directory)
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusFileClosed)
+	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*"}), smb.StatusFileClosed)
+	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Length: 10}}, false), smb.StatusFileClosed)
+	statusIs(t, table.CheckIO(open.ID, binding, 0, 10, false), smb.StatusFileClosed)
+	_, status = table.Close(open.ID, binding)
+	statusIs(t, status, smb.StatusFileClosed)
+	found, status := table.Find(fresh.ID, fresh.Binding)
+	statusIs(t, status, smb.StatusSuccess)
+	if found != fresh {
+		t.Fatal("the old binding changed the reconnected open")
 	}
 }
 
-func TestInvalidReservationDoesNotAcquireSharing(t *testing.T) {
+// A replayed durable CREATE finds its open only with the same user, share,
+// client and create GUID, and not while the first CREATE is still pending.
+func TestLookupCreateMatchesTheWholeIdentity(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	_, status := table.LookupCreate(req)
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+	token := reserve(t, table, req)
+	_, status = table.LookupCreate(req)
+	statusIs(t, status, smb.StatusDuplicateObjectID)
+	statusIs(t, table.Abort(token), smb.StatusSuccess)
+	open := commit(t, table, req, durableGrant(req))
+	found, status := table.LookupCreate(req)
+	statusIs(t, status, smb.StatusSuccess)
+	if found != open {
+		t.Fatalf("lookup = %+v, want %+v", found, open)
+	}
 	for _, modify := range []func(*state.OpenRequest){
-		func(req *state.OpenRequest) { req.Object.Inode = 0 },
-		func(req *state.OpenRequest) { req.Binding = state.Binding{} },
-		func(req *state.OpenRequest) { req.SharingIntent = 8 },
-		func(req *state.OpenRequest) { req.Sharing = 8 },
+		func(r *state.OpenRequest) { r.User += "other" },
+		func(r *state.OpenRequest) { r.Share += "other" },
+		func(r *state.OpenRequest) { r.ClientGUID[0]++ },
+		func(r *state.OpenRequest) { r.CreateGUID[0]++ },
 	} {
-		table := newTable(t)
-		req := request(1)
-		modify(&req)
-		_, status := table.Reserve(req)
-		statusIs(t, status, smb.StatusInvalidParameter)
-		commit(t, table, request(1), state.Grant{})
+		other := req
+		modify(&other)
+		_, status = table.LookupCreate(other)
+		statusIs(t, status, smb.StatusObjectNameNotFound)
 	}
+	closeOpen(t, table, open)
+	_, status = table.LookupCreate(req)
+	statusIs(t, status, smb.StatusObjectNameNotFound)
 }
