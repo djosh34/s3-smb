@@ -83,7 +83,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if len(short) > 24 || !size32(111+len(name)) {
+		if len(short) > 24 {
 			return nil, errMalformed
 		}
 		member := builder{}
@@ -148,9 +148,6 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		name, err := encodeUTF16(e.Name)
 		if err != nil {
 			return nil, err
-		}
-		if !size32(87 + len(name)) {
-			return nil, errMalformed
 		}
 		member := builder{}
 		n := 80 + len(name)

@@ -17,7 +17,7 @@ func decodeAlgorithms(c NegotiateContext, typ uint16) ([]uint16, error) {
 }
 
 func encodeAlgorithms(values []uint16, typ uint16) (NegotiateContext, error) {
-	if len(values) == 0 || !size16(len(values)) || len(values) > 32766 {
+	if len(values) == 0 || len(values) > 32766 {
 		return NegotiateContext{}, errMalformed
 	}
 	b := builder{}
@@ -54,7 +54,7 @@ func DecodePreauthContext(c NegotiateContext) (PreauthContext, error) {
 
 // EncodePreauthContext writes a preauth hash list and salt.
 func EncodePreauthContext(v PreauthContext) (NegotiateContext, error) {
-	if len(v.Hashes) == 0 || !size16(len(v.Hashes)) || !size16(len(v.Salt)) || !size16(4+2*len(v.Hashes)+len(v.Salt)) {
+	if len(v.Hashes) == 0 || 4+2*len(v.Hashes)+len(v.Salt) > 65535 {
 		return NegotiateContext{}, errMalformed
 	}
 	b := builder{}
@@ -159,9 +159,6 @@ func EncodeAAPLReply(v AAPLReply) (CreateContext, error) {
 	model, err := encodeUTF16(v.Model)
 	if err != nil {
 		return CreateContext{}, err
-	}
-	if !size32(len(model)) {
-		return CreateContext{}, errMalformed
 	}
 	b := builder{}
 	b.u32(1)

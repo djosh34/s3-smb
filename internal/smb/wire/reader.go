@@ -205,19 +205,11 @@ func (b *builder) length8(n int) {
 }
 
 func (b *builder) length16(n int) {
-	v, err := count16(n)
-	if err != nil {
-		b.err = err
+	if n < 0 || n > 65535 {
+		b.err = errMalformed
 		return
 	}
-	b.u16(v)
-}
-
-func count16(n int) (uint16, error) {
-	if n < 0 || n > 65535 {
-		return 0, errMalformed
-	}
-	return uint16(n), nil
+	b.u16(uint16(n))
 }
 
 func (b *builder) length32(n int) {
@@ -270,8 +262,6 @@ func (b *builder) i32(v int32) {
 	}
 	b.u32(^uint32(-(v + 1) & 0x7fffffff))
 }
-func size16(n int) bool { _, err := count16(n); return err == nil }
-func size32(n int) bool { _, err := count32(n); return err == nil }
 
 func body(m Message, command Command, response bool, size uint16, fixed int) *reader {
 	r := &reader{data: m.Body}

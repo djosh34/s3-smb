@@ -50,14 +50,11 @@ func decodeCreateContexts(data []byte) ([]CreateContext, error) {
 func encodeCreateContexts(contexts []CreateContext) ([]byte, error) {
 	b := builder{}
 	for i, c := range contexts {
-		if len(c.Name) == 0 || !size16(len(c.Name)) || !size32(len(c.Data)) {
+		if len(c.Name) == 0 {
 			return nil, errMalformed
 		}
 		dataOffset := 16 + len(c.Name)
 		dataOffset += (8 - dataOffset%8) % 8
-		if !size16(dataOffset) || !size32(dataOffset+len(c.Data)+7) {
-			return nil, errMalformed
-		}
 		member := builder{}
 		member.u32(0)
 		member.u16(16)
@@ -112,14 +109,8 @@ func decodeNegotiateContexts(data []byte, count uint16) ([]NegotiateContext, err
 }
 
 func encodeNegotiateContexts(contexts []NegotiateContext) ([]byte, error) {
-	if !size16(len(contexts)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	for i, c := range contexts {
-		if !size16(len(c.Data)) {
-			return nil, errMalformed
-		}
 		if i > 0 {
 			b.align8()
 		}

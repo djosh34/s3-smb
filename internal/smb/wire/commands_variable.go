@@ -17,9 +17,6 @@ func DecodeSessionSetupRequest(m Message) (SessionSetupRequest, error) {
 
 // EncodeSessionSetupRequest writes the command body without an SMB header.
 func EncodeSessionSetupRequest(v SessionSetupRequest) ([]byte, error) {
-	if !size16(len(v.Token)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(25)
 	b.u8(v.Flags)
@@ -50,9 +47,6 @@ func DecodeSessionSetupResponse(m Message) (SessionSetupResponse, error) {
 
 // EncodeSessionSetupResponse writes the command body without an SMB header.
 func EncodeSessionSetupResponse(v SessionSetupResponse) ([]byte, error) {
-	if !size16(len(v.Token)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(9)
 	b.u16(v.Flags)
@@ -82,9 +76,6 @@ func EncodeTreeConnectRequest(v TreeConnectRequest) ([]byte, error) {
 	name, err := encodeUTF16(v.Path)
 	if err != nil {
 		return nil, err
-	}
-	if !size16(len(name)) {
-		return nil, errMalformed
 	}
 	b := builder{}
 	b.u16(9)
@@ -130,9 +121,6 @@ func EncodeCreateRequest(v CreateRequest) ([]byte, error) {
 	contexts, err := encodeCreateContexts(v.Contexts)
 	if err != nil {
 		return nil, err
-	}
-	if !size16(len(name)) || !size32(len(contexts)) {
-		return nil, errMalformed
 	}
 	offset := 56 + len(name)
 	offset += (8 - offset%8) % 8
@@ -197,9 +185,6 @@ func EncodeCreateResponse(v CreateResponse) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !size32(len(contexts)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(89)
 	b.u8(v.OplockLevel)
@@ -244,9 +229,6 @@ func DecodeReadRequest(m Message) (ReadRequest, error) {
 
 // EncodeReadRequest writes the command body without an SMB header.
 func EncodeReadRequest(v ReadRequest) ([]byte, error) {
-	if !size16(len(v.ChannelInfo)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(49)
 	b.zero(1)
@@ -282,9 +264,6 @@ func DecodeReadResponse(m Message) (ReadResponse, error) {
 
 // EncodeReadResponse writes the command body without an SMB header.
 func EncodeReadResponse(v ReadResponse) ([]byte, error) {
-	if !size32(len(v.Data)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(17)
 	if len(v.Data) > 0 {
@@ -320,9 +299,6 @@ func DecodeWriteRequest(m Message) (WriteRequest, error) {
 
 // EncodeWriteRequest writes the command body without an SMB header.
 func EncodeWriteRequest(v WriteRequest) ([]byte, error) {
-	if !size32(len(v.Data)) || !size16(len(v.ChannelInfo)) || len(v.ChannelInfo) > 0 && !size16(112+len(v.Data)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(49)
 	if len(v.Data) > 0 {
@@ -367,7 +343,7 @@ func DecodeLockRequest(m Message) (LockRequest, error) {
 
 // EncodeLockRequest writes the command body without an SMB header.
 func EncodeLockRequest(v LockRequest) ([]byte, error) {
-	if len(v.Elements) == 0 || !size16(len(v.Elements)) {
+	if len(v.Elements) == 0 {
 		return nil, errMalformed
 	}
 	b := builder{}
@@ -405,9 +381,6 @@ func EncodeQueryDirectoryRequest(v QueryDirectoryRequest) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !size16(len(name)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(33)
 	b.u8(uint8(v.InfoClass))
@@ -444,9 +417,6 @@ func DecodeQueryInfoRequest(m Message) (QueryInfoRequest, error) {
 
 // EncodeQueryInfoRequest writes the command body without an SMB header.
 func EncodeQueryInfoRequest(v QueryInfoRequest) ([]byte, error) {
-	if !size32(len(v.Input)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(41)
 	b.u8(uint8(v.InfoType))
@@ -483,9 +453,6 @@ func DecodeSetInfoRequest(m Message) (SetInfoRequest, error) {
 
 // EncodeSetInfoRequest writes the command body without an SMB header.
 func EncodeSetInfoRequest(v SetInfoRequest) ([]byte, error) {
-	if !size32(len(v.Input)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(33)
 	b.u8(uint8(v.InfoType))
@@ -515,9 +482,6 @@ func DecodeQueryInfoResponse(m Message) (QueryResponse, error) {
 
 // EncodeQueryInfoResponse writes the command body without an SMB header.
 func EncodeQueryInfoResponse(v QueryResponse) ([]byte, error) {
-	if !size32(len(v.Data)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(9)
 	if len(v.Data) > 0 {
@@ -542,9 +506,6 @@ func DecodeQueryDirectoryResponse(m Message) (QueryResponse, error) {
 
 // EncodeQueryDirectoryResponse writes the command body without an SMB header.
 func EncodeQueryDirectoryResponse(v QueryResponse) ([]byte, error) {
-	if !size32(len(v.Data)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(9)
 	if len(v.Data) > 0 {
@@ -579,9 +540,6 @@ func DecodeIOCTLRequest(m Message) (IOCTLRequest, error) {
 
 // EncodeIOCTLRequest writes the command body without an SMB header.
 func EncodeIOCTLRequest(v IOCTLRequest) ([]byte, error) {
-	if !size32(len(v.Input)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u16(57)
 	b.zero(2)
@@ -608,9 +566,6 @@ func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
 	outputOffset := 112 + len(v.Input)
 	if len(v.Output) > 0 {
 		outputOffset += (8 - outputOffset%8) % 8
-	}
-	if !size32(len(v.Input)) || !size32(len(v.Output)) || !size32(outputOffset+len(v.Output)) {
-		return nil, errMalformed
 	}
 	b := builder{}
 	b.u16(49)
@@ -660,9 +615,6 @@ func DecodeErrorResponse(m Message) (ErrorResponse, error) {
 func EncodeErrorResponse(v ErrorResponse) ([]byte, error) {
 	if err := validateErrorContexts(v); err != nil {
 		return nil, err
-	}
-	if !size32(len(v.Data)) {
-		return nil, errMalformed
 	}
 	b := builder{}
 	b.u16(9)
