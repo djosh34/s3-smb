@@ -154,7 +154,7 @@ func (h *harness) detach() error {
 		file := h.backupDirectory
 		h.backupDirectory = nil
 		if err := file.Close(); err != nil {
-			return err
+			h.t.Error("close held backup", err)
 		}
 	}
 	text, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
@@ -337,13 +337,15 @@ func (h *harness) holdBackup(selected, volume string) string {
 	defer func() { cancel(); h.ctx = parent }()
 	h.must(h.waitFor("open selected backup "+selected, time.Minute, time.Second, func() (bool, error) {
 		file, err := helpers.OpenBackup(selected, func() (string, error) {
-			h.t.Log("selected backup vanished before open; remounting", selected)
-			output, err := h.try(time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volume, "-m")
-			if err != nil {
-				return "", err
+			return h.try(time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volume, "-m")
+		}, func() error {
+			select {
+			case <-h.ctx.Done():
+				return h.ctx.Err()
+			case <-time.After(2 * time.Second):
+				return nil
 			}
-			return helpers.SelectBackup(strings.Split(strings.TrimSpace(output), "\n"), "", filepath.Base(selected))
-		})
+		}, func(message string) { h.t.Log(message, selected) })
 		if errors.Is(err, os.ErrNotExist) {
 			h.t.Log("selected backup vanished again after remount", selected, err)
 			return false, nil
