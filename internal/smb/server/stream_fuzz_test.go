@@ -91,7 +91,7 @@ func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Messag
 			t.Error("ServeConn did not stop within the bound")
 		}
 		cancel()
-		shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(t.Context()), streamBound)
+		shutdownCtx, stop := context.WithTimeout(context.WithoutCancel(ctx), streamBound)
 		defer stop()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			t.Error(err)
