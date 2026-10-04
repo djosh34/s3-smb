@@ -13,8 +13,9 @@ import (
 	"howett.net/plist"
 )
 
-func attachment(t *testing.T, device, mount string) string {
+func attachment(t *testing.T, mount string) string {
 	t.Helper()
+	const device = "/dev/disk42"
 	data, err := plist.Marshal(map[string]any{"system-entities": []map[string]string{
 		{"dev-entry": device}, {"dev-entry": device + "s2", "mount-point": mount},
 	}}, plist.XMLFormat)
@@ -29,14 +30,14 @@ func TestMacFeatures(t *testing.T) {
 		wantError                    bool
 		wantCalls                    int
 	}{
-		{name: "round-trip", user: "user attribute round-trip\n", finder: finderInfo, attached: attachment(t, "/dev/disk42", "/Volumes/s3-smb-m4"), wantCalls: 8},
+		{name: "round-trip", user: "user attribute round-trip\n", finder: finderInfo, attached: attachment(t, "/Volumes/s3-smb-m4"), wantCalls: 9},
 		{name: "user mismatch", user: "changed\n", wantError: true, wantCalls: 2},
 		{name: "FinderInfo malformed", user: "user attribute round-trip\n", finder: "ZZ", wantError: true, wantCalls: 4},
 		{name: "FinderInfo short", user: "user attribute round-trip\n", finder: "54455854", wantError: true, wantCalls: 4},
 		{name: "FinderInfo changed", user: "user attribute round-trip\n", finder: strings.Repeat("00", 32), wantError: true, wantCalls: 4},
 		{name: "attachment has no device", user: "user attribute round-trip\n", finder: finderInfo, attached: `<plist version="1.0"><dict><key>system-entities</key><array/></dict></plist>`, wantError: true, wantCalls: 7},
 		{name: "attachment malformed", user: "user attribute round-trip\n", finder: finderInfo, attached: "not a plist", wantError: true, wantCalls: 7},
-		{name: "attachment not mounted", user: "user attribute round-trip\n", finder: finderInfo, attached: attachment(t, "/dev/disk42", ""), wantError: true, wantCalls: 8},
+		{name: "attachment not mounted", user: "user attribute round-trip\n", finder: finderInfo, attached: attachment(t, ""), wantError: true, wantCalls: 9},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			share := t.TempDir()
@@ -69,8 +70,8 @@ func TestMacFeatures(t *testing.T) {
 
 func TestMacFeatureCommands(t *testing.T) {
 	injected := errors.New("native command failed")
-	// Every native failure must fail acceptance, including F_FULLFSYNC and detach.
-	for failAt := -1; failAt < 8; failAt++ {
+	// Failures before detach must fail acceptance, including F_FULLFSYNC.
+	for failAt := -1; failAt < 7; failAt++ {
 		t.Run(strconv.Itoa(failAt), func(t *testing.T) {
 			share := t.TempDir()
 			var expected [][]string
@@ -93,7 +94,7 @@ func TestMacFeatureCommands(t *testing.T) {
 				case 3:
 					return expected[2][3], nil
 				case 6:
-					return attachment(t, "/dev/disk42", "/Volumes/s3-smb-m4"), nil
+					return attachment(t, "/Volumes/s3-smb-m4"), nil
 				default:
 					return "", nil
 				}
@@ -101,7 +102,7 @@ func TestMacFeatureCommands(t *testing.T) {
 			err := MacFeatures(command, share, "/task/bin/fullsync")
 			if failAt == -1 {
 				must(t, err)
-				if calls != 8 {
+				if calls != 9 {
 					t.Fatal("missing commands", calls)
 				}
 			} else if !errors.Is(err, injected) || calls != failAt+1 {
@@ -131,6 +132,7 @@ func featureCommands(t *testing.T, share, path string) [][]string {
 		{"/task/bin/fullsync", filepath.Join(directory, "full-sync")},
 		{"/usr/bin/hdiutil", "create", "-type", "SPARSEBUNDLE", "-size", "64m", "-fs", "HFS+", "-volname", "s3-smb-m4", bundle},
 		{"/usr/bin/hdiutil", "attach", "-nobrowse", "-plist", bundle},
+		{"/sbin/mount"},
 		{"/usr/bin/hdiutil", "detach", "/dev/disk42"},
 	}
 }

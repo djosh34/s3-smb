@@ -34,8 +34,10 @@ func TestM4Workflow(t *testing.T) {
 				Inputs map[string]struct{ Options []string } `yaml:"inputs"`
 			} `yaml:"workflow_dispatch"`
 		} `yaml:"on"`
+		Env  map[string]string
 		Jobs map[string]struct {
 			If    string
+			Needs string
 			Env   map[string]string
 			Steps []struct {
 				Uses string
@@ -67,8 +69,18 @@ func TestM4Workflow(t *testing.T) {
 	if !ran {
 		t.Fatal("M4 must run the checked-out harness")
 	}
-	if strings.Contains(workflow.Jobs["machine-loss-recover"].If, "inputs.mode != 'discover'") {
-		t.Fatal("M4 must not start machine-loss recovery")
+	if workflow.Env["MAC_SERVER"] != "${{ inputs.server }}" {
+		t.Fatal("other jobs must keep the selected server")
+	}
+	if workflow.Jobs["backup"].If != "inputs.mode == 'acceptance'" || workflow.Jobs["recover"].Needs != "backup" || workflow.Jobs["recover"].If != "" {
+		t.Fatal("fresh-Mac recovery must depend on the acceptance backup")
+	}
+	if workflow.Jobs["scenario"].If != "inputs.mode == 'acceptance' || inputs.mode == 'scenarios'" {
+		t.Fatal("only acceptance and scenarios may run the scenario matrix")
+	}
+	recovery := workflow.Jobs["machine-loss-recover"]
+	if recovery.If != "${{ !cancelled() && (inputs.mode == 'acceptance' || inputs.mode == 'scenarios') && contains(inputs.scenarios, 'machine-loss') }}" || recovery.Needs != "scenario" || recovery.Env["MAC_PHASE"] != "recover" {
+		t.Fatal("machine-loss recovery must require an uncancelled acceptance/scenarios run with machine-loss selected", recovery)
 	}
 }
 
