@@ -62,6 +62,7 @@ type ShareMode Rights
 // SharingIntent includes the minimum read, write and delete intent from the
 // granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
 // is tracked separately and makes the object delete-pending at once.
+// WriteThrough retains CREATE's durability mode for every WRITE on this open.
 // This table is never persisted across restart.
 type Open struct {
 	DurableDeadline  time.Time
@@ -81,6 +82,7 @@ type Open struct {
 	SharingIntent    Rights
 	Sharing          ShareMode
 	DeleteOnClose    bool
+	WriteThrough     bool
 	Durable          bool
 }
 
@@ -174,6 +176,7 @@ type Grant struct {
 	DurableTimeout time.Duration
 	Directory      bool
 	DeleteOnClose  bool
+	WriteThrough   bool
 }
 
 // CloseAction transfers cleanup to the server. FileID names the removed open;

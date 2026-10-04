@@ -60,13 +60,21 @@ func TestCreateImpersonationLevels(t *testing.T) {
 func TestCreateRegularFileArchiveAttributes(t *testing.T) {
 	client := newReadWriteClient(t, smbtest.NewStorage(t))
 	for _, disposition := range []uint32{fileSupersede, fileCreateDisposition, fileOpenIf, fileOverwriteIf} {
-		for _, attributes := range []uint32{0, 0x80, 0x2, 0x100, 0x200, 0x2082} {
+		for _, test := range []struct{ attributes, want uint32 }{
+			{0, 0x20},
+			{0x80, 0x20},
+			{0x2, 0x22},
+			{0x100, 0x120},
+			{0x200, 0x20},
+			{0x2082, 0x2022},
+		} {
+			attributes := test.attributes
 			t.Run(fmt.Sprintf("disposition_%d_attributes_%x", disposition, attributes), func(t *testing.T) {
 				name := fmt.Sprintf("new-%d-%x", disposition, attributes)
 				request := createRequest(name, disposition)
 				request.FileAttributes = attributes
 				opened := createdFile(t, client.create(t, request))
-				want := attributes&clientSettableFileAttributes | 0x20
+				want := test.want
 				if opened.Attributes != want || opened.Action != 2 {
 					t.Fatalf("new file: action %d, attributes %#x, want %#x", opened.Action, opened.Attributes, want)
 				}
@@ -91,7 +99,12 @@ func TestCreateRegularFileArchiveAttributes(t *testing.T) {
 func TestCreateOverwriteSetsArchiveAndPreservesOtherAttributes(t *testing.T) {
 	client := newReadWriteClient(t, smbtest.NewStorage(t))
 	for _, disposition := range []uint32{fileOverwrite, fileOverwriteIf} {
-		for _, attributes := range []uint32{0, 0x80, 0x2} {
+		for _, test := range []struct{ attributes, want uint32 }{
+			{0, 0x120},
+			{0x80, 0x120},
+			{0x2, 0x122},
+		} {
+			attributes := test.attributes
 			t.Run(fmt.Sprintf("disposition_%d_attributes_%x", disposition, attributes), func(t *testing.T) {
 				name := fmt.Sprintf("overwrite-%d-%x", disposition, attributes)
 				request := createRequest(name, fileCreateDisposition)
@@ -100,7 +113,7 @@ func TestCreateOverwriteSetsArchiveAndPreservesOtherAttributes(t *testing.T) {
 				requireIOStatus(t, client.close(t, opened.ID, 0), smb.StatusSuccess)
 				request.Disposition, request.FileAttributes = disposition, attributes
 				replaced := createdFile(t, client.create(t, request))
-				want := attributes&clientSettableFileAttributes | 0x120
+				want := test.want
 				if replaced.Attributes != want || replaced.Action != 3 {
 					t.Fatalf("overwrite: action %d, attributes %#x, want %#x", replaced.Action, replaced.Attributes, want)
 				}

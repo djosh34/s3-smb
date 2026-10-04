@@ -102,7 +102,7 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 	if n != len(write.Data) {
 		return result, fmt.Errorf("%w: %w", smb.ErrIO, io.ErrShortWrite)
 	}
-	if write.Flags&writeThrough != 0 {
+	if write.Flags&writeThrough != 0 || open.WriteThrough {
 		if err = request.Storage.Flush(ctx, open.Handle, smb.SyncData); err != nil {
 			return result, err
 		}

@@ -189,7 +189,8 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		ID: FileID{Persistent: table.nextPersistent, Volatile: table.nextVolatile}, Binding: request.Binding,
 		ClientGUID: request.ClientGUID, CreateGUID: request.CreateGUID, CreateParameters: request.CreateParameters,
 		GrantedAccess: request.GrantedAccess, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
-		DeleteOnClose: grant.DeleteOnClose, Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
+		DeleteOnClose: grant.DeleteOnClose, WriteThrough: grant.WriteThrough,
+		Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
 	}
 	if grant.Lease.State != 0 {
 		open.LeaseKey = grant.Lease.Key

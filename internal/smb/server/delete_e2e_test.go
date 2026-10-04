@@ -317,43 +317,43 @@ func (storage *pausedDeletionStorage) Close(ctx context.Context, handle smb.Hand
 }
 
 func TestLogoffDeletionRacesCreateWithoutRemovingNewOpen(t *testing.T) {
-	for range 64 {
-		t.Run("race", func(t *testing.T) {
-			storage := newFilesMetaStorage(t)
-			seedDeletionData(t, storage, "data", "old data")
-			paused := &pausedDeletionStorage{Storage: storage, entered: make(chan struct{}), resume: make(chan struct{})}
-			var resume sync.Once
-			unblock := func() { resume.Do(func() { close(paused.resume) }) }
-			defer unblock()
-			options := testOptions(t)
-			options.Storage = paused
-			server, err := New(options)
-			if err != nil {
-				t.Fatal(err)
-			}
-			deleting, creating := newDeletionPeer(t, server), newDeletionPeer(t, server)
-			deleting.open(t, "data", fileDelete, fileOpen, fileDeleteOnClose, smb.StatusSuccess)
-			message := treeRequest(t, deleting.session, deleting.next, wire.Logoff)
-			if sendErr := deleting.client.Send(deleting.ctx, []wire.Message{message}); sendErr != nil {
-				t.Fatal(sendErr)
-			}
-			select {
-			case <-paused.entered:
-			case <-deleting.ctx.Done():
-				t.Fatal(deleting.ctx.Err())
-			}
-			creating.open(t, "data", fileReadData, fileOpenIf, 0, smb.StatusDeletePending)
-			unblock()
-			response, err := deleting.client.Receive(deleting.ctx)
-			if err != nil || response.Messages[0].Header.Status != smb.StatusSuccess {
-				t.Fatalf("LOGOFF = %+v, %v", response, err)
-			}
-			id := creating.open(t, "data", fileReadData, fileOpenIf, 0, smb.StatusSuccess)
-			creating.close(t, id)
-			resolved, err := storage.Lookup(t.Context(), "data")
-			if err != nil || !resolved.Exists {
-				t.Fatalf("new CREATE lost its file: %+v, %v", resolved, err)
-			}
-		})
-	}
+	// The close barrier forces the deletion-pending window deterministically.
+	// Use go test -count for stress instead of allocating 64 identical runtimes.
+	t.Run("race", func(t *testing.T) {
+		storage := newFilesMetaStorage(t)
+		seedDeletionData(t, storage, "data", "old data")
+		paused := &pausedDeletionStorage{Storage: storage, entered: make(chan struct{}), resume: make(chan struct{})}
+		var resume sync.Once
+		unblock := func() { resume.Do(func() { close(paused.resume) }) }
+		defer unblock()
+		options := testOptions(t)
+		options.Storage = paused
+		server, err := New(options)
+		if err != nil {
+			t.Fatal(err)
+		}
+		deleting, creating := newDeletionPeer(t, server), newDeletionPeer(t, server)
+		deleting.open(t, "data", fileDelete, fileOpen, fileDeleteOnClose, smb.StatusSuccess)
+		message := treeRequest(t, deleting.session, deleting.next, wire.Logoff)
+		if sendErr := deleting.client.Send(deleting.ctx, []wire.Message{message}); sendErr != nil {
+			t.Fatal(sendErr)
+		}
+		select {
+		case <-paused.entered:
+		case <-deleting.ctx.Done():
+			t.Fatal(deleting.ctx.Err())
+		}
+		creating.open(t, "data", fileReadData, fileOpenIf, 0, smb.StatusDeletePending)
+		unblock()
+		response, err := deleting.client.Receive(deleting.ctx)
+		if err != nil || response.Messages[0].Header.Status != smb.StatusSuccess {
+			t.Fatalf("LOGOFF = %+v, %v", response, err)
+		}
+		id := creating.open(t, "data", fileReadData, fileOpenIf, 0, smb.StatusSuccess)
+		creating.close(t, id)
+		resolved, err := storage.Lookup(t.Context(), "data")
+		if err != nil || !resolved.Exists {
+			t.Fatalf("new CREATE lost its file: %+v, %v", resolved, err)
+		}
+	})
 }

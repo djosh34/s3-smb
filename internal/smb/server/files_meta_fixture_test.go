@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"path/filepath"
 	"testing"
@@ -91,8 +93,16 @@ func newFilesMetaStorageWithMetadata(t *testing.T, capacity uint64) (*smbfs.FS, 
 	return storage, metadata
 }
 
+type filesMetaClientTest interface {
+	Helper()
+	Context() context.Context
+	Cleanup(func())
+	Fatal(...any)
+	Error(...any)
+}
+
 // newFilesMetaClient drives the public connection entry point with raw SMB.
-func newFilesMetaClient(t *testing.T, server *Server) (*smbtest.Client, context.Context, smbtest.Session) {
+func newFilesMetaClient(t filesMetaClientTest, server *Server) (*smbtest.Client, context.Context, smbtest.Session) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	local, remote := net.Pipe()
@@ -100,20 +110,18 @@ func newFilesMetaClient(t *testing.T, server *Server) (*smbtest.Client, context.
 	if err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		if serveErr := server.ServeConn(ctx, local); serveErr != nil {
-			server.options.Logger.Debug("test connection ended", "error", serveErr)
-		}
-	}()
+	done := make(chan error, 1)
+	go func() { done <- server.ServeConn(ctx, local) }()
 	t.Cleanup(func() {
 		if closeErr := client.Close(); closeErr != nil {
 			t.Error(closeErr)
 		}
 		cancel()
 		select {
-		case <-done:
+		case serveErr := <-done:
+			if unexpectedErr := filesMetaServeError(serveErr); unexpectedErr != nil {
+				t.Error(unexpectedErr)
+			}
 		case <-time.After(10 * time.Second):
 			t.Error("ServeConn did not stop")
 		}
@@ -126,6 +134,26 @@ func newFilesMetaClient(t *testing.T, server *Server) (*smbtest.Client, context.
 		t.Fatal(err)
 	}
 	return client, ctx, session
+}
+
+// Filter only the plain outcomes of closing our net.Pipe and canceling its
+// context. Recurse into joins, not wrappers: a wrapped storage cleanup error
+// remains observable even when it wraps one of these same sentinels.
+func filesMetaServeError(err error) error {
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, part := range joined.Unwrap() {
+			result = errors.Join(result, filesMetaServeError(part))
+		}
+		return result
+	}
+	if _, wrapped := err.(interface{ Unwrap() error }); wrapped {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return nil
+	}
+	return err
 }
 
 func insertFilesMetaOpen(t *testing.T, server *Server, session smbtest.Session, path string, grantedAccess uint32) state.Open {

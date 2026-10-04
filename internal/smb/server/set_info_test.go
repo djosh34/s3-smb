@@ -173,10 +173,12 @@ func TestSetInfoBasicAttributeMask(t *testing.T) {
 		attributes uint32
 		want       uint32
 	}{
-		{"all supported file flags", "data", 0x80, 0x3127, 0x31a7},
-		{"unsupported flags ignored", "data", 0x87, 0x620, 0xa0},
+		{"all supported file flags", "data", 0x80, 0x3127, 0x3127},
+		{"unsupported flags ignored", "data", 0x87, 0x620, 0x20},
 		{"unsupported flags alone clear supported flags", "data", 0x87, 0x600, 0x80},
 		{"normal clears supported flags", "data", 0x87, 0x80, 0x80},
+		{"normal after archive", "data", 0x20, 0x80, 0x80},
+		{"server-owned flags preserved", "data", 0x402, 0x620, 0x420},
 		{"zero leaves attributes unchanged", "data", 0x87, 0, 0x87},
 		{"directory kind preserved", "", 0x13, 0x3027, 0x3037},
 	} {
@@ -224,12 +226,11 @@ func TestSetInfoBasicRejectsAttributeKindMismatchWithoutMutation(t *testing.T) {
 
 func TestSetInfoUnixEpochIsAnExplicitTime(t *testing.T) {
 	f := newSetInfoFixture(t, 0x100)
-	before := f.attr(t)
 	epoch := time.Unix(0, 0).UTC()
 	value := filetime(t, epoch)
 	f.basic(t, wire.FileBasicInformation{Created: value, Accessed: value, Modified: value, Changed: value, Attributes: 0x20}, smb.StatusSuccess)
 	attr := f.attr(t)
-	if !attr.Created.Equal(epoch) || !attr.Accessed.Equal(epoch) || !attr.Modified.Equal(epoch) || !attr.Changed.Equal(epoch) || attr.Attributes != before.Attributes&^0x3127|0x20 {
+	if !attr.Created.Equal(epoch) || !attr.Accessed.Equal(epoch) || !attr.Modified.Equal(epoch) || !attr.Changed.Equal(epoch) || attr.Attributes != 0x20 {
 		t.Fatalf("epoch or attributes not stored: %+v", attr)
 	}
 }
@@ -250,7 +251,7 @@ func TestSetInfoBasicFieldsAreIndependent(t *testing.T) {
 	created = created.Add(time.Minute)
 	f.basic(t, wire.FileBasicInformation{Created: filetime(t, created), Accessed: wire.FiletimeSuppress, Modified: wire.FiletimeResume, Attributes: 0x20}, smb.StatusSuccess)
 	after = f.attr(t)
-	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != before.Attributes&^0x3127|0x20 {
+	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != 0x20 {
 		t.Fatalf("mixed sentinel update changed other fields: %+v", after)
 	}
 }

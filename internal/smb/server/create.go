@@ -23,9 +23,11 @@ const (
 
 const (
 	fileDirectoryFile    uint32 = 0x00000001
+	fileWriteThrough     uint32 = 0x00000002
 	fileNonDirectoryFile uint32 = 0x00000040
 	fileDeleteOnClose    uint32 = 0x00001000
 	fileOpenByFileID     uint32 = 0x00002000
+	fileReserveOpfilter  uint32 = 0x00100000
 )
 
 func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
@@ -39,7 +41,7 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 	if strings.HasPrefix(create.Name, "\\") || strings.HasPrefix(create.Name, "/") {
 		return create, smb.StatusInvalidParameter
 	}
-	if create.Options&fileOpenByFileID != 0 {
+	if create.Options&(fileOpenByFileID|fileReserveOpfilter) != 0 {
 		return create, smb.StatusNotSupported
 	}
 	if create.Disposition > fileOverwriteIf || create.ShareAccess & ^uint32(7) != 0 || create.Options&(fileDirectoryFile|fileNonDirectoryFile) == fileDirectoryFile|fileNonDirectoryFile {
@@ -79,6 +81,9 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 		}
 		return 2, false, smb.StatusSuccess // FILE_CREATED.
 	}
+	if create.Disposition == fileCreateDisposition && create.Options&fileDirectoryFile != 0 {
+		return 0, false, smb.StatusObjectNameCollision
+	}
 	if create.Options&fileDirectoryFile != 0 && resolved.Attr.Kind != smb.KindDirectory {
 		return 0, false, smb.StatusNotADirectory
 	}
@@ -93,6 +98,11 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	case fileSupersede, fileOverwrite, fileOverwriteIf:
 		if resolved.Attr.Kind == smb.KindDirectory {
 			return 0, false, smb.StatusFileIsADirectory
+		}
+		if resolved.Object.Stream == "" && resolved.Attr.Attributes&0x6&^create.FileAttributes != 0 {
+			// MS-FSA refuses destructive unnamed-stream opens that omit an
+			// existing HIDDEN or SYSTEM attribute, before truncation.
+			return 0, false, smb.StatusAccessDenied
 		}
 		if create.Disposition == fileSupersede {
 			if granted&fileDelete == 0 {
@@ -125,6 +135,7 @@ func createGrant(create wire.CreateRequest, resolved smb.Resolved, handle smb.Ha
 	return state.Grant{
 		Handle: handle, Directory: resolved.Attr.Kind == smb.KindDirectory,
 		DeleteOnClose: create.Options&fileDeleteOnClose != 0, DeleteName: resolved.Name,
+		WriteThrough: create.Options&fileWriteThrough != 0,
 	}
 }
 

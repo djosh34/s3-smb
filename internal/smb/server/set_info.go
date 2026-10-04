@@ -87,7 +87,10 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		if attr.Kind == smb.KindFile && info.Attributes&0x10 != 0 || attr.Kind == smb.KindDirectory && info.Attributes&0x100 != 0 {
 			return smb.StatusInvalidParameter
 		}
-		attributes := attr.Attributes&^clientSettableFileAttributes | info.Attributes&clientSettableFileAttributes
+		attributes := attr.Attributes&^(clientSettableFileAttributes|0x80) | info.Attributes&clientSettableFileAttributes
+		if attributes == 0 {
+			attributes = 0x80 // FILE_ATTRIBUTE_NORMAL is valid only alone.
+		}
 		change.Attributes = &attributes
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, change))
@@ -137,7 +140,7 @@ func setAllocationInfo(ctx context.Context, request RequestContext, open state.O
 	if allocation >= attr.Size {
 		return smb.StatusSuccess
 	}
-	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &allocation}))
+	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{SizeCap: &allocation}))
 }
 
 func setInfoStorageStatus(ctx context.Context, request RequestContext, err error) smb.Status {
