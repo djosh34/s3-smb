@@ -8,6 +8,7 @@ import (
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
+	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -43,7 +44,7 @@ func checkPendingCreateProgress(t *testing.T, command wire.Command, cipher uint1
 		case <-ctx.Done():
 			return reply{}, ctx.Err()
 		}
-		if err := sendCreateTestBreak(request, key); err != nil {
+		if err := server.sendLeaseBreak(ctx, state.Break{Binding: request.Binding(), ClientGUID: request.Session.ClientGUID, LeaseKey: state.GUID(key), CurrentState: 7, AckRequired: true, Epoch: 1}); err != nil {
 			return reply{}, err
 		}
 		select {
@@ -59,15 +60,11 @@ func checkPendingCreateProgress(t *testing.T, command wire.Command, cipher uint1
 	pending := exchange(ctx, t, client, request)[0]
 	assertCreatePending(t, request, pending)
 	close(beginBreak)
-	notification := receiveCreateTestMessage(ctx, t, client)
-	if notification.Header.Command != wire.OplockBreak || notification.Header.MessageID != ^uint64(0) || notification.Header.SessionID != session.SessionID || notification.Header.Credit != 0 {
-		t.Fatalf("lease notification: %+v", notification.Header)
-	}
-	decoded, err := wire.DecodeLeaseBreakNotification(notification)
+	decoded, err := client.WaitLeaseBreak(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decoded.Key != key || decoded.CurrentState != 7 || decoded.NewState != 0 || decoded.Flags != 1 {
+	if decoded.Key != key || decoded.CurrentState != 7 || decoded.NewState != 0 || decoded.Flags != 1 || decoded.Epoch != 1 {
 		t.Fatalf("lease break: %+v", decoded)
 	}
 	progress := compoundFileRequest(t, session, wire.Close, request.Header.MessageID+1, holderID, false)
@@ -134,20 +131,6 @@ func createTestProgressHandler(command wire.Command, key [16]byte, holderID wire
 		close(progressed)
 		return reply{body: body}, nil
 	}
-}
-
-func sendCreateTestBreak(request RequestContext, key [16]byte) error {
-	body, err := wire.EncodeLeaseBreakNotification(wire.LeaseBreakNotification{Key: key, CurrentState: 7, Flags: 1})
-	if err != nil {
-		return err
-	}
-	request.server.mu.Lock()
-	connection := request.server.sessions[request.Session.SessionID]
-	request.server.mu.Unlock()
-	if connection == nil {
-		return errors.New("controlled lease holder has no connection")
-	}
-	return connection.send([]wire.Message{{Header: wire.Header{Command: wire.OplockBreak, MessageID: ^uint64(0), SessionID: request.Session.SessionID, Flags: wire.FlagResponse}, Body: body}})
 }
 
 func TestLocalCreateGetsOneSynchronousReply(t *testing.T) {
