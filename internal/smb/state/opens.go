@@ -184,9 +184,12 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		GrantedAccess: request.GrantedAccess, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
 		DeleteOnClose: grant.DeleteOnClose, Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
 	}
-	if grant.Lease.State != 0 {
+	joining := table.lease(request.Object, leaseIdentity{client: grant.Lease.ClientGUID, key: grant.Lease.Key}) != nil
+	if grant.Lease.State != 0 || joining {
 		open.LeaseKey = grant.Lease.Key
-		table.commitLease(request.Object, grant.Lease)
+		if grant.Lease.State != 0 {
+			table.commitLease(request.Object, grant.Lease)
+		}
 	}
 	table.releaseReservation(reservation, request)
 	table.opens[open.ID.Persistent] = &openEntry{Open: open, deleteName: grant.DeleteName}
