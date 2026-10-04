@@ -30,10 +30,6 @@ func flushMessage(t *testing.T, session smbtest.Session, id uint64, file wire.Fi
 	return ioMessage(session, id, wire.Flush, body, 1)
 }
 
-func flushFileID(openID uint64, volatile uint64) wire.FileID {
-	return wire.FileID{Persistent: openID, Volatile: volatile}
-}
-
 func TestFlushCrossHandleWaitsForMetadataBarrier(t *testing.T) {
 	for _, reserved := range []uint16{0, 0xffff} {
 		t.Run(fmt.Sprintf("reserved_%04x", reserved), func(t *testing.T) {
@@ -69,11 +65,16 @@ func checkFlushBarrier(t *testing.T, reserved uint16) {
 	// Always unblock the barrier before connection cleanup, including failures.
 	unblock := sync.OnceFunc(func() { close(resume) })
 	t.Cleanup(unblock)
-	writer := insertIOOpen(t, server, session, "flush-data", 3)
-	other := insertIOOpen(t, server, session, "flush-data", 1)
+	writer := createdFile(t, fileCreate(ctx, t, client, session, session.NextMessageID, wire.CreateRequest{
+		Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition,
+	}))
+	other := createdFile(t, fileCreate(ctx, t, client, session, session.NextMessageID+1, wire.CreateRequest{
+		Name: "flush-data", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen,
+	}))
+	session.NextMessageID += 2
 	payload := []byte("cross-handle durable bytes")
-	writeForFlush(ctx, t, client, session, flushFileID(writer.ID.Persistent, writer.ID.Volatile), payload)
-	message := flushMessage(t, session, session.NextMessageID+1, flushFileID(other.ID.Persistent, other.ID.Volatile), reserved)
+	writeForFlush(ctx, t, client, session, writer.ID, payload)
+	message := flushMessage(t, session, session.NextMessageID+1, other.ID, reserved)
 	if sendErr := client.Send(ctx, []wire.Message{message}); sendErr != nil {
 		t.Fatal(sendErr)
 	}
@@ -178,11 +179,16 @@ func TestFlushStorageErrorsReachClient(t *testing.T) {
 				fail.Store(false)
 				fixture.store.fail.Store(false)
 			})
-			writer := insertIOOpen(t, server, session, "failed-flush", 3)
-			other := insertIOOpen(t, server, session, "failed-flush", 1)
+			writer := createdFile(t, fileCreate(ctx, t, client, session, session.NextMessageID, wire.CreateRequest{
+				Name: "failed-flush", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition,
+			}))
+			other := createdFile(t, fileCreate(ctx, t, client, session, session.NextMessageID+1, wire.CreateRequest{
+				Name: "failed-flush", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen,
+			}))
+			session.NextMessageID += 2
 			fixture.store.fail.Store(upload)
-			writeForFlush(ctx, t, client, session, flushFileID(writer.ID.Persistent, writer.ID.Volatile), []byte("uncommitted bytes"))
-			response := ioRoundTrip(ctx, t, client, flushMessage(t, session, session.NextMessageID+1, flushFileID(other.ID.Persistent, other.ID.Volatile), 0xffff))
+			writeForFlush(ctx, t, client, session, writer.ID, []byte("uncommitted bytes"))
+			response := ioRoundTrip(ctx, t, client, flushMessage(t, session, session.NextMessageID+1, other.ID, 0xffff))
 			if response.Header.Status != smb.StatusIODeviceError {
 				t.Fatalf("storage error = %+v", response.Header)
 			}
@@ -213,9 +219,11 @@ func TestFlushRejectsInvalidRequestsWithoutStorageWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
-	open := insertIOOpen(t, server, session, "invalid-flush", 3)
-	id := flushFileID(open.ID.Persistent, open.ID.Volatile)
-	next := session.NextMessageID
+	open := createdFile(t, fileCreate(ctx, t, client, session, session.NextMessageID, wire.CreateRequest{
+		Name: "invalid-flush", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition,
+	}))
+	id := open.ID
+	next := session.NextMessageID + 1
 	for _, reserved := range []uint16{1, 0x8000, 0xfffe} {
 		response := ioRoundTrip(ctx, t, client, flushMessage(t, session, next, id, reserved))
 		if response.Header.Status != smb.StatusInvalidParameter {
