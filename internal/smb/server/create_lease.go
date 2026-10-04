@@ -155,7 +155,11 @@ func createLeaseResponse(request RequestContext, create wire.CreateRequest, reso
 	if open.LeaseKey != (state.GUID{}) {
 		return appendCreateLease(request, open, response)
 	}
-	context, err := wire.EncodeLeaseContext(wire.LeaseContext{Version: 2, Key: lease.Key})
+	result := wire.LeaseContext{Version: 2, Key: lease.Key, Epoch: lease.Epoch}
+	if lease.Flags&leaseParentKeySet != 0 && lease.ParentKey != [16]byte{} {
+		result.ParentKey, result.Flags = lease.ParentKey, leaseParentKeySet
+	}
+	context, err := wire.EncodeLeaseContext(result)
 	if err != nil {
 		return err
 	}

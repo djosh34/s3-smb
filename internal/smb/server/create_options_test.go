@@ -56,9 +56,9 @@ func TestCreateDirectoryOptions(t *testing.T) {
 	}
 }
 
-func TestCreateIgnoresLeaseAndDurableContexts(t *testing.T) {
+func TestCreateIgnoresDurableContexts(t *testing.T) {
 	client := newReadWriteClient(t, newFilesMetaStorage(t))
-	for _, tag := range []string{"RqLs", "DH2Q", "DH2C"} {
+	for _, tag := range []string{"DH2Q", "DH2C"} {
 		request := createRequest(tag, fileCreateDisposition)
 		request.OplockLevel = 0xff
 		request.Contexts = []wire.CreateContext{{Name: tag, Data: []byte{1, 2, 3}}}
