@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -50,6 +52,12 @@ func (request RequestContext) FileID(id wire.FileID) (wire.FileID, smb.Status) {
 		return request.fileID, smb.StatusSuccess
 	}
 	return id, smb.StatusSuccess
+}
+
+// Cleanup runs CloseActions from the open table through the one cleanup path.
+// CLOSE and lease acknowledgment handlers use it to drain active references.
+func (request RequestContext) Cleanup(ctx context.Context, actions []state.CloseAction) error {
+	return request.server.cleanup(ctx, actions)
 }
 
 // Binding identifies the session and tree for open-table operations.
