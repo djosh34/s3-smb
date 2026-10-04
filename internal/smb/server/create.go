@@ -234,6 +234,7 @@ func closeFailedCreate(ctx context.Context, request RequestContext, open state.O
 	}
 	closeErr := request.Storage.Close(ctx, action.Handle)
 	if action.Remove {
+		defer request.Opens.CompleteDelete(action.Object)
 		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object.Inode))
 	}
 	return closeErr

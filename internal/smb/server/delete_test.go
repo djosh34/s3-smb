@@ -43,7 +43,11 @@ func (storage *deletionStorage) Remove(_ context.Context, name smb.Name, inode s
 }
 
 func (storage *deletionStorage) PathOf(context.Context, smb.Inode) (string, error) {
-	return "renamed", storage.pathErr
+	err := storage.pathErr
+	if storage.changed {
+		storage.pathErr = smb.ErrNameNotFound
+	}
+	return "renamed", err
 }
 
 func (storage *deletionStorage) Lookup(context.Context, string) (smb.Resolved, error) {
@@ -78,7 +82,7 @@ func TestCleanupRemovesCurrentNameAndSelectedStream(t *testing.T) {
 }
 
 func TestCleanupReleasesDeletePendingOnEveryOutcome(t *testing.T) {
-	for _, outcome := range []string{"success", "remove failure", "cancelled", "path failure", "lookup failure", "changed inode"} {
+	for _, outcome := range []string{"success", "remove failure", "cancelled", "gone inode", "path failure", "lookup failure", "changed inode"} {
 		t.Run(outcome, func(t *testing.T) { checkCleanupOutcome(t, outcome) })
 	}
 }
@@ -109,7 +113,7 @@ func checkCleanupOutcome(t *testing.T, outcome string) {
 		t.Fatalf("cleanup window allowed reservation: %#x", status)
 	}
 	err = server.cleanup(t.Context(), []state.CloseAction{action})
-	if (err == nil) != (outcome == "success") {
+	if (err == nil) != (outcome == "success" || outcome == "gone inode" || outcome == "changed inode") {
 		t.Fatalf("cleanup %s: %v", outcome, err)
 	}
 	if outcome == "remove failure" && !errors.Is(err, smb.ErrIO) {
@@ -134,8 +138,10 @@ func cleanupOutcome(outcome string) *deletionStorage {
 		storage.removeErr = smb.ErrIO
 	case "cancelled":
 		storage.removeErr = context.Canceled
-	case "path failure":
+	case "gone inode":
 		storage.pathErr = smb.ErrNameNotFound
+	case "path failure":
+		storage.pathErr = smb.ErrIO
 	case "lookup failure":
 		storage.lookupErr = smb.ErrIO
 	case "changed inode":
