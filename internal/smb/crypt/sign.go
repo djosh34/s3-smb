@@ -25,7 +25,7 @@ func (protector *Protector) Sign(member []byte) ([16]byte, error) {
 	if !bytes.Equal(member[48:64], zero[:]) {
 		return [16]byte{}, fmt.Errorf("SMB signature field must be zero before signing")
 	}
-	return protector.signature(member)
+	return protector.signature(member), nil
 }
 
 // Verify checks the received member in constant time without changing it.
@@ -35,10 +35,7 @@ func (protector *Protector) Verify(member []byte) error {
 	}
 	unsigned := bytes.Clone(member)
 	clear(unsigned[48:64])
-	expected, err := protector.signature(unsigned)
-	if err != nil {
-		return err
-	}
+	expected := protector.signature(unsigned)
 	if subtle.ConstantTimeCompare(expected[:], member[48:64]) != 1 {
 		return fmt.Errorf("invalid SMB signature")
 	}
@@ -58,12 +55,9 @@ func validateMember(member []byte) error {
 	return nil
 }
 
-func (protector *Protector) signature(member []byte) ([16]byte, error) {
+func (protector *Protector) signature(member []byte) [16]byte {
 	if protector.signBlock != nil {
-		return aesCMAC(protector.signBlock, member), nil
-	}
-	if protector.signGMAC == nil {
-		return [16]byte{}, fmt.Errorf("SMB protector has no signing key")
+		return aesCMAC(protector.signBlock, member)
 	}
 	var nonce [12]byte
 	copy(nonce[:8], member[24:32])
@@ -77,7 +71,5 @@ func (protector *Protector) signature(member []byte) ([16]byte, error) {
 	}
 	binary.LittleEndian.PutUint32(nonce[8:], suffix)
 	tag := protector.signGMAC.Seal(nil, nonce[:], nil, member)
-	var signature [16]byte
-	copy(signature[:], tag)
-	return signature, nil
+	return [16]byte(tag)
 }

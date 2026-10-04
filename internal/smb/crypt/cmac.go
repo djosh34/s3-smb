@@ -32,8 +32,8 @@ package crypt
 
 import "crypto/cipher"
 
-// aesCMAC is the reviewed AES-only port of the old server's CMAC. The caller
-// supplies an AES block from aes.NewCipher. Subkeys and digest state are local
+// aesCMAC computes the RFC 4493 AES-CMAC of message. The caller supplies an
+// AES block from aes.NewCipher. Subkeys and digest state are local
 // to each call. The last complete block uses K1; a partial block uses K2 and
 // the RFC 4493 padding, including for the empty message.
 func aesCMAC(block cipher.Block, message []byte) [16]byte {
