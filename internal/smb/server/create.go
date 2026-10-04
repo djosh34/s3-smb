@@ -151,7 +151,7 @@ func createLocked(ctx context.Context, request RequestContext, create wire.Creat
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (result reply, resultErr error) {
-	contexts, err := createAAPLContexts(request, create.Contexts)
+	contexts, validAAPLQuery, err := createAAPLContexts(create.Contexts)
 	if err != nil {
 		return reply{status: smb.StatusInvalidParameter}, nil
 	}
@@ -159,7 +159,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	if status = streamOpenStatus(request.aaplNegotiated(), create, resolved); status != smb.StatusSuccess {
+	if status = streamOpenStatus(request.aaplNegotiated() || validAAPLQuery, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	if !resolved.Exists {
@@ -198,14 +198,8 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 			return reply{}, truncateErr
 		}
 	}
-	if action != 1 && create.FileAttributes != 0 {
-		attributes := create.FileAttributes
-		if action == 3 {
-			attributes |= resolved.Attr.Attributes
-		}
-		if attrErr := request.Storage.SetAttr(ctx, resolved.Object, smb.AttrChange{Attributes: &attributes}); attrErr != nil {
-			return reply{}, attrErr
-		}
+	if attrErr := setCreateAttributes(ctx, request.Storage, create, resolved, action); attrErr != nil {
+		return reply{}, attrErr
 	}
 	attr, err := request.Storage.GetAttr(ctx, resolved.Object)
 	if err != nil {
@@ -225,6 +219,9 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	body, err := wire.EncodeCreateResponse(response)
 	if err != nil {
 		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
+	}
+	if validAAPLQuery {
+		request.markAAPL()
 	}
 	return reply{body: body, fileID: response.ID}, nil
 }

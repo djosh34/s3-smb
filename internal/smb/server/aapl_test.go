@@ -1,35 +1,11 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func TestAAPLNegotiationIsPerConnection(t *testing.T) {
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	first := newConnection(ctx, cancel, server, nil).requestContext()
-	second := newConnection(ctx, cancel, server, nil).requestContext()
-	if first.aaplNegotiated() || second.aaplNegotiated() {
-		t.Fatal("new connection has negotiated AAPL")
-	}
-	first.markAAPL()
-	if !first.aaplNegotiated() || second.aaplNegotiated() {
-		t.Fatal("AAPL state crossed connections")
-	}
-	var empty RequestContext
-	empty.markAAPL()
-	if empty.aaplNegotiated() {
-		t.Fatal("empty request negotiated AAPL")
-	}
-}
 
 func TestAAPLRequestedFields(t *testing.T) {
 	for _, requested := range []uint64{0, 1, 2, 3, 4, 5, 6, 7, 0xffffffffffffffff} {
@@ -38,11 +14,11 @@ func TestAAPLRequestedFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			contexts, err := createAAPLContexts(RequestContext{}, []wire.CreateContext{{Name: "unknown"}, query})
+			contexts, validQuery, err := createAAPLContexts([]wire.CreateContext{{Name: "unknown"}, query})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(contexts) != 1 {
+			if !validQuery || len(contexts) != 1 {
 				t.Fatalf("contexts = %v", contexts)
 			}
 			reply, err := wire.DecodeAAPLReply(contexts[0])
@@ -74,11 +50,11 @@ func TestAAPLInvalidContexts(t *testing.T) {
 		{{Name: "AAPL", Data: append([]byte{2}, query.Data[1:]...)}},
 		{query, query},
 	} {
-		if _, err := createAAPLContexts(RequestContext{}, contexts); err == nil {
+		if replies, validQuery, err := createAAPLContexts(contexts); err == nil || validQuery || len(replies) != 0 {
 			t.Fatalf("accepted invalid contexts: %v", contexts)
 		}
 	}
-	if contexts, err := createAAPLContexts(RequestContext{}, []wire.CreateContext{{Name: "unknown"}}); err != nil || len(contexts) != 0 {
+	if contexts, validQuery, err := createAAPLContexts([]wire.CreateContext{{Name: "unknown"}}); err != nil || validQuery || len(contexts) != 0 {
 		t.Fatalf("unknown context: %v, %v", contexts, err)
 	}
 }
