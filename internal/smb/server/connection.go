@@ -240,6 +240,8 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 	}
 	defer connection.finishRequest(operation)
 	switch uint16(message.Header.Command) {
+	case uint16(wire.ChangeNotify):
+		return reply{status: smb.StatusNotSupported}, nil
 	case uint16(wire.TreeConnect):
 		return connection.treeConnect(message)
 	case uint16(wire.Logoff):
