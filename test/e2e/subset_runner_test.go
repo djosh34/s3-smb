@@ -3,6 +3,7 @@ package e2e
 import (
 	"context"
 	"errors"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -39,9 +40,14 @@ func TestSmbnextSubsetRunner(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls [][]string
+			t.Setenv("S3_SMB_CHECK_MODE", "pr")
 			run := func(_ context.Context, tool string, args ...string) (string, error) {
-				if tool != "go" {
-					t.Fatalf("unexpected tool %s", tool)
+				wantTool := "go"
+				if len(calls) > 0 {
+					wantTool = "env"
+				}
+				if tool != wantTool {
+					t.Fatalf("unexpected tool %s, want %s", tool, wantTool)
 				}
 				calls = append(calls, args)
 				if len(calls) == 1 {
@@ -59,6 +65,9 @@ func TestSmbnextSubsetRunner(t *testing.T) {
 				return `{"Action":"pass","Test":"TestFirst"}` + "\n" + `{"Action":"pass","Test":"TestSecond"}`, nil
 			}
 			err := runSmbnextSubset(t.Context(), run, tt.allowlist)
+			if mode := os.Getenv("S3_SMB_CHECK_MODE"); mode != "pr" {
+				t.Fatalf("subset changed the parent check mode to %q", mode)
+			}
 			if (err != nil) != tt.invalid {
 				t.Fatalf("got %v; invalid=%t", err, tt.invalid)
 			}
@@ -75,7 +84,7 @@ func TestSmbnextSubsetRunner(t *testing.T) {
 				} else if tt.allowlist == "TestFirst\nTestSecond" {
 					pattern = "^(TestFirst|TestSecond)$"
 				}
-				want := []string{"test", "-race", "-shuffle=on", "-count=1", "-json", "-timeout=30m", "-run", pattern, "./test/e2e"}
+				want := []string{"S3_SMB_CHECK_MODE=gate", "go", "test", "-race", "-shuffle=on", "-count=1", "-json", "-timeout=30m", "-run", pattern, "./test/e2e"}
 				if len(calls) != 2 || !reflect.DeepEqual(calls[1], want) {
 					t.Fatalf("execution commands = %v, want %v", calls[1:], want)
 				}

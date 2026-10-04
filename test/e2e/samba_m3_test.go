@@ -20,7 +20,7 @@ var m3PinnedListing string
 var m3SelectionNotes string
 
 func TestM3SambaInventory(t *testing.T) {
-	inventory, err := parseTortureAllowlist(m3PinnedListing, m3PinnedListing)
+	inventory, err := parseTestAllowlist(m3PinnedListing, m3PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestM3SambaInventory(t *testing.T) {
 	if len(inventory) != 60 {
 		t.Fatalf("pinned M3 inventory has %d names, want 60", len(inventory))
 	}
-	candidates, err := parseTortureAllowlist(m3TortureCandidates, m3PinnedListing)
+	candidates, err := parseTestAllowlist(m3TortureCandidates, m3PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +76,7 @@ func TestM3SambaInventory(t *testing.T) {
 }
 
 func TestSambaM3Interop(t *testing.T) {
-	names, err := parseTortureAllowlist(m3TortureCandidates, m3PinnedListing)
+	names, err := parseTestAllowlist(m3TortureCandidates, m3PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestSambaM3EmptyRootListing(t *testing.T) {
 
 func TestM3SambaCandidatesStayDisabled(t *testing.T) {
 	selected := strings.Split(tortureAllowlist, "\n")
-	inventory, err := parseTortureAllowlist(m3PinnedListing, m3PinnedListing)
+	inventory, err := parseTestAllowlist(m3PinnedListing, m3PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}

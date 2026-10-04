@@ -19,14 +19,14 @@ var m4TortureInventory string
 var m4PinnedListing string
 
 func TestM4Inventory(t *testing.T) {
-	available, err := parseTortureAllowlist(m4PinnedListing, m4PinnedListing)
+	available, err := parseTestAllowlist(m4PinnedListing, m4PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(available) != 63 {
 		t.Fatalf("M4 inventory has %d IDs, want 58 family IDs and 5 M3 deferrals", len(available))
 	}
-	selected, err := parseTortureAllowlist(m4TortureAllowlist, m4PinnedListing)
+	selected, err := parseTestAllowlist(m4TortureAllowlist, m4PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestSambaM4Interop(t *testing.T) {
 }
 
 func TestM4Runner(t *testing.T) {
-	names, err := parseTortureAllowlist(m4TortureAllowlist, m4PinnedListing)
+	names, err := parseTestAllowlist(m4TortureAllowlist, m4PinnedListing)
 	if err != nil {
 		t.Fatal(err)
 	}

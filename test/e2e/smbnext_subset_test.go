@@ -40,7 +40,9 @@ func runSmbnextSubset(ctx context.Context, run integrationCommand, allowlist str
 		patterns[i] = regexp.QuoteMeta(name)
 	}
 	pattern := "^(" + strings.Join(patterns, "|") + ")$"
-	output, err := run(ctx, "go", "test", "-race", "-shuffle=on", "-count=1", "-json", "-timeout=30m", "-run", pattern, "./test/e2e")
+	// MissingData exercises permanent-read retries only in gate mode. Set it
+	// for this child, without changing the parent PR check or other suites.
+	output, err := run(ctx, "env", "S3_SMB_CHECK_MODE=gate", "go", "test", "-race", "-shuffle=on", "-count=1", "-json", "-timeout=30m", "-run", pattern, "./test/e2e")
 	if err != nil {
 		return fmt.Errorf("run smbnext e2e subset: %w\n%s", err, output)
 	}

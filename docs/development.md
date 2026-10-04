@@ -163,6 +163,9 @@ A separate `TestSmbnextE2ESubset` step runs the exact names in
 `GORACE=halt_on_error=1`. It validates names against Go's test listing and builds
 an anchored `-run` expression. Failures, skips (including subtests) and missing
 success reports fail the step. An empty list is validated but runs no tests.
+The selected child runs with `S3_SMB_CHECK_MODE=gate` and a 30-minute timeout,
+so `TestMissingDataIsSMBError` exercises permanent-read retries rather than
+skipping. The parent PR mode and other suites are unchanged.
 The M3 list gains names only after their dependencies land and the tests pass.
 
 The script prints the directory that holds each daemon's stdout, stderr and
