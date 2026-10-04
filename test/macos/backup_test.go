@@ -171,21 +171,9 @@ func (h *harness) detach() error {
 			}
 		}
 	}
-	mounts, err := h.try(2*time.Minute, "/sbin/mount")
-	if err != nil {
-		return err
-	}
-	// listbackups mounts APFS snapshots. They must go before their image.
-	for _, line := range strings.Split(mounts, "\n") {
-		if !strings.HasPrefix(line, "com.apple.TimeMachine.") || !strings.Contains(line, " on /Volumes/.timemachine/") {
-			continue
-		}
-		_, tail, _ := strings.Cut(line, " on ")
-		path, _, _ := strings.Cut(tail, " (")
-		if _, err := h.try(2*time.Minute, "/sbin/umount", path); err != nil {
-			if _, err := h.try(2*time.Minute, "/sbin/umount", "-f", path); err != nil {
-				return err
-			}
+	if len(devices) == 0 {
+		if err := helpers.UnmountSnapshots(h.ejectCommand); err != nil {
+			return err
 		}
 	}
 	for index := len(devices) - 1; index >= 0; index-- {
@@ -197,8 +185,12 @@ func (h *harness) detach() error {
 	return h.detachShares()
 }
 
+func (h *harness) ejectCommand(args ...string) (string, error) {
+	return h.try(2*time.Minute, args...)
+}
+
 func (h *harness) detachDevice(device string) error {
-	if _, err := h.try(2*time.Minute, "/usr/bin/hdiutil", "detach", device); err == nil {
+	if err := helpers.Eject(h.ejectCommand, device, false); err == nil {
 		return nil
 	}
 	return h.waitFor("eject "+device, time.Minute, 5*time.Second, func() (bool, error) {
@@ -209,7 +201,7 @@ func (h *harness) detachDevice(device string) error {
 		if !strings.Contains(text, "<string>"+device+"</string>") {
 			return true, nil
 		}
-		_, err = h.try(2*time.Minute, "/usr/bin/hdiutil", "detach", "-force", device)
+		err = helpers.Eject(h.ejectCommand, device, true)
 		if err != nil {
 			h.t.Log("image still busy", device, err)
 		}
