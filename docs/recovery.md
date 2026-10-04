@@ -76,6 +76,10 @@ one per week for 2 months and one per month for 2 years.
 6. Mount the share and check your files. For Time Machine, restore a few files
    with `tmutil restore` or the Time Machine app and compare them.
 
+You may keep `storage.cache_dir` when recovering. Recovery deletes only the
+volume UUID directory under that root. Other files and directories stay as they
+are.
+
 A valid snapshot does not prove that every data object it points at exists.
 A missing object shows up as a read error on that file.
 

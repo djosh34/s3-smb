@@ -27,6 +27,7 @@ storage:
   state_dir: ./state
   cache_dir: ./cache
   cache_size: "10 GB"
+  capacity: "2 TB"
 
 s3:
   bucket: your-existing-bucket
@@ -64,6 +65,7 @@ logging:
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
 | `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
+| `storage.capacity` | `0` (no limit) |
 | `s3.bucket` | Required, must exist |
 | `s3.region` | `us-east-1`. Set the bucket's real region. |
 | `s3.endpoint` | AWS S3 for the region; otherwise an `http://` or `https://` origin |
@@ -77,6 +79,13 @@ logging:
 | `logging.format` | `text`, or `json` |
 | `logging.level` | `info`, or `debug`, `warn`, `error` |
 
+`storage.cache_dir` is one directory, not a list or glob pattern. Its path must
+not contain `:`, `,`, `*`, `?`, `[` or a backslash. This also applies to paths
+inherited from `XDG_CACHE_HOME` or the config file's directory. Recovery deletes
+only the volume UUID directory under this root. The volume cache and
+`storage.state_dir` must be separate directories, with neither inside the other.
+Recovery refuses to wipe overlapping directories.
+
 ## Sizes
 
 Sizes use decimal units B, KB, MB, GB and TB. 1 MB is 1,000,000 bytes. A number
@@ -87,6 +96,22 @@ values above 9,223,372,036,854,775,807 bytes are errors. Quote sizes.
 `cache_size: 0` turns off the disk and memory block caches. s3-smb still needs
 memory for I/O buffers (300 MiB by default) and disk for the SQLite database and
 metadata backup staging. The cache does not need to hold the whole dataset.
+
+## Capacity
+
+`storage.capacity` limits the total space used by the JuiceFS volume. It uses the
+same decimal sizes as `storage.cache_size`. Omitting it or setting it to `0` means
+no limit.
+
+`serve` stores the capacity when it initializes a volume and updates it on each
+writable start. Restart to change the limit. Removing the setting clears a stored
+limit. Lowering it below current usage does not delete files, but writes that
+need more space fail with a no-space error until usage falls below the limit.
+JuiceFS counts allocated file space, including files kept in trash, not the size
+of encrypted objects or metadata backups in S3. This is not a bucket quota.
+
+The current SMB adapter reports at most 1 TiB of free space. When the capacity
+leaves less free space than that, the share reports the capacity as its size.
 
 ## Retention
 

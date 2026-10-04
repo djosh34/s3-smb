@@ -121,7 +121,14 @@ func CleanupRecoveryStaging(stateDir string) error {
 
 // Recover validates a snapshot and clears dead sessions in a staged copy. The
 // caller holds the state lock and has confirmed the old writer has stopped.
-func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format) (saved *meta.Format, err error) {
+// After preparation, recovery wipes the volume cache and renames the database.
+func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath, cacheRoot string, current *meta.Format) (*meta.Format, error) {
+	return recoverMetadata(ctx, blob, key, dbPath, current, func() error {
+		return WipeVolumeCache(cacheRoot, current.UUID, filepath.Dir(dbPath))
+	})
+}
+
+func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format, beforePublish func() error) (saved *meta.Format, err error) {
 	if current == nil {
 		return nil, errors.New("current validated volume settings required")
 	}
@@ -156,7 +163,15 @@ func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath string,
 	if err = ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err = os.Link(path, dbPath); err != nil {
+	// A kill before the rename leaves no database. The next start recovers
+	// again, including another cache wipe.
+	if err = beforePublish(); err != nil {
+		return nil, err
+	}
+	if err = ctx.Err(); err != nil {
+		return nil, err
+	}
+	if err = os.Rename(path, dbPath); err != nil {
 		return nil, err
 	}
 	if err = syncDir(parent); err != nil {

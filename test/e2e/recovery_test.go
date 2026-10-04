@@ -36,6 +36,7 @@ type fixture struct {
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
+	storageCapacity              string // Empty means no volume limit.
 	interval                     string // Metadata backup interval. Empty means 2s.
 	readonly, failStart          bool
 	store                        *s3.Client
@@ -95,6 +96,10 @@ func (f *fixture) config() string {
 	if capacity == "" {
 		capacity = "0 MB"
 	}
+	storageSettings := ""
+	if f.storageCapacity != "" {
+		storageSettings = fmt.Sprintf("  capacity: %q\n", f.storageCapacity)
+	}
 	interval := f.interval
 	if interval == "" {
 		interval = "2s"
@@ -109,7 +114,7 @@ func (f *fixture) config() string {
   password: %q
   read_only: %t
 storage:
-  state_dir: ./state
+%s  state_dir: ./state
   cache_dir: ./cache
   cache_size: %q
 s3:
@@ -128,7 +133,7 @@ backup:
 logging:
   format: json
   level: info
-`, f.addr, f.password, f.readonly, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
+`, f.addr, f.password, f.readonly, storageSettings, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()

@@ -187,6 +187,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	format.Storage = "s3"
 	format.TrashDays = c.Backup.TrashDays
 	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
+	// Capacity comes from the current configuration, including on recovery.
+	// An omitted setting clears any stored limit.
+	format.Capacity = uint64(c.Storage.Capacity)
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
 		return errors.New("configured encryption mode differs from the existing dataset")
 	}
@@ -221,7 +224,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
-		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, format); err != nil {
+		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, c.Storage.CacheDir, format); err != nil {
 			return fmt.Errorf("recover selected metadata: %w", err)
 		}
 		recovered = true

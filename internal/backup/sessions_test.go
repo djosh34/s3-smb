@@ -30,7 +30,7 @@ func TestRecoveryCleansMoreThanOneSessionBatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "restored.db")
-	if _, err = Recover(context.Background(), s, r.Key, path, f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
 	if err = checkSnapshotSessions(context.Background(), path); err != nil {
@@ -55,7 +55,7 @@ func TestRecoveryRefusesSustainedRowsWithoutSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "restored.db")
-	if _, err = Recover(context.Background(), s, r.Key, path, f); err == nil || !strings.Contains(err.Error(), "jfs_sustained table is not empty") {
+	if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err == nil || !strings.Contains(err.Error(), "jfs_sustained table is not empty") {
 		t.Fatal("published recovery with uncleared open-file rows", err)
 	}
 }

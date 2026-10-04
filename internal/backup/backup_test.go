@@ -184,7 +184,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			current.SessionToken = "replacement-token"
 			current.TrashDays = 7
 			path := filepath.Join(t.TempDir(), "restored.db")
-			restored, err := Recover(context.Background(), s, r.Key, path, &current)
+			restored, err := Recover(context.Background(), s, r.Key, path, t.TempDir(), &current)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -211,7 +211,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			if _, err = next.Backup(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = Recover(context.Background(), s, r.Key, path, &current); err == nil {
+			if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), &current); err == nil {
 				t.Fatal("replaced existing active database")
 			}
 			st, err := os.Stat(path)
@@ -276,7 +276,7 @@ func TestBackupCollisionBackwardClockAndAmbiguousUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = Recover(context.Background(), s, r.Key, filepath.Join(t.TempDir(), "restore.db"), f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, filepath.Join(t.TempDir(), "restore.db"), t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
 }

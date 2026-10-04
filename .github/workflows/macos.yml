@@ -88,6 +88,8 @@ jobs:
         with:
           go-version: '1.26.3'
           cache: false
+      - name: Check SQLite full fsync on every pool connection
+        run: go test -count=1 ./internal/juicefs/pkg/meta -run '^TestSQLiteFullFSyncEveryConnection$'
       - name: Time Machine backup
         run: bash test/macos/run.sh
       - name: Upload the reference manifest

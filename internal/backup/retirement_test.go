@@ -104,7 +104,7 @@ func TestPendingDeletionCannotDeleteNewFileAfterRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "restored.db")
-	if _, err = Recover(context.Background(), s, r.Key, path, f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
 	if queryCount(t, path, "jfs_delfile") != 1 {
@@ -158,7 +158,7 @@ func TestCompactedSlicesRetireAfterSnapshotRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "restored.db")
-	if _, err = Recover(context.Background(), s, r.Key, path, f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
 	if queryCount(t, path, "jfs_delslices") != 1 || queryCount(t, path, "jfs_chunk_ref") != 3 {

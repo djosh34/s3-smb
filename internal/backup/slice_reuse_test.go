@@ -79,7 +79,7 @@ func TestSliceIDReuseReadsNewBytesThroughDiskCache(t *testing.T) {
 	if err = os.Remove(m.path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = Recover(context.Background(), s, r.Key, m.path, f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, m.path, cache, f); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = os.Stat(volumeCache); !os.IsNotExist(err) {

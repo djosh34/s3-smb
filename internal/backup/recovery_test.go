@@ -121,7 +121,7 @@ func TestRecoveryRejectsSHA256AndIntegrityFailure(t *testing.T) {
 			}
 			dir := t.TempDir()
 			path := filepath.Join(dir, "restored.db")
-			if _, err = Recover(context.Background(), s, r.Key, path, f); err == nil || !strings.Contains(err.Error(), failure) {
+			if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err == nil || !strings.Contains(err.Error(), failure) {
 				t.Fatalf("wanted %s refusal, got %v", failure, err)
 			}
 			entries, err := os.ReadDir(dir)
@@ -180,7 +180,7 @@ func TestSnapshotOfLiveLocksRecoversToReadOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(t.TempDir(), "restored.db")
-			if _, err = Recover(context.Background(), s, r.Key, path, f); err != nil {
+			if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err != nil {
 				t.Fatal(err)
 			}
 			if err = checkSnapshotSessions(context.Background(), path); err != nil {
