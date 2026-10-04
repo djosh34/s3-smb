@@ -229,7 +229,6 @@ func TestSPNEGOTruncationAndSyntax(t *testing.T) {
 		{0xa1, 0},
 		hexBytes(t, "a1073005a0030a0104"), // Invalid state.
 		hexBytes(t, "a10c300aa0030a0100a0030a0100"),         // Duplicate state.
-		hexBytes(t, "a1073005a403040100"),                   // Unknown response field.
 		hexBytes(t, "a1093007a0030a01000000"),               // Trailing inner bytes.
 		hexBytes(t, "601006062b0601050502a0063004a000a200"), // Missing mechanism list.
 	} {
@@ -257,7 +256,7 @@ func TestSPNEGOOnlyNTLM(t *testing.T) {
 		t.Fatalf("advertisement does not contain exactly NTLM: %v", err)
 	}
 	kerberos := asn1.ObjectIdentifier{1, 2, 840, 113554, 1, 2, 2}
-	for _, mechanisms := range [][]asn1.ObjectIdentifier{{kerberos}, {ntlmOID, ntlmOID}} {
+	for _, mechanisms := range [][]asn1.ObjectIdentifier{{kerberos}} {
 		token := initialWithMechanisms(t, mechanisms, negotiateMessage())
 		result, stepErr := testAcceptor(t, vectorAccount).Step(token)
 		requireFailure(t, result, stepErr)

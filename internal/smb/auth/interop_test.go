@@ -216,6 +216,164 @@ func selectedChallenge(t testing.TB, acceptor *Acceptor, initiator *Initiator, m
 	return challenge, offer
 }
 
+func TestNTLMWithoutOptimisticToken(t *testing.T) {
+	acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+	challenge, _ := selectedChallenge(t, acceptor, initiator, []asn1.ObjectIdentifier{ntlmOID}, nil, 1)
+	authenticate, err := initiator.Step(challenge.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	final, err := acceptor.Step(authenticate.Token)
+	if err != nil || !final.Done {
+		t.Fatalf("NTLM without an optimistic token failed: %v", err)
+	}
+	requireBytes(t, final.SessionKey, authenticate.SessionKey)
+	if done, finalErr := initiator.Step(final.Token); finalErr != nil || !done.Done {
+		t.Fatalf("final acceptance failed: %v", finalErr)
+	}
+}
+
+func TestInitiatorRequiresNamingPairs(t *testing.T) {
+	for _, omitted := range []uint16{avComputer, avDomain} {
+		acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+		challenge := clientChallenge(t, acceptor, initiator, offeredFlags)
+		var pairs []avPair
+		for _, id := range []uint16{avComputer, avDomain, avTimestamp} {
+			if id != omitted {
+				pairs = append(pairs, avPair{id: id, value: challenge.av[id]})
+			}
+		}
+		info, err := encodeAV(pairs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := append(bytes.Clone(challenge.raw), info...)
+		if _, fieldErr := putField(raw, 40, len(challenge.raw), info); fieldErr != nil {
+			t.Fatal(fieldErr)
+		}
+		token, err := encodeResponse(1, ntlmOID, raw, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		result, err := initiator.Step(token)
+		requireFailure(t, result, err)
+	}
+}
+
+func TestRequiredAuthenticateFlags(t *testing.T) {
+	for _, test := range []struct {
+		remove uint32
+		add    uint32
+	}{
+		{remove: flagUnicode},
+		{remove: flagNTLM},
+		{remove: flagExtended},
+		{remove: flagSign, add: flagKeyExch},
+		{add: flagAnonymous},
+	} {
+		acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+		challenge := clientChallenge(t, acceptor, initiator, offeredFlags)
+		flags := challenge.flags&offeredFlags&^test.remove | test.add
+		token, _ := clientAuthenticate(t, initiator, challenge, clientTargetInfo(t, challenge, true), challenge.av[avTimestamp], flags, true)
+		result, err := acceptor.Step(token)
+		requireFailure(t, result, err)
+	}
+	acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+	challenge := clientChallenge(t, acceptor, initiator, offeredFlags&^flagKeyExch)
+	token, _ := clientAuthenticate(t, initiator, challenge, clientTargetInfo(t, challenge, true), challenge.av[avTimestamp], offeredFlags, true)
+	result, err := acceptor.Step(token)
+	requireFailure(t, result, err)
+}
+
+func TestUnusedSessionKeyFields(t *testing.T) {
+	acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
+	challenge := clientChallenge(t, acceptor, initiator, offeredFlags&^flagKeyExch)
+	token, key := clientAuthenticate(t, initiator, challenge, clientTargetInfo(t, challenge, true), challenge.av[avTimestamp], offeredFlags&^flagKeyExch, true)
+	wrapped, err := decodeSPNEGO(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := decodeNTLM(wrapped.token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// MS-NLMP 2.2.1.3 says these fields MUST be ignored without KEY_EXCH.
+	littleEndian.PutUint16(message.raw[52:], 65535)
+	littleEndian.PutUint32(message.raw[56:], 0xffffffff)
+	mic, err := transcriptMIC(key, initiator.negotiate, challenge.raw, message.raw, message.micOffset)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(message.raw[message.micOffset:], mic)
+	token, err = encodeResponse(-1, nil, message.raw, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := acceptor.Step(token)
+	if err != nil || !result.Done {
+		t.Fatalf("unused session key fields affected authentication: %v", err)
+	}
+	requireBytes(t, result.SessionKey, key)
+}
+
+func TestSPNEGOMechanismPositions(t *testing.T) {
+	for _, duplicate := range []bool{false, true} {
+		mechanisms := []asn1.ObjectIdentifier{ntlmOID, ntlmOID}
+		state := 1
+		if !duplicate {
+			mechanisms = nil
+			for index := 0; index < 17; index++ {
+				mechanisms = append(mechanisms, asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 2, 2, 20 + index})
+			}
+			mechanisms = append(mechanisms, ntlmOID)
+			state = 3
+		}
+		token := initialWithMechanisms(t, mechanisms, nil)
+		result, err := testAcceptor(t, vectorAccount).Step(token)
+		if err != nil {
+			t.Fatalf("valid mechanism list was refused: %v", err)
+		}
+		selection, err := decodeSPNEGO(result.Token)
+		if err != nil || selection.state != state || !selection.mechanism.Equal(ntlmOID) {
+			t.Fatalf("incorrect selection: %+v, %v", selection, err)
+		}
+	}
+}
+
+func TestSPNEGOExtensions(t *testing.T) {
+	// RFC 4178 section 6: unrecognized extension fields are ignored.
+	initial := hexBytes(t, "602106062b0601050502a0173015a00e300c060a2b06010401823702020aa503040101")
+	if _, err := testInitiator(t, vectorAccount).Start(initial); err != nil {
+		t.Fatalf("unknown initial extension was refused: %v", err)
+	}
+	initiator := testInitiator(t, vectorAccount)
+	startExchange(t, testAcceptor(t, vectorAccount), initiator)
+	final := hexBytes(t, "a10c300aa0030a0100a403040101")
+	result, err := initiator.Step(final)
+	if err != nil || !result.Done {
+		t.Fatalf("unknown final extension was refused: %v", err)
+	}
+}
+
+func TestTargetInfoMICFlag(t *testing.T) {
+	info := testAppendAV(t, nil, avComputer, encodeUTF16("Server"))
+	info = testAppendAV(t, info, avFlags, []byte{4, 0, 0, 0})
+	info = testAppendAV(t, info, avEnd, nil)
+	original := bytes.Clone(info)
+	withMIC, err := targetInfoWithMIC(info)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs, err := decodeAV(withMIC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if littleEndian.Uint32(pairs[avFlags]) != 6 {
+		t.Fatal("initiator did not add MIC-present while preserving existing flags")
+	}
+	requireBytes(t, info, original)
+}
+
 func TestLaterNTLMMechanism(t *testing.T) {
 	for _, variant := range []string{"valid", "bad MIC", "missing MIC"} {
 		acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)

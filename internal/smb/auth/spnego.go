@@ -29,7 +29,8 @@ type spnegoToken struct {
 func readDER(data []byte) (asn1.RawValue, []byte, error) {
 	var value asn1.RawValue
 	rest, err := asn1.Unmarshal(data, &value)
-	if err != nil {
+	// End-of-contents is a BER marker, not a DER value or extension field.
+	if err != nil || (value.Class == asn1.ClassUniversal && value.Tag == 0) {
 		return value, nil, errToken
 	}
 	return value, rest, nil
@@ -94,7 +95,19 @@ func decodeSPNEGOFields(data []byte, result *spnegoToken) error {
 	previous := -1
 	for len(data) != 0 {
 		field, rest, err := readDER(data)
-		if err != nil || field.Class != asn1.ClassContextSpecific || !field.IsCompound || field.Tag <= previous || field.Tag > 4 {
+		if err != nil {
+			return err
+		}
+		lastKnownTag := 3
+		if result.initial {
+			lastKnownTag = 4
+		}
+		// RFC 4178 section 6 requires ignoring unknown extension fields.
+		if field.Class != asn1.ClassContextSpecific || field.Tag > lastKnownTag {
+			data = rest
+			continue
+		}
+		if !field.IsCompound || field.Tag <= previous {
 			return errToken
 		}
 		previous = field.Tag
@@ -118,16 +131,7 @@ func decodeInitField(field asn1.RawValue, result *spnegoToken) error {
 		if err := unmarshalDER(field.Bytes, &result.mechs); err != nil {
 			return err
 		}
-		if len(result.mechs) > 16 {
-			return errToken
-		}
-		for index, mech := range result.mechs {
-			for _, earlier := range result.mechs[:index] {
-				if earlier.Equal(mech) {
-					return errToken
-				}
-			}
-		}
+
 	case 1:
 		var flags asn1.BitString
 		return unmarshalDER(field.Bytes, &flags)
