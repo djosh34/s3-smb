@@ -175,7 +175,7 @@ func prepareSnapshot(ctx context.Context, path string, saved, current *meta.Form
 	closed := false
 	defer func() {
 		if !closed {
-			err = errors.Join(err, m.Shutdown())
+			err = errors.Join(err, m.CloseSession(), m.Shutdown())
 		}
 	}()
 	if _, err = m.Load(true); err != nil {
