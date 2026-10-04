@@ -118,10 +118,12 @@ func (c *streamClient) write(t *testing.T, id wire.FileID, data []byte, offset u
 
 func (c *streamClient) read(t *testing.T, id wire.FileID, offset uint64, want []byte) {
 	t.Helper()
-	if len(want) > 65536 {
+	length := uint64(len(want))
+	if length > 65536 {
 		t.Fatal("stream test read exceeds one credit")
+		return
 	}
-	body, err := wire.EncodeReadRequest(wire.ReadRequest{ID: id, Offset: offset, Length: uint32(len(want))})
+	body, err := wire.EncodeReadRequest(wire.ReadRequest{ID: id, Offset: offset, Length: uint32(length)})
 	if err != nil {
 		t.Fatal(err)
 	}
