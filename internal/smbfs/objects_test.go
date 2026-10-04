@@ -209,8 +209,10 @@ func TestReadOnlyRejectsAllMutations(t *testing.T) {
 		}
 	})
 	for _, r := range []smb.Resolved{base, stream} {
-		_, err = ro.Open(t.Context(), r.Object, smb.AccessWrite)
-		requireError(t, err, smb.ErrReadOnly)
+		for _, access := range []smb.Access{smb.AccessWrite, smb.AccessAppend, smb.AccessWrite | smb.AccessAppend} {
+			_, err = ro.Open(t.Context(), r.Object, access)
+			requireError(t, err, smb.ErrReadOnly)
+		}
 		h, openErr := ro.Open(t.Context(), r.Object, smb.AccessRead)
 		if openErr != nil {
 			t.Fatal(openErr)
