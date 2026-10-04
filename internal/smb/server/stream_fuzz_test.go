@@ -72,11 +72,15 @@ func streamFrame(t testing.TB, messages ...wire.Message) []byte {
 
 func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Message, bool) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(t.Context())
+	// The test context is canceled before cleanup, but the peer-close wait must not be.
+	ctx, cancel := context.WithCancel(context.Background())
 	local, remote := net.Pipe()
 	done := make(chan error, 1)
 	go func() { done <- server.ServeConn(ctx, local) }()
 	t.Cleanup(func() {
+		if err := ctx.Err(); err != nil {
+			t.Errorf("server context canceled before peer-close wait: %v", err)
+		}
 		select {
 		case err := <-done:
 			// Protocol rejection is an expected outcome for mutated inputs.
