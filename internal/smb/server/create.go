@@ -38,22 +38,23 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 	if create.Disposition > fileOverwriteIf || create.ShareAccess & ^uint32(7) != 0 || create.Options&(fileDirectoryFile|fileNonDirectoryFile) == fileDirectoryFile|fileNonDirectoryFile {
 		return create, smb.StatusInvalidParameter
 	}
-	return create, smb.StatusSuccess
+	_, status := decodeCreateLease(create)
+	return create, status
 }
 
 // expandCreateAccess removes generic bits before storing the granted mask.
 func expandCreateAccess(desired uint32) uint32 {
-	granted := desired &^ 0xf2000000
-	if desired&0x80000000 != 0 {
-		granted |= 0x00120089 // FILE_GENERIC_READ.
+	granted := desired &^ (genericRead | genericWrite | genericExecute | genericAll | maximumAllowed)
+	if desired&genericRead != 0 {
+		granted |= fileGenericRead
 	}
-	if desired&0x40000000 != 0 {
-		granted |= 0x00120116 // FILE_GENERIC_WRITE.
+	if desired&genericWrite != 0 {
+		granted |= fileGenericWrite
 	}
-	if desired&0x20000000 != 0 {
-		granted |= 0x001200a0 // FILE_GENERIC_EXECUTE.
+	if desired&genericExecute != 0 {
+		granted |= fileGenericExecute
 	}
-	if desired&0x12000000 != 0 { // GENERIC_ALL or MAXIMUM_ALLOWED.
+	if desired&(genericAll|maximumAllowed) != 0 {
 		granted |= fileAllAccess
 	}
 	return granted
@@ -96,7 +97,7 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	}
 }
 
-func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status) {
+func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status, error) {
 	open := state.OpenRequest{
 		Object: resolved.Object, Binding: request.Binding(), User: request.Session.User,
 		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
@@ -105,7 +106,7 @@ func reserveCreate(request RequestContext, create wire.CreateRequest, resolved s
 	if create.Disposition == fileSupersede || create.Options&fileDeleteOnClose != 0 {
 		open.SharingIntent |= state.RightDelete
 	}
-	return request.Opens.Reserve(open)
+	return reserveCreateLease(request, create, resolved, open)
 }
 
 func createGrant(create wire.CreateRequest, resolved smb.Resolved, handle smb.Handle) state.Grant {
@@ -132,11 +133,7 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
-	result, unlock, err := createLocked(ctx, request, create, granted)
-	if unlock != nil {
-		unlock()
-	}
-	return result, err
+	return runCreateWithLeases(ctx, request, create, granted)
 }
 
 // createLocked holds the parent from selection through grant publication. The
@@ -166,9 +163,9 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 			return reply{}, err
 		}
 	}
-	reservation, status := reserveCreate(request, create, resolved, granted)
-	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
+	reservation, status, err := reserveCreate(request, create, resolved, granted)
+	if status != smb.StatusSuccess || err != nil {
+		return reply{status: status}, err
 	}
 	var handle smb.Handle
 	committed := false
@@ -209,12 +206,19 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if err != nil {
 		return reply{}, err
 	}
-	open, status := request.Opens.Commit(reservation, createGrant(create, resolved, handle))
+	grant := createGrant(create, resolved, handle)
+	if leaseStatus := grantCreateLease(request, create, resolved, reservation, &grant); leaseStatus != smb.StatusSuccess {
+		return reply{status: leaseStatus}, nil
+	}
+	open, status := request.Opens.Commit(reservation, grant)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	committed = true
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
+	if leaseErr := createLeaseResponse(request, create, resolved, open, &response); leaseErr != nil {
+		return reply{}, errors.Join(leaseErr, closeFailedCreate(context.WithoutCancel(ctx), request, open))
+	}
 	body, err := wire.EncodeCreateResponse(response)
 	if err != nil {
 		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
