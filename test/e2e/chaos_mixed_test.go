@@ -98,9 +98,7 @@ func TestChaosMixedFaults(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), budget)
 	defer cancel()
-	// Replace with newChaosFixture when the shared new-server helper lands.
-	// A default-daemon run is development evidence only; this PR stays draft.
-	f := newFixture(t, false)
+	f := newChaosFixture(t, false)
 	f.interval = "1h"
 	f.cacheSize = "0 MB"
 	proxy := newFaultProxy(t, f.endpoint)
