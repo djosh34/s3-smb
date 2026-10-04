@@ -102,8 +102,10 @@ tests use mock downloads to check both CPU architectures, cache reuse and errors
 
 PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
 `testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
-for one minute with two workers. Tests receive `S3_SMB_CHECK_MODE=pr` or `gate`,
-including inside Docker, so they can choose short or full-length outage tests.
+for one minute with two workers. Other checks use Go's CPU defaults, including
+inside Docker. The entry point leaves `GOMAXPROCS` and `GOFLAGS` unchanged.
+Tests receive `S3_SMB_CHECK_MODE=pr` or `gate`, including inside Docker, so they
+can choose short or full-length outage tests.
 The namespace measurement test runs an encrypted snapshot and cold recovery
 through the daemon and MinIO. PR mode seeds 4,096 bands; gate mode seeds 524,288.
 It checks peak daemon RSS and elapsed time and writes `namespace-measurement.json`
