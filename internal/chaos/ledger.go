@@ -174,13 +174,21 @@ func checkFiles(mark Mark, read ReadFunc, crash bool) error {
 	}
 	for _, name := range sortedNames(mark.files) {
 		file := mark.files[name]
-		allowed := possibleFile{missing: true}
+		allowed := []possibleFile{{missing: true}}
 		for i, op := range file.ops {
 			optional := op.kind == attemptOp || (crash && i >= file.flushed)
-			allowed.apply(op, optional)
+			allowed = applyOperation(allowed, op, optional)
 		}
-		if err := allowed.check(name, read); err != nil {
-			return err
+		data, readErr := read(name)
+		var failure error
+		for _, state := range allowed {
+			failure = state.check(name, data, readErr)
+			if failure == nil {
+				break
+			}
+		}
+		if failure != nil {
+			return failure
 		}
 	}
 	return nil
@@ -203,18 +211,37 @@ type possibleFile struct {
 	missing bool
 }
 
+// Optional size and existence changes fork the structural outcome. Their zero
+// fill belongs only to that outcome, never to a file that kept its old length.
+// Writes still combine byte choices within each outcome, as rule 2 requires.
+func applyOperation(states []possibleFile, op operation, optional bool) []possibleFile {
+	if optional && (op.kind == truncateOp || op.kind == removeOp) {
+		count := len(states)
+		for i := range count {
+			changed := states[i]
+			changed.layers = slices.Clone(changed.layers)
+			changed.sizes = slices.Clone(changed.sizes)
+			changed.apply(op, false)
+			states = append(states, changed)
+		}
+		return states
+	}
+	for i := range states {
+		states[i].apply(op, optional)
+	}
+	return states
+}
+
 func (p *possibleFile) apply(op operation, optional bool) {
 	switch op.kind {
 	case writeOp, attemptOp:
 		p.write(op, optional)
 	case truncateOp:
-		p.truncate(op.size, optional)
+		p.truncate(op.size)
 	case removeOp:
-		p.layers = append(p.layers, byteLayer{end: math.MaxInt64, required: !optional})
+		p.layers = append(p.layers, byteLayer{end: math.MaxInt64, required: true})
 		p.missing = true
-		if !optional {
-			p.sizes = nil
-		}
+		p.sizes = nil
 	}
 }
 
@@ -242,10 +269,10 @@ func (p *possibleFile) write(op operation, optional bool) {
 	p.layers = append(p.layers, byteLayer{start: op.offset, end: end, data: op.data, required: !optional})
 }
 
-func (p *possibleFile) truncate(size int64, optional bool) {
+func (p *possibleFile) truncate(size int64) {
 	// Bytes past the new end must be zero if a later operation grows the file.
-	p.layers = append(p.layers, byteLayer{start: size, end: math.MaxInt64, required: !optional})
-	p.setSizes([]sizeRange{{low: size, high: size}}, optional)
+	p.layers = append(p.layers, byteLayer{start: size, end: math.MaxInt64, required: true})
+	p.setSizes([]sizeRange{{low: size, high: size}}, false)
 }
 
 func (p *possibleFile) setSizes(sizes []sizeRange, optional bool) {
@@ -275,8 +302,7 @@ func (p *possibleFile) setSizes(sizes []sizeRange, optional bool) {
 	p.sizes = merged
 }
 
-func (p *possibleFile) check(name string, read ReadFunc) error {
-	data, err := read(name)
+func (p *possibleFile) check(name string, data []byte, err error) error {
 	if errors.Is(err, fs.ErrNotExist) {
 		if p.missing {
 			return nil

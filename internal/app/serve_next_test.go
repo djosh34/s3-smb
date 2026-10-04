@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,9 +48,18 @@ func TestSMBNextServeCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initErr := m.Init(format, false)
-	if closeErr := m.Shutdown(); initErr != nil || closeErr != nil {
-		t.Fatalf("initialize local dataset: %v, %v", initErr, closeErr)
+	if err = m.Init(format, false); err != nil {
+		t.Fatal(err)
+	}
+	// SID-zero rows from the old adapter are unrelated to the new server.
+	if eno := m.Setlk(meta.Background(), meta.RootInode, 1, false, syscall.F_WRLCK, 0, 11, 1); eno != 0 {
+		t.Fatal(eno)
+	}
+	if eno := m.Flock(meta.Background(), meta.RootInode, 1, syscall.F_WRLCK, false); eno != 0 {
+		t.Fatal(eno)
+	}
+	if err = m.Shutdown(); err != nil {
+		t.Fatal(err)
 	}
 	identity, err := json.Marshal(format)
 	if err != nil {
@@ -131,6 +141,19 @@ func TestSMBNextServeCancellation(t *testing.T) {
 			t.Error(err)
 		}
 		t.Fatal("serve left its listener open")
+	}
+	conf := meta.DefaultConf()
+	conf.ReadOnly = true
+	m, err = storage.OpenMetadata(filepath.Join(stateDir, "metadata.db"), conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plocks, flocks, listErr := m.ListLocks(t.Context(), meta.RootInode)
+	if closeErr := m.Shutdown(); listErr != nil || closeErr != nil {
+		t.Fatalf("inspect native locks: %v, %v", listErr, closeErr)
+	}
+	if len(plocks) != 1 || len(flocks) != 1 {
+		t.Fatalf("new server changed native locks: plocks=%v, flocks=%v", plocks, flocks)
 	}
 	lock, err := lockState(stateDir)
 	if err != nil {
