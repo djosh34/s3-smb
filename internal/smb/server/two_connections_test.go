@@ -25,15 +25,12 @@ func twoIOClients(t *testing.T, barrier smbfs.MetadataBarrier) (*ioFixture, *rea
 
 func createIOFile(t *testing.T, client *readWriteClient, request wire.CreateRequest) wire.CreateResponse {
 	t.Helper()
-	response := fileCreate(client.ctx, t, client.client, client.session, client.next, request)
-	client.next++
-	return createdFile(t, response)
+	return createdFile(t, client.create(t, request))
 }
 
 func closeIOFile(t *testing.T, client *readWriteClient, id wire.FileID) {
 	t.Helper()
-	response := fileClose(client.ctx, t, client.client, client.session, client.next, id, 0)
-	client.next++
+	response := client.close(t, id, 0)
 	requireIOStatus(t, response, smb.StatusSuccess)
 	if _, err := wire.DecodeCloseResponse(response); err != nil {
 		t.Fatal(err)
@@ -41,26 +38,6 @@ func closeIOFile(t *testing.T, client *readWriteClient, id wire.FileID) {
 	binding := state.Binding{SessionID: client.session.SessionID, TreeID: client.session.TreeID}
 	if _, status := client.server.options.State.Find(state.FileID(id), binding); status != smb.StatusFileClosed {
 		t.Fatalf("CLOSE retained open: %#x", status)
-	}
-}
-
-func writeIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, data []byte) {
-	t.Helper()
-	response := client.write(t, wire.WriteRequest{ID: id, Data: data}, 1)
-	requireIOStatus(t, response, smb.StatusSuccess)
-	written, err := wire.DecodeWriteResponse(response)
-	if err != nil || uint64(written.Count) != uint64(len(data)) {
-		t.Fatalf("WRITE = %+v, %v", written, err)
-	}
-}
-
-func readIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, want string) {
-	t.Helper()
-	response := client.read(t, wire.ReadRequest{ID: id, Length: 128}, 1)
-	requireIOStatus(t, response, smb.StatusSuccess)
-	read, err := wire.DecodeReadResponse(response)
-	if err != nil || string(read.Data) != want {
-		t.Fatalf("READ = %q, want %q, error %v", read.Data, want, err)
 	}
 }
 
@@ -82,17 +59,16 @@ func TestTwoConnectionDeniedDestructiveCreate(t *testing.T) {
 	writer := createIOFile(t, a, wire.CreateRequest{Name: "protected", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 1, Disposition: fileCreateDisposition})
 	reader := createIOFile(t, b, wire.CreateRequest{Name: "protected", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen})
 	payload := "preserve these acknowledged bytes"
-	writeIOBytes(t, a, writer.ID, []byte(payload))
+	writeCreatedFile(t, a, writer.ID, payload)
 	for _, disposition := range []uint32{fileOverwrite, fileSupersede} {
-		response := fileCreate(b.ctx, t, b.client, b.session, b.next, wire.CreateRequest{Name: "protected", DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: disposition})
-		b.next++
+		response := b.create(t, wire.CreateRequest{Name: "protected", DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: disposition})
 		requireIOStatus(t, response, smb.StatusSharingViolation)
 		if _, err := wire.DecodeErrorResponse(response); err != nil {
 			t.Fatal(err)
 		}
 		// Check the existing bytes before proving the rejected CREATE left
 		// the connection usable. B reads through its own CREATE-created open.
-		readIOBytes(t, b, reader.ID, payload)
+		readCreatedFile(t, b, reader.ID, payload)
 		echoIOClient(t, b)
 	}
 	closeIOFile(t, a, writer.ID)
@@ -103,7 +79,7 @@ func TestTwoConnectionTruncateBeforeStaleFlush(t *testing.T) {
 	fixture, a, b := twoIOClients(t, nil)
 	writer := createIOFile(t, a, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition})
 	old := "old buffered bytes that must never reappear after truncation"
-	writeIOBytes(t, a, writer.ID, []byte(old))
+	writeCreatedFile(t, a, writer.ID, old)
 	if fixture.store.puts.Load() != 0 {
 		t.Fatal("test needs buffered writes before the destructive CREATE")
 	}
@@ -113,7 +89,7 @@ func TestTwoConnectionTruncateBeforeStaleFlush(t *testing.T) {
 	}
 	requireIOStatus(t, b.read(t, wire.ReadRequest{ID: replacement.ID, Length: 1}, 1), smb.StatusEndOfFile)
 	payload := "new"
-	writeIOBytes(t, b, replacement.ID, []byte(payload))
+	writeCreatedFile(t, b, replacement.ID, payload)
 	response := ioRoundTrip(a.ctx, t, a.client, flushMessage(t, a.session, a.next, writer.ID, 0))
 	a.next++
 	requireIOStatus(t, response, smb.StatusSuccess)
@@ -129,7 +105,7 @@ func TestTwoConnectionTruncateBeforeStaleFlush(t *testing.T) {
 		t.Fatalf("stale-handle FLUSH restored length %d, want %d", info.Size(), len(payload))
 	}
 	assertCommittedFlushData(t, fixture, []byte(payload))
-	readIOBytes(t, b, replacement.ID, payload)
+	readCreatedFile(t, b, replacement.ID, payload)
 	closeIOFile(t, a, writer.ID)
 	closeIOFile(t, b, replacement.ID)
 }
@@ -153,17 +129,17 @@ func TestTwoConnectionReadAndFlush(t *testing.T) {
 			writer := createIOFile(t, a, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition})
 			reader := createIOFile(t, b, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen})
 			payload := "acknowledged bytes from connection A"
-			writeIOBytes(t, a, writer.ID, []byte(payload))
+			writeCreatedFile(t, a, writer.ID, payload)
 
 			// Knowing A's FileId does not give B access to A's open.
 			requireIOStatus(t, b.read(t, wire.ReadRequest{ID: writer.ID, Length: 1}, 1), smb.StatusFileClosed)
 			echoIOClient(t, b)
-			readIOBytes(t, b, reader.ID, payload)
+			readCreatedFile(t, b, reader.ID, payload)
 			// READ can upload the shared writer. Complete another write so the
 			// FLUSH has work that B has not already committed by reading.
 			putsBefore := fixture.store.puts.Load()
 			payload = "A completed another write before B's FLUSH"
-			writeIOBytes(t, a, writer.ID, []byte(payload))
+			writeCreatedFile(t, a, writer.ID, payload)
 
 			message := flushMessage(t, b.session, b.next, reader.ID, test.reserved)
 			b.next++
@@ -186,7 +162,7 @@ func TestTwoConnectionReadAndFlush(t *testing.T) {
 			assertCommittedFlushData(t, fixture, []byte(payload))
 			closeIOFile(t, a, writer.ID)
 			// Closing A must not release B's separate storage reference.
-			readIOBytes(t, b, reader.ID, payload)
+			readCreatedFile(t, b, reader.ID, payload)
 			closeIOFile(t, b, reader.ID)
 		})
 	}
