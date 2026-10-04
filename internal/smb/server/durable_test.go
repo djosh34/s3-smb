@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"testing"
 	"time"
 
@@ -11,52 +10,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func durableCreateOptions() smbtest.CreateOptions {
-	return smbtest.CreateOptions{
-		Request: wire.CreateRequest{Name: "durable", DesiredAccess: 0xc0000000, ShareAccess: 7, Disposition: fileOpenIf, Options: fileNonDirectoryFile},
-		Lease:   &wire.LeaseContext{Version: 2, Key: [16]byte{4}, State: smb.LeaseRead | smb.LeaseWrite | smb.LeaseHandle},
-		Durable: &wire.DurableRequest{CreateGUID: [16]byte{5}},
-	}
-}
-
-func durableExchange(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, id uint64, options smbtest.CreateOptions) wire.Message {
-	t.Helper()
-	header := wire.Header{MessageID: id, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 16}
-	if err := client.SendCreate(ctx, header, options); err != nil {
-		t.Fatal(err)
-	}
-	for {
-		response, err := client.Receive(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if len(response.Messages) != 1 || response.Messages[0].Header.MessageID != id {
-			t.Fatalf("unexpected CREATE reply: %+v", response.Messages)
-		}
-		if response.Messages[0].Header.Status != smb.StatusPending {
-			return response.Messages[0]
-		}
-	}
-}
-
-func durableResult(t *testing.T, message wire.Message) smbtest.CreateResult {
-	t.Helper()
-	result, err := smbtest.DecodeCreateReply(message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return result
-}
-
-func durableOpen(t *testing.T, server *Server, session smbtest.Session, id wire.FileID) state.Open {
-	t.Helper()
-	open, status := server.options.State.Find(state.FileID(id), state.Binding{SessionID: session.SessionID, TreeID: session.TreeID})
-	if status != smb.StatusSuccess {
-		t.Fatalf("find durable open = %#x", status)
-	}
-	return open
-}
 
 func TestDurableTimeoutsAndPersistence(t *testing.T) {
 	for _, milliseconds := range []uint32{0, 1, 119999, 120000, 300000, 959999, 960000, 960001, ^uint32(0)} {

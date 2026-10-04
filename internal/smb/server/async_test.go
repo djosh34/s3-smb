@@ -1,55 +1,12 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func asyncMessage(t *testing.T, command wire.Command, id uint64) wire.Message {
-	t.Helper()
-	var body []byte
-	var err error
-	switch uint16(command) {
-	case uint16(wire.Create):
-		body, err = wire.EncodeCreateRequest(wire.CreateRequest{Name: "file"})
-	case uint16(wire.Read):
-		body, err = wire.EncodeReadRequest(wire.ReadRequest{Length: 16})
-	case uint16(wire.Write):
-		body, err = wire.EncodeWriteRequest(wire.WriteRequest{Data: []byte("data")})
-	case uint16(wire.Flush):
-		body, err = wire.EncodeFlushRequest(wire.FlushRequest{})
-	default:
-		t.Fatalf("not an async command: %d", command)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire.Message{Header: wire.Header{Command: command, MessageID: id, SessionID: 77, TreeID: 12, CreditCharge: 1, Credit: 16}, Body: body}
-}
-
-func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr error) (*Server, chan struct{}) {
-	t.Helper()
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	// Install controlled work at the handler boundary, before ServeConn starts.
-	// corePipeClient supplies identity; these tests do not exercise login.
-	server.handlers[command] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
-		select {
-		case <-release:
-			return result, resultErr
-		case <-ctx.Done():
-			return reply{}, ctx.Err()
-		}
-	}
-	return server, release
-}
 
 // Regression for #104: the async error keeps all three request identities.
 func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
@@ -102,20 +59,5 @@ func TestAsyncBackendErrorGrantsNoFinalCredits(t *testing.T) {
 				t.Fatalf("async final credit/status: %+v", header)
 			}
 		})
-	}
-}
-
-func commandName(command wire.Command) string {
-	switch uint16(command) {
-	case uint16(wire.Create):
-		return "create"
-	case uint16(wire.Read):
-		return "read"
-	case uint16(wire.Write):
-		return "write"
-	case uint16(wire.Flush):
-		return "flush"
-	default:
-		return "unknown"
 	}
 }

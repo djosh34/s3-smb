@@ -1,28 +1,13 @@
 package server
 
 import (
-	"context"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-const objectIDReadAttributes uint32 = 0x00000080 // FILE_READ_ATTRIBUTES.
-
-func objectIDOpenCases() []struct {
-	name    string
-	request wire.CreateRequest
-} {
-	return []struct {
-		name    string
-		request wire.CreateRequest
-	}{
-		{name: "file", request: wire.CreateRequest{Name: "object-id-test", DesiredAccess: objectIDReadAttributes, ShareAccess: 7, Disposition: fileOpenIf, Options: fileNonDirectoryFile}},
-		{name: "root", request: wire.CreateRequest{Name: "", DesiredAccess: objectIDReadAttributes, ShareAccess: 7, Disposition: fileOpen, Options: fileDirectoryFile}},
-	}
-}
+// FILE_READ_ATTRIBUTES.
 
 func TestObjectIDIOCTLRefusal(t *testing.T) {
 	for _, test := range objectIDOpenCases() {
@@ -93,16 +78,5 @@ func TestQFidOptionalCreateContext(t *testing.T) {
 				t.Fatalf("CLOSE status = %#x", closed.Header.Status)
 			}
 		})
-	}
-}
-
-func objectIDAssertEcho(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, id uint64) {
-	t.Helper()
-	response := exchange(ctx, t, client, sessionEcho(t, session, id))[0]
-	if response.Header.Status != smb.StatusSuccess {
-		t.Fatalf("ECHO status = %#x", response.Header.Status)
-	}
-	if _, err := wire.DecodeEchoResponse(response); err != nil {
-		t.Fatal(err)
 	}
 }

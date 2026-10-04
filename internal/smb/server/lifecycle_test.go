@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -120,36 +119,6 @@ func TestServeAndShutdownOwnListenerAndConnections(t *testing.T) {
 	if err := remote.Close(); err != nil {
 		t.Fatal(err)
 	}
-}
-
-type cleanupHandle struct{ object smb.ObjectKey }
-
-func (handle cleanupHandle) Key() smb.ObjectKey { return handle.object }
-
-// This records shutdown calls, not filesystem coherence or file operations.
-type cleanupStorage struct {
-	smb.Storage
-	closeErr  error
-	removeErr error
-	closed    atomic.Int32
-	removed   atomic.Int32
-}
-
-func (storage *cleanupStorage) Close(context.Context, smb.Handle) error {
-	storage.closed.Add(1)
-	return storage.closeErr
-}
-func (*cleanupStorage) PathOf(context.Context, smb.Inode) (string, error) { return "renamed", nil }
-func (*cleanupStorage) Lookup(context.Context, string) (smb.Resolved, error) {
-	return smb.Resolved{Exists: true, Object: smb.ObjectKey{Inode: 2}, Name: smb.Name{Parent: 1, Base: "renamed"}}, nil
-}
-
-func (storage *cleanupStorage) Remove(_ context.Context, name smb.Name, inode smb.Inode) error {
-	if name.Base != "renamed" || inode != 2 {
-		return errors.New("shutdown used a stale deletion name")
-	}
-	storage.removed.Add(1)
-	return storage.removeErr
 }
 
 func TestShutdownClosesOpensAppliesDeletionAndReturnsAllErrors(t *testing.T) {

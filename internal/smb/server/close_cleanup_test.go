@@ -11,30 +11,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-type closingStorage struct {
-	pathOf func(context.Context, smb.Inode) (string, error)
-	lookup func(context.Context, string) (smb.Resolved, error)
-	cleanupStorage
-}
-
-func (storage *closingStorage) PathOf(ctx context.Context, inode smb.Inode) (string, error) {
-	return storage.pathOf(ctx, inode)
-}
-
-func (storage *closingStorage) Lookup(ctx context.Context, path string) (smb.Resolved, error) {
-	return storage.lookup(ctx, path)
-}
-
-type closeNamespaceFailure struct {
-	pathErr    error
-	lookupErr  error
-	wantErr    error
-	name       string
-	failAt     int
-	mismatch   bool
-	persistent bool
-}
-
 func TestCloseOpenNamespaceFailuresReleaseResources(t *testing.T) {
 	for _, test := range []closeNamespaceFailure{
 		{name: "identity discovery race", pathErr: smb.ErrIdentityChanged},
@@ -90,46 +66,6 @@ func TestCloseOpenNamespaceFailuresReleaseResources(t *testing.T) {
 			}
 		})
 	}
-}
-
-func injectCloseNamespaceFailure(t *testing.T, server *Server, storage *closingStorage, test closeNamespaceFailure) {
-	t.Helper()
-	pathCalls, lookupCalls := 0, 0
-	storage.pathOf = func(ctx context.Context, inode smb.Inode) (string, error) {
-		pathCalls++
-		if len(server.parents) != 0 {
-			t.Error("discovery retried with a parent guard held")
-		}
-		if test.pathErr != nil && (pathCalls == 1 || test.persistent) {
-			return "", test.pathErr
-		}
-		return storage.cleanupStorage.PathOf(ctx, inode)
-	}
-	storage.lookup = func(ctx context.Context, path string) (smb.Resolved, error) {
-		lookupCalls++
-		if test.lookupErr != nil && (lookupCalls == test.failAt || test.persistent && lookupCalls >= test.failAt) {
-			return smb.Resolved{}, test.lookupErr
-		}
-		resolved, err := storage.cleanupStorage.Lookup(ctx, path)
-		if test.mismatch && lookupCalls == test.failAt {
-			resolved.Object.Inode++
-		}
-		return resolved, err
-	}
-}
-
-func reserveCleanupOpen(t *testing.T, server *Server, deleteOnClose bool) state.Open {
-	t.Helper()
-	object := smb.ObjectKey{Inode: 2}
-	token, status := server.options.State.Reserve(state.OpenRequest{Object: object, Binding: state.Binding{SessionID: 1, TreeID: 2}, GrantedAccess: 0x10003, Sharing: 7})
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	open, status := server.options.State.Commit(token, state.Grant{Handle: cleanupHandle{object: object}, DeleteOnClose: deleteOnClose, DeleteName: smb.Name{Parent: 1, Base: "renamed"}})
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	return open
 }
 
 func TestCleanupCancellationDuringDrainStillDeletes(t *testing.T) {

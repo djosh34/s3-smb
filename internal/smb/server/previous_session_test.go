@@ -68,26 +68,6 @@ func TestPreviousSessionIDReplacesLiveSessionAndDetachesDurability(t *testing.T)
 	}
 }
 
-func assertRawStatus(ctx context.Context, t *testing.T, client *smbtest.Client, message wire.Message, status smb.Status) {
-	t.Helper()
-	payload, err := wire.Join([]wire.Message{message})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sendPayload(ctx, t, client, payload)
-	response, err := client.ReceiveRaw(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	members, err := wire.Split(response)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(members) != 1 || members[0].Header.Status != status {
-		t.Fatalf("raw status: %+v, want %#x", members, status)
-	}
-}
-
 func TestPreviousSessionIDCanReplaceSessionOnSameConnection(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {

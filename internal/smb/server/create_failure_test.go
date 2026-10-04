@@ -1,64 +1,12 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
-
-const (
-	createFailOpen int32 = iota + 1
-	createFailTruncate
-	createFailGetAttr
-	createFailClose
-)
-
-type createFaultStorage struct {
-	smb.Storage
-	failure       atomic.Int32
-	opens, closes atomic.Int64
-}
-
-func (storage *createFaultStorage) Open(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error) {
-	handle, err := storage.Storage.Open(ctx, object, access)
-	if err != nil {
-		return handle, err
-	}
-	storage.opens.Add(1)
-	if storage.failure.Load() == createFailOpen {
-		// Even a reference returned with an error must be released.
-		return handle, smb.ErrIO
-	}
-	return handle, nil
-}
-
-func (storage *createFaultStorage) Close(ctx context.Context, handle smb.Handle) error {
-	storage.closes.Add(1)
-	err := storage.Storage.Close(ctx, handle)
-	if storage.failure.Load() == createFailClose {
-		return errors.Join(err, smb.ErrIO)
-	}
-	return err
-}
-
-func (storage *createFaultStorage) Truncate(ctx context.Context, handle smb.Handle, size uint64) error {
-	if storage.failure.Load() == createFailTruncate {
-		return smb.ErrIO
-	}
-	return storage.Storage.Truncate(ctx, handle, size)
-}
-
-func (storage *createFaultStorage) GetAttr(ctx context.Context, object smb.ObjectKey) (smb.Attr, error) {
-	if storage.failure.Load() == createFailGetAttr {
-		return smb.Attr{}, smb.ErrIO
-	}
-	return storage.Storage.GetAttr(ctx, object)
-}
 
 func TestCreateFailureAbortsAndClosesReferences(t *testing.T) {
 	for _, failure := range []int32{createFailOpen, createFailTruncate, createFailGetAttr} {

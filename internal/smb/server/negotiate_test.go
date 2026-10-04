@@ -13,30 +13,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func negotiateMessage(t testing.TB, credit uint16) wire.Message {
-	t.Helper()
-	preauth, err := wire.EncodePreauthContext(wire.PreauthContext{Hashes: []uint16{smb.PreauthSHA512}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	encryption, err := wire.EncodeEncryptionContext(wire.EncryptionContext{Ciphers: []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	signing, err := wire.EncodeSigningContext(wire.SigningContext{Algorithms: []uint16{smb.SigningCMAC, smb.SigningGMAC}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := wire.EncodeNegotiateRequest(wire.NegotiateRequest{
-		Dialects: []uint16{smb.Dialect311}, SecurityMode: smb.AdvertisedSecurityMode,
-		Capabilities: smb.CapabilityLargeMTU, Contexts: []wire.NegotiateContext{preauth, encryption, signing},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire.Message{Header: wire.Header{Command: wire.Negotiate, Credit: credit}, Body: body}
-}
-
 func TestNegotiateSelects311AndOfferedAlgorithms(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {

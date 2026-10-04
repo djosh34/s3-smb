@@ -135,15 +135,6 @@ func TestLookupLockedReturnsSelectionUnderGuard(t *testing.T) {
 	}
 }
 
-type lookupStorage struct {
-	lookup func(context.Context, string) (smb.Resolved, error)
-	cleanupStorage
-}
-
-func (storage *lookupStorage) Lookup(ctx context.Context, path string) (smb.Resolved, error) {
-	return storage.lookup(ctx, path)
-}
-
 func TestLookupLockedRetriesChangedParent(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {
@@ -226,25 +217,6 @@ func TestLookupLockedCancellationWhileWaitingForParent(t *testing.T) {
 	}
 }
 
-func waitParentUsers(t *testing.T, server *Server, parent smb.Inode, count uint64) {
-	t.Helper()
-	deadline := time.After(5 * time.Second)
-	for {
-		server.namespaceMu.Lock()
-		guard := server.parents[parent]
-		ready := guard != nil && guard.refs == count
-		server.namespaceMu.Unlock()
-		if ready {
-			return
-		}
-		select {
-		case <-deadline:
-			t.Fatal("parent users did not arrive")
-		case <-time.After(time.Millisecond):
-		}
-	}
-}
-
 func TestCloseOpenDoesNotDrainWhileHoldingParent(t *testing.T) {
 	options := testOptions(t)
 	selected := make(chan struct{})
@@ -295,18 +267,6 @@ func TestCloseOpenDoesNotDrainWhileHoldingParent(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("close drained with parent guard held")
 	}
-}
-
-type removingStorage struct {
-	entered chan struct{}
-	proceed chan struct{}
-	cleanupStorage
-}
-
-func (storage *removingStorage) Remove(ctx context.Context, name smb.Name, inode smb.Inode) error {
-	close(storage.entered)
-	<-storage.proceed
-	return storage.cleanupStorage.Remove(ctx, name, inode)
 }
 
 func TestCleanupDeletionBlocksSameParentLookup(t *testing.T) {

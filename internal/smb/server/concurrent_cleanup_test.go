@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -16,63 +15,6 @@ func TestStopRequestsCancelsButDoesNotWaitForOtherCleanups(t *testing.T) {
 			name = "pending"
 		}
 		t.Run(name, func(t *testing.T) { checkCleanupWaits(t, pending) })
-	}
-}
-
-func checkCleanupWaits(t *testing.T, pending bool) {
-	t.Helper()
-	connection := &connection{pending: make(map[uint64]*pendingRequest), inflight: make(map[*sessionRequest]struct{})}
-	contexts := make([]context.Context, 0, 3)
-	cleanupDone := make([]chan struct{}, 0, 2)
-	var fileDone chan struct{}
-	for index, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect, wire.Read} {
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-		contexts = append(contexts, ctx)
-		done := make(chan struct{})
-		if command == wire.Read {
-			fileDone = done
-			go func() { <-ctx.Done(); close(done) }()
-		} else {
-			cleanupDone = append(cleanupDone, done)
-			defer close(done)
-		}
-		id := uint64(index + 1)
-		header := wire.Header{Command: command, MessageID: id, SessionID: 1, TreeID: 1}
-		if pending {
-			connection.pending[id] = &pendingRequest{header: header, work: &work{done: done, cancel: cancel}}
-		} else {
-			connection.inflight[&sessionRequest{header: header, cancel: cancel, done: done}] = struct{}{}
-		}
-	}
-	finished := make(chan struct{}, 2)
-	go func() { connection.stopRequests(1, 0, 1); finished <- struct{}{} }()
-	go func() { connection.stopRequests(1, 1, 2); finished <- struct{}{} }()
-	ctx, cancel := context.WithTimeout(t.Context(), time.Second)
-	defer cancel()
-	for range 2 {
-		select {
-		case <-finished:
-		case <-ctx.Done():
-			t.Fatal("cleanup requests waited on each other")
-		}
-	}
-	for _, ctx := range contexts {
-		if ctx.Err() == nil {
-			t.Fatal("cleanup did not cancel matching work")
-		}
-	}
-	select {
-	case <-fileDone:
-	default:
-		t.Fatal("file work was not drained")
-	}
-	for _, done := range cleanupDone {
-		select {
-		case <-done:
-			t.Fatal("test did not keep cleanup work pending")
-		default:
-		}
 	}
 }
 

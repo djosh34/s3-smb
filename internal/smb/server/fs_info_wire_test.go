@@ -2,59 +2,12 @@ package server
 
 import (
 	"bytes"
-	"context"
-	"encoding/binary"
-	"net"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-// newQueryInfoFixtureWithStorage keeps real object storage while allowing
-// configured capacity and a fault injected at the StatFS seam.
-func newQueryInfoFixtureWithStorage(t *testing.T, storage smb.Storage) *queryInfoFixture {
-	t.Helper()
-	options := testOptions(t)
-	options.Storage = storage
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-	local, remote := net.Pipe()
-	client, err := smbtest.NewClient(remote)
-	if err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan error, 1)
-	go func() { done <- server.ServeConn(ctx, local) }()
-	t.Cleanup(func() {
-		if closeErr := client.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-		cancel()
-		select {
-		case serveErr := <-done:
-			if serveErr != nil && ctx.Err() == nil {
-				t.Error(serveErr)
-			}
-		case <-time.After(5 * time.Second):
-			t.Error("ServeConn did not stop")
-		}
-		if shutdownErr := server.Shutdown(context.WithoutCancel(ctx)); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
-	})
-	session, err := client.Login(ctx, smbtest.LoginOptions{Share: options.ShareName, Account: options.Account, Cipher: smb.CipherAES128GCM, Signing: smb.SigningGMAC, ClientGUID: [16]byte{2}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &queryInfoFixture{storage: storage, server: server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
-}
 
 func TestFilesystemQueriesOnWire(t *testing.T) {
 	for _, capacity := range []uint64{0, (3 << 30) + 1023} {
@@ -96,26 +49,6 @@ func TestFilesystemQueriesOnWire(t *testing.T) {
 			}
 		}
 		f.echo(t)
-	}
-}
-
-func checkFilesystemSpace(t *testing.T, data []byte, class wire.FilesystemInfoClass, space smb.Space) {
-	t.Helper()
-	if got := binary.LittleEndian.Uint64(data[0:8]); got != space.Capacity/4096 {
-		t.Fatalf("class %d total units = %d, want %d", class, got, space.Capacity/4096)
-	}
-	if got := binary.LittleEndian.Uint64(data[8:16]); got != space.Available/4096 {
-		t.Fatalf("class %d caller units = %d, want %d", class, got, space.Available/4096)
-	}
-	sectorOffset := 16
-	if class == wire.ClassFilesystemFullSize {
-		if got := binary.LittleEndian.Uint64(data[16:24]); got != space.Free/4096 {
-			t.Fatalf("actual available at offset 16 = %d, want %d", got, space.Free/4096)
-		}
-		sectorOffset = 24
-	}
-	if len(data) != sectorOffset+8 || binary.LittleEndian.Uint32(data[sectorOffset:sectorOffset+4]) != 8 || binary.LittleEndian.Uint32(data[sectorOffset+4:sectorOffset+8]) != 512 {
-		t.Fatalf("class %d allocation geometry = %x", class, data)
 	}
 }
 

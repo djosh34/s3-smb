@@ -9,46 +9,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
-type expiryNotifications struct {
-	*cleanupStorage
-	closedHandles chan smb.Handle
-}
-
-func (storage *expiryNotifications) Close(ctx context.Context, handle smb.Handle) error {
-	err := storage.cleanupStorage.Close(ctx, handle)
-	storage.closedHandles <- handle
-	return err
-}
-
-func fakeExpiryTicks(t *testing.T, server *Server) chan time.Time {
-	t.Helper()
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	server.scavengerStop = make(chan struct{})
-	server.scavengerDone = make(chan struct{})
-	ticks := make(chan time.Time)
-	go server.runScavenger(context.WithoutCancel(t.Context()), ticks)
-	return ticks
-}
-
-func sendExpiryTick(t *testing.T, ticks chan<- time.Time) {
-	t.Helper()
-	select {
-	case ticks <- time.Time{}:
-	case <-time.After(3 * time.Second):
-		t.Fatal("scavenger did not take a tick")
-	}
-}
-
-func waitExpiredHandle(t *testing.T, storage *expiryNotifications) {
-	t.Helper()
-	select {
-	case <-storage.closedHandles:
-	case <-time.After(3 * time.Second):
-		t.Fatal("scavenger did not close the handle")
-	}
-}
-
 func TestScavengerKeepsRunningAfterCleanupErrors(t *testing.T) {
 	storage := &expiryNotifications{cleanupStorage: &cleanupStorage{closeErr: smb.ErrIO}, closedHandles: make(chan smb.Handle, 3)}
 	server, clock := expiryServer(t, storage)

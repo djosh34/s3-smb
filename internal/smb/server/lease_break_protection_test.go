@@ -65,20 +65,3 @@ func TestLeaseBreakNegotiatedGCMDoesNotRequireEncryption(t *testing.T) {
 		})
 	}
 }
-
-func checkPlaintextBreak(t *testing.T, payload []byte) wire.LeaseBreakNotification {
-	t.Helper()
-	messages, err := wire.Split(payload)
-	if err != nil || len(messages) != 1 {
-		t.Fatalf("notification frame: %+v, %v", messages, err)
-	}
-	header := messages[0].Header
-	if header.Command != wire.OplockBreak || header.MessageID != ^uint64(0) || header.SessionID != 0 || header.TreeID != 0 || header.Credit != 0 || header.CreditCharge != 0 || header.Flags != wire.FlagResponse || header.Signature != [16]byte{} {
-		t.Fatalf("unsolicited header: %+v", header)
-	}
-	notification, err := wire.DecodeLeaseBreakNotification(messages[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	return notification
-}

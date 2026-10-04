@@ -12,13 +12,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func openRequestContext(server *Server, open state.Open) RequestContext {
-	return RequestContext{
-		server: server, Storage: server.options.Storage, Opens: server.options.State,
-		Session: Session{SessionID: open.Binding.SessionID}, Tree: Tree{TreeID: open.Binding.TreeID},
-	}
-}
-
 func TestUseOpenValidatesIdentity(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {
@@ -201,17 +194,5 @@ func TestSessionCleanupWaitsForOpenReference(t *testing.T) {
 				t.Fatal(ctx.Err())
 			}
 		})
-	}
-}
-
-func assertCleanupWaiting(t *testing.T, done <-chan error, storage *cleanupStorage) {
-	t.Helper()
-	select {
-	case err := <-done:
-		t.Fatalf("cleanup finished with active references: %v", err)
-	case <-time.After(10 * time.Millisecond):
-	}
-	if storage.closed.Load() != 0 {
-		t.Fatal("storage handle closed with active references")
 	}
 }

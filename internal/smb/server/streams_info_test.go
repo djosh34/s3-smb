@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"fmt"
-	"maps"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -38,61 +37,6 @@ func TestIssue97SelectedStreamInformation(t *testing.T) {
 			assertStreamLength(t, c.query(t, base, wire.ClassFileStandard), wire.ClassFileStandard, uint64(baseSize))
 			c.close(t, base)
 		})
-	}
-}
-
-func assertStreamList(t *testing.T, data []byte, want map[string]uint64) {
-	t.Helper()
-	listed, err := wire.DecodeFileStreamInformation(data)
-	if err != nil {
-		t.Fatal(err)
-	}
-	want = maps.Clone(want)
-	if len(listed.Entries) != len(want) {
-		t.Fatalf("streams: %+v", listed.Entries)
-	}
-	for _, entry := range listed.Entries {
-		size, exists := want[entry.Name]
-		if !exists || size != entry.Size || entry.AllocationSize < size {
-			t.Fatalf("unexpected stream: %+v", entry)
-		}
-		delete(want, entry.Name)
-	}
-	if len(want) != 0 {
-		t.Fatalf("missing streams: %v", want)
-	}
-}
-
-func assertStreamLength(t *testing.T, data []byte, class wire.FileInfoClass, want uint64) {
-	t.Helper()
-	var size, allocation uint64
-	switch uint8(class) {
-	case uint8(wire.ClassFileStandard):
-		info, err := wire.DecodeFileStandardInformation(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		size, allocation = info.EndOfFile, info.AllocationSize
-		if info.Directory {
-			t.Fatal("stream reported as directory")
-		}
-	case uint8(wire.ClassFileAll):
-		info, err := wire.DecodeFileAllInformation(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		size, allocation = info.Standard.EndOfFile, info.Standard.AllocationSize
-	case uint8(wire.ClassFileNetworkOpen):
-		info, err := wire.DecodeFileNetworkOpenInformation(data)
-		if err != nil {
-			t.Fatal(err)
-		}
-		size, allocation = info.EndOfFile, info.AllocationSize
-	default:
-		t.Fatalf("unexpected class %d", class)
-	}
-	if size != want || allocation < size {
-		t.Fatalf("class %d: EOF %d allocation %d, want EOF %d", class, size, allocation, want)
 	}
 }
 

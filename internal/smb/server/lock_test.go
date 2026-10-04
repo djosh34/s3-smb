@@ -1,81 +1,14 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func lockServer(t *testing.T) *Server {
-	t.Helper()
-	options := testOptions(t)
-	options.Storage = smbtest.NewStorage(t)
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return server
-}
-
-func insertLockOpen(t *testing.T, server *Server, session smbtest.Session, path string) state.Open {
-	t.Helper()
-	return insertIOOpen(t, server, session, path, fileReadData|fileWriteData)
-}
-
-func createLockOpen(ctx context.Context, t *testing.T, server *Server, client *smbtest.Client, session smbtest.Session, id uint64, create wire.CreateRequest) state.Open {
-	t.Helper()
-	response := createdFile(t, fileCreate(ctx, t, client, session, id, create))
-	open, status := server.options.State.Find(state.FileID(response.ID), state.Binding{SessionID: session.SessionID, TreeID: session.TreeID})
-	if status != smb.StatusSuccess {
-		t.Fatalf("CREATE open lookup: %#x", status)
-	}
-	return open
-}
-
-func lockMessage(t *testing.T, session smbtest.Session, messageID uint64, id state.FileID, elements ...wire.LockElement) wire.Message {
-	t.Helper()
-	body, err := wire.EncodeLockRequest(wire.LockRequest{ID: wire.FileID(id), Elements: elements})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire.Message{Header: wire.Header{Command: wire.Lock, MessageID: messageID, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 16}, Body: body}
-}
-
-func lockExchange(ctx context.Context, t *testing.T, client *smbtest.Client, want []smb.Status, messages ...wire.Message) {
-	t.Helper()
-	bounded, cancel := context.WithTimeout(ctx, time.Second)
-	defer cancel()
-	responses := exchange(bounded, t, client, messages...)
-	if len(responses) != len(want) {
-		t.Fatalf("got %d replies, want %d", len(responses), len(want))
-	}
-	if len(messages) != len(want) {
-		t.Fatal("reply expectations do not match requests")
-	}
-	for index := 0; index < len(responses) && index < len(want) && index < len(messages); index++ {
-		response := responses[index]
-		status := want[index]
-		if response.Header.Status != status || response.Header.Flags&wire.FlagAsync != 0 || response.Header.MessageID != messages[index].Header.MessageID {
-			t.Fatalf("reply %d: %+v, want status %#x and a synchronous reply", index, response.Header, status)
-		}
-		if status == smb.StatusSuccess && response.Header.Command == wire.Lock {
-			if _, err := wire.DecodeLockResponse(response); err != nil {
-				t.Fatal(err)
-			}
-		} else if status != smb.StatusSuccess {
-			if _, err := wire.DecodeErrorResponse(response); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-}
 
 func TestLockRejectsDirectoryWithoutMutation(t *testing.T) {
 	server := lockServer(t)

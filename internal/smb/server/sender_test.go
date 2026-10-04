@@ -1,86 +1,11 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"io"
-	"net"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 )
-
-type controlledWrite struct {
-	release chan error
-}
-
-type controlledConn struct {
-	net.Conn
-	writes chan controlledWrite
-	count  atomic.Int32
-}
-
-func (conn *controlledConn) Write(data []byte) (int, error) {
-	conn.count.Add(1)
-	call := controlledWrite{release: make(chan error, 1)}
-	conn.writes <- call
-	err := <-call.release
-	if err == nil {
-		return conn.Conn.Write(data)
-	}
-	n, writeErr := conn.Conn.Write(data[:5])
-	return n, errors.Join(err, writeErr)
-}
-
-func senderPipe(t *testing.T) (*sender, *controlledConn, *smbtest.Client, context.Context) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-	local, remote := net.Pipe()
-	conn := &controlledConn{Conn: local, writes: make(chan controlledWrite, 3)}
-	client, err := smbtest.NewClient(remote)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sender := newSender(conn)
-	go sender.run(ctx, conn.Close)
-	t.Cleanup(func() {
-		cancel()
-		if err := client.Close(); err != nil {
-			t.Error(err)
-		}
-		if err := conn.Close(); err != nil {
-			t.Error(err)
-		}
-		select {
-		case <-sender.done:
-		case <-time.After(3 * time.Second):
-			t.Error("sender did not stop")
-		}
-	})
-	return sender, conn, client, ctx
-}
-
-func waitWrite(ctx context.Context, t *testing.T, conn *controlledConn) controlledWrite {
-	t.Helper()
-	select {
-	case call := <-conn.writes:
-		return call
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-		return controlledWrite{}
-	}
-}
-
-func noCompletion(t *testing.T, completion <-chan error) {
-	t.Helper()
-	select {
-	case err := <-completion:
-		t.Fatalf("premature sender completion: %v", err)
-	default:
-	}
-}
 
 // Regression for #129: a producer cannot observe another frame's completion.
 func TestEachProducerReceivesOwnCompletion(t *testing.T) {

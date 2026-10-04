@@ -9,42 +9,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func (fixture *reconnectFixture) lockSequence(t *testing.T, client *smbtest.Client, session *smbtest.Session, id wire.FileID, sequence uint32, elements ...wire.LockElement) smb.Status {
-	t.Helper()
-	body, err := wire.EncodeLockRequest(wire.LockRequest{ID: id, Sequence: sequence, Elements: elements})
-	if err != nil {
-		t.Fatal(err)
-	}
-	header := reconnectHeader(session, wire.Lock)
-	if sendErr := client.Send(fixture.ctx, []wire.Message{{Header: header, Body: body}}); sendErr != nil {
-		t.Fatal(sendErr)
-	}
-	response, err := client.Receive(fixture.ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Messages) != 1 {
-		t.Fatal("expected one LOCK reply")
-	}
-	message := response.Messages[0]
-	if message.Header.MessageID != header.MessageID || message.Header.Command != wire.Lock || message.Header.Status == smb.StatusPending || message.Header.Flags&wire.FlagAsync != 0 {
-		t.Fatalf("wrong or asynchronous LOCK reply: %+v", message.Header)
-	}
-	if message.Header.Status == smb.StatusSuccess {
-		if _, decodeErr := wire.DecodeLockResponse(message); decodeErr != nil {
-			t.Fatal(decodeErr)
-		}
-	}
-	return message.Header.Status
-}
-
-func requireLockSequenceStatus(t *testing.T, got, want smb.Status) {
-	t.Helper()
-	if got != want {
-		t.Fatalf("LOCK status = %#x, want %#x", got, want)
-	}
-}
-
 func TestDurableLockSequenceRawReconnect(t *testing.T) {
 	for _, protection := range []struct {
 		name   string

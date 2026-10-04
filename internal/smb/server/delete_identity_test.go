@@ -1,25 +1,10 @@
 package server
 
 import (
-	"context"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
-
-// A storage-side rename can change a name even while the server holds its
-// namespace guard. The real adapter must check the inode again inside Remove.
-type replacedDeletionStorage struct {
-	smb.Storage
-	replacement smb.RenameRequest
-}
-
-func (storage *replacedDeletionStorage) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error {
-	if err := storage.Rename(ctx, storage.replacement); err != nil {
-		return err
-	}
-	return storage.Storage.Remove(ctx, name, expect)
-}
 
 func TestDeleteOnCloseLeavesChangedIdentityAlone(t *testing.T) {
 	for _, stream := range []string{"", ":stream:$DATA"} {

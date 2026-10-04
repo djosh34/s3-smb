@@ -5,36 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-type logEntry struct {
-	message string
-	level   slog.Level
-}
-type recordedHandler struct {
-	entries []logEntry
-	mu      sync.Mutex
-}
-
-func (*recordedHandler) Enabled(context.Context, slog.Level) bool { return true }
-func (handler *recordedHandler) Handle(_ context.Context, record slog.Record) error {
-	handler.mu.Lock()
-	defer handler.mu.Unlock()
-	handler.entries = append(handler.entries, logEntry{message: record.Message, level: record.Level})
-	return nil
-}
-func (handler *recordedHandler) WithAttrs([]slog.Attr) slog.Handler { return handler }
-func (handler *recordedHandler) WithGroup(string) slog.Handler      { return handler }
-func (handler *recordedHandler) snapshot() []logEntry {
-	handler.mu.Lock()
-	defer handler.mu.Unlock()
-	return append([]logEntry(nil), handler.entries...)
-}
 
 func TestReceiveErrorLogsConnectionClosed(t *testing.T) {
 	options := testOptions(t)

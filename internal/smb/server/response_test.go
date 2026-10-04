@@ -38,35 +38,3 @@ func TestResponseBodiesFollowCommandStatus(t *testing.T) {
 		}
 	}
 }
-
-func responseBodyFixture(t *testing.T, command wire.Command) (wire.Message, []byte) {
-	t.Helper()
-	var request, response []byte
-	var requestErr, responseErr error
-	switch uint16(command) {
-	case uint16(wire.SessionSetup):
-		request, requestErr = wire.EncodeSessionSetupRequest(wire.SessionSetupRequest{})
-		response, responseErr = wire.EncodeSessionSetupResponse(wire.SessionSetupResponse{Token: []byte("challenge")})
-	case uint16(wire.QueryInfo):
-		request, requestErr = wire.EncodeQueryInfoRequest(wire.QueryInfoRequest{OutputLength: 16})
-		response, responseErr = wire.EncodeQueryInfoResponse(wire.QueryResponse{Data: []byte("partial")})
-	case uint16(wire.IOCTL):
-		request, requestErr = wire.EncodeIOCTLRequest(wire.IOCTLRequest{MaxOutput: 16})
-		response, responseErr = wire.EncodeIOCTLResponse(wire.IOCTLResponse{Output: []byte("partial")})
-	case uint16(wire.Read):
-		request, requestErr = wire.EncodeReadRequest(wire.ReadRequest{Length: 16})
-		response, responseErr = wire.EncodeReadResponse(wire.ReadResponse{Data: []byte("partial")})
-	case uint16(wire.Echo):
-		request, requestErr = wire.EncodeEchoRequest(wire.EmptyRequest{})
-		response, responseErr = wire.EncodeEchoResponse(wire.EmptyResponse{})
-	default:
-		t.Fatalf("no response fixture for command %d", command)
-	}
-	if requestErr != nil {
-		t.Fatal(requestErr)
-	}
-	if responseErr != nil {
-		t.Fatal(responseErr)
-	}
-	return wire.Message{Header: wire.Header{Command: command, MessageID: 1, CreditCharge: 1, Credit: 1}, Body: request}, response
-}

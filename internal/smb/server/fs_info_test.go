@@ -175,17 +175,6 @@ func TestFilesystemVolumeOutputLength(t *testing.T) {
 	}
 }
 
-// This wrapper injects only a StatFS fault. All object operations use the real adapter.
-type statFSFaultStorage struct {
-	smb.Storage
-	err error
-}
-
-func (storage statFSFaultStorage) StatFS(context.Context) (smb.Space, error) {
-	// Nonzero data on failure must never reach the reply.
-	return smb.Space{Capacity: 1 << 40, Free: 1 << 39, Available: 1 << 38}, storage.err
-}
-
 func TestFilesystemStatFSError(t *testing.T) {
 	storage := newFilesMetaStorage(t)
 	ctx, cancel := context.WithCancel(t.Context())

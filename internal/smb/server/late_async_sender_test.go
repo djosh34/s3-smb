@@ -7,83 +7,10 @@ import (
 	"log/slog"
 	"net"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-// The async producer reports send failures through the server logger.
-type asyncReplyErrors chan error
-
-func (asyncReplyErrors) Enabled(context.Context, slog.Level) bool { return true }
-func (logs asyncReplyErrors) Handle(_ context.Context, record slog.Record) error {
-	if record.Message != "async reply failed" {
-		return nil
-	}
-	replyErr := errors.New("async failure log lacks an error")
-	record.Attrs(func(attr slog.Attr) bool {
-		if attr.Key == "error" {
-			if err, ok := attr.Value.Any().(error); ok {
-				replyErr = err
-			}
-		}
-		return true
-	})
-	logs <- replyErr
-	return nil
-}
-func (logs asyncReplyErrors) WithAttrs([]slog.Attr) slog.Handler { return logs }
-func (logs asyncReplyErrors) WithGroup(string) slog.Handler      { return logs }
-
-func controlledAsyncExchange(ctx context.Context, t *testing.T, client *smbtest.Client, conn *controlledConn, message wire.Message) wire.Message {
-	t.Helper()
-	if err := client.Send(ctx, []wire.Message{message}); err != nil {
-		t.Fatal(err)
-	}
-	call := waitWrite(ctx, t, conn)
-	call.release <- nil
-	response, err := client.Receive(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Messages) != 1 {
-		t.Fatalf("controlled exchange returned %d replies", len(response.Messages))
-	}
-	return response.Messages[0]
-}
-
-// Hold the failing write until the async producer is waiting on its own queued
-// send. Queue observation is only a scheduling barrier; assertions use the
-// producer's error, transport bytes and ServeConn's return.
-func waitAsyncSendQueued(ctx context.Context, t *testing.T, server *Server) {
-	t.Helper()
-	server.mu.Lock()
-	var active *connection
-	for conn := range server.connections {
-		active = conn
-	}
-	server.mu.Unlock()
-	if active == nil {
-		t.Fatal("no active connection")
-	}
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
-	for {
-		active.sender.mu.Lock()
-		queued := len(active.sender.queue) > 0
-		active.sender.mu.Unlock()
-		if queued {
-			return
-		}
-		select {
-		case <-ticker.C:
-		case <-ctx.Done():
-			t.Fatal(ctx.Err())
-		}
-	}
-}
 
 func TestLateAsyncCompletionRacesPartialWriteFailure(t *testing.T) {
 	options := testOptions(t)

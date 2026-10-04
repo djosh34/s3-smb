@@ -12,19 +12,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func streamAsyncReply(t *testing.T, id uint64, status smb.Status) wire.Message {
-	t.Helper()
-	body, err := wire.EncodeErrorResponse(wire.ErrorResponse{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	credit := uint16(0)
-	if status == smb.StatusPending {
-		credit = 3
-	}
-	return wire.Message{Header: wire.Header{Command: wire.Read, MessageID: id, SessionID: 77, AsyncID: id + 10, Flags: wire.FlagResponse | wire.FlagAsync, Status: status, Credit: credit}, Body: body}
-}
-
 func TestStreamReadsInterimAndFinalBeforeNextRequest(t *testing.T) {
 	for _, status := range []smb.Status{smb.StatusSuccess, smb.StatusIODeviceError} {
 		t.Run(fmt.Sprintf("status_%08x", status), func(t *testing.T) {

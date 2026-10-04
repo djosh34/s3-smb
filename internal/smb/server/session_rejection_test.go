@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/asn1"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -35,29 +34,6 @@ func TestLoginRejectsWrongPasswordGuestAndMissingGCM(t *testing.T) {
 			}
 		})
 	}
-}
-
-func kerberosOffer(t *testing.T) []byte {
-	t.Helper()
-	sequence, err := asn1.Marshal(struct {
-		Mechs []asn1.ObjectIdentifier `asn1:"explicit,tag:0"`
-	}{Mechs: []asn1.ObjectIdentifier{{1, 2, 840, 113554, 1, 2, 2}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	choice, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassContextSpecific, Tag: 0, IsCompound: true, Bytes: sequence})
-	if err != nil {
-		t.Fatal(err)
-	}
-	oid, err := asn1.Marshal(asn1.ObjectIdentifier{1, 3, 6, 1, 5, 5, 2})
-	if err != nil {
-		t.Fatal(err)
-	}
-	token, err := asn1.Marshal(asn1.RawValue{Class: asn1.ClassApplication, Tag: 0, IsCompound: true, Bytes: append(oid, choice...)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return token
 }
 
 func TestKerberosAndSessionBindingAreRefusedWithoutClosing(t *testing.T) {

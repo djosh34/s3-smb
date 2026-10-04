@@ -3,45 +3,10 @@ package server
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"strings"
 	"testing"
-
-	"github.com/djosh34/s3-smb/internal/smb"
 )
-
-type filesMetaCleanupRecorder struct {
-	*testing.T
-	cleanups []func()
-	reported []string
-}
-
-func (test *filesMetaCleanupRecorder) Cleanup(cleanup func()) {
-	test.cleanups = append(test.cleanups, cleanup)
-}
-
-func (test *filesMetaCleanupRecorder) Error(args ...any) {
-	test.reported = append(test.reported, fmt.Sprint(args...))
-}
-
-func (test *filesMetaCleanupRecorder) finish() {
-	for len(test.cleanups) > 0 {
-		last := len(test.cleanups) - 1
-		cleanup := test.cleanups[last]
-		test.cleanups = test.cleanups[:last]
-		cleanup()
-	}
-}
-
-type filesMetaCloseFailure struct {
-	smb.Storage
-	err error
-}
-
-func (storage *filesMetaCloseFailure) Close(ctx context.Context, handle smb.Handle) error {
-	return errors.Join(storage.Storage.Close(ctx, handle), storage.err)
-}
 
 func TestFilesMetaClientReportsDisconnectCleanup(t *testing.T) {
 	for _, failure := range []error{

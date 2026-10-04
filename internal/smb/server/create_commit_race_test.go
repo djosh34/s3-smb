@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"runtime"
 	"sync"
@@ -12,30 +11,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-// Count actual adapter references: reselection must not repeat storage Open or
-// close a successfully committed handle as though it were a failed CREATE.
-type createCommitRaceStorage struct {
-	smb.Storage
-	opens  atomic.Uint64
-	closes atomic.Uint64
-}
-
-func (storage *createCommitRaceStorage) Open(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error) {
-	handle, err := storage.Storage.Open(ctx, object, access)
-	if err == nil {
-		storage.opens.Add(1)
-	}
-	return handle, err
-}
-
-func (storage *createCommitRaceStorage) Close(ctx context.Context, handle smb.Handle) error {
-	err := storage.Storage.Close(ctx, handle)
-	if err == nil {
-		storage.closes.Add(1)
-	}
-	return err
-}
 
 func TestConcurrentCreateAndMutationNeverExposeStaleGrantInvalidParameter(t *testing.T) {
 	options := testOptions(t)
@@ -119,29 +94,4 @@ func TestConcurrentCreateAndMutationNeverExposeStaleGrantInvalidParameter(t *tes
 		t.Fatalf("CREATE reselection repeated/leaked storage or lacked races: opens %d, closes %d, mutations %d", storage.opens.Load(), storage.closes.Load(), cycles.Load())
 	}
 	t.Logf("100 valid protected CREATEs raced %d real mutation gates; mode, epochs, effective-H responses and one Open/Close per request verified", cycles.Load())
-}
-
-func checkConcurrentCreateGrant(t *testing.T, lease *wire.LeaseContext, durable *wire.DurableReply, level uint8) {
-	t.Helper()
-	if lease == nil || lease.ParentKey != [16]byte{8} || lease.Duration != 0 {
-		t.Fatalf("invalid concurrent lease response: %+v", lease)
-	}
-	if lease.State == 0 {
-		if level != 0 || lease.Epoch != 7 || lease.Flags != leaseParentKeySet || durable != nil {
-			t.Fatalf("declined response advanced epoch/promised durability: %+v, %+v", lease, durable)
-		}
-		return
-	}
-	if lease.State != smb.LeaseRead|smb.LeaseHandle || level != leaseOplockLevel {
-		t.Fatalf("unsupported concurrent grant: %+v, level %#x", lease, level)
-	}
-	if lease.Flags == leaseParentKeySet|leaseBreakInProgress {
-		if lease.Epoch != 9 || durable != nil {
-			t.Fatalf("pending NONE target promised effective H: %+v, %+v", lease, durable)
-		}
-		return
-	}
-	if lease.Flags != leaseParentKeySet || lease.Epoch != 8 || durable != nil && durable.Timeout != 120000 {
-		t.Fatalf("acquisition changed shared epoch/timeout contract: %+v, %+v", lease, durable)
-	}
 }

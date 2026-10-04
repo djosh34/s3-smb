@@ -44,20 +44,6 @@ func TestSixtyFiveLoginAndLogoffCyclesReleaseSessionSlots(t *testing.T) {
 	}
 }
 
-func onlyConnection(t *testing.T, server *Server) *connection {
-	t.Helper()
-	server.mu.Lock()
-	defer server.mu.Unlock()
-	if len(server.connections) != 1 {
-		t.Fatal("expected one connection")
-	}
-	for owner := range server.connections {
-		return owner
-	}
-	t.Fatal("connection was not registered")
-	return nil
-}
-
 func TestLogoffDiscardsIncompleteAuthentication(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {

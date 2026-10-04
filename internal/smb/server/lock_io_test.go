@@ -1,56 +1,13 @@
 package server
 
 import (
-	"context"
 	"fmt"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func lockIO(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, id uint64, open state.Open, write bool, data string, want smb.Status) {
-	t.Helper()
-	if len(data) != 8 {
-		t.Fatal("lock I/O tests use eight-byte ranges")
-		return
-	}
-	command := wire.Read
-	var body []byte
-	var err error
-	if write {
-		command = wire.Write
-		body, err = wire.EncodeWriteRequest(wire.WriteRequest{ID: wire.FileID(open.ID), Data: []byte(data)})
-	} else {
-		body, err = wire.EncodeReadRequest(wire.ReadRequest{ID: wire.FileID(open.ID), Length: 8})
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := ioRoundTrip(ctx, t, client, ioMessage(session, id, command, body, 1))
-	if response.Header.Status != want {
-		t.Fatalf("command %d object %+v: status %#x, want %#x", command, open.Object, response.Header.Status, want)
-	}
-	if want != smb.StatusSuccess {
-		if _, err := wire.DecodeErrorResponse(response); err != nil {
-			t.Fatal(err)
-		}
-		return
-	}
-	if write {
-		written, err := wire.DecodeWriteResponse(response)
-		if err != nil || int(written.Count) != len(data) {
-			t.Fatalf("WRITE: %+v, %v", written, err)
-		}
-	} else {
-		read, err := wire.DecodeReadResponse(response)
-		if err != nil || string(read.Data) != data {
-			t.Fatalf("READ: %q, %v, want %q", read.Data, err, data)
-		}
-	}
-}
 
 func TestLockStreamAndBaseIOStaySeparate(t *testing.T) {
 	for _, heldStream := range []bool{false, true} {

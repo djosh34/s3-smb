@@ -2,123 +2,13 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
-	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-type setInfoFixture struct {
-	storage smb.Storage
-	client  *smbtest.Client
-	ctx     context.Context
-	open    state.Open
-	session smbtest.Session
-	nextID  uint64
-}
-
-func newSetInfoFixture(t *testing.T, access uint32) *setInfoFixture {
-	t.Helper()
-	return newSetInfoFixtureForPath(t, "data", access)
-}
-
-func newSetInfoFixtureForPath(t *testing.T, path string, access uint32) *setInfoFixture {
-	t.Helper()
-	options := testOptions(t)
-	options.Storage = newFilesMetaStorage(t)
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, ctx, session := newFilesMetaClient(t, server)
-	open := insertFilesMetaOpen(t, server, session, path, access)
-	return &setInfoFixture{storage: options.Storage, client: client, ctx: ctx, session: session, open: open, nextID: session.NextMessageID}
-}
-
-func (f *setInfoFixture) set(t *testing.T, info wire.SetInfoRequest, want smb.Status) {
-	t.Helper()
-	body, err := wire.EncodeSetInfoRequest(info)
-	if err != nil {
-		t.Fatal(err)
-	}
-	response := exchange(f.ctx, t, f.client, wire.Message{Header: wire.Header{
-		Command: wire.SetInfo, MessageID: f.nextID, SessionID: f.session.SessionID, TreeID: f.session.TreeID, CreditCharge: 1, Credit: 16,
-	}, Body: body})[0]
-	if response.Header.Status == smb.StatusPending {
-		final, receiveErr := f.client.Receive(f.ctx)
-		if receiveErr != nil {
-			t.Fatal(receiveErr)
-		}
-		if len(final.Messages) != 1 {
-			t.Fatalf("SET_INFO final reply contains %d messages, want one", len(final.Messages))
-		}
-		response = final.Messages[0]
-	}
-	f.nextID++
-	if response.Header.Status != want {
-		t.Fatalf("SET_INFO type %d class %d: status %#x, want %#x", info.InfoType, info.InfoClass, response.Header.Status, want)
-	}
-	if want == smb.StatusSuccess {
-		if _, decodeErr := wire.DecodeSetInfoResponse(response); decodeErr != nil {
-			t.Fatal(decodeErr)
-		}
-	}
-}
-
-func (f *setInfoFixture) basic(t *testing.T, info wire.FileBasicInformation, want smb.Status) {
-	t.Helper()
-	buffer, err := wire.EncodeFileBasicInformation(info)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileBasic), Input: buffer}, want)
-}
-
-func (f *setInfoFixture) size(t *testing.T, class wire.FileInfoClass, size uint64, want smb.Status) {
-	t.Helper()
-	var buffer []byte
-	var err error
-	if class == wire.ClassFileEndOfFile {
-		buffer, err = wire.EncodeFileEndOfFileInformation(wire.FileEndOfFileInformation{EndOfFile: size})
-	} else {
-		buffer, err = wire.EncodeFileAllocationInformation(wire.FileAllocationInformation{AllocationSize: size})
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: wire.InfoFile, InfoClass: uint8(class), Input: buffer}, want)
-}
-
-func (f *setInfoFixture) attr(t *testing.T) smb.Attr {
-	t.Helper()
-	attr, err := f.storage.GetAttr(f.ctx, f.open.Object)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return attr
-}
-
-func (f *setInfoFixture) write(t *testing.T, data string) {
-	t.Helper()
-	count, err := f.storage.WriteAt(f.ctx, f.open.Handle, []byte(data), 0)
-	if err != nil || count != len(data) {
-		t.Fatalf("WriteAt = %d, %v", count, err)
-	}
-}
-
-func filetime(t *testing.T, value time.Time) wire.Filetime {
-	t.Helper()
-	encoded, err := wire.EncodeFiletime(value)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return encoded
-}
 
 func TestSetInfoTimestampSentinelsWithoutOverflowIssue111(t *testing.T) {
 	for _, sentinel := range []wire.Filetime{wire.FiletimeUnchanged, wire.FiletimeSuppress, wire.FiletimeResume} {

@@ -1,71 +1,14 @@
 package server
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"runtime/pprof"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 )
-
-const fuzzResetPageSize = 64
-
-func resetFuzzStorage(ctx context.Context, storage smb.Storage, root smb.Attr) error {
-	if err := removeFuzzChildren(ctx, storage, root.Inode); err != nil {
-		return err
-	}
-	return storage.SetAttr(ctx, smb.ObjectKey{Inode: root.Inode}, smb.AttrChange{
-		Created: &root.Created, Accessed: &root.Accessed, Modified: &root.Modified,
-		Changed: &root.Changed, Attributes: &root.Attributes,
-	})
-}
-
-func removeFuzzChildren(ctx context.Context, storage smb.Storage, parent smb.Inode) error {
-	var cookie smb.Cookie
-	for {
-		entries, err := storage.ReadDir(ctx, parent, cookie, fuzzResetPageSize)
-		if err != nil {
-			return fmt.Errorf("list fuzz directory: %w", err)
-		}
-		if len(entries) == 0 {
-			return nil
-		}
-		for _, entry := range entries {
-			if entry.Attr.Kind == smb.KindDirectory {
-				if err := removeFuzzChildren(ctx, storage, entry.Attr.Inode); err != nil {
-					return err
-				}
-			}
-			if err := storage.Remove(ctx, smb.Name{Parent: parent, Base: entry.Name}, entry.Attr.Inode); err != nil {
-				return fmt.Errorf("remove fuzz entry %q: %w", entry.Name, err)
-			}
-			cookie = entry.Next
-		}
-	}
-}
-
-func fuzzRuntimeWorkers(t *testing.T) int {
-	t.Helper()
-	var stacks bytes.Buffer
-	if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
-		t.Fatal(err)
-	}
-	count := 0
-	for _, stack := range strings.Split(stacks.String(), "\n\n") {
-		if strings.Contains(stack, "internal/juicefs/pkg/chunk.NewCachedStore.func") ||
-			strings.Contains(stack, ").cleanupCache(") ||
-			strings.Contains(stack, ").checkReadBuffer(") ||
-			strings.Contains(stack, ").flushAll(") {
-			count++
-		}
-	}
-	return count
-}
 
 func TestFuzzStorageRuntimeStaysBounded(t *testing.T) {
 	storage := smbtest.NewStorage(t)

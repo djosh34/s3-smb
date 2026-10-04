@@ -2,93 +2,16 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
-
-type expiryClock struct {
-	now time.Time
-	mu  sync.Mutex
-}
-
-func (clock *expiryClock) Now() time.Time {
-	clock.mu.Lock()
-	defer clock.mu.Unlock()
-	return clock.now
-}
-
-func (clock *expiryClock) advance(duration time.Duration) {
-	clock.mu.Lock()
-	defer clock.mu.Unlock()
-	clock.now = clock.now.Add(duration)
-}
-
-func expiryServer(t *testing.T, storage smb.Storage) (*Server, *expiryClock) {
-	t.Helper()
-	clock := &expiryClock{now: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)}
-	options := testOptions(t)
-	options.Now = clock.Now
-	var err error
-	options.State, err = state.New(options.Now)
-	if err != nil {
-		t.Fatal(err)
-	}
-	options.Storage = storage
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := server.Shutdown(context.WithoutCancel(t.Context())); err != nil {
-			t.Error(err)
-		}
-	})
-	return server, clock
-}
-
-func expiryRequest(inode smb.Inode, session uint64) state.OpenRequest {
-	return state.OpenRequest{
-		Object: smb.ObjectKey{Inode: inode}, Binding: state.Binding{SessionID: session, TreeID: 1},
-		ClientGUID: state.GUID{1}, CreateGUID: state.GUID{byte(inode & 0xff), byte(session & 0xff)},
-		GrantedAccess: 0x10001, Sharing: state.ShareMode(state.RightRead | state.RightDelete),
-	}
-}
-
-func expiryGrant(request state.OpenRequest) state.Grant {
-	return state.Grant{
-		Handle: cleanupHandle{object: request.Object}, DurableTimeout: 2 * time.Minute,
-		Lease: state.Lease{ClientGUID: request.ClientGUID, Key: state.GUID{byte(request.Object.Inode & 0xff)}, State: smb.LeaseRead | smb.LeaseHandle},
-	}
-}
-
-func commitExpiryOpen(t *testing.T, server *Server, request state.OpenRequest, grant state.Grant) state.Open {
-	t.Helper()
-	token, status := server.options.State.Reserve(request)
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	open, status := server.options.State.Commit(token, grant)
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	return open
-}
-
-func detachExpiryOpen(t *testing.T, server *Server, open state.Open) {
-	t.Helper()
-	if actions := server.options.State.Disconnect(open.Binding.SessionID); len(actions) != 0 {
-		t.Fatalf("durable open closed on disconnect: %+v", actions)
-	}
-}
 
 func TestExpiryClosesHandlesAndAppliesPendingDeletion(t *testing.T) {
 	for _, disposition := range []bool{false, true} {

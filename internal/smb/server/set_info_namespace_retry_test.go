@@ -2,33 +2,10 @@ package server
 
 import (
 	"context"
-	"sync"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
-
-// lookupMoveStorage changes real namespace entries after the discovery lookup.
-// Data, attributes and every other operation still use the real adapter.
-type lookupMoveStorage struct {
-	smb.Storage
-	move func(context.Context) error
-	path string
-	once sync.Once
-}
-
-func (s *lookupMoveStorage) Lookup(ctx context.Context, path string) (smb.Resolved, error) {
-	resolved, err := s.Storage.Lookup(ctx, path)
-	if err != nil || path != s.path {
-		return resolved, err
-	}
-	var moveErr error
-	s.once.Do(func() { moveErr = s.move(ctx) })
-	if moveErr != nil {
-		return smb.Resolved{}, moveErr
-	}
-	return resolved, nil
-}
 
 func TestRenameRetriesAfterSourceMoves(t *testing.T) {
 	f := newNamespaceClient(t)

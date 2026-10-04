@@ -1,7 +1,6 @@
 package server
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,68 +9,9 @@ import (
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-type readWriteClient struct {
-	client  *smbtest.Client
-	server  *Server
-	ctx     context.Context
-	session smbtest.Session
-	next    uint64
-}
-
-func newReadWriteClient(t *testing.T, storage smb.Storage) *readWriteClient {
-	t.Helper()
-	options := testOptions(t)
-	options.Storage = storage
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, ctx, session := loginClient(t, server, smb.CipherAES128GCM, smb.SigningGMAC)
-	// Grow the window before exercising maximum-size multi-credit operations.
-	message := sessionEcho(t, session, session.NextMessageID)
-	message.Header.Credit = 32
-	if response := ioRoundTrip(ctx, t, client, message); response.Header.Status != smb.StatusSuccess {
-		t.Fatal(response.Header)
-	}
-	return &readWriteClient{client: client, server: server, ctx: ctx, session: session, next: session.NextMessageID + 1}
-}
-
-func (client *readWriteClient) read(t *testing.T, request wire.ReadRequest, charge uint16) wire.Message {
-	t.Helper()
-	body, err := wire.EncodeReadRequest(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client.exchange(t, wire.Read, body, charge)
-}
-
-func (client *readWriteClient) write(t *testing.T, request wire.WriteRequest, charge uint16) wire.Message {
-	t.Helper()
-	body, err := wire.EncodeWriteRequest(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return client.exchange(t, wire.Write, body, charge)
-}
-
-func (client *readWriteClient) exchange(t *testing.T, command wire.Command, body []byte, charge uint16) wire.Message {
-	t.Helper()
-	message := ioMessage(client.session, client.next, command, body, charge)
-	client.next += uint64(max(charge, 1))
-	return ioRoundTrip(client.ctx, t, client.client, message)
-}
-
-func requireIOStatus(t *testing.T, response wire.Message, want smb.Status) {
-	t.Helper()
-	if response.Header.Status != want {
-		t.Fatalf("status %#x, want %#x", response.Header.Status, want)
-	}
-}
 
 func TestReadSeesWriteFromAnotherOpen(t *testing.T) {
 	fixture := newIOFixture(t, nil)
@@ -169,22 +109,6 @@ func TestReadWriteLimitsAndChannels(t *testing.T) {
 	requireIOStatus(t, client.write(t, wire.WriteRequest{ID: id}, 1), smb.StatusSuccess)
 }
 
-type writeBarrier struct {
-	entered, resume chan struct{}
-	once            sync.Once
-	full            bool
-}
-
-func (barrier *writeBarrier) Commit(ctx context.Context, full bool) error {
-	barrier.once.Do(func() { barrier.full = full; close(barrier.entered) })
-	select {
-	case <-barrier.resume:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
-}
-
 func TestWriteThroughWaitsForDurableStorage(t *testing.T) {
 	barrier := &writeBarrier{entered: make(chan struct{}), resume: make(chan struct{})}
 	var unblock sync.Once
@@ -223,27 +147,6 @@ func TestWriteThroughWaitsForDurableStorage(t *testing.T) {
 	if err != nil || written.Count != 7 {
 		t.Fatalf("write through: %+v, %v", written, err)
 	}
-}
-
-type failedIOStorage struct {
-	smb.Storage
-	readErr, writeErr, flushErr error
-	readCount, writeCount       int
-	flushes                     int
-}
-
-func (storage *failedIOStorage) ReadAt(_ context.Context, _ smb.Handle, data []byte, _ uint64) (int, error) {
-	copy(data, "data")
-	return storage.readCount, storage.readErr
-}
-
-func (storage *failedIOStorage) WriteAt(_ context.Context, _ smb.Handle, _ []byte, _ uint64) (int, error) {
-	return storage.writeCount, storage.writeErr
-}
-
-func (storage *failedIOStorage) Flush(_ context.Context, _ smb.Handle, _ smb.SyncMode) error {
-	storage.flushes++
-	return storage.flushErr
 }
 
 func TestReadWriteStorageFailures(t *testing.T) {

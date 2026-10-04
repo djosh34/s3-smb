@@ -6,122 +6,16 @@ import (
 	"fmt"
 	"log/slog"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func insertSessionOpen(t *testing.T, server *Server, session smbtest.Session, durable bool, inode smb.Inode) state.Open {
-	t.Helper()
-	object := smb.ObjectKey{Inode: inode}
-	client := state.GUID{2}
-	request := state.OpenRequest{Object: object, Binding: state.Binding{SessionID: session.SessionID, TreeID: session.TreeID}, User: server.options.Account.User, Share: server.options.ShareName, ClientGUID: client, GrantedAccess: 1, Sharing: 7}
-	grant := state.Grant{Handle: cleanupHandle{object: object}}
-	if durable {
-		request.CreateGUID = state.GUID{byte(inode & 0xff)}
-		grant.DurableTimeout = time.Minute
-		grant.Lease = state.Lease{ClientGUID: client, Key: state.GUID{byte(inode & 0xff)}, State: smb.LeaseRead | smb.LeaseHandle}
-	}
-	reservation, status := server.options.State.Reserve(request)
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	open, status := server.options.State.Commit(reservation, grant)
-	if status != smb.StatusSuccess {
-		t.Fatal(status)
-	}
-	return open
-}
-
-func treeRequest(t *testing.T, session smbtest.Session, id uint64, command wire.Command) wire.Message {
-	t.Helper()
-	var body []byte
-	var err error
-	switch uint16(command) {
-	case uint16(wire.TreeDisconnect):
-		body, err = wire.EncodeTreeDisconnectRequest(wire.EmptyRequest{})
-	case uint16(wire.Logoff):
-		body, err = wire.EncodeLogoffRequest(wire.EmptyRequest{})
-	case uint16(wire.Read):
-		body, err = wire.EncodeReadRequest(wire.ReadRequest{Length: 1})
-	case uint16(wire.TreeConnect):
-		body, err = wire.EncodeTreeConnectRequest(wire.TreeConnectRequest{Path: "\\\\server\\backup"})
-	default:
-		t.Fatalf("no body for command %d", command)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire.Message{Header: wire.Header{Command: command, MessageID: id, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 16}, Body: body}
-}
 
 func TestTreeDisconnectAndLogoffCloseOnlyOwnedOpens(t *testing.T) {
 	for _, command := range []wire.Command{wire.TreeDisconnect, wire.Logoff} {
 		for _, cipher := range []uint16{0, smb.CipherAES128GCM} {
 			t.Run(fmt.Sprintf("command_%d_cipher_%d", command, cipher), func(t *testing.T) { checkSessionCleanup(t, command, cipher) })
-		}
-	}
-}
-
-func checkSessionCleanup(t *testing.T, command wire.Command, cipher uint16) {
-	t.Helper()
-	options := testOptions(t)
-	if cipher == 0 {
-		options.Encryption = AllowPlaintext
-	}
-	storage := &cleanupStorage{}
-	options.Storage = storage
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	client, ctx, session := loginClient(t, server, cipher, smb.SigningGMAC)
-	_, _, other := loginClient(t, server, cipher, smb.SigningGMAC)
-	owned := []state.Open{insertSessionOpen(t, server, session, false, 2), insertSessionOpen(t, server, session, true, 3)}
-	unrelated := insertSessionOpen(t, server, other, false, 4)
-	response := exchange(ctx, t, client, treeRequest(t, session, session.NextMessageID, command))[0]
-	if response.Header.Status != smb.StatusSuccess || storage.closed.Load() != 2 {
-		t.Fatalf("cleanup: %+v, closed %d", response.Header, storage.closed.Load())
-	}
-	for _, open := range owned {
-		if _, status := options.State.Find(open.ID, open.Binding); status == smb.StatusSuccess {
-			t.Fatal("owned open survived cleanup")
-		}
-	}
-	if _, status := options.State.Find(unrelated.ID, unrelated.Binding); status != smb.StatusSuccess {
-		t.Fatal("another session's open was closed")
-	}
-	next := session.NextMessageID + 1
-	if command == wire.Logoff {
-		payload, err := wire.Join([]wire.Message{treeRequest(t, session, next, wire.Read)})
-		if err != nil {
-			t.Fatal(err)
-		}
-		sendPayload(ctx, t, client, payload)
-		payload, err = client.ReceiveRaw(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-		members, err := wire.Split(payload)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if members[0].Header.Status != smb.StatusUserSessionDeleted {
-			t.Fatal("logged-off identity remains valid")
-		}
-	} else {
-		response = exchange(ctx, t, client, treeRequest(t, session, next, wire.Read))[0]
-		if response.Header.Status != smb.StatusNetworkNameDeleted {
-			t.Fatalf("deleted tree: %+v", response.Header)
-		}
-	}
-	if command == wire.TreeDisconnect {
-		response = exchange(ctx, t, client, sessionEcho(t, session, next+1))[0]
-		if response.Header.Status != smb.StatusSuccess {
-			t.Fatal("disconnect removed the session")
 		}
 	}
 }

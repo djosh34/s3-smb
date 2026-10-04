@@ -10,21 +10,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
-type blockedCleanup struct {
-	*cleanupStorage
-	entered chan struct{}
-	release chan struct{}
-}
-
-func (storage *blockedCleanup) Close(ctx context.Context, handle smb.Handle) error {
-	close(storage.entered)
-	<-storage.release
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return storage.cleanupStorage.Close(ctx, handle)
-}
-
 func TestShutdownCleanupContinuesAfterCallerCancellation(t *testing.T) {
 	options := testOptions(t)
 	storage := &blockedCleanup{cleanupStorage: &cleanupStorage{}, entered: make(chan struct{}), release: make(chan struct{})}

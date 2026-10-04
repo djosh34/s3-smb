@@ -7,17 +7,9 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func joinDurableLease(t *testing.T, server *Server, session smbtest.Session, open state.Open) state.Open {
-	t.Helper()
-	request := state.OpenRequest{Object: open.Object, Binding: state.Binding{SessionID: session.SessionID, TreeID: session.TreeID}, User: open.User, Share: open.Share, ClientGUID: open.ClientGUID, CreateGUID: state.GUID{99}, Sharing: 7}
-	grant := state.Grant{Handle: cleanupHandle{object: open.Object}, DurableTimeout: smb.DefaultDurableTimeout, Lease: state.Lease{ClientGUID: open.ClientGUID, Key: open.LeaseKey, State: smb.LeaseRead | smb.LeaseHandle | smb.LeaseWrite}}
-	return commitLeaseOpen(t, server, request, grant)
-}
 
 func TestLeaseAcknowledgmentDrainsDetachedMember(t *testing.T) {
 	server, client, ctx, session, storage := leaseServer(t, smb.CipherAES128GCM, smb.SigningGMAC)

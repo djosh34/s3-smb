@@ -40,35 +40,6 @@ func TestServerStreamSeeds(t *testing.T) {
 	}
 }
 
-func checkStreamSeedReply(t *testing.T, id uint64, message wire.Message) {
-	t.Helper()
-	want := smb.StatusSuccess
-	var err error
-	switch uint16(message.Header.Command) {
-	case uint16(wire.Negotiate):
-		_, err = wire.DecodeNegotiateResponse(message)
-	case uint16(wire.Echo):
-		_, err = wire.DecodeEchoResponse(message)
-	case uint16(wire.SessionSetup):
-		want = smb.StatusMoreProcessingRequired
-		_, err = wire.DecodeSessionSetupResponse(message)
-		if message.Header.SessionID == 0 {
-			t.Fatal("session seed did not start authentication")
-		}
-	case uint16(wire.TreeConnect):
-		want = smb.StatusUserSessionDeleted
-		_, err = wire.DecodeErrorResponse(message)
-	default:
-		t.Fatal("unexpected seed command", message.Header.Command)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if message.Header.Status != want || message.Header.MessageID != id {
-		t.Fatalf("reply %d: %+v", id, message.Header)
-	}
-}
-
 func TestServerStreamCloseAndIncompleteInput(t *testing.T) {
 	storage := smbtest.NewStorage(t)
 	for _, stream := range [][]byte{
@@ -211,28 +182,4 @@ func TestStreamRejectsInvalidReply(t *testing.T) {
 	if err == nil || closed {
 		t.Fatalf("request sent as reply: closed %v, error %v", closed, err)
 	}
-}
-
-func streamPeer(t *testing.T, serve func(net.Conn) error) net.Conn {
-	t.Helper()
-	local, remote := net.Pipe()
-	done := make(chan error, 1)
-	go func() {
-		err := serve(remote)
-		done <- errors.Join(err, remote.Close())
-	}()
-	t.Cleanup(func() {
-		if err := local.Close(); err != nil {
-			t.Error(err)
-		}
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(streamBound):
-			t.Error("test peer did not stop")
-		}
-	})
-	return local
 }

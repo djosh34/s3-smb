@@ -4,21 +4,8 @@ import (
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
-	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-func createSharedDurable(t *testing.T, client *createLeaseClient, lease *wire.LeaseContext) smbtest.CreateResult {
-	t.Helper()
-	header := client.header(wire.Create)
-	if err := client.client.SendCreate(client.ctx, header, smbtest.CreateOptions{
-		Request: leaseCreateRequest("file"), Lease: lease, Durable: &wire.DurableRequest{CreateGUID: [16]byte{5}},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return client.created(t, header.MessageID)
-}
 
 func TestDurableJoinGrantsOnExistingSharedH(t *testing.T) {
 	server, holder, writer := newCreateLeaseClients(t)

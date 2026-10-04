@@ -7,10 +7,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
-type mutationHandle struct{ object smb.ObjectKey }
-
-func (handle mutationHandle) Key() smb.ObjectKey { return handle.object }
-
 // leaseMutationAllows is the agreed internal seam used by CREATE selection and
 // Commit revalidation. Its caller must hold mu; the gate changes no lease state.
 func TestLeaseMutationGateExcludesOnlySelectedIdentity(t *testing.T) {

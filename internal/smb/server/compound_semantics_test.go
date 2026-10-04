@@ -66,65 +66,6 @@ func TestFirstRelatedStillChecksProtectionBodiesAndCharges(t *testing.T) {
 	}
 }
 
-func checkFirstRelatedValidation(t *testing.T, signing uint16, invalid string) {
-	t.Helper()
-	options := testOptions(t)
-	options.Encryption = AllowPlaintext
-	server, err := New(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var calls atomic.Int32
-	server.handlers[wire.Echo] = func(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
-		calls.Add(1)
-		return handleEcho(ctx, request, message)
-	}
-	client, ctx, session := loginClient(t, server, 0, signing)
-	first := sessionEcho(t, session, session.NextMessageID)
-	first.Header.Flags = wire.FlagRelated
-	requests := []wire.Message{first}
-	want := smb.StatusAccessDenied
-	if invalid == "unsigned" {
-		payload, encodeErr := wire.Join(requests)
-		if encodeErr != nil {
-			t.Fatal(encodeErr)
-		}
-		sendPayload(ctx, t, client, payload)
-	} else {
-		second := compoundFileRequest(t, session, wire.Echo, session.NextMessageID+1, wire.FileID{}, true)
-		if invalid == "body" {
-			second.Body = []byte{0, 0, 0, 0}
-		} else {
-			second.Header.Command = wire.Read
-			second.Body, err = wire.EncodeReadRequest(wire.ReadRequest{Length: smb.CreditUnit + 1})
-			if err != nil {
-				t.Fatal(err)
-			}
-		}
-		requests = append(requests, second, sessionEcho(t, session, session.NextMessageID+2))
-		want = smb.StatusInvalidParameter
-		if sendErr := client.Send(ctx, requests); sendErr != nil {
-			t.Fatal(sendErr)
-		}
-	}
-	response, err := client.Receive(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Messages) != len(requests) || calls.Load() != 0 {
-		t.Fatalf("invalid compound: %d replies, %d handlers", len(response.Messages), calls.Load())
-	}
-	for _, message := range response.Messages {
-		if message.Header.Status != want || message.Header.SessionID != session.SessionID || message.Header.Flags&wire.FlagSigned == 0 {
-			t.Fatalf("invalid request lost its protected refusal: %+v", message.Header)
-		}
-	}
-	next := session.NextMessageID + uint64(len(requests))
-	if response := exchange(ctx, t, client, sessionEcho(t, session, next))[0]; response.Header.Status != smb.StatusSuccess {
-		t.Fatal("refusal closed the connection")
-	}
-}
-
 func TestEncryptedCompoundStillRejectsInvalidIdentity(t *testing.T) {
 	for _, cipher := range []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM} {
 		for _, invalid := range []string{"first related", "unrelated session"} {

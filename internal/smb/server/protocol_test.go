@@ -65,23 +65,6 @@ func TestNegotiateContextValidation(t *testing.T) {
 	}
 }
 
-func assertSelectedContexts(t *testing.T, message wire.Message, wantSigning uint16) {
-	t.Helper()
-	response, err := wire.DecodeNegotiateResponse(message)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(response.Contexts) != 3 {
-		t.Fatalf("ignored contexts were echoed: %+v", response.Contexts)
-	}
-	if wantSigning != 0 {
-		signing, err := wire.DecodeSigningContext(response.Contexts[2])
-		if err != nil || len(signing.Algorithms) != 1 || signing.Algorithms[0] != wantSigning {
-			t.Fatalf("default signing: %+v, %v", signing, err)
-		}
-	}
-}
-
 func TestNegotiateDoesNotChooseUnofferedAlgorithms(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {
