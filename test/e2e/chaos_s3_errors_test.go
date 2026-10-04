@@ -27,8 +27,7 @@ type chaosS3Burst struct {
 
 func TestChaosS3Errors(t *testing.T) {
 	seed := chaos.Seed(t)
-	// Switch to newChaosFixture when the harness adds the smbnext binary helper.
-	f := newFixture(t, false)
+	f := newChaosFixture(t, false)
 	f.interval = "1h"
 	f.cacheSize = "0 MB"
 	proxy := newFaultProxy(t, f.endpoint)
