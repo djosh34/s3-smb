@@ -295,9 +295,10 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	closeErr := backendError(s.metadata.Close(storageContext(cleanup), meta.Ino(h.key.Inode)))
 	// Invalidate pre-close SQL snapshots before dropping the live length.
 	s.commits.Add(1)
-	live := h.state.snapshot()
-	live.valid = false
-	h.state.publish(live)
+	h.state.liveMu.Lock()
+	h.state.live.valid = false
+	h.state.streams = nil
+	h.state.liveMu.Unlock()
 	return errors.Join(flushErr, writerErr, xattrErr, closeErr, ctx.Err())
 }
 
