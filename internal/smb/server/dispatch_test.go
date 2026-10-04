@@ -18,7 +18,7 @@ func TestMissingSessionCommandsReturnStatusAndKeepConnection(t *testing.T) {
 			err     error
 			body    []byte
 			command wire.Command
-		}{command, body, err})
+		}{command: command, body: body, err: err})
 	}
 	body, err := wire.EncodeLogoffRequest(wire.EmptyRequest{})
 	add(wire.Logoff, body, err)
