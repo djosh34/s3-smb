@@ -77,7 +77,11 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		}
 	}
 	if info.Attributes != 0 {
-		attributes := normalizeFileAttributes(info.Attributes, open.Directory)
+		attr, attrErr := request.Storage.GetAttr(ctx, open.Object)
+		if attrErr != nil {
+			return setInfoStorageStatus(ctx, request, attrErr)
+		}
+		attributes := normalizeFileAttributes(info.Attributes, attr.Kind == smb.KindDirectory)
 		change.Attributes = &attributes
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, change))
