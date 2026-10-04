@@ -100,16 +100,13 @@ func (f *namespaceClient) set(t *testing.T, open state.Open, class wire.FileInfo
 		TreeID: f.session.TreeID, CreditCharge: 1, Credit: 1,
 	}, Body: body}
 	f.nextID++
-	response := exchange(f.ctx, t, f.client, message)
-	if len(response) != 1 {
-		t.Fatalf("SET_INFO replies = %d", len(response))
-	}
-	if response[0].Header.Status == smb.StatusSuccess {
-		if _, err = wire.DecodeSetInfoResponse(response[0]); err != nil {
+	response := ioRoundTrip(f.ctx, t, f.client, message)
+	if response.Header.Status == smb.StatusSuccess {
+		if _, err = wire.DecodeSetInfoResponse(response); err != nil {
 			t.Fatal(err)
 		}
 	}
-	return response[0].Header.Status
+	return response.Header.Status
 }
 
 func (f *namespaceClient) rename(t *testing.T, open state.Open, path string, replace bool) smb.Status {

@@ -38,7 +38,7 @@ func (peer *deletionPeer) open(t *testing.T, path string, access, disposition, o
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := exchange(peer.ctx, t, peer.client, peer.message(wire.Create, body))[0]
+	response := ioRoundTrip(peer.ctx, t, peer.client, peer.message(wire.Create, body))
 	if response.Header.Status != want {
 		t.Fatalf("CREATE %s: %#x, want %#x", path, response.Header.Status, want)
 	}
@@ -79,7 +79,7 @@ func (peer *deletionPeer) disposition(t *testing.T, id wire.FileID) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := exchange(peer.ctx, t, peer.client, peer.message(wire.SetInfo, body))[0]
+	response := ioRoundTrip(peer.ctx, t, peer.client, peer.message(wire.SetInfo, body))
 	if response.Header.Status != smb.StatusSuccess {
 		t.Fatalf("SET_INFO disposition: %#x", response.Header.Status)
 	}
