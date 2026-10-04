@@ -1,0 +1,9 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118221
+time: 2026-10-04 12:50:21.534315
+test: smb2.create.mkdir-dup.mkdir-dup
+time: 2026-10-04 12:50:21.534530
+time: 2026-10-04 12:50:21.558070
+success: smb2.create.mkdir-dup.mkdir-dup
+Testing SMB2 Create Directory with multiple connections
+waiting for replies

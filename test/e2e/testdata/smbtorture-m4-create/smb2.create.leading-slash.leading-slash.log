@@ -1,0 +1,10 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118221
+time: 2026-10-04 12:50:21.121290
+test: smb2.create.leading-slash.leading-slash
+time: 2026-10-04 12:50:21.121485
+time: 2026-10-04 12:50:21.125657
+failure: smb2.create.leading-slash.leading-slash [
+(../../source4/torture/smb2/create.c:1514) Incorrect status NT_STATUS_OBJECT_NAME_INVALID - should be NT_STATUS_INVALID_PARAMETER
+]
+Trying to create a directory with leading slash on path

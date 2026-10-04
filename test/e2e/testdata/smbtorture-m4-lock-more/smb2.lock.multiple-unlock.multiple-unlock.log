@@ -1,0 +1,12 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117959
+time: 2026-10-04 12:45:59.219309
+test: smb2.lock.multiple-unlock.multiple-unlock
+time: 2026-10-04 12:45:59.219474
+time: 2026-10-04 12:45:59.261398
+failure: smb2.lock.multiple-unlock.multiple-unlock [
+../../source4/torture/smb2/lock.c:1934: status was NT_STATUS_LOCK_NOT_GRANTED, expected NT_STATUS_OK: (../../source4/torture/smb2/lock.c:1934)
+]
+Testing multiple unlocks:
+  unlock 2 locks, first one not locked. Expect no locks unlocked. 
+  unlock 2 locks, second one not locked. Expect first lock unlocked.

@@ -1,0 +1,8 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118222
+time: 2026-10-04 12:50:22.202250
+test: smb2.create.dosattr_tmp_dir.dosattr_tmp_dir
+time: 2026-10-04 12:50:22.202436
+time: 2026-10-04 12:50:22.248461
+success: smb2.create.dosattr_tmp_dir.dosattr_tmp_dir
+(../../source4/torture/smb2/create.c:3404) Failed to set attrib 0x100 on smb2_open

@@ -1,0 +1,9 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117959
+time: 2026-10-04 12:45:59.928313
+test: smb2.lock.context.context
+time: 2026-10-04 12:45:59.928470
+time: 2026-10-04 12:45:59.978998
+success: smb2.lock.context.context
+Testing locker context:
+  pid shouldn't affect locker context

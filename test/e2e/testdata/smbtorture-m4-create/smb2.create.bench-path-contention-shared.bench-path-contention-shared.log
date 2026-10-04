@@ -1,0 +1,21 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118222
+time: 2026-10-04 12:50:22.429705
+test: smb2.create.bench-path-contention-shared.bench-path-contention-shared
+time: 2026-10-04 12:50:22.429968
+time: 2026-10-04 12:50:32.445705
+success: smb2.create.bench-path-contention-shared.bench-path-contention-shared
+Opening 4 connections
+Opened 4 connections with qdepth=1 => 4 loops
+Running for 10 seconds
+1.00 second: open[num/s=366,avslat=0.006135,minlat=0.003772,maxlat=0.013155] close[num/s=365,avslat=0.004814,minlat=0.002793,maxlat=0.011922]     
+2.00 second: open[num/s=365,avslat=0.006172,minlat=0.003985,maxlat=0.008831] close[num/s=363,avslat=0.004793,minlat=0.002755,maxlat=0.009935]     
+3.00 second: open[num/s=354,avslat=0.006294,minlat=0.003947,maxlat=0.009807] close[num/s=356,avslat=0.004997,minlat=0.002609,maxlat=0.008979]     
+4.00 second: open[num/s=363,avslat=0.006143,minlat=0.003483,maxlat=0.009461] close[num/s=362,avslat=0.004886,minlat=0.002916,maxlat=0.008214]     
+5.00 second: open[num/s=368,avslat=0.006051,minlat=0.004530,maxlat=0.020575] close[num/s=368,avslat=0.004838,minlat=0.003518,maxlat=0.018006]     
+6.00 second: open[num/s=380,avslat=0.005888,minlat=0.003381,maxlat=0.008920] close[num/s=381,avslat=0.004625,minlat=0.002679,maxlat=0.008189]     
+7.00 second: open[num/s=382,avslat=0.005868,minlat=0.003349,maxlat=0.009813] close[num/s=382,avslat=0.004600,minlat=0.002778,maxlat=0.007563]     
+8.00 second: open[num/s=378,avslat=0.005937,minlat=0.003898,maxlat=0.009732] close[num/s=375,avslat=0.004682,minlat=0.002732,maxlat=0.008196]     
+9.00 second: open[num/s=354,avslat=0.006284,minlat=0.002823,maxlat=0.013154] close[num/s=355,avslat=0.005009,minlat=0.002650,maxlat=0.011239]     
+10.00 second: open[num/s=364,avslat=0.006129,minlat=0.002823,maxlat=0.021425] close[num/s=363,avslat=0.004867,minlat=0.002609,maxlat=0.023083]
+10.00 seconds

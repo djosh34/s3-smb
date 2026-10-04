@@ -1,0 +1,16 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117960
+time: 2026-10-04 12:46:00.465476
+test: smb2.lock.overlap.overlap
+time: 2026-10-04 12:46:00.465668
+time: 2026-10-04 12:46:00.572138
+success: smb2.lock.overlap.overlap
+Testing overlapping locks:
+the same session/handle cannot set overlapping exclusive locks
+the same session/handle can set overlapping shared locks
+a different session cannot set overlapping exclusive locks
+a different session can set overlapping shared locks
+a different handle cannot set overlapping exclusive locks
+a different handle can set overlapping shared locks
+the same handle cannot coalesce read locks
+the server doesn't have the NT byte range lock bug

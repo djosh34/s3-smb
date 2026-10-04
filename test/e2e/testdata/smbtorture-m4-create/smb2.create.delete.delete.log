@@ -1,0 +1,8 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118220
+time: 2026-10-04 12:50:20.781350
+test: smb2.create.delete.delete
+time: 2026-10-04 12:50:20.781626
+time: 2026-10-04 12:50:20.921176
+success: smb2.create.delete.delete
+Checking SMB2_OPEN for delete on a readonly file.

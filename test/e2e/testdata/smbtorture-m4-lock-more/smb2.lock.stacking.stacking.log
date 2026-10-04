@@ -1,0 +1,13 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117959
+time: 2026-10-04 12:45:59.438174
+test: smb2.lock.stacking.stacking
+time: 2026-10-04 12:45:59.438354
+time: 2026-10-04 12:45:59.503901
+success: smb2.lock.stacking.stacking
+Testing lock stacking:
+  stacking a shared on top of a sharedlock succeeds.
+  stacking a shared on top of an exclusive lock succeeds.
+  stacking a shared on top of an exclusive lock with different handles fails.
+  stacking an exclusive on top of a shared lock fails.
+  two exclusive locks do not stack.

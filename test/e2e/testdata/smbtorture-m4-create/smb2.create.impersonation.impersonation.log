@@ -1,0 +1,10 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118221
+time: 2026-10-04 12:50:21.310333
+test: smb2.create.impersonation.impersonation
+time: 2026-10-04 12:50:21.310566
+time: 2026-10-04 12:50:21.334947
+failure: smb2.create.impersonation.impersonation [
+(../../source4/torture/smb2/create.c:1558) Incorrect status NT_STATUS_OK - should be NT_STATUS_BAD_IMPERSONATION_LEVEL
+]
+Testing SMB2 open with an invalid impersonation level.
