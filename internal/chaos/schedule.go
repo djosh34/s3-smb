@@ -34,8 +34,9 @@ type Step struct {
 type Schedule []Step
 
 // Generate builds count fault steps, spaced interval apart, followed by a
-// restoration step. It mixes network delay, stalls and drops with S3 errors,
-// throttling, delay and outages. The same seed, count and interval replay it.
+// zero-fault step. It mixes network delay, stalls and drops with S3 errors,
+// throttling, delay and outages. Outages end on their own deadlines. The same
+// seed, count and interval replay it.
 func Generate(seed uint64, count int, interval time.Duration) (Schedule, error) {
 	if count < 1 || count == math.MaxInt || interval <= 0 || int64(count) > math.MaxInt64/int64(interval) {
 		return nil, errors.New("schedule needs a positive count and interval without duration overflow")
