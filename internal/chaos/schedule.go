@@ -128,14 +128,14 @@ func (s Schedule) prepare(network *netfault.Proxy, s3 *s3fault.Proxy) (Schedule,
 		}
 		if step.Net != nil {
 			fault := *step.Net
-			if fault.Delay < 0 {
-				return nil, fmt.Errorf("schedule step %d: negative network delay", i)
+			if fault.Delay < 0 || fault.CutAfter < 0 || fault.CutDirection > netfault.ServerToClient || (fault.CutAfter > 0 && fault.CutDirection == 0) {
+				return nil, fmt.Errorf("schedule step %d: invalid network fault", i)
 			}
 			step.Net = &fault
 		}
 		if step.S3 != nil {
 			fault := *step.S3
-			if fault.HeaderDelay < 0 || fault.BodyDelay < 0 || fault.CutAfter < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
+			if fault.HeaderDelay < 0 || fault.BodyDelay < 0 || fault.CutAfter < 0 || fault.RequestCutAfter < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
 				return nil, fmt.Errorf("schedule step %d: invalid S3 fault", i)
 			}
 			step.S3 = &fault
