@@ -346,7 +346,7 @@ func testName(fault Fault, canceled bool) string {
 }
 
 func TestInvalidInputs(t *testing.T) {
-	for _, host := range []string{"localhost", "127.0.0.1", "::1", "127.0.0.2", "::ffff:127.0.0.1"} {
+	for _, host := range []string{"localhost", "127.0.0.1", "::1", "127.0.0.2", "::ffff:127.0.0.1", "0.0.0.0", "::"} {
 		for _, prefix := range []string{"", "00"} {
 			t.Run("self target/"+host+"/port prefix="+prefix, func(t *testing.T) {
 				testSelfTarget(t, host, prefix)
@@ -407,8 +407,8 @@ func testSelfTarget(t *testing.T, host, portPrefix string) {
 			t.Error(closeErr)
 		}
 	}
-	if startErr == nil {
-		t.Fatalf("accepted a self target: %s", upstream)
+	if !errors.Is(startErr, errSelfTarget) {
+		t.Fatalf("self target %s returned %v, want %v", upstream, startErr, errSelfTarget)
 	}
 	if _, acceptErr := listener.Accept(); !errors.Is(acceptErr, net.ErrClosed) {
 		t.Fatalf("rejected constructor did not close listener: %v", acceptErr)

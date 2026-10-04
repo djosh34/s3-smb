@@ -15,6 +15,8 @@ import (
 	"time"
 )
 
+var errSelfTarget = errors.New("network fault proxy cannot target its own address")
+
 // Fault applies in both directions until SetFault replaces it. Delay precedes
 // each forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
 // without discarding buffered data. Drop closes current connections and rejects
@@ -64,7 +66,7 @@ type link struct {
 
 // New starts a proxy for an explicit TCP host:port. The listener binds only to
 // 127.0.0.1. It resolves the upstream once and rejects its own port when any
-// target address is loopback or matches the listener. Each accepted connection
+// target address is loopback or unspecified. Each accepted connection
 // tries the resolved addresses in order; later DNS changes cannot bypass the check.
 func New(ctx context.Context, upstream string) (*Proxy, error) {
 	if err := ctx.Err(); err != nil {
@@ -91,8 +93,8 @@ func start(ctx context.Context, upstream string, listener net.Listener) (*Proxy,
 	}
 	if int(port) == local.Port {
 		for _, address := range addresses {
-			if address.IP.IsLoopback() || address.IP.Equal(local.IP) {
-				return nil, errors.Join(errors.New("network fault proxy cannot target its own address"), listener.Close())
+			if address.IP.IsLoopback() || address.IP.IsUnspecified() {
+				return nil, errors.Join(errSelfTarget, listener.Close())
 			}
 		}
 	}
