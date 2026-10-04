@@ -29,6 +29,7 @@ type harness struct {
 	t                                                                         *testing.T
 	ctx                                                                       context.Context
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
+	launchdPlist                                                              string
 	daemon, minio, backup                                                     *process
 	attachments                                                               []string
 	serial, applicationSerial                                                 int
