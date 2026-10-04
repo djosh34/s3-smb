@@ -50,6 +50,27 @@ func TestUseOpenValidatesIdentity(t *testing.T) {
 	}
 }
 
+func TestUseOpenResolvesRelatedFileID(t *testing.T) {
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := insertSessionOpen(t, server, smbtest.Session{SessionID: 1, TreeID: 2}, false, 3)
+	request := openRequestContext(server, open)
+	request.related, request.fileID = true, wire.FileID(open.ID)
+	placeholder := wire.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}
+	found, release, status := useOpen(request, placeholder)
+	if status != smb.StatusSuccess || found.ID != open.ID {
+		t.Fatalf("inherited open: %+v, %#x", found, status)
+	}
+	release()
+	request.fileID = wire.FileID{}
+	_, release, status = useOpen(request, placeholder)
+	if status != smb.StatusInvalidParameter || release != nil {
+		t.Fatalf("missing inherited open: %#x", status)
+	}
+}
+
 func TestCleanupDrainsOpenUses(t *testing.T) {
 	options := testOptions(t)
 	storage := &cleanupStorage{}
@@ -92,6 +113,94 @@ func TestCleanupDrainsOpenUses(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("cleanup did not drain")
+	}
+}
+
+func TestReconnectKeepsReferencesAcrossVolatileIDs(t *testing.T) {
+	options := testOptions(t)
+	storage := &cleanupStorage{}
+	options.Storage = storage
+	server, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := insertSessionOpen(t, server, smbtest.Session{SessionID: 1, TreeID: 2}, true, 3)
+	_, release, status := useOpen(openRequestContext(server, open), wire.FileID(open.ID))
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	defer release()
+	if actions := options.State.Disconnect(open.Binding.SessionID); len(actions) != 0 {
+		t.Fatal("durable open closed on drop")
+	}
+	attached, status := options.State.Reconnect(state.ReconnectRequest{
+		ID: open.ID, Binding: state.Binding{SessionID: 4, TreeID: 5},
+		User: open.User, Share: open.Share, ClientGUID: open.ClientGUID,
+		CreateGUID: open.CreateGUID, LeaseKey: open.LeaseKey,
+	})
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	_, newRelease, status := useOpen(openRequestContext(server, attached), wire.FileID(attached.ID))
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	newRelease()
+	server.openMu.Lock()
+	uses := server.activeOpens[open.ID.Persistent]
+	if uses == nil || uses.count != 1 {
+		t.Error("old binding's reference was not preserved")
+	}
+	server.openMu.Unlock()
+}
+
+func TestSessionCleanupWaitsForOpenReference(t *testing.T) {
+	for _, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect} {
+		t.Run(map[wire.Command]string{wire.Logoff: "logoff", wire.TreeDisconnect: "tree disconnect"}[command], func(t *testing.T) {
+			options := testOptions(t)
+			storage := &cleanupStorage{}
+			options.Storage = storage
+			server, err := New(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
+			open := insertSessionOpen(t, server, session, false, 2)
+			_, release, status := useOpen(openRequestContext(server, open), wire.FileID(open.ID))
+			if status != smb.StatusSuccess {
+				t.Fatal(status)
+			}
+			if err := client.Send(ctx, []wire.Message{treeRequest(t, session, session.NextMessageID, command)}); err != nil {
+				release()
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() {
+				response, receiveErr := client.Receive(ctx)
+				if receiveErr == nil && response.Messages[0].Header.Status != smb.StatusSuccess {
+					t.Errorf("cleanup reply: %+v", response.Messages[0].Header)
+				}
+				done <- receiveErr
+			}()
+			select {
+			case err := <-done:
+				release()
+				t.Fatalf("cleanup replied with active reference: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			if storage.closed.Load() != 0 {
+				t.Error("session cleanup closed an active handle")
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil || storage.closed.Load() != 1 {
+					t.Fatalf("cleanup: %v, handles closed %d", err, storage.closed.Load())
+				}
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+		})
 	}
 }
 
