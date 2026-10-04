@@ -152,6 +152,29 @@ GitHub's `check` job calls `scripts/check.sh` on every pull request and on
 `check` is fixed because branch protection requires it. Failed runs upload
 daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
 
+## Replay a chaos test
+
+Chaos tests use `internal/chaos` to log their seed and fault schedule. Set
+`S3_SMB_CHAOS_SEED` to the logged unsigned decimal seed to replay it. Each named
+random stream is independent, so data generation does not change fault choices.
+Offsets and generated data repeat; process and network timing can still differ.
+
+Run the logged command in the Linux test container, with the same MinIO and log
+settings as the failed run. Set `S3_SMB_CHAOS_BINARY=/tmp/s3-smb-next` to select the
+race-enabled smbnext daemon. Keep `GORACE=halt_on_error=1` and the same
+`S3_SMB_CHECK_MODE` (`pr` or `gate`). For example:
+
+```sh
+S3_SMB_CHAOS_SEED=349 go test -race -shuffle=on -count=1 -v ./test/e2e -run '^TestChaosExample$'
+```
+
+Without `S3_SMB_CHAOS_BINARY`, daemon-backed chaos tests skip. Long scenarios use
+`gate` mode; PR runs use their short variants. The ledger checks acknowledged
+changes after a connection drop, flushed changes after a crash with local disk
+intact, and the captured metadata backup after cold recovery. A recorded write
+attempt allows only its earlier bytes or attempted bytes. Scenarios must compare
+directory listings themselves to detect paths never recorded in the ledger.
+
 ## Time Machine end-to-end test
 
 `.github/workflows/macos.yml` runs only when dispatched by hand:

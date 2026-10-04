@@ -109,6 +109,64 @@ func TestFlushedLifecycle(t *testing.T) {
 	}
 }
 
+func TestFlushedGrowthAndSizeChanges(t *testing.T) {
+	l := NewLedger()
+	l.Write("file", 0, []byte("ab"))
+	l.Flush("file")
+	l.Write("file", 2, []byte("cd"))
+	for _, data := range []string{"ab", "abc", "abcd", "ab\x00d"} {
+		if err := l.CheckFlushed(reader(map[string]string{"file": data})); err != nil {
+			t.Fatalf("partial growth %q: %v", data, err)
+		}
+	}
+	l.Truncate("file", 1)
+	if err := l.CheckFlushed(reader(map[string]string{"file": "a"})); err != nil {
+		t.Fatal(err)
+	}
+	l.Remove("file")
+	if err := l.CheckFlushed(reader(nil)); err != nil {
+		t.Fatal(err)
+	}
+	l.Flush("file")
+	if err := l.CheckFlushed(reader(map[string]string{"file": "ab"})); err == nil {
+		t.Fatal("accepted flushed removal resurrection")
+	}
+}
+
+func TestSettledAttemptAtFlushAndMark(t *testing.T) {
+	l := NewLedger()
+	l.Attempt("file", 0, []byte("abc"))
+	l.Write("file", 0, []byte("abc"))
+	l.Flush("file")
+	m := l.Mark()
+	l.Attempt("file", 0, []byte("XYZ"))
+	if err := l.CheckMark(m, reader(map[string]string{"file": "abc"})); err != nil {
+		t.Fatal(err)
+	}
+	for _, check := range []func(ReadFunc) error{l.CheckFlushed, func(read ReadFunc) error { return l.CheckMark(m, read) }} {
+		if err := check(reader(map[string]string{"file": "ab"})); err == nil {
+			t.Fatal("settled attempt retained uncertain length")
+		}
+		if err := check(reader(nil)); err == nil {
+			t.Fatal("settled attempt retained uncertain existence")
+		}
+	}
+}
+
+func TestZeroLengthOperations(t *testing.T) {
+	l := NewLedger()
+	l.Write("untouched", 100, nil)
+	l.Attempt("untouched", 100, nil)
+	l.Flush("untouched")
+	l.Truncate("empty", 0)
+	if err := l.CheckAcknowledged(reader(map[string]string{"empty": ""})); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.CheckAcknowledged(reader(map[string]string{"empty": "", "untouched": ""})); err == nil {
+		t.Fatal("zero-length write created a file")
+	}
+}
+
 func TestMark(t *testing.T) {
 	l := NewLedger()
 	l.Write("file", 0, []byte("backup"))
