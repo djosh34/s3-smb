@@ -177,7 +177,7 @@ func TestDirectoryContinuationReusesOriginalPattern(t *testing.T) {
 	f.create(t, "alpha", smb.KindFile)
 	f.create(t, "beta", smb.KindFile)
 	open := f.open(t, "", 1)
-	for i, want := range []string{"alpha", "beta"} {
+	for i, want := range []string{".", "..", "alpha", "beta"} {
 		pattern, flags := "", uint8(directorySingle)
 		if i == 0 {
 			pattern, flags = "*", directoryRestart|directorySingle
@@ -219,7 +219,7 @@ func TestDirectoryEntriesReportLiveLength(t *testing.T) {
 
 func TestDirectoryPagingListsEveryNameOnce(t *testing.T) {
 	f := newDirectoryFixture(t)
-	want := make(map[string]bool)
+	want := map[string]bool{".": true, "..": true}
 	for i := range 150 {
 		name := fmt.Sprintf("entry-%03d", i)
 		f.create(t, name, smb.KindFile)
@@ -227,7 +227,7 @@ func TestDirectoryPagingListsEveryNameOnce(t *testing.T) {
 	}
 	open := f.open(t, "", 1)
 	seen := make(map[string]bool)
-	for page := range 151 {
+	for page := range 153 {
 		pattern := ""
 		if page == 0 {
 			pattern = "*"
@@ -265,13 +265,15 @@ func TestDirectoryRestartAndReopen(t *testing.T) {
 		want    string
 		flags   uint8
 	}{
-		{"*", "alpha", directorySingle},
-		{"", "alpha", directoryRestart | directorySingle},
-		{"alpha", "beta", directorySingle},
+		{"*", ".", directorySingle},
+		{"", ".", directoryRestart | directorySingle},
+		{"alpha", "..", directorySingle},
 		{"alpha", "alpha", directoryReopen | directorySingle},
 		{"", "alpha", directoryRestart | directorySingle},
 		{"beta", "beta", directoryReopen | directorySingle},
-		{"", "alpha", directoryReopen | directorySingle},
+		{"", ".", directoryReopen | directorySingle},
+		{"", "..", directorySingle},
+		{"", "alpha", directorySingle},
 		{"", "beta", directorySingle},
 	}
 	for _, test := range cases {
@@ -352,16 +354,52 @@ func TestDirectoryFilteredDots(t *testing.T) {
 	}
 }
 
-func TestDirectoryEmptyRootHasNoDots(t *testing.T) {
+func TestDirectoryEmptyRootListsDots(t *testing.T) {
 	f := newDirectoryFixture(t)
-	root := f.open(t, "", 1)
-	status, _ := f.query(t, root, "*", 0, wire.ClassDirectoryNames, 4096)
+	request := createRequest("", fileOpen)
+	request.Options = fileDirectoryFile
+	created := createdFile(t, fileCreate(f.ctx, t, f.client, f.session, f.next, request))
+	f.next++
+	root := state.Open{ID: state.FileID(created.ID)}
+	attr, err := f.server.options.Storage.Lookup(f.ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, class := range []wire.DirectoryInfoClass{wire.ClassDirectory, wire.ClassDirectoryFull, wire.ClassDirectoryBoth, wire.ClassDirectoryNames, wire.ClassDirectoryIDBoth, wire.ClassDirectoryIDFull} {
+		status, entries := f.query(t, root, "*", directoryReopen, class, 4096)
+		if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{".", ".."}) {
+			t.Fatalf("class %d empty root: %#x, %v", class, status, directoryNames(entries))
+		}
+		for _, entry := range entries {
+			if class != wire.ClassDirectoryNames && entry.Metadata.Basic.Attributes&0x10 == 0 {
+				t.Fatalf("root dot is not a directory: %+v", entry)
+			}
+			if (class == wire.ClassDirectoryIDBoth || class == wire.ClassDirectoryIDFull) && entry.Metadata.FileID != uint64(attr.Object.Inode) {
+				t.Fatalf("root dot escapes the share: %+v", entry)
+			}
+		}
+		status, _ = f.query(t, root, "", 0, class, 4096)
+		if status != smb.StatusNoMoreFiles {
+			t.Fatalf("class %d empty root continuation: %#x", class, status)
+		}
+	}
+	status, _ := f.query(t, root, "*", directoryReopen, wire.ClassDirectoryNames, 1)
+	if status != smb.StatusBufferTooSmall {
+		t.Fatalf("small root buffer: %#x", status)
+	}
+	for _, name := range []string{".", ".."} {
+		stepStatus, entries := f.query(t, root, "", directorySingle, wire.ClassDirectoryNames, 16)
+		if stepStatus != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{name}) {
+			t.Fatalf("root continuation: %#x, %v, want %q", stepStatus, directoryNames(entries), name)
+		}
+	}
+	status, _ = f.query(t, root, "missing", directoryReopen, wire.ClassDirectoryNames, 4096)
 	if status != smb.StatusNoSuchFile {
-		t.Fatalf("empty root: %#x", status)
+		t.Fatalf("unmatched root filter: %#x", status)
 	}
 	status, _ = f.query(t, root, "", 0, wire.ClassDirectoryNames, 4096)
 	if status != smb.StatusNoMoreFiles {
-		t.Fatalf("empty root continuation: %#x", status)
+		t.Fatalf("unmatched root continuation: %#x", status)
 	}
 }
 
@@ -475,7 +513,7 @@ func TestDirectoryIgnoresIndexSpecified(t *testing.T) {
 	f.create(t, "alpha", smb.KindFile)
 	f.create(t, "beta", smb.KindFile)
 	open := f.open(t, "", 1)
-	for i, want := range []string{"alpha", "beta"} {
+	for i, want := range []string{".", "..", "alpha", "beta"} {
 		status, entries := f.query(t, open, "*", directoryIndex|directorySingle, wire.ClassDirectoryNames, 4096)
 		if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{want}) {
 			t.Fatalf("query %d index changed position: %#x, %+v", i, status, entries)

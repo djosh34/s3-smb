@@ -201,9 +201,7 @@ func directoryDots(ctx context.Context, storage smb.Storage, inode smb.Inode, cu
 	if err != nil {
 		return nil, err
 	}
-	if name == "" {
-		return nil, nil
-	}
+	// The share root is its own parent, so ".." never escapes the share.
 	parentPath := path.Dir(strings.ReplaceAll(name, "\\", "/"))
 	if parentPath == "." {
 		parentPath = ""
