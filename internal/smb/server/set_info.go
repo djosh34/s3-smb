@@ -12,6 +12,9 @@ import (
 // Matches smbfs allocation accounting and the filesystem information replies.
 const setInfoAllocationUnit uint64 = 4096
 
+// MS-FSA permits basic information to change only these file attribute bits.
+const setInfoAttributeMask uint32 = 0x3127
+
 func handleSetInfo(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	info, err := wire.DecodeSetInfoRequest(message)
 	if err != nil {
@@ -68,7 +71,7 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		{&change.Changed, info.Changed},
 	} {
 		update, decodeErr := wire.DecodeTimeUpdate(field.value)
-		if decodeErr != nil {
+		if decodeErr != nil || update.Action == wire.TimeSet && field.value >= 1<<63 {
 			return smb.StatusInvalidParameter
 		}
 		if update.Action == wire.TimeSet {
@@ -76,7 +79,15 @@ func setBasicInfo(ctx context.Context, request RequestContext, open state.Open, 
 		}
 	}
 	if info.Attributes != 0 {
-		change.Attributes = &info.Attributes
+		attr, attrErr := request.Storage.GetAttr(ctx, open.Object)
+		if attrErr != nil {
+			return setInfoStorageStatus(ctx, request, attrErr)
+		}
+		if attr.Kind == smb.KindFile && info.Attributes&0x10 != 0 || attr.Kind == smb.KindDirectory && info.Attributes&0x100 != 0 {
+			return smb.StatusInvalidParameter
+		}
+		attributes := attr.Attributes&^setInfoAttributeMask | info.Attributes&setInfoAttributeMask
+		change.Attributes = &attributes
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, change))
 }

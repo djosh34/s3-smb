@@ -138,13 +138,98 @@ func TestSetInfoTimestampSentinelsWithoutOverflowIssue111(t *testing.T) {
 	}
 }
 
+func TestSetInfoNegativeTimesDoNotMutateIssue111(t *testing.T) {
+	valid := filetime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
+	for _, invalid := range []wire.Filetime{1 << 63, ^wire.Filetime(0) - 2} {
+		for _, test := range []struct {
+			name string
+			info wire.FileBasicInformation
+		}{
+			{"created", wire.FileBasicInformation{Created: invalid, Accessed: valid, Modified: valid, Changed: valid, Attributes: 0x20}},
+			{"accessed", wire.FileBasicInformation{Created: valid, Accessed: invalid, Modified: valid, Changed: valid, Attributes: 0x20}},
+			{"modified", wire.FileBasicInformation{Created: valid, Accessed: valid, Modified: invalid, Changed: valid, Attributes: 0x20}},
+			{"changed", wire.FileBasicInformation{Created: valid, Accessed: valid, Modified: valid, Changed: invalid, Attributes: 0x20}},
+		} {
+			t.Run(fmt.Sprintf("%016x/%s", invalid, test.name), func(t *testing.T) {
+				f := newSetInfoFixture(t, 0x100)
+				before := f.attr(t)
+				f.basic(t, test.info, smb.StatusInvalidParameter)
+				if after := f.attr(t); after != before {
+					t.Fatalf("invalid timestamp changed metadata: before %+v, after %+v", before, after)
+				}
+				if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
+					t.Fatal("invalid timestamp dropped connection")
+				}
+			})
+		}
+	}
+}
+
+func TestSetInfoBasicAttributeMask(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		path       string
+		stored     uint32
+		attributes uint32
+		want       uint32
+	}{
+		{"all supported file flags", "data", 0x80, 0x3127, 0x31a7},
+		{"unsupported flags ignored", "data", 0x87, 0x620, 0xa0},
+		{"unsupported flags alone clear supported flags", "data", 0x87, 0x600, 0x80},
+		{"normal clears supported flags", "data", 0x87, 0x80, 0x80},
+		{"zero leaves attributes unchanged", "data", 0x87, 0, 0x87},
+		{"directory kind preserved", "", 0x13, 0x3027, 0x3037},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newSetInfoFixtureForPath(t, test.path, 0x100)
+			if err := f.storage.SetAttr(f.ctx, f.open.Object, smb.AttrChange{Attributes: &test.stored}); err != nil {
+				t.Fatal(err)
+			}
+			before := f.attr(t)
+			f.basic(t, wire.FileBasicInformation{Attributes: test.attributes}, smb.StatusSuccess)
+			after := f.attr(t)
+			if after.Attributes != test.want || after.Kind != before.Kind {
+				t.Fatalf("attributes = %#x, kind = %d; want %#x, kind %d", after.Attributes, after.Kind, test.want, before.Kind)
+			}
+			if !after.Created.Equal(before.Created) || !after.Accessed.Equal(before.Accessed) || !after.Modified.Equal(before.Modified) {
+				t.Fatalf("attribute-only request changed file times: before %+v, after %+v", before, after)
+			}
+		})
+	}
+}
+
+func TestSetInfoBasicRejectsAttributeKindMismatchWithoutMutation(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		path       string
+		attributes uint32
+	}{
+		{"directory bit on file", "data", 0x10},
+		{"temporary directory", "", 0x100},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			f := newSetInfoFixtureForPath(t, test.path, 0x100)
+			before := f.attr(t)
+			value := filetime(t, time.Date(2001, 1, 2, 3, 4, 5, 0, time.UTC))
+			f.basic(t, wire.FileBasicInformation{Created: value, Accessed: value, Modified: value, Changed: value, Attributes: test.attributes}, smb.StatusInvalidParameter)
+			if after := f.attr(t); after != before {
+				t.Fatalf("invalid attributes changed metadata: before %+v, after %+v", before, after)
+			}
+			if response := exchange(f.ctx, t, f.client, sessionEcho(t, f.session, f.nextID))[0]; response.Header.Status != smb.StatusSuccess {
+				t.Fatal("invalid attributes dropped connection")
+			}
+		})
+	}
+}
+
 func TestSetInfoUnixEpochIsAnExplicitTime(t *testing.T) {
 	f := newSetInfoFixture(t, 0x100)
+	before := f.attr(t)
 	epoch := time.Unix(0, 0).UTC()
 	value := filetime(t, epoch)
 	f.basic(t, wire.FileBasicInformation{Created: value, Accessed: value, Modified: value, Changed: value, Attributes: 0x20}, smb.StatusSuccess)
 	attr := f.attr(t)
-	if !attr.Created.Equal(epoch) || !attr.Accessed.Equal(epoch) || !attr.Modified.Equal(epoch) || !attr.Changed.Equal(epoch) || attr.Attributes != 0x20 {
+	if !attr.Created.Equal(epoch) || !attr.Accessed.Equal(epoch) || !attr.Modified.Equal(epoch) || !attr.Changed.Equal(epoch) || attr.Attributes != before.Attributes&^0x3127|0x20 {
 		t.Fatalf("epoch or attributes not stored: %+v", attr)
 	}
 }
@@ -165,7 +250,7 @@ func TestSetInfoBasicFieldsAreIndependent(t *testing.T) {
 	created = created.Add(time.Minute)
 	f.basic(t, wire.FileBasicInformation{Created: filetime(t, created), Accessed: wire.FiletimeSuppress, Modified: wire.FiletimeResume, Attributes: 0x20}, smb.StatusSuccess)
 	after = f.attr(t)
-	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != 0x20 {
+	if !after.Created.Equal(created) || !after.Accessed.Equal(accessed) || !after.Modified.Equal(modified) || !after.Changed.Equal(changed) || after.Attributes != before.Attributes&^0x3127|0x20 {
 		t.Fatalf("mixed sentinel update changed other fields: %+v", after)
 	}
 }
@@ -312,12 +397,13 @@ func TestSetInfoChecksGrantedAccessPerClass(t *testing.T) {
 		t.Run(fmt.Sprintf("%x", access), func(t *testing.T) {
 			f := newSetInfoFixture(t, access)
 			f.write(t, "1234567")
+			before := f.attr(t)
 			want := smb.StatusAccessDenied
 			if access&0x100 != 0 {
 				want = smb.StatusSuccess
 			}
 			f.basic(t, wire.FileBasicInformation{Attributes: 0x20}, want)
-			if access&0x100 == 0 && f.attr(t).Attributes == 0x20 {
+			if access&0x100 == 0 && f.attr(t).Attributes != before.Attributes {
 				t.Fatal("denied basic update changed attributes")
 			}
 			want = smb.StatusAccessDenied
