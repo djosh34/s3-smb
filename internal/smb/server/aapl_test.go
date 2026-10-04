@@ -20,9 +20,21 @@ func TestAAPLNegotiationIsPerConnection(t *testing.T) {
 	if first.aaplNegotiated() || second.aaplNegotiated() {
 		t.Fatal("new connection has negotiated AAPL")
 	}
-	first.markAAPL()
+	query, err := wire.EncodeAAPLQuery(wire.AAPLQuery{Requested: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := createAAPLContexts(first, []wire.CreateContext{query}); err != nil {
+		t.Fatal(err)
+	}
 	if !first.aaplNegotiated() || second.aaplNegotiated() {
 		t.Fatal("AAPL state crossed connections")
+	}
+	if _, err := createAAPLContexts(second, []wire.CreateContext{query, query}); err == nil || second.aaplNegotiated() {
+		t.Fatal("invalid AAPL query marked negotiation")
+	}
+	if _, err := createAAPLContexts(second, []wire.CreateContext{{Name: "unknown"}}); err != nil || second.aaplNegotiated() {
+		t.Fatal("unrelated context marked AAPL negotiation")
 	}
 	var empty RequestContext
 	empty.markAAPL()

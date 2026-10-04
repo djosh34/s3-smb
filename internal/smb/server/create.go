@@ -136,10 +136,6 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	contexts, err := createAAPLContexts(request, create.Contexts)
-	if err != nil {
-		return reply{status: smb.StatusInvalidParameter}, nil
-	}
 	granted := expandCreateAccess(create.DesiredAccess)
 	result, unlock, err := createLocked(ctx, request, create, granted)
 	if unlock != nil {
@@ -160,7 +156,10 @@ func createLocked(ctx context.Context, request RequestContext, create wire.Creat
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (result reply, resultErr error) {
-	var err error
+	contexts, err := createAAPLContexts(request, create.Contexts)
+	if err != nil {
+		return reply{status: smb.StatusInvalidParameter}, nil
+	}
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil

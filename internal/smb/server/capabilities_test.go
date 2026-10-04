@@ -64,6 +64,58 @@ func (client *capabilityClient) create(t *testing.T, request wire.CreateRequest,
 	return created
 }
 
+func (client *capabilityClient) close(t *testing.T, id wire.FileID) {
+	t.Helper()
+	body, err := wire.EncodeCloseRequest(wire.CloseRequest{ID: id})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := client.exchange(t, wire.Close, body, smb.StatusSuccess)
+	if _, err := wire.DecodeCloseResponse(response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (client *capabilityClient) fileInformation(t *testing.T, id wire.FileID, class wire.FileInfoClass) []byte {
+	t.Helper()
+	body, err := wire.EncodeQueryInfoRequest(wire.QueryInfoRequest{
+		ID: id, InfoType: wire.InfoFile, InfoClass: uint8(class), OutputLength: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := client.exchange(t, wire.QueryInfo, body, smb.StatusSuccess)
+	data, err := wire.DecodeQueryInfoResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data.Data
+}
+
+func (client *capabilityClient) filesystemAttributes(t *testing.T) uint32 {
+	t.Helper()
+	root := client.create(t, wire.CreateRequest{
+		Disposition: fileOpen, Options: fileDirectoryFile, ShareAccess: 7, DesiredAccess: 0x00120089,
+	}, smb.StatusSuccess)
+	body, err := wire.EncodeQueryInfoRequest(wire.QueryInfoRequest{
+		ID: root.ID, InfoType: wire.InfoFilesystem, InfoClass: uint8(wire.ClassFilesystemAttribute), OutputLength: 4096,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := client.exchange(t, wire.QueryInfo, body, smb.StatusSuccess)
+	data, err := wire.DecodeQueryInfoResponse(response)
+	if err != nil {
+		t.Fatal(err)
+	}
+	attributes, err := wire.DecodeFilesystemAttributeInformation(data.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.close(t, root.ID)
+	return attributes.Attributes
+}
+
 func TestAAPLReplyOnEveryConnection(t *testing.T) {
 	server := newCapabilityServer(t)
 	query, err := wire.EncodeAAPLQuery(wire.AAPLQuery{Requested: 7, ClientCapabilities: ^uint64(0)})
@@ -98,7 +150,7 @@ func TestMalformedAAPLDoesNotCreateFile(t *testing.T) {
 	server := newCapabilityServer(t)
 	client := capabilityConnection(t, server)
 	client.create(t, wire.CreateRequest{
-		Name: "invalid-aapl", Disposition: fileCreate, ShareAccess: 7, DesiredAccess: fileAllAccess,
+		Name: "invalid-aapl", Disposition: fileCreateDisposition, ShareAccess: 7, DesiredAccess: fileAllAccess,
 		Contexts: []wire.CreateContext{{Name: "AAPL", Data: []byte{1}}},
 	}, smb.StatusInvalidParameter)
 	resolved, err := server.options.Storage.Lookup(t.Context(), "invalid-aapl")
