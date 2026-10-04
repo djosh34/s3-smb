@@ -67,10 +67,10 @@ func checkReplacementInFlight(t *testing.T, command wire.Command) {
 	if command == wire.Read {
 		// Deliberately stop before waitLocal/sendPending. There is no timer or
 		// scheduling race deciding whether this operation is in pending.
-		operation = owner.startWork(ctx, message, nil)
+		operation = owner.startWork(ctx, message, nil, compoundState{})
 	} else {
 		operation = &work{done: make(chan struct{})}
-		go func() { operation.result = owner.execute(ctx, message); close(operation.done) }()
+		go func() { operation.result = owner.execute(ctx, message, compoundState{}); close(operation.done) }()
 	}
 	select {
 	case <-started:
@@ -144,7 +144,7 @@ func checkReplacementInFlight(t *testing.T, command wire.Command) {
 	if _, status := options.State.Reconnect(state.ReconnectRequest{ID: durable.ID, Binding: state.Binding{SessionID: result.session.SessionID, TreeID: result.session.TreeID}, User: durable.User, Share: durable.Share, ClientGUID: durable.ClientGUID, CreateGUID: durable.CreateGUID, LeaseKey: durable.LeaseKey}); status != smb.StatusSuccess {
 		t.Fatalf("existing durable open was not preserved: %#x", status)
 	}
-	if result := owner.execute(ctx, message); result.status != smb.StatusUserSessionDeleted {
+	if result := owner.execute(ctx, message, compoundState{}); result.status != smb.StatusUserSessionDeleted {
 		t.Fatal("removed identity accepted more work")
 	}
 }
