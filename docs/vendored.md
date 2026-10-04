@@ -60,6 +60,17 @@ Added files: `server/cleanup.go`, `server/request_validation.go`, `server/status
 
 Deleted: `internal/msrpc`, `stats`.
 
+### New SMB crypt package
+
+`internal/smb/crypt/cmac.go` ports the AES-CMAC algorithm from
+`internal/smb-old/smb2/internal/crypto/cmac/cmac.go` at the SMB upstream commit
+listed above. Review checked its subkey doubling, final-block handling and
+RFC 4493 padding. The port is AES-only, has call-local state, removes the
+panic and streaming hash interface, and uses fixed-size arrays.
+`internal/smb/crypt/cmac_test.go` checks all four RFC 4493 vectors.
+The file retains the Go Authors and Hiroshi Ioka copyright and BSD-3-Clause
+notice. The old package is unchanged.
+
 ### xorm and mpb
 
 `internal/thirdparty/xorm/engine.go` installs `log.SlogLogger`, added in `log/slog.go`, so the engine never builds the stdout SQL logger and never logs SQL arguments. Tests: `logging_s3smb_test.go`, `log/slog_test.go`. mpb has no changes.
