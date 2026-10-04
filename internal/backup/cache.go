@@ -20,7 +20,10 @@ func WipeVolumeCache(cacheRoot, volumeUUID, stateDir string) error {
 	if !filepath.IsAbs(cacheRoot) || !filepath.IsAbs(stateDir) {
 		return errors.New("cache root and state directory must be absolute")
 	}
-	root, err := filepath.EvalSymlinks(cacheRoot)
+	// JuiceFS cleans the joined path before opening the cache. Resolve only
+	// its parent for the state overlap check; delete the joined path itself.
+	path := filepath.Join(cacheRoot, volumeUUID)
+	root, err := filepath.EvalSymlinks(filepath.Dir(path))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
@@ -31,8 +34,7 @@ func WipeVolumeCache(cacheRoot, volumeUUID, stateDir string) error {
 	if err != nil {
 		return fmt.Errorf("resolve state directory: %w", err)
 	}
-	path := filepath.Join(root, volumeUUID)
-	if withinDirectory(state, path) {
+	if withinDirectory(state, filepath.Join(root, volumeUUID)) {
 		return errors.New("volume cache overlaps the state directory; refusing to delete it")
 	}
 	// RemoveAll unlinks symlinks inside this directory without following them.

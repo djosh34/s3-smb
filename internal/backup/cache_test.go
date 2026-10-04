@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/djosh34/s3-smb/internal/storage"
 )
 
 const cacheTestUUID = "6f4f1a3b-5370-4383-b974-5d1bd26191b4"
@@ -103,6 +105,64 @@ func TestWipeVolumeCacheInsideState(t *testing.T) {
 	got, err := os.ReadFile(keep)
 	if err != nil || string(got) != "state file" {
 		t.Fatalf("state file changed: %q, %v", got, err)
+	}
+}
+
+func TestWipeVolumeCacheMatchesJuiceFSPath(t *testing.T) {
+	format, err := storage.NewFormat("test", false, 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, physicalRootExists := range map[string]bool{"missing physical root": false, "existing physical root": true} {
+		t.Run(name, func(t *testing.T) {
+			base, state := t.TempDir(), t.TempDir()
+			target := filepath.Join(base, "x", "y")
+			if err := os.MkdirAll(target, 0700); err != nil {
+				t.Fatal(err)
+			}
+			alias := filepath.Join(base, "a")
+			if err := os.Symlink(target, alias); err != nil {
+				t.Fatal(err)
+			}
+			// Keep .. in the configured string. JuiceFS cleans it before opening
+			// the cache, rather than following the symlink first.
+			root := alias + string(os.PathSeparator) + ".." + string(os.PathSeparator) + "b"
+			capacity := int64(8 << 20)
+			conf, err := storage.CacheConfig(format, root, &capacity)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.MkdirAll(conf.CacheDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(conf.CacheDir, "old"), []byte("old cache"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			unrelated := filepath.Join(base, "x", "b", format.UUID, "keep")
+			if physicalRootExists {
+				if err := os.MkdirAll(filepath.Dir(unrelated), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(unrelated, []byte("unrelated file"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := WipeVolumeCache(root, format.UUID, conf.CacheDir); err == nil {
+				t.Fatal("accepted a cache path that names the state directory")
+			}
+			if err := WipeVolumeCache(root, format.UUID, state); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Lstat(conf.CacheDir); !os.IsNotExist(err) {
+				t.Fatalf("JuiceFS cache remains at %s: %v", conf.CacheDir, err)
+			}
+			if physicalRootExists {
+				got, err := os.ReadFile(unrelated)
+				if err != nil || string(got) != "unrelated file" {
+					t.Fatalf("unrelated file changed: %q, %v", got, err)
+				}
+			}
+		})
 	}
 }
 
