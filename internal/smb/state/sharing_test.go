@@ -8,28 +8,30 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
-// MS-FSA 2.1.5.1.2.2 ignores same-stream sharing modes when either
-// open lacks data, execute, append and delete access.
+// MS-FSA 2.1.5.1.2.2 ignores sharing modes when either open lacks
+// data, execute, append and delete access, including base/stream delete checks.
 func TestMetadataOnlySharingIsIgnored(t *testing.T) {
-	for _, mask := range []uint32{0, 0x80, 0x100000, 0x100080} {
-		for _, reverse := range []bool{false, true} {
-			for _, committed := range []bool{false, true} {
-				t.Run(fmt.Sprintf("mask_%x_reverse_%t_committed_%t", mask, reverse, committed), func(t *testing.T) {
-					table := newTable(t)
-					metadata, data := request(1), request(1)
-					metadata.GrantedAccess, metadata.Sharing = mask, 0
-					data.GrantedAccess, data.Sharing = 0x10003, 0
-					first, second := metadata, data
-					if reverse {
-						first, second = second, first
-					}
-					if committed {
-						commit(t, table, first, state.Grant{})
-					} else {
-						reserve(t, table, first)
-					}
-					reserve(t, table, second)
-				})
+	for _, stream := range []string{"", "xattr"} {
+		for _, mask := range []uint32{0, 0x80, 0x100000, 0x100080} {
+			for _, reverse := range []bool{false, true} {
+				for _, committed := range []bool{false, true} {
+					t.Run(fmt.Sprintf("stream_%s_mask_%x_reverse_%t_committed_%t", stream, mask, reverse, committed), func(t *testing.T) {
+						table := newTable(t)
+						metadata, data := requestWithStream(1, stream), request(1)
+						metadata.GrantedAccess, metadata.Sharing = mask, 0
+						data.GrantedAccess, data.Sharing = 0x10003, 0
+						first, second := metadata, data
+						if reverse {
+							first, second = second, first
+						}
+						if committed {
+							commit(t, table, first, state.Grant{})
+						} else {
+							reserve(t, table, first)
+						}
+						reserve(t, table, second)
+					})
+				}
 			}
 		}
 	}

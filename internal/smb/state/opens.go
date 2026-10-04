@@ -99,12 +99,12 @@ func sharingCompatible(left, right OpenRequest) bool {
 	if left.Object.Inode != right.Object.Inode {
 		return true
 	}
+	// MS-FSA 2.1.5.1.2.2 excludes metadata-only opens from both
+	// directions of sharing, including base deletion against named streams.
+	if left.SharingIntent == 0 || right.SharingIntent == 0 {
+		return true
+	}
 	if left.Object.Stream == right.Object.Stream {
-		// MS-FSA 2.1.5.1.2.2 excludes metadata-only opens from both
-		// directions of the sharing check, regardless of their share mode.
-		if left.SharingIntent == 0 || right.SharingIntent == 0 {
-			return true
-		}
 		return left.SharingIntent & ^Rights(right.Sharing) == 0 && right.SharingIntent & ^Rights(left.Sharing) == 0
 	}
 	// Base deletion checks every stream's deny-delete share, in both orders.

@@ -165,6 +165,7 @@ func TestBaseDeleteSharingChecksEveryStream(t *testing.T) {
 		for _, committed := range []bool{false, true} {
 			table := newTable(t)
 			deny := requestWithStream(1, "xattr")
+			deny.GrantedAccess = 1
 			deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 			need := deleteRequest(1, "")
 			first, second := deny, need
@@ -191,6 +192,7 @@ func TestDeleteRequiresAccessAndCompatibleSharing(t *testing.T) {
 	req.GrantedAccess = 0x10000
 	open := commit(t, table, req, state.Grant{})
 	deny := requestWithStream(2, "xattr")
+	deny.GrantedAccess = 1
 	deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	_, status := table.Reserve(deny)
 	statusIs(t, status, smb.StatusSharingViolation)

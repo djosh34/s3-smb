@@ -338,6 +338,35 @@ func TestSharingCloseAndDropReleaseAllOpens(t *testing.T) {
 	}
 }
 
+func TestSharingMetadataStreamAllowsBaseDelete(t *testing.T) {
+	for _, separate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("two_connections_%t", separate), func(t *testing.T) {
+			server := newSharingServer(t)
+			first := newSharingClient(t, server)
+			second := first
+			if separate {
+				second = newSharingClient(t, server)
+			}
+			first.close(t, first.open(t, "metadata", fileReadData, 7))
+			first.close(t, first.open(t, "metadata:xattr", fileWriteData, 7))
+			for _, metadata := range []uint32{0, 0x80, 0x100000, 0x100080} {
+				for _, reverse := range []bool{false, true} {
+					firstName, secondName := "metadata:xattr", "metadata"
+					firstAccess, secondAccess := metadata, uint32(fileDelete)
+					if reverse {
+						firstName, secondName = secondName, firstName
+						firstAccess, secondAccess = secondAccess, firstAccess
+					}
+					id := first.open(t, firstName, firstAccess, 0)
+					other := second.open(t, secondName, secondAccess, 0)
+					second.close(t, other)
+					first.close(t, id)
+				}
+			}
+		})
+	}
+}
+
 func TestSharingNamedStreams(t *testing.T) {
 	for _, separate := range []bool{false, true} {
 		t.Run(fmt.Sprintf("two_connections_%t", separate), func(t *testing.T) {
