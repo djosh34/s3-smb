@@ -29,7 +29,7 @@ func newStreamClient(t *testing.T) *streamClient {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, ctx, session := loginClient(t, server, smb.CipherAES128GCM, smb.SigningCMAC)
+	client, ctx, session := newFilesMetaClient(t, server)
 	return &streamClient{server: server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
 }
 

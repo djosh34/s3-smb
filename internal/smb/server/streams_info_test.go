@@ -100,7 +100,7 @@ func assertStreamLength(t *testing.T, data []byte, class wire.FileInfoClass, wan
 // An empty unnamed file and FILE_OPEN_IF are not covered by that rule.
 func TestAAPLEmptyStreamOpen(t *testing.T) {
 	c := newStreamClient(t)
-	base := c.create(t, streamRequest("data", 2), smb.StatusSuccess).ID
+	base := c.create(t, streamRequest("data", fileCreateDisposition), smb.StatusSuccess).ID
 	for _, stream := range []string{"AFP_AfpInfo", "AFP_Resource", "com.apple.FinderInfo", "other.xattr"} {
 		name := "data:" + stream
 		id := c.create(t, streamRequest(name, 2), smb.StatusSuccess).ID
@@ -119,7 +119,7 @@ func TestAAPLEmptyStreamOpen(t *testing.T) {
 		t.Fatalf("AAPL not negotiated: %+v", negotiated.Contexts)
 	}
 	c.close(t, negotiated.ID)
-	client, ctx, session := loginClient(t, c.server, smb.CipherAES128GCM, smb.SigningCMAC)
+	client, ctx, session := newFilesMetaClient(t, c.server)
 	fresh := &streamClient{server: c.server, client: client, ctx: ctx, session: session, next: session.NextMessageID}
 	freshID := fresh.create(t, streamRequest("data:AFP_Resource", fileOpen), smb.StatusSuccess).ID
 	fresh.close(t, freshID)
