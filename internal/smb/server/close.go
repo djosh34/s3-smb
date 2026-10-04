@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -16,30 +17,35 @@ func handleClose(ctx context.Context, request RequestContext, message wire.Messa
 	if closeRequest.Flags & ^uint16(1) != 0 {
 		return reply{status: smb.StatusInvalidParameter}, nil
 	}
-	open, release, status := useOpen(request, closeRequest.ID)
+	id, status := request.FileID(closeRequest.ID)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
+	action, removeErr := removeOpen(ctx, request, state.FileID(id))
+	if action.FileID == (state.FileID{}) {
+		if errors.Is(removeErr, smb.ErrInvalidHandle) {
+			return reply{status: smb.StatusFileClosed}, nil
+		}
+		return reply{}, removeErr
+	}
+	ctx = context.WithoutCancel(ctx)
+	request.server.drainOpen(action.FileID)
 	response := wire.CloseResponse{}
 	var queryErr error
 	if closeRequest.Flags&1 != 0 {
-		attr, attrErr := request.Storage.GetAttr(ctx, open.Object)
+		attr, attrErr := request.Storage.GetAttr(ctx, action.Handle.Key())
 		if attrErr != nil {
 			queryErr = attrErr
 		} else {
 			response, queryErr = closeResponse(attr)
 		}
 	}
-	release()
-	closeErr := closeOpen(context.WithoutCancel(ctx), request, open.ID)
-	if errors.Is(closeErr, smb.ErrInvalidHandle) {
-		return reply{status: smb.StatusFileClosed}, nil
-	}
-	if cleanupErr := errors.Join(queryErr, closeErr); cleanupErr != nil {
-		return reply{}, cleanupErr
+	closeErr := request.Cleanup(ctx, []state.CloseAction{action})
+	if cleanupErr := errors.Join(removeErr, queryErr, closeErr); cleanupErr != nil {
+		return reply{fileID: wire.FileID(action.FileID)}, cleanupErr
 	}
 	body, err := wire.EncodeCloseResponse(response)
-	return reply{body: body, fileID: wire.FileID(open.ID)}, err
+	return reply{body: body, fileID: wire.FileID(action.FileID)}, err
 }
 
 func closeResponse(attr smb.Attr) (wire.CloseResponse, error) {

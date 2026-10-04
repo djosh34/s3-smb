@@ -44,9 +44,9 @@ func TestCreateDirectoryOptions(t *testing.T) {
 		{"file", fileDirectoryFile, fileOpen, smb.StatusNotADirectory},
 		{"dir", fileNonDirectoryFile, fileOpen, smb.StatusFileIsADirectory},
 		{"file", fileDirectoryFile | fileNonDirectoryFile, fileOpen, smb.StatusInvalidParameter},
-		{"dir", fileDirectoryFile, fileSupersede, smb.StatusFileIsADirectory},
-		{"dir", fileDirectoryFile, fileOverwrite, smb.StatusFileIsADirectory},
-		{"dir", fileDirectoryFile, fileOverwriteIf, smb.StatusFileIsADirectory},
+		{"dir", fileDirectoryFile, fileSupersede, smb.StatusInvalidParameter},
+		{"dir", fileDirectoryFile, fileOverwrite, smb.StatusInvalidParameter},
+		{"dir", fileDirectoryFile, fileOverwriteIf, smb.StatusInvalidParameter},
 	} {
 		t.Run(fmt.Sprintf("%s_options_%x_disposition_%d", test.name, test.options, test.disposition), func(t *testing.T) {
 			request := createRequest(test.name, test.disposition)
