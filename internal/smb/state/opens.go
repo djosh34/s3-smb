@@ -268,6 +268,13 @@ func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status) {
 	return open.Open, smb.StatusSuccess
 }
 
+// DeletePending reports deletion of the selected object or its base file.
+func (table *Table) DeletePending(key smb.ObjectKey) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	return table.deletePending(key)
+}
+
 // SetDirectory saves a cursor, reusing the search pattern on continuation.
 func (table *Table) SetDirectory(id FileID, binding Binding, cursor DirectoryCursor) smb.Status {
 	table.mu.Lock()
