@@ -180,12 +180,33 @@ func (c *testClient) disconnect() error {
 	return err
 }
 
+// dialProtected logs in with signing only, or with cipher on a server that
+// requires encryption.
+func dialProtected(t *testing.T, cipher uint16) *testClient {
+	t.Helper()
+	srv := newTestServer(t)
+	if cipher != 0 {
+		srv.server.options.Encryption = RequireEncryption
+	}
+	return srv.dial(t, smbtest.LoginOptions{Cipher: cipher, Signing: smb.SigningGMAC})
+}
+
 // ended waits for the server to end the connection on its own and returns
 // the server's error.
 func (c *testClient) ended() error {
 	err := <-c.served
 	c.served = nil
 	return err
+}
+
+// negotiate sends the Mac's NEGOTIATE and returns the decoded reply.
+func (c *testClient) negotiate(t *testing.T) wire.NegotiateResponse {
+	t.Helper()
+	response, status := decodeReply(t, c.call(t, wire.Negotiate, negotiateRequest(t), 1), wire.DecodeNegotiateResponse)
+	if status != smb.StatusSuccess {
+		t.Fatalf("NEGOTIATE status %#x", status)
+	}
+	return response
 }
 
 // reconnect logs in on a new connection as this client coming back after a

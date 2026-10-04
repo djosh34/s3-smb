@@ -14,16 +14,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// negotiate sends the Mac's NEGOTIATE and returns the decoded reply.
-func negotiate(t *testing.T, client *testClient) wire.NegotiateResponse {
-	t.Helper()
-	response, status := decodeReply(t, client.call(t, wire.Negotiate, negotiateRequest(t), 1), wire.DecodeNegotiateResponse)
-	if status != smb.StatusSuccess {
-		t.Fatalf("NEGOTIATE status %#x", status)
-	}
-	return response
-}
-
 // smb1Negotiate is the framed SMB1 NEGOTIATE a Mac opens with.
 func smb1Negotiate(dialects string) []byte {
 	payload := append(make([]byte, 35), dialects...)
@@ -39,7 +29,7 @@ func TestNegotiate(t *testing.T) {
 	if status := client.call(t, wire.Negotiate, body, 1).Header.Status; status != smb.StatusNotSupported {
 		t.Fatalf("SMB 3.0.2 NEGOTIATE status %#x", status)
 	}
-	response := negotiate(t, client)
+	response := client.negotiate(t)
 	if response.Dialect != smb.Dialect311 || response.SecurityMode != smb.AdvertisedSecurityMode || response.ServerGUID != srv.server.options.ServerGUID ||
 		response.MaxRead != smb.MaxReadSize || response.MaxWrite != smb.MaxWriteSize || response.MaxTransact != smb.MaxTransactSize || len(response.Token) == 0 {
 		t.Fatalf("NEGOTIATE reply %+v", response)
@@ -154,11 +144,11 @@ func TestNegotiationOrder(t *testing.T) {
 	for name, send := range map[string]func(t *testing.T, client *testClient){
 		"request before NEGOTIATE": func(t *testing.T, client *testClient) { client.send(t, wire.Echo, echo, 1) },
 		"second NEGOTIATE": func(t *testing.T, client *testClient) {
-			negotiate(t, client)
+			client.negotiate(t)
 			client.send(t, wire.Negotiate, negotiateRequest(t), 1)
 		},
 		"SMB1 after SMB2": func(t *testing.T, client *testClient) {
-			negotiate(t, client)
+			client.negotiate(t)
 			sendRaw(t, client, smb1Negotiate("\x02SMB 2.???\x00"))
 		},
 		"SMB1 without SMB2 offer": func(t *testing.T, client *testClient) { sendRaw(t, client, smb1Negotiate("\x02SMB 2.002\x00")) },
@@ -167,7 +157,7 @@ func TestNegotiationOrder(t *testing.T) {
 			sendRaw(t, client, binary.BigEndian.AppendUint32(nil, 64<<10+1))
 		},
 		"message ID used twice": func(t *testing.T, client *testClient) {
-			negotiate(t, client)
+			client.negotiate(t)
 			client.session.NextMessageID = 0
 			client.send(t, wire.Echo, echo, 1)
 		},
@@ -219,7 +209,7 @@ func TestLoginRefusals(t *testing.T) {
 		t.Fatal(err)
 	}
 	client = srv.accept(t)
-	negotiate(t, client)
+	client.negotiate(t)
 	for _, test := range []struct {
 		name    string
 		request wire.SessionSetupRequest
@@ -238,7 +228,7 @@ func TestLoginRefusals(t *testing.T) {
 // A connection keeps at most 64 logins going at a time.
 func TestIncompleteLoginsAreBounded(t *testing.T) {
 	client := newTestServer(t).accept(t)
-	negotiate(t, client)
+	client.negotiate(t)
 	start := loginStart(t)
 	for range 64 {
 		if status := client.call(t, wire.SessionSetup, start, 1).Header.Status; status != smb.StatusMoreProcessingRequired {
@@ -285,7 +275,7 @@ func TestForeignSessionAndTree(t *testing.T) {
 		t.Fatalf("FLUSH on another connection's tree: status %#x", status)
 	}
 	plain := srv.accept(t)
-	negotiate(t, plain)
+	plain.negotiate(t)
 	header = plain.header(wire.Flush, 1)
 	header.SessionID, header.TreeID = other.session.SessionID, other.session.TreeID
 	if err := plain.raw.Send(t.Context(), []wire.Message{{Header: header, Body: flush}}); err != nil {

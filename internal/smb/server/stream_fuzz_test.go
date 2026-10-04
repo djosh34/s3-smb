@@ -34,7 +34,7 @@ func FuzzServerStream(f *testing.F) {
 		}
 		// Cleanups run last first: the server shuts down before the reset.
 		t.Cleanup(func() {
-			if err := resetStorage(context.WithoutCancel(t.Context()), adapter, root.Attr); err != nil {
+			if err := resetStorage(context.WithoutCancel(t.Context()), adapter, root.Attr.Inode); err != nil {
 				t.Error(err)
 			}
 		})
@@ -132,18 +132,9 @@ func runStream(t *testing.T, srv *testServer, stream []byte) []wire.Message {
 	return replies
 }
 
-// resetStorage removes everything below the root and restores its
-// attributes, so each fuzz input starts from the same storage.
-func resetStorage(ctx context.Context, adapter *smbfs.FS, root smb.Attr) error {
-	if err := removeChildren(ctx, adapter, root.Inode); err != nil {
-		return err
-	}
-	return adapter.SetAttr(ctx, smb.ObjectKey{Inode: root.Inode}, smb.AttrChange{
-		Created: &root.Created, Accessed: &root.Accessed, Modified: &root.Modified, Changed: &root.Changed, Attributes: &root.Attributes,
-	})
-}
-
-func removeChildren(ctx context.Context, adapter *smbfs.FS, parent smb.Inode) error {
+// resetStorage removes everything below parent, so each fuzz input starts
+// from the same storage.
+func resetStorage(ctx context.Context, adapter *smbfs.FS, parent smb.Inode) error {
 	for {
 		entries, err := adapter.ReadDir(ctx, parent, 0, 64)
 		if err != nil || len(entries) == 0 {
@@ -151,7 +142,7 @@ func removeChildren(ctx context.Context, adapter *smbfs.FS, parent smb.Inode) er
 		}
 		for _, entry := range entries {
 			if entry.Attr.Kind == smb.KindDirectory {
-				if err := removeChildren(ctx, adapter, entry.Attr.Inode); err != nil {
+				if err := resetStorage(ctx, adapter, entry.Attr.Inode); err != nil {
 					return err
 				}
 			}

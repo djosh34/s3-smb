@@ -7,20 +7,8 @@ import (
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
-	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
-
-// dialProtected logs in with signing only, or with cipher on a server that
-// requires encryption.
-func dialProtected(t *testing.T, cipher uint16) *testClient {
-	t.Helper()
-	srv := newTestServer(t)
-	if cipher != 0 {
-		srv.server.options.Encryption = RequireEncryption
-	}
-	return srv.dial(t, smbtest.LoginOptions{Cipher: cipher, Signing: smb.SigningGMAC})
-}
 
 // A signed session refuses requests not signed with its key, and an encrypted
 // session refuses plaintext. The refusal is protected like any reply, and the

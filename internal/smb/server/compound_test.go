@@ -130,7 +130,7 @@ func TestCompoundRefusals(t *testing.T) {
 // the 9-byte error body (MS-SMB2 2.2.2, 3.3.4.1.3).
 func TestReplyFraming(t *testing.T) {
 	client := newTestServer(t).accept(t)
-	negotiate(t, client)
+	client.negotiate(t)
 	// Without a session CREATE fails.
 	if err := client.raw.Send(t.Context(), []wire.Message{echoMessage(t, client), createMessage(t, client, "file", fileOpenIf)}); err != nil {
 		t.Fatal(err)
