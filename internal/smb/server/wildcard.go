@@ -7,6 +7,7 @@ import (
 
 // matchPattern follows MS-FSA 2.1.4.4 with case-sensitive comparison.
 // Empty names never match. An empty pattern selects every directory entry.
+// By lead decision, "*.*" also selects names without a dot.
 func matchPattern(pattern, name string) bool {
 	if name == "" {
 		return false
@@ -49,8 +50,8 @@ func matchPattern(pattern, name string) bool {
 				} else {
 					current[j] = next[j+1]
 				}
-			case '"': // DOS_DOT consumes a dot, or nothing at end.
-				current[j] = (end && next[j]) || (!end && filename[j] == '.' && next[j+1])
+			case '"': // DOS_DOT matches a dot, a literal quote, or nothing at end.
+				current[j] = (end && next[j]) || (!end && (filename[j] == '.' || filename[j] == '"') && next[j+1])
 			default:
 				current[j] = !end && expression[i] == filename[j] && next[j+1]
 			}

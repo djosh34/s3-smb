@@ -79,6 +79,8 @@ func TestDirectoryMatchingTreatsLiteralCharactersAndDOSWildcardsCorrectly(t *tes
 		{"DOS question uses UTF16 units", ">", "😀", false},
 		{"DOS questions match surrogate pair", ">>", "😀", true},
 		{"DOS dot consumes dot", "a\"txt", "a.txt", true},
+		{"DOS dot matches literal quote", "a\"b", "a\"b", true},
+		{"DOS dots match literal quotes", "a\"\"", "a\"\"", true},
 		{"DOS dot at end", "a\"", "a", true},
 		{"DOS dot matches trailing dot", "a\"", "a.", true},
 		{"DOS dot cannot disappear inside name", "a\"txt", "atxt", false},
@@ -111,14 +113,37 @@ func FuzzMatchPattern(f *testing.F) {
 	f.Add("<.", "report...")
 	f.Add("**a***b**", "aaaaab")
 	f.Add("??", "😀")
+	f.Add("a\"b", "a\"b")
 	f.Add("a[1](b){2}+^$|\\.", "a[1](b){2}+^$|\\.")
 	f.Add("\xff", "\xff")
 	f.Fuzz(func(t *testing.T, pattern, name string) {
 		// Every input must finish without a panic. Nonempty literal names
 		// must match themselves, including arbitrary byte strings.
-		matchPattern(pattern, name)
-		if name != "" && !strings.ContainsAny(name, "*?<>\"") && !matchPattern(name, name) {
+		got := matchPattern(pattern, name)
+		if name == "" {
+			if got {
+				t.Fatalf("pattern %q matched an empty name", pattern)
+			}
+			return
+		}
+		if !strings.ContainsAny(name, "*?<>\"") && !matchPattern(name, name) {
 			t.Fatalf("literal name %q did not match itself", name)
+		}
+		if !matchPattern("*"+name, name) {
+			t.Fatalf("star-prefixed name %q did not match itself", name)
+		}
+
+		// Build an independent UTF-16 length count to exercise every unit
+		// through the wildcard table, including supplementary characters.
+		units := 0
+		for _, char := range name {
+			units++
+			if char > 0xffff {
+				units++
+			}
+		}
+		if !matchPattern(strings.Repeat("?", units), name) {
+			t.Fatalf("%d question marks did not match name %q", units, name)
 		}
 	})
 }
