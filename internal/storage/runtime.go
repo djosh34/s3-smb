@@ -52,7 +52,7 @@ func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config
 	if err := validateFormat(format); err != nil {
 		return chunk.Config{}, err
 	}
-	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 20, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
+	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 4, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
 		c.CacheSize = uint64(*capacity)
 	}
