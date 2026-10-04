@@ -39,7 +39,8 @@ Session and tree IDs are unique across the running server. A tree belongs to
 one session, even though every tree names the same configured share.
 LOGOFF and TREE_DISCONNECT invalidate the identity, cancel and drain its pending
 work, then run open-table cleanup. An async cleanup member does not wait for
-itself. Cleanup continues if the transport is canceled. On a drop, the table
+itself or another cleanup member. It cancels other cleanup work and drains
+ordinary pending work. Cleanup continues if the transport is canceled. On a drop, the table
 detaches durable opens before waiting for work; storage cleanup follows the drain.
 
 ## CREATE and cleanup
@@ -88,6 +89,10 @@ After that window, the server returns the storage error visibly.
 
 The server validates the whole compound before dispatch.
 The server verifies request signatures and credit charges before changing state.
+A missing or bad signature, or plaintext on an encrypted session, gets
+ACCESS_DENIED before any member of that compound is dispatched. A denial for
+multiple encrypted sessions uses separate transforms, one session per frame.
+Invalid GCM authentication or malformed framing still closes the transport.
 Each command consumes its credit charge once.
 For multi-credit commands, the charge rounds the larger of input and expected output up to 64 KiB units.
 A synchronous response grants credits once.
@@ -103,6 +108,11 @@ Each dependent request gets its own pending reply and async ID.
 The server waits for the prerequisite before executing a dependent request, including CLOSE.
 The server saves inherited session, tree and FileId from the preceding operation.
 This inheritance also applies when the preceding operation uses an existing handle.
+Handlers report the FileId they used or created even when returning an error.
+Members that report no FileId leave the saved ID unchanged.
+An error-severity predecessor blocks a following related FileId command with the
+same status, even when the predecessor used or generated no FileId. This is the
+server's simple dispatch policy. Warning statuses do not block the next member.
 The server sends completed prefix replies only once.
 Final responses use fresh buffers and may be compounded or sent separately.
 Unrelated members need not wait on S3.
@@ -133,6 +143,13 @@ The raw client verifies final SESSION_SETUP before tree connect. Its returned
 `NextMessageID` lets a test send new traffic without reusing a handshake credit.
 A protector never reuses a send nonce.
 Reconnect derives fresh keys and nonce state.
+Successful SESSION_SETUP processes PreviousSessionId across connections. It
+removes a matching session for the same user and uses disconnect cleanup, which
+detaches durable opens instead of closing them. Missing, self and different-user
+identities are ignored. LOGOFF also removes incomplete authentication exchanges.
+Removed sessions do not occupy a session slot. Outstanding replies keep a key
+reference only until their final response, so LOGOFF replies and canceled async
+finals remain protected after removal.
 
 A transport drop detaches durable opens immediately, without waiting for S3.
 The server cancels old request contexts but keeps acknowledged data and durable handles.
