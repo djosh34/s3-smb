@@ -165,6 +165,20 @@ func (connection *connection) send(messages []wire.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
+	if connection.mixedEncryption(messages) {
+		// One transform belongs to one session. Policy-error replies to a
+		// plaintext compound spanning encrypted sessions need separate frames.
+		for _, message := range messages {
+			if err := connection.sendFrame([]wire.Message{message}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return connection.sendFrame(messages)
+}
+
+func (connection *connection) sendFrame(messages []wire.Message) error {
 	payload, err := connection.encodePayload(messages)
 	if err != nil {
 		return err
@@ -208,12 +222,12 @@ func errorBodyRequired(command wire.Command, status smb.Status) bool {
 	return true
 }
 
-func (connection *connection) dispatch(ctx context.Context, message wire.Message) (reply, error) {
+func (connection *connection) dispatch(ctx context.Context, message wire.Message, previous compoundState) (reply, error) {
 	if message.Header.Command == wire.Negotiate {
 		return connection.negotiate(message)
 	}
 	if message.Header.Command == wire.SessionSetup {
-		return connection.sessionSetup(message)
+		return connection.sessionSetup(ctx, message)
 	}
 	if message.Header.Command > wire.OplockBreak {
 		return reply{status: smb.StatusNotSupported}, nil
@@ -231,6 +245,8 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 		return connection.treeDisconnect(ctx, message)
 	}
 	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
+		request.related = message.Header.Flags&wire.FlagRelated != 0
+		request.fileID = previous.fileID
 		return handle(ctx, request, message)
 	}
 	return reply{status: smb.StatusNotSupported}, nil

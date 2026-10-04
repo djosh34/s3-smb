@@ -95,13 +95,28 @@ func checkSessionCleanup(t *testing.T, command wire.Command, cipher uint16) {
 		t.Fatal("another session's open was closed")
 	}
 	next := session.NextMessageID + 1
-	response = exchange(ctx, t, client, treeRequest(t, session, next, wire.Read))[0]
-	want := smb.StatusNetworkNameDeleted
 	if command == wire.Logoff {
-		want = smb.StatusUserSessionDeleted
-	}
-	if response.Header.Status != want {
-		t.Fatalf("deleted identity: %+v", response.Header)
+		payload, err := wire.Join([]wire.Message{treeRequest(t, session, next, wire.Read)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		sendPayload(ctx, t, client, payload)
+		payload, err = client.ReceiveRaw(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		members, err := wire.Split(payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if members[0].Header.Status != smb.StatusUserSessionDeleted {
+			t.Fatal("logged-off identity remains valid")
+		}
+	} else {
+		response = exchange(ctx, t, client, treeRequest(t, session, next, wire.Read))[0]
+		if response.Header.Status != smb.StatusNetworkNameDeleted {
+			t.Fatalf("deleted tree: %+v", response.Header)
+		}
 	}
 	if command == wire.TreeDisconnect {
 		response = exchange(ctx, t, client, sessionEcho(t, session, next+1))[0]
