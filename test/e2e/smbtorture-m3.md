@@ -152,13 +152,13 @@ Failures remain candidates and blockers:
 | smb2.dir.modify.modify | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
 | smb2.dir.sorted.sorted | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
 | smb2.dir.large-files.large-files | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
-| smb2.compound.related5.related5 | NOT_SUPPORTED instead of FILE_CLOSED, compound.c:599. | connection |
+| smb2.compound.related5.related5 | NOT_SUPPORTED instead of FILE_CLOSED, compound.c:599. | Mac/file operations (IOCTL) |
 | smb2.compound.invalid1.invalid1 | Connection closes instead of INVALID_PARAMETER, compound.c:1493. | connection |
 | smb2.compound.invalid2.invalid2 | Connection closes instead of first-member success, compound.c:1575. | connection |
 | smb2.compound.invalid4.invalid4 | NOT_SUPPORTED instead of INVALID_PARAMETER, compound.c:1724. | connection |
 | smb2.compound_find.compound_find_close.compound_find_close | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
-| smb2.rename.rename_dir_openfile.rename_dir_openfile | Rename succeeds instead of ACCESS_DENIED, rename.c:1038. | files-meta |
-| smb2.rename.close-full-information.close-full-information | CREATE attributes are 0x80 instead of archive 0x20, rename.c:1469. | files-io/Mac |
+| smb2.rename.rename_dir_openfile.rename_dir_openfile | Rename succeeds instead of ACCESS_DENIED, rename.c:1038. | file operations |
+| smb2.rename.close-full-information.close-full-information | CREATE attributes are 0x80 instead of archive 0x20, rename.c:1469. | file operations |
 | smb2.rw.invalid.invalid | READ at INT64_MAX with length 1 gets END_OF_FILE instead of INVALID_PARAMETER, read_write.c:233. This occurs before the test's maximum-file-size policy check. | files-io |
 
 The five race reports identify a read in `dbMeta.genLog` at `sql.go:1085` and a
@@ -178,8 +178,12 @@ Empty-root `smbclient -c ls` failed in two separate external fresh roots and in
 the separate canonical `TestSambaM3EmptyRootListing`. All reported
 `NT_STATUS_NO_SUCH_FILE listing \\*`. The canonical shuffle seed was
 `1791118659901920595`; it failed without a skip. Populated-directory listing
-succeeded in both external runs. The metadata owner received the exact heads,
-commands and raw logs. Root/dot-entry policy is unchanged.
+succeeded in both external runs. The metadata owner classified the empty-root
+failure as a reproduced area-C defect, superseding the provisional root policy.
+The combined metadata writer owns its fix and regression. Root/dot-entry policy
+is unchanged on this test branch. The informational `dir.modify` attribute and
+listing findings need C/B diagnosis; rename/open-file and CREATE attributes belong
+to B, and the `related5` IOCTL failure belongs to Mac/B, not QUERY_INFO.
 
 Even the 20 passing candidates remain disabled: this was an approved local probe
 union, not a landed dependency stack. Area F must rerun against the final server
