@@ -22,25 +22,28 @@ type reply struct {
 type handler func(context.Context, wire.Message) (reply, error)
 
 type connection struct {
-	conn       net.Conn
-	closeErr   error
-	ctx        context.Context
-	preauth    *crypt.Preauth
-	sender     *sender
-	server     *Server
-	cancel     context.CancelFunc
-	credits    credits
-	closeOnce  sync.Once
-	cipher     uint16
-	signing    uint16
-	clientGUID [16]byte
-	negotiated bool
-	wildcard   bool
+	conn        net.Conn
+	closeErr    error
+	ctx         context.Context
+	preauth     *crypt.Preauth
+	sender      *sender
+	server      *Server
+	cancel      context.CancelFunc
+	pending     map[uint64]*pendingRequest
+	credits     credits
+	pendingMu   sync.Mutex
+	workers     sync.WaitGroup
+	closeOnce   sync.Once
+	nextAsyncID uint64
+	cipher      uint16
+	signing     uint16
+	clientGUID  [16]byte
+	negotiated  bool
+	opened      bool
 }
 
-func newConnection(ctx context.Context, server *Server, conn net.Conn) *connection {
-	ctx, cancel := context.WithCancel(ctx)
-	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits()}
+func newConnection(ctx context.Context, cancel context.CancelFunc, server *Server, conn net.Conn) *connection {
+	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits(), pending: make(map[uint64]*pendingRequest), nextAsyncID: 1}
 }
 
 func (connection *connection) close() error {
@@ -51,18 +54,23 @@ func (connection *connection) close() error {
 	return connection.closeErr
 }
 
-func (connection *connection) serve() error {
-	stop := context.AfterFunc(connection.ctx, func() {
+func (connection *connection) serve(ctx context.Context) error {
+	stop := context.AfterFunc(ctx, func() {
 		if err := connection.close(); err != nil {
 			connection.server.options.Logger.Error("close connection", "error", err)
 		}
 	})
 	defer stop()
-	go connection.sender.run(connection.ctx, connection.close)
-	err := connection.receive()
+	go connection.sender.run(ctx, connection.close)
+	err := connection.receive(ctx)
+	ctxErr := ctx.Err()
+	if err != nil {
+		connection.server.options.Logger.Info("connection refused", "reason", err)
+	}
 	closeErr := connection.close()
 	<-connection.sender.done
-	return errors.Join(err, closeErr)
+	connection.workers.Wait()
+	return errors.Join(err, ctxErr, closeErr)
 }
 
 func readFrame(reader io.Reader) ([]byte, error) {
@@ -81,7 +89,7 @@ func readFrame(reader io.Reader) ([]byte, error) {
 	return payload, nil
 }
 
-func (connection *connection) receive() error {
+func (connection *connection) receive(ctx context.Context) error {
 	for {
 		payload, err := readFrame(connection.conn)
 		if err != nil {
@@ -91,7 +99,7 @@ func (connection *connection) receive() error {
 			return err
 		}
 		if bytes.HasPrefix(payload, []byte{0xff, 'S', 'M', 'B'}) {
-			if connection.wildcard || connection.negotiated {
+			if connection.opened {
 				return errors.New("SMB1 negotiate is not the opening request")
 			}
 			if decodeErr := wire.DecodeSMB1Negotiate(payload); decodeErr != nil {
@@ -100,71 +108,30 @@ func (connection *connection) receive() error {
 			if sendErr := connection.sendWildcard(); sendErr != nil {
 				return sendErr
 			}
-			connection.wildcard = true
+			connection.opened = true
 			continue
 		}
+		connection.opened = true
 		messages, err := wire.Split(payload)
 		if err != nil {
 			return err
 		}
-		if err := connection.process(messages); err != nil {
+		if err := connection.process(ctx, messages); err != nil {
 			return err
 		}
 	}
-}
-
-func (connection *connection) process(messages []wire.Message) error {
-	validationErr := validateCompound(messages)
-	if err := connection.credits.consume(messages); err != nil {
-		return err
-	}
-	if validationErr != nil {
-		connection.server.options.Logger.Info("compound refused", "reason", validationErr)
-	}
-	responses := make([]wire.Message, 0, len(messages))
-	var preceding wire.Header
-	for _, message := range messages {
-		if message.Header.Flags&wire.FlagRelated != 0 {
-			message.Header.SessionID, message.Header.TreeID = preceding.SessionID, preceding.TreeID
-		}
-		preceding = message.Header
-		if message.Header.Command == wire.Cancel {
-			continue
-		}
-		var result reply
-		if validationErr != nil {
-			result.status = smb.StatusInvalidParameter
-		} else {
-			var err error
-			result, err = connection.dispatch(message)
-			if err != nil {
-				return err
-			}
-		}
-		response, err := makeResponse(message.Header, result, connection.credits.grant(message.Header))
-		if err != nil {
-			return err
-		}
-		responses = append(responses, response)
-	}
-	if len(responses) == 0 {
-		return nil
-	}
-	if len(responses) == 1 && responses[0].Header.Command == wire.Negotiate && responses[0].Header.Status == smb.StatusSuccess {
-		payload, err := wire.Join(responses)
-		if err != nil {
-			return err
-		}
-		connection.preauth.Update(payload)
-		return <-connection.sender.enqueue(payload)
-	}
-	return connection.send(responses)
 }
 
 func (connection *connection) send(messages []wire.Message) error {
+	if len(messages) == 0 {
+		return nil
+	}
 	payload, err := wire.Join(messages)
 	if err != nil {
 		return err
+	}
+	if len(messages) == 1 && messages[0].Header.Command == wire.Negotiate && messages[0].Header.Status == smb.StatusSuccess {
+		connection.preauth.Update(payload)
 	}
 	return <-connection.sender.enqueue(payload)
 }
@@ -185,12 +152,12 @@ func makeResponse(request wire.Header, result reply, credits uint16) (wire.Messa
 	return wire.Message{Header: header, Body: body}, nil
 }
 
-func (connection *connection) dispatch(message wire.Message) (reply, error) {
+func (connection *connection) dispatch(ctx context.Context, message wire.Message) (reply, error) {
 	if message.Header.Command == wire.Negotiate {
 		return connection.negotiate(message)
 	}
 	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
-		return handle(connection.ctx, message)
+		return handle(ctx, message)
 	}
 	if message.Header.Command <= wire.OplockBreak && (message.Header.Command != wire.SessionSetup || message.Header.SessionID != 0) {
 		return reply{status: smb.StatusUserSessionDeleted}, nil

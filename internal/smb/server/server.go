@@ -77,13 +77,14 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		// Registration happens before starting the goroutine, so Shutdown cannot
 		// finish while an accepted connection is still waiting to be registered.
-		connection, err := server.addConnection(ctx, conn)
+		connCtx, cancel := context.WithCancel(ctx)
+		connection, err := server.addConnection(connCtx, cancel, conn)
 		if err != nil {
 			acceptErr = err
 			break
 		}
 		go func() {
-			if err := server.runConnection(connection); err != nil {
+			if err := server.runConnection(connCtx, connection); err != nil {
 				server.options.Logger.Debug("connection ended", "error", err)
 			}
 		}()
@@ -96,28 +97,30 @@ func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error {
 	if conn == nil {
 		return errors.New("nil connection")
 	}
-	connection, err := server.addConnection(ctx, conn)
+	ctx, cancel := context.WithCancel(ctx)
+	connection, err := server.addConnection(ctx, cancel, conn)
 	if err != nil {
 		return err
 	}
-	return server.runConnection(connection)
+	return server.runConnection(ctx, connection)
 }
 
-func (server *Server) addConnection(ctx context.Context, conn net.Conn) (*connection, error) {
+func (server *Server) addConnection(ctx context.Context, cancel context.CancelFunc, conn net.Conn) (*connection, error) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
 	if server.stopping {
+		cancel()
 		return nil, errors.Join(net.ErrClosed, conn.Close())
 	}
-	connection := newConnection(ctx, server, conn)
+	connection := newConnection(ctx, cancel, server, conn)
 	server.connections[connection] = struct{}{}
 	server.workers.Add(1)
 	return connection, nil
 }
 
-func (server *Server) runConnection(connection *connection) error {
+func (server *Server) runConnection(ctx context.Context, connection *connection) error {
 	defer server.workers.Done()
-	err := connection.serve()
+	err := connection.serve(ctx)
 	server.mu.Lock()
 	delete(server.connections, connection)
 	server.mu.Unlock()
