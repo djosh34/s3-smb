@@ -45,13 +45,31 @@ if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFI
 case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
-  'go list '*) printf 'example/one\n\nexample/two\n' ;;
+  'go list '*) printf 'example/one\n\nexample/two\nexample/three\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
     printf 'ok example/one 0.01s\n' ;;
   "go test -list ^Fuzz example/two")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzOther\n'; fi
     printf '? example/two [no test files]\n' ;;
+  "go test -list ^Fuzz example/three")
+    if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzLast\n'; fi ;;
+  'go test -run '*'-fuzz '*)
+    [[ $GOMAXPROCS == 1 ]] || exit 18
+    package=${!#}
+    printf 'fuzz-start %s\n' "$package" >> "$CHECK_TEST_COMMANDS"
+    if [[ -n ${CHECK_TEST_PARALLEL:-} ]]; then
+      if [[ $package == example/two ]]; then touch "$CHECK_TEST_PEER"; fi
+      if [[ $5 == '^FuzzFirst$' && $CHECK_TEST_PARALLEL -gt 1 ]]; then
+        for ((attempt=0; attempt<200; attempt++)); do
+          if [[ -e $CHECK_TEST_PEER ]]; then break; fi
+          /bin/sleep 0.01
+        done
+        [[ -e $CHECK_TEST_PEER ]] || exit 19
+      fi
+      /bin/sleep 0.05
+    fi
+    printf 'fuzz-done %s\n' "$package" >> "$CHECK_TEST_COMMANDS" ;;
   'gofmt '*) printf '%s' "${CHECK_TEST_UNFORMATTED:-}" ;;
   'docker image inspect '*) [[ ${CHECK_TEST_CACHED:-no} == yes ]] ;;
   'docker start -a '*) exit "${CHECK_TEST_CONTAINER_EXIT:-0}" ;;
@@ -65,7 +83,9 @@ export PATH="$fixture/bin:$PATH"
 export CHECK_TEST_COMMANDS="$fixture/commands"
 export S3_SMB_TEST_LOGS="$fixture/logs"
 export GITHUB_OUTPUT="$fixture/github-output"
-unset CHECK_TEST_FAIL CHECK_TEST_FAIL_PREFIX CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT
+export CHECK_TEST_PEER="$fixture/peer"
+unset CHECK_TEST_FAIL CHECK_TEST_FAIL_PREFIX CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT CHECK_TEST_PARALLEL
+unset GOMAXPROCS
 
 fail() { echo "check.sh test failed: $*" >&2; exit 1; }
 contains() { grep -F -- "$1" "$CHECK_TEST_COMMANDS" >/dev/null || fail "missing command: $1"; }
@@ -73,6 +93,7 @@ absent() { if grep -F -- "$1" "$CHECK_TEST_COMMANDS" >/dev/null; then fail "unex
 run_check() {
   : > "$CHECK_TEST_COMMANDS"
   : > "$GITHUB_OUTPUT"
+  rm -f "$CHECK_TEST_PEER"
   if bash "$fixture/repo/scripts/check.sh" "$@" > "$fixture/output" 2>&1; then
     result=0
   else
@@ -139,13 +160,34 @@ succeeds
 contains 'darwin golangci-lint run --build-tags macos ./test/macos/...'
 contains 'darwin go vet -tags macos ./test/macos/...'
 contains 'go [gate] test -count=1 ./...'
-contains 'go [gate] test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'
-contains 'go [gate] test -run ^$ -fuzz ^FuzzSecond$ -fuzztime 1m -parallel 2 example/one'
-contains 'go [gate] test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 2 example/two'
-contains 'go [gate] test -run ^$ -fuzz ^Fuzz$ -fuzztime 1m -parallel 2 example/one'
-contains 'go [gate] test -run ^$ -fuzz ^Fuzz日本$ -fuzztime 1m -parallel 2 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 1 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^FuzzSecond$ -fuzztime 1m -parallel 1 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 1 example/two'
+contains 'go [gate] test -run ^$ -fuzz ^Fuzz$ -fuzztime 1m -parallel 1 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^Fuzz日本$ -fuzztime 1m -parallel 1 example/one'
+contains 'go [gate] test -run ^$ -fuzz ^FuzzLast$ -fuzztime 1m -parallel 1 example/three'
 contains '-e S3_SMB_CHECK_MODE=gate'
-[[ $(grep -c -- ' -fuzz ' "$CHECK_TEST_COMMANDS") == 5 ]] || fail 'wrong fuzz target count'
+[[ $(grep -c -- ' -fuzz ' "$CHECK_TEST_COMMANDS") == 6 ]] || fail 'wrong fuzz target count'
+
+# Packages overlap only within the CPU budget; targets of one package never do.
+for budget in 1 2 3; do
+  export GOMAXPROCS=$budget CHECK_TEST_PARALLEL=$budget
+  run_check --gate
+  succeeds
+  awk -v budget="$budget" '
+    $1 == "fuzz-start" {
+      if (packages[$2]++) exit 1
+      active++
+      if (active > budget) exit 1
+      if (active > peak) peak = active
+      starts++
+    }
+    $1 == "fuzz-done" { if (--packages[$2] != 0) exit 1; active--; ends++ }
+    $1 == "docker" && active != 0 { exit 1 }
+    END { if (active != 0 || peak != budget || starts != 6 || ends != 6) exit 1 }
+  ' "$CHECK_TEST_COMMANDS" || fail "fuzz scheduling exceeded or missed budget $budget"
+done
+unset GOMAXPROCS CHECK_TEST_PARALLEL
 export CHECK_TEST_TARGETS=no
 run_check --gate
 succeeds
@@ -162,7 +204,9 @@ for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
   'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
   'go test -list ^Fuzz example/one' \
-  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'; do
+  'go test -list ^Fuzz example/two' \
+  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 1 example/one' \
+  'go test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 1 example/two'; do
   export CHECK_TEST_FAIL=$command
   run_check --gate
   fails
@@ -173,6 +217,24 @@ for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
   esac
 done
 unset CHECK_TEST_FAIL
+
+# A failed package waits for its peer and never starts the next batch.
+export CHECK_TEST_PARALLEL=1
+for target in 'FuzzFirst$ -fuzztime 1m -parallel 1 example/one' \
+  'FuzzOther$ -fuzztime 1m -parallel 1 example/two'; do
+  export CHECK_TEST_FAIL="go test -run ^\$ -fuzz ^$target"
+  run_check --gate
+  fails
+  absent ' -fuzz ^FuzzLast$ '
+  absent 'docker [gate] network create'
+  if [[ $target == FuzzFirst* ]]; then
+    contains 'fuzz-done example/two'
+  else
+    contains 'fuzz-done example/one'
+  fi
+  grep -Fx 'fuzz_failed=true' "$GITHUB_OUTPUT" >/dev/null || fail 'missing fuzz artifact signal'
+done
+unset CHECK_TEST_FAIL CHECK_TEST_PARALLEL
 for prefix in 'shellcheck ' 'actionlint '; do
   export CHECK_TEST_FAIL_PREFIX=$prefix
   run_check
@@ -276,4 +338,7 @@ for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
     fail "internal step accepted missing $variable"
   fi
 done
+# Only dispatched gates receive the longer job timeout.
+grep -Fx "    timeout-minutes: \${{ inputs.gate && 180 || 60 }}" \
+  "$root/.github/workflows/check.yml" >/dev/null || fail 'wrong workflow timeout'
 echo 'check.sh tests passed'

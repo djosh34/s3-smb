@@ -89,20 +89,50 @@ fi
 if [[ $S3_SMB_CHECK_MODE == gate ]]; then
   echo '== Fuzz exploration =='
   go list -f '{{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}}' ./... > "$work/packages"
+  fuzz_packages=()
   while IFS= read -r package; do
     [[ -n $package ]] || continue
-    go test -list '^Fuzz' "$package" > "$work/targets"
+    targets="$work/targets-${#fuzz_packages[@]}"
+    go test -list '^Fuzz' "$package" > "$work/listed"
+    : > "$targets"
     while IFS= read -r target; do
       # go test also prints package summaries. Only target names belong here.
       if [[ $target == Fuzz* && $target != *[[:space:]]* ]]; then
-        echo "Fuzzing $package/$target"
-        if ! go test -run '^$' -fuzz "^${target}$" -fuzztime 1m -parallel 2 "$package"; then
-          fuzz_failure
-          exit 1
-        fi
+        printf '%s\n' "$target" >> "$targets"
       fi
-    done < "$work/targets"
+    done < "$work/listed"
+    if [[ -s $targets ]]; then fuzz_packages+=("$package"); fi
   done < "$work/packages"
+
+  fuzz_package() {
+    local package=$1 targets=$2 target
+    while IFS= read -r target; do
+      echo "Fuzzing $package/$target"
+      if ! GOMAXPROCS=1 go test -run '^$' -fuzz "^${target}$" -fuzztime 1m -parallel 1 "$package"; then
+        return 1
+      fi
+    done < "$targets"
+  }
+  fuzz_pids=()
+  wait_fuzz() {
+    local pid failed=false
+    # Drain the whole batch, even on failure, before cleanup or integration.
+    for pid in "${fuzz_pids[@]}"; do
+      if ! wait "$pid"; then failed=true; fi
+    done
+    fuzz_pids=()
+    if [[ $failed == true ]]; then
+      fuzz_failure
+      exit 1
+    fi
+  }
+  # Each package uses one CPU. Other check stages never overlap fuzz workers.
+  for index in "${!fuzz_packages[@]}"; do
+    fuzz_package "${fuzz_packages[$index]}" "$work/targets-$index" &
+    fuzz_pids+=("$!")
+    if (( ${#fuzz_pids[@]} >= GOMAXPROCS )); then wait_fuzz; fi
+  done
+  wait_fuzz
 fi
 
 echo '== Docker integration =='
