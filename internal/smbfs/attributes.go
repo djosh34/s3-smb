@@ -340,7 +340,7 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 			return err
 		}
 	}
-	if err := s.setTimes(ctx, key.Inode, change); err != nil {
+	if err := s.setTimes(ctx, key.Inode, st, change); err != nil {
 		return err
 	}
 	if err := s.setProperties(ctx, key.Inode, change); err != nil {
@@ -350,7 +350,7 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	return nil
 }
 
-func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
+func (s *FS) setTimes(ctx context.Context, ino smb.Inode, st *inodeState, change smb.AttrChange) error {
 	var a meta.Attr
 	var mask uint16
 	if change.Accessed != nil {
@@ -375,6 +375,8 @@ func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange)
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &stored)); err != nil {
 		return err
 	}
+	// A later error can leave some timestamps changed, so invalidate on error too.
+	defer s.invalidateDirectoryTimes(st)
 	// JuiceFS forbids path-based time changes in trash. Retained references use
 	// the same private exact-time representation without changing trash admission.
 	if !stored.Parent.IsTrash() {
@@ -405,6 +407,16 @@ func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange)
 		}
 	}
 	return nil
+}
+
+func (s *FS) invalidateDirectoryTimes(st *inodeState) {
+	st.liveMu.Lock()
+	st.live.flushed = s.flushes.Add(1)
+	st.liveMu.Unlock()
+	// Without a retained handle, the per-inode generation leaves with its state.
+	if st.refs.Load() == 0 {
+		s.commits.Add(1)
+	}
 }
 
 func (s *FS) setProperties(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {

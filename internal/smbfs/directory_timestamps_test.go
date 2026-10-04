@@ -135,6 +135,35 @@ func TestDirectoryTimesAcrossTruncateAndReopen(t *testing.T) {
 	}
 }
 
+func TestDirectoryTimesAcrossSetAttr(t *testing.T) {
+	for _, retained := range []bool{false, true} {
+		t.Run(map[bool]string{false: "without_handle", true: "with_handle"}[retained], func(t *testing.T) {
+			f := newFixture(t, 0)
+			r := f.create(t, "data", smb.KindFile)
+			if retained {
+				f.open(t, r.Object, smb.AccessRead)
+			}
+			initial := time.Unix(1000000000, 0).UTC()
+			if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Accessed: &initial, Modified: &initial, Changed: &initial}); err != nil {
+				t.Fatal(err)
+			}
+			generation := f.fs.directoryGeneration()
+			page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+			if err != nil || len(page) != 1 {
+				t.Fatalf("pre-setattr page = %+v, %v", page, err)
+			}
+			stamp := time.Date(2100, 1, 1, 0, 0, 0, 123456700, time.UTC)
+			if err = f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Accessed: &stamp, Modified: &stamp, Changed: &stamp}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+			if err != nil || !got.Accessed.Equal(stamp) || !got.Modified.Equal(stamp) || !got.Changed.Equal(stamp) {
+				t.Fatalf("page across setattr = %+v, %v; want times %v", got, err, stamp)
+			}
+		})
+	}
+}
+
 func TestFlushTimesStayUnchangedAfterLastClose(t *testing.T) {
 	f := newFixture(t, 0)
 	r := f.create(t, "data", smb.KindFile)
