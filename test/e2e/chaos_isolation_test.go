@@ -27,6 +27,7 @@ const isolationMaxLatency = 2 * time.Second
 
 type isolationPlan struct {
 	activate chaos.Schedule
+	cut      chaos.Schedule
 	restore  chaos.Schedule
 	hold     time.Duration
 }
@@ -41,11 +42,15 @@ func makeIsolationPlan(seed uint64, kind string, gate bool) isolationPlan {
 	if kind == "slow" {
 		fault = netfault.Fault{Delay: 400*time.Millisecond + time.Duration(random.IntN(200))*time.Millisecond}
 	}
-	return isolationPlan{
-		activate: chaos.Schedule{{Net: &fault}},
+	plan := isolationPlan{
+		activate: chaos.Schedule{{At: time.Duration(50+random.IntN(100)) * time.Millisecond, Net: &fault}},
 		restore:  chaos.Schedule{{Net: &netfault.Fault{}}},
 		hold:     hold,
 	}
+	if kind == "cut" {
+		plan.cut = chaos.Schedule{{At: time.Duration(150+random.IntN(100)) * time.Millisecond, Cut: true}}
+	}
+	return plan
 }
 
 func isolationBytes(seed uint64, stream string, size int) []byte {
@@ -125,6 +130,15 @@ func runIsolation(t *testing.T, seed uint64, kind, operation string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	fileClosed := false
+	t.Cleanup(func() {
+		if !fileClosed {
+			cancelFault()
+			if err := file.Close(); err != nil {
+				t.Logf("close canceled fault handle: %v", err)
+			}
+		}
+	})
 	if err := plan.activate.Run(t.Context(), proxy, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -158,9 +172,8 @@ func runIsolation(t *testing.T, seed uint64, kind, operation string) {
 	case <-time.After(200 * time.Millisecond):
 	}
 	if kind == "cut" {
-		cut := chaos.Schedule{{Cut: true}}
-		t.Logf("cut blocked client:\n%s", cut)
-		if err := cut.Run(t.Context(), proxy, nil); err != nil {
+		t.Logf("cut blocked client:\n%s", plan.cut)
+		if err := plan.cut.Run(t.Context(), proxy, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -203,11 +216,13 @@ func runIsolation(t *testing.T, seed uint64, kind, operation string) {
 	} else if got.err != nil || got.n != len(payload) || operation == "read" && !bytes.Equal(got.data, payload) {
 		t.Fatalf("restored %s: bytes=%d/%d error=%v", operation, got.n, len(payload), got.err)
 	}
-	if err := file.Close(); err != nil {
+	closeErr := file.Close()
+	fileClosed = true
+	if closeErr != nil {
 		if kind != "cut" {
-			t.Fatal(err)
+			t.Fatal(closeErr)
 		}
-		t.Logf("close cut handle failed visibly: %v", err)
+		t.Logf("close cut handle failed visibly: %v", closeErr)
 	}
 	isolationProbe(t, healthy, echo, ledger, healthyData, bound)
 	if err := ledger.CheckAcknowledged(chaosRead(func(name string) ([]byte, error) {
@@ -232,12 +247,13 @@ func startIsolationOperation(file *smbclient.File, ledger *chaos.Ledger, payload
 		ledger.Attempt("fault.bin", 0, payload)
 	}
 	go func() {
-		close(started)
 		got := isolationResult{}
 		if operation == "read" {
 			got.data = make([]byte, len(payload))
+			close(started)
 			got.n, got.err = io.ReadFull(file, got.data)
 		} else {
+			close(started)
 			got.n, got.err = file.WriteAt(payload, 0)
 			if got.n > 0 {
 				ledger.Write("fault.bin", 0, payload[:got.n])
@@ -381,6 +397,12 @@ func TestIsolationPlan(t *testing.T) {
 		gate := makeIsolationPlan(357, kind, true)
 		if first.hold < 4*time.Second || first.hold >= 5*time.Second || gate.hold < 30*time.Second || gate.hold >= 31*time.Second {
 			t.Fatalf("unexpected fault lengths: PR=%s gate=%s", first.hold, gate.hold)
+		}
+		if first.activate[0].At < 50*time.Millisecond || first.activate[0].At >= 150*time.Millisecond {
+			t.Fatal("activation offset is outside the seeded range")
+		}
+		if kind == "cut" && (len(first.cut) != 1 || !first.cut[0].Cut || first.cut[0].At < 150*time.Millisecond || first.cut[0].At >= 250*time.Millisecond) {
+			t.Fatal("missing seeded cut")
 		}
 		if !reflect.DeepEqual(*first.restore[0].Net, netfault.Fault{}) {
 			t.Fatal("restoration retained faults")
