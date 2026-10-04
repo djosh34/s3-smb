@@ -40,6 +40,7 @@ type FS struct {
 	mu         sync.Mutex
 	renameMu   sync.Mutex
 	commits    atomic.Uint64
+	flushes    atomic.Uint64
 	capacity   uint64
 	volumeID   uint64
 	readOnly   bool
@@ -48,6 +49,7 @@ type FS struct {
 type liveState struct {
 	modified time.Time
 	size     uint64
+	flushed  uint64 // generation invalidating older directory rows for this inode
 	dirty    bool
 	valid    bool // size is authoritative while the native reference is retained
 }
@@ -243,7 +245,7 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 		if err = backendError(s.metadata.Open(storageContext(ctx), meta.Ino(key.Inode), flags, &raw)); err != nil {
 			return nil, err
 		}
-		st.publish(liveState{size: raw.Length, valid: true})
+		st.publish(liveState{size: raw.Length, flushed: s.flushes.Add(1), valid: true})
 	}
 	st.refs.Add(1)
 	if key.Stream != "" {
@@ -259,6 +261,10 @@ func (s *FS) flush(ctx context.Context, st *inodeState) error {
 		}
 	}
 	live := st.snapshot()
+	if live.dirty {
+		// Invalidate only this inode's pre-flush directory timestamps.
+		live.flushed = s.flushes.Add(1)
+	}
 	live.dirty = false
 	st.publish(live)
 	return ctx.Err()
@@ -295,9 +301,10 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	closeErr := backendError(s.metadata.Close(storageContext(cleanup), meta.Ino(h.key.Inode)))
 	// Invalidate pre-close SQL snapshots before dropping the live length.
 	s.commits.Add(1)
-	live := h.state.snapshot()
-	live.valid = false
-	h.state.publish(live)
+	h.state.liveMu.Lock()
+	h.state.live.valid = false
+	h.state.streams = nil
+	h.state.liveMu.Unlock()
 	return errors.Join(flushErr, writerErr, xattrErr, closeErr, ctx.Err())
 }
 
@@ -478,7 +485,7 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 	}
 	s.writer.Truncate(meta.Ino(key.Inode), size)
 	s.reader.Truncate(meta.Ino(key.Inode), size)
-	st.publish(liveState{size: size, valid: st.refs.Load() > 0})
+	st.publish(liveState{size: size, flushed: s.flushes.Add(1), valid: st.refs.Load() > 0})
 	s.commits.Add(1)
 	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
 	return nil
