@@ -20,10 +20,11 @@ func NewClient(conn net.Conn) (*Client, error) {
 	return &Client{conn: conn, pending: make(map[uint64]pendingReply), sendSlot: make(chan struct{}, 1)}, nil
 }
 
-// Send encodes one compound, changing only NextCommand links and padding.
-// It does not allocate message IDs or adjust credits, flags or signatures.
+// Send encodes one compound and applies protection after Login. Before Login
+// it changes only NextCommand links and padding. It never allocates message IDs
+// or adjusts credits. Use SendRaw to bypass protection.
 func (client *Client) Send(ctx context.Context, messages []wire.Message) error {
-	payload, err := wire.Join(messages)
+	payload, err := client.encodeMessages(messages)
 	if err != nil {
 		return err
 	}
@@ -73,12 +74,11 @@ func (client *Client) Receive(ctx context.Context) (Reply, error) {
 	if err != nil {
 		return Reply{}, err
 	}
-	messages, err := wire.Split(payload)
-	reply := Reply{Raw: payload, Messages: messages}
+	reply, err := client.decodeMessages(payload)
 	if err != nil {
 		return reply, err
 	}
-	for _, message := range messages {
+	for _, message := range reply.Messages {
 		h := message.Header
 		if h.Flags&wire.FlagAsync == 0 {
 			if h.Status == smb.StatusPending {
