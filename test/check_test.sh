@@ -36,6 +36,10 @@ cat > "$fixture/bin/stub" <<'STUB'
 set -Eeuo pipefail
 command=${0##*/}
 command=${command%-stub}
+if [[ ${GOMAXPROCS-unset} != "$CHECK_TEST_GOMAXPROCS" || ${GOFLAGS-unset} != "$CHECK_TEST_GOFLAGS" ]]; then
+  echo "Go settings changed: GOMAXPROCS=${GOMAXPROCS-unset} GOFLAGS=${GOFLAGS-unset}" >&2
+  exit 1
+fi
 printf '%s [%s] %s\n' "$command" "$S3_SMB_CHECK_MODE" "$*" >> "$CHECK_TEST_COMMANDS"
 if [[ ${GOOS:-} == darwin ]]; then
   printf 'darwin %s %s\n' "$command" "$*" >> "$CHECK_TEST_COMMANDS"
@@ -66,6 +70,8 @@ export CHECK_TEST_COMMANDS="$fixture/commands"
 export S3_SMB_TEST_LOGS="$fixture/logs"
 export GITHUB_OUTPUT="$fixture/github-output"
 unset CHECK_TEST_FAIL CHECK_TEST_FAIL_PREFIX CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT
+unset GOMAXPROCS GOFLAGS
+export CHECK_TEST_GOMAXPROCS=unset CHECK_TEST_GOFLAGS=unset
 
 fail() { echo "check.sh test failed: $*" >&2; exit 1; }
 contains() { grep -F -- "$1" "$CHECK_TEST_COMMANDS" >/dev/null || fail "missing command: $1"; }
@@ -152,6 +158,23 @@ succeeds
 absent ' -fuzz '
 contains 'docker [gate] start -a'
 unset CHECK_TEST_TARGETS
+
+# Neither mode sets defaults or changes caller-supplied Go settings.
+for setting in supplied empty; do
+  if [[ $setting == supplied ]]; then
+    export GOMAXPROCS=7 GOFLAGS='-mod=readonly -p=5'
+  else
+    export GOMAXPROCS='' GOFLAGS=''
+  fi
+  export CHECK_TEST_GOMAXPROCS=$GOMAXPROCS CHECK_TEST_GOFLAGS=$GOFLAGS
+  run_check
+  succeeds
+  run_check --gate
+  succeeds
+  contains 'go [gate] test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'
+done
+unset GOMAXPROCS GOFLAGS
+export CHECK_TEST_GOMAXPROCS=unset CHECK_TEST_GOFLAGS=unset
 
 # Failures stop later stages. Seed and exploration failures request artifacts.
 for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
@@ -250,6 +273,13 @@ wait "$second"
 first_id=$(grep 'network create' "$fixture/first" | awk '{print $5}')
 second_id=$(grep 'network create' "$fixture/second" | awk '{print $5}')
 [[ -n $first_id && -n $second_id && $first_id != "$second_id" ]] || fail 'parallel names collide'
+# Docker uses Go's CPU defaults while keeping readonly module resolution.
+grep -Fx 'ENV GOTOOLCHAIN=local CGO_ENABLED=1 GOFLAGS="-mod=readonly"' "$root/test/Dockerfile" >/dev/null \
+  || fail 'Docker Go settings differ from the uncapped defaults'
+if grep -E 'GOMAXPROCS|(^|[[:space:]"=])-p([=[:space:]]|$)' "$root/test/Dockerfile" >/dev/null; then
+  fail 'Docker image caps Go parallelism'
+fi
+
 # The internal Docker step builds a normal daemon and race-tests every package.
 : > "$CHECK_TEST_COMMANDS"
 export S3_SMB_CHECK_MODE=gate S3_SMB_E2E_ENDPOINT=http://minio:9000
