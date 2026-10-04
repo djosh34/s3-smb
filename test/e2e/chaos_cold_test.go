@@ -22,8 +22,7 @@ import (
 
 func TestChaosColdRecovery(t *testing.T) {
 	seed := chaos.Seed(t)
-	// Use the default daemon to check the scenario while the chaos fixture lands.
-	f := newFixture(t, true)
+	f := newChaosFixture(t, true)
 	f.interval = "12s"
 	proxy, err := s3fault.New(context.Background(), f.endpoint)
 	if err != nil {
