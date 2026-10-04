@@ -25,8 +25,46 @@ type reconnectGate struct {
 
 type reconnectStorage struct {
 	smb.Storage
-	gate *reconnectGate
-	mu   sync.Mutex
+	gate    *reconnectGate
+	closed  chan struct{}
+	removed chan struct{}
+	mu      sync.Mutex
+}
+
+// observeCleanup reports the selected band's storage cleanup, not merely its
+// removal from the open table. Expiry dispatches that work asynchronously.
+func (storage *reconnectStorage) observeCleanup() (<-chan struct{}, <-chan struct{}) {
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	storage.closed = make(chan struct{})
+	storage.removed = make(chan struct{})
+	return storage.closed, storage.removed
+}
+
+func (storage *reconnectStorage) Close(ctx context.Context, handle smb.Handle) error {
+	if err := storage.Storage.Close(ctx, handle); err != nil {
+		return err
+	}
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	if storage.closed != nil {
+		close(storage.closed)
+		storage.closed = nil
+	}
+	return nil
+}
+
+func (storage *reconnectStorage) Remove(ctx context.Context, name smb.Name, inode smb.Inode) error {
+	if err := storage.Storage.Remove(ctx, name, inode); err != nil {
+		return err
+	}
+	storage.mu.Lock()
+	defer storage.mu.Unlock()
+	if storage.removed != nil {
+		close(storage.removed)
+		storage.removed = nil
+	}
+	return nil
 }
 
 func (storage *reconnectStorage) arm(command wire.Command) *reconnectGate {
@@ -110,7 +148,9 @@ func newReconnectFixture(t *testing.T, cipher uint16) *reconnectFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options.Encryption = AllowPlaintext
+	if cipher == 0 {
+		options.Encryption = AllowPlaintext
+	}
 	server, err := New(options)
 	if err != nil {
 		t.Fatal(err)
