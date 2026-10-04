@@ -206,6 +206,11 @@ func prepareSnapshot(ctx context.Context, path string, saved, current *meta.Form
 	if st := m.GetAttr(meta.Background(), meta.RootInode, &attr); st != 0 {
 		return fmt.Errorf("recovered root: %w", st)
 	}
+	// Session cleanup can queue inode retirement even with background jobs off.
+	// Join it and flush the resulting counters before closing SQLite.
+	if err = m.CloseSession(); err != nil {
+		return err
+	}
 	err = m.Shutdown()
 	closed = true
 	if err != nil {

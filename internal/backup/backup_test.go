@@ -64,9 +64,12 @@ type testMetadata struct {
 	path string
 }
 
-func newMetadata(t *testing.T) (*testMetadata, *meta.Format) {
+func newMetadata(t *testing.T, maintenance ...func() error) (*testMetadata, *meta.Format) {
 	t.Helper()
 	c := meta.DefaultConf()
+	if len(maintenance) > 0 {
+		c.CheckMaintenance = maintenance[0]
+	}
 	c.NoBGJob = true
 	c.MaxDeletes = 0
 	path := filepath.Join(t.TempDir(), "metadata.db")

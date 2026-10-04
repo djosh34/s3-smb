@@ -73,7 +73,8 @@ func readNativeFile(t *testing.T, m meta.Meta, store chunk.ChunkStore, ino meta.
 // Regression for #92: the last allocated inode is absent from the tree but
 // still has pending data deletion. Restoring only the tree would reuse it.
 func TestPendingDeletionCannotDeleteNewFileAfterRecovery(t *testing.T) {
-	m, f := newMetadata(t)
+	// Pause native retirement at the same maintenance guard used in production.
+	m, f := newMetadata(t, func() error { return ErrUnprotected })
 	s := newStore(t)
 	runtime := nativeRuntime(t, m, s, f, t.TempDir(), 0)
 	createInode(t, m, "kept")
@@ -95,6 +96,9 @@ func TestPendingDeletionCannotDeleteNewFileAfterRecovery(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "restored.db")
 	if _, err = Recover(context.Background(), s, r.Key, path, f); err != nil {
 		t.Fatal(err)
+	}
+	if queryCount(t, path, "jfs_delfile") != 1 {
+		t.Fatal("recovery dropped pending deletion")
 	}
 	restored := recoveredMetadata(t, path, false, 1)
 	freshRuntime := nativeRuntime(t, restored, s, f, t.TempDir(), 0)
