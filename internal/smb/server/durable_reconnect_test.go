@@ -14,6 +14,7 @@ import (
 func TestDH2CReattachesRetainedOpen(t *testing.T) {
 	server, client, ctx, session := newFileClient(t)
 	options := durableCreateOptions()
+	options.Lease.Flags, options.Lease.ParentKey, options.Lease.Epoch = leaseParentKeySet, [16]byte{8}, 7
 	first := durableResult(t, durableExchange(ctx, t, client, session, session.NextMessageID, options))
 	binding := state.Binding{SessionID: session.SessionID, TreeID: session.TreeID}
 	original, status := server.options.State.Find(state.FileID(first.Reply.ID), binding)
@@ -34,13 +35,16 @@ func TestDH2CReattachesRetainedOpen(t *testing.T) {
 	}
 	options.Reconnect = &wire.DurableReconnect{ID: first.Reply.ID, CreateGUID: options.Durable.CreateGUID}
 	options.Durable = nil
+	options.Request.DesiredAccess, options.Request.ShareAccess = fileAllAccess, 0
+	options.Request.Options |= fileDeleteOnClose
+	options.Lease.State, options.Lease.Epoch, options.Lease.ParentKey = smb.LeaseRead, 999, [16]byte{9}
 	second := durableResult(t, durableExchange(newCtx, t, newClient, newSession, newSession.NextMessageID, options))
 	if second.Reply.ID.Persistent != first.Reply.ID.Persistent || second.Reply.ID.Volatile == first.Reply.ID.Volatile || second.Reply.Action != 1 || second.Durable == nil || second.Lease == nil || *second.Lease != *first.Lease {
 		t.Fatalf("reconnect changed identity or grant: first %+v, second %+v", first, second)
 	}
 	newBinding := state.Binding{SessionID: newSession.SessionID, TreeID: newSession.TreeID}
 	reattached, status := server.options.State.Find(state.FileID(second.Reply.ID), newBinding)
-	if status != smb.StatusSuccess || reattached.Handle != original.Handle || reattached.GrantedAccess != original.GrantedAccess || reattached.Sharing != original.Sharing {
+	if status != smb.StatusSuccess || reattached.Handle != original.Handle || reattached.GrantedAccess != original.GrantedAccess || reattached.Sharing != original.Sharing || reattached.DeleteOnClose != original.DeleteOnClose {
 		t.Fatalf("reattached = %+v, status %#x", reattached, status)
 	}
 	if status := server.options.State.Lock(reattached.ID, newBinding, []state.Range{{Length: 10}}, true); status != smb.StatusSuccess {
