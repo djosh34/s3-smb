@@ -13,7 +13,7 @@ func TestFeatureMasks(t *testing.T) {
 		got  uint64
 		want uint64
 	}{
-		{"negotiate", uint64(smb.AdvertisedCapabilities), 0x06},
+		{"negotiate", uint64(smb.AdvertisedCapabilities), 0x04},
 		{"filesystem", uint64(smb.AdvertisedFilesystemAttributes), 0x07},
 		{"aapl-not-enabled", smb.AAPLVolumeCapabilities, 0},
 		{"aapl-case-sensitive", smb.AAPLCaseSensitive, 0x02},

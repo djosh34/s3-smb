@@ -2,24 +2,28 @@
 
 Preparation for [#348](https://github.com/djosh34/s3-smb/issues/348) and the
 leases-area part of [#138](https://github.com/djosh34/s3-smb/issues/138).
-The production LEASING bit remains disabled. None of the candidate Samba tests
-has passed against smbnext in this preparation branch.
+LEASING is disabled in both the integration and this draft branch. A private
+probe at 034617a temporarily enabled that bit after the raw Go feature proof
+passed. All six compatible Samba tests failed, and the bit was disabled again.
+Activation remains blocked. See the [run results](smb-m5-results.md).
 
 ## Activation
 
 `test/e2e/smbtorture.allowlist` remains the runner's selected M2 list.
 `test/e2e/smbtorture.m5.allowlist` is a separate candidate list. The inventory
-and exclusions are not executable test selectors. Do not select the M5 list
-or enable LEASING until grants, breaks, durability and
-[#347 reconnect tests](https://github.com/djosh34/s3-smb/issues/347) pass.
-Then run every selected exact name against the pinned client and the
-race-enabled smbnext daemon. A skip or missing success report is not a pass.
+and exclusions are not executable test selectors. `TestSambaM5Interop` runs all
+six exact names as isolated subtests through the same runner, with a fresh
+race-enabled daemon for each. The grants, breaks, durability and
+[#347 reconnect tests](https://github.com/djosh34/s3-smb/issues/347) pass on this
+candidate. The compatible Samba failures still block activation and merge.
+A skip or missing success report is not a pass.
 
 The final activation must preserve the other milestone lists. It must also
 check that NEGOTIATE advertises exactly LARGE_MTU | LEASING (0x06), without
-DFS, multichannel, persistent handles or directory leasing. The existing
-`internal/smb/features_test.go:TestFeatureMasks` currently expects 0x04;
-update that test only when the bit is enabled and add a wire-level assertion.
+DFS, multichannel, persistent handles or directory leasing. The current feature and raw wire tests assert the unchanged 0x04 mask.
+Enabling LEASING and updating the exact-mask expectations to 0x06 is the last
+step, only after the full checked feature stack, raw Go proof and all six
+compatible Samba tests pass. No filesystem or AAPL bit changes.
 
 ## Pinned enumeration
 
@@ -90,23 +94,25 @@ or change its timeout policy to satisfy a Samba test.
 ## Durable reconnect coverage gap
 
 There is no eligible unchanged durable-v2 test in the two pinned durable-v2
-families. This is not a passing durable reconnect gate, and not authority to
-amend [M5's test list](https://github.com/djosh34/s3-smb/issues/191). The lead
-must record a coverage-gap decision before M5 can close. Proposed evidence is
-[#346's raw DH2C/replay tests](https://github.com/djosh34/s3-smb/issues/346) and
-[#347's real-adapter network-fault tests](https://github.com/djosh34/s3-smb/issues/347).
-Keep the pinned runner and server policy unchanged.
+families. This is not a passing Samba durable reconnect gate. The
+[coverage-gap decision](https://github.com/djosh34/s3-smb/issues/191#issuecomment-5979491025)
+requires [#346's raw DH2C/replay tests](https://github.com/djosh34/s3-smb/issues/346)
+and [#347's real-adapter network-fault tests](https://github.com/djosh34/s3-smb/issues/347)
+instead. They pass on this candidate. The counted Mac short-drop and longer-drop
+recovery evidence is still required in the final gate. Keep the pinned runner
+and the 960000 ms cap/120000 ms default unchanged.
 
 ## Capability and grant evidence
 
 This table covers only the leases area. Filesystem attributes and AAPL are
 owned by the mac area through [#122](https://github.com/djosh34/s3-smb/issues/122).
-References to open component PRs are planned evidence, not claims that the
-integration branch already passes them.
+The raw Go tests pass on the integrated candidate described in the run results.
+This is not a claim that the integration branch passes the compatible Samba
+tests or the final Mac gate.
 
 | Wire surface | Intended M5 behavior | Evidence to require before activation |
 | --- | --- | --- |
-| NEGOTIATE LEASING bit 0x02 | Off in this prep branch; final mask 0x06 with LARGE_MTU. No new directory/persistent/multichannel/DFS bits. | Exact-mask tests in `internal/smb/features_test.go` and a wire NEGOTIATE assertion in #348, plus lease candidates after #347. |
+| NEGOTIATE LEASING bit 0x02 | Disabled: current mask 0x04. Final mask 0x06 with LARGE_MTU only after all six compatible tests pass. No new directory/persistent/multichannel/DFS bits. | Exact-mask tests in `internal/smb/features_test.go` and a wire NEGOTIATE assertion in #348, plus lease candidates after #347. |
 | CREATE oplock level 0xff and `RqLs` V2 | Only regular unnamed files grant safe R (1), RH (3), RWH (7). Classic oplocks, V1 leases, directories and named streams receive no grant. | #345 `TestCreateLeaseV2SupportedStates`, `TestCreateLeaseSafeSubsetWithOtherOpens`, `TestCreateRefusesClassicOplocksAndNonFileLeases`, `TestCreateLeaseContextValidation`. |
 | `RqLs` key, state, epoch and flags | Echo the lease identity; shared opens use table state/epoch. BREAK_IN_PROGRESS is captured during a pending break. PARENT_LEASE_KEY_SET reports a supplied parent key, not a directory grant. | #345 `TestCreateLeaseSharesStateEpochAndParent`, `TestCreateLeaseResponseWithoutParentFlagClearsParent`, `TestCreateLeaseResponseCarriesPendingSharedBreak`; state `TestPrepareLeaseSharedStateAndEpoch`. |
 | OPLOCK_BREAK lease notification and acknowledgment reply | Captured current/target state, epoch and acknowledgment flag. Plaintext notification unsigned, encrypted notification GCM; acknowledgment carries no epoch. | #343 `TestLeaseBreakNotificationAndAcknowledgment`, `TestLeaseBreakAcknowledgmentRejectsInvalidRequests`, `TestDetachedLeaseBreakRetainingHCompletesWithoutNotification`; #396 unsigned-notification tests. |
