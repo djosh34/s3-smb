@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -29,7 +30,7 @@ func sessionEcho(t *testing.T, session smbtest.Session, id uint64) wire.Message 
 func TestLoginAndProtectedEcho(t *testing.T) {
 	for _, cipher := range []uint16{0, smb.CipherAES128GCM, smb.CipherAES256GCM} {
 		for _, signing := range []uint16{smb.SigningCMAC, smb.SigningGMAC} {
-			t.Run(commandName(wire.Echo)+string(rune('a'+cipher))+string(rune('a'+signing)), func(t *testing.T) {
+			t.Run(fmt.Sprintf("cipher_%d_signing_%d", cipher, signing), func(t *testing.T) {
 				options := testOptions(t)
 				if cipher == 0 {
 					options.Encryption = AllowPlaintext
