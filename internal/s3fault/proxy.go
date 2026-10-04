@@ -37,8 +37,10 @@ type Event struct {
 // ServiceUnavailable. For throttling, use status 503 and code SlowDown. CutBody
 // sends at most CutAfter bytes and aborts a shortened response, including chunked
 // responses. It leaves the original Content-Length intact.
-// CutRequest stops an upload after RequestCutAfter forwarded bytes if its body
-// has more data. It resets the client connection instead of sending an HTTP error.
+// CutRequest cuts after RequestCutAfter client-body bytes, plus one probe byte
+// that is never forwarded. It resets the client connection instead of sending
+// an HTTP error. RequestCutAfter is not an upstream delivery count: transport
+// buffering can forward fewer bytes, or no request, for small fixed-length cuts.
 // A request snapshots its fault, so replacement affects only later requests.
 type Fault struct {
 	Method          string
@@ -177,14 +179,14 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			if fault.Code == "SlowDown" {
 				kind = "throttle"
 			}
-			p.observe(r, kind, fault.Status)
 			if fault.HeaderDelay != 0 {
-				p.observe(r, "header-delay", fault.Status)
+				p.observe(r, "header-delay", 0)
 			}
 			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
 				p.writeError(w, http.StatusBadGateway, "ServiceUnavailable")
 				return
 			}
+			p.observe(r, kind, fault.Status)
 			p.writeError(w, fault.Status, fault.Code)
 			return
 		}
@@ -252,7 +254,9 @@ func notify(events chan Event, r *http.Request, status int) {
 // Events reports one event per applied fault kind per request. Kinds are status,
 // throttle, header-delay, body-delay, request-cut, response-cut, outage,
 // metadata-failure and hold. Cuts are reported only when data is actually cut.
-// Status is zero for request-cut, since no response exists. Events contain no
+// Status is zero for request-cut and for delays before an injected error, since
+// no response exists yet. Status and throttle events follow a successful delay.
+// Events contain no
 // headers, query strings or bodies. The channel stays open after Close.
 func (p *Proxy) Events() <-chan Event { return p.events }
 

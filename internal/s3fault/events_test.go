@@ -5,8 +5,11 @@ package s3fault_test
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -17,8 +20,8 @@ import (
 
 func TestCutUploads(t *testing.T) {
 	for _, chunked := range []bool{false, true} {
-		for _, cut := range []int64{0, 8192, 65536, 65537} {
-			t.Run(strings.Join([]string{boolName(chunked), time.Duration(cut).String()}, "/"), func(t *testing.T) {
+		for _, cut := range []int64{0, 100, 8192, 65536, 65537} {
+			t.Run(boolName(chunked)+"/"+strconv.FormatInt(cut, 10), func(t *testing.T) {
 				testCutUpload(t, chunked, cut)
 			})
 		}
@@ -48,8 +51,10 @@ func testCutUpload(t *testing.T, chunked bool, cut int64) {
 	}
 	res := send(req)
 	if cut < int64(len(data)) {
-		if !errors.Is(res.err, syscall.ECONNRESET) || res.status != 0 {
-			t.Fatalf("cut upload: status=%d error=%v, want connection reset", res.status, res.err)
+		// A reset racing the HTTP client's writer can also surface as a closed
+		// connection error. The paused raw TCP test checks the reset itself.
+		if res.err == nil || res.status != 0 {
+			t.Fatalf("cut upload: status=%d error=%v, want transport failure", res.status, res.err)
 		}
 		assertEvent(t, proxy, "request-cut", http.MethodPut, 0)
 	} else {
@@ -58,8 +63,16 @@ func testCutUpload(t *testing.T, chunked bool, cut int64) {
 		}
 		assertNoEvent(t, proxy)
 	}
-	// A zero-byte cut can end before the upstream sees even the headers.
-	if cut == 0 {
+	// A small fixed-length cut need not flush all consumed bytes upstream.
+	// Zero-byte cuts may or may not send headers, even with chunked framing.
+	if cut == 0 || !chunked && cut < 4096 {
+		select {
+		case got := <-received:
+			if int64(len(got)) > cut || !bytes.Equal(got, data[:len(got)]) {
+				t.Fatalf("small cut forwarded %d bytes, want a prefix of at most %d", len(got), cut)
+			}
+		case <-time.After(50 * time.Millisecond):
+		}
 		return
 	}
 	select {
@@ -161,6 +174,24 @@ func TestFaultEvents(t *testing.T) {
 	}
 }
 
+func TestDelayedStatusEvents(t *testing.T) {
+	proxy := newProxy(t, http.HandlerFunc(payload))
+	for _, code := range []string{"ServiceUnavailable", "SlowDown"} {
+		setFault(t, proxy, s3fault.Fault{Status: 503, Code: code, HeaderDelay: time.Millisecond})
+		res := request(t, proxy, http.MethodPut, "/bucket/chunks/key")
+		if res.status != 503 {
+			t.Fatalf("delayed error status=%d, want 503", res.status)
+		}
+		assertEvent(t, proxy, "header-delay", http.MethodPut, 0)
+		kind := "status"
+		if code == "SlowDown" {
+			kind = "throttle"
+		}
+		assertEvent(t, proxy, kind, http.MethodPut, 503)
+		assertNoEvent(t, proxy)
+	}
+}
+
 func TestEventOverflow(t *testing.T) {
 	proxy := newProxy(t, http.HandlerFunc(payload))
 	setFault(t, proxy, s3fault.Fault{Status: 503})
@@ -190,5 +221,47 @@ func TestNegativeRequestCut(t *testing.T) {
 	}
 	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != 503 {
 		t.Fatal("invalid fault replaced the current fault")
+	}
+}
+
+func TestCutPausedUploads(t *testing.T) {
+	for _, chunked := range []bool{false, true} {
+		t.Run(boolName(chunked), func(t *testing.T) {
+			proxy := newProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if _, err := io.Copy(io.Discard, r.Body); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			setFault(t, proxy, s3fault.Fault{CutRequest: true, RequestCutAfter: 4})
+			var dialer net.Dialer
+			conn, err := dialer.DialContext(t.Context(), "tcp", strings.TrimPrefix(proxy.URL(), "http://"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := conn.Close(); err != nil {
+					t.Error(err)
+				}
+			}()
+			if err := conn.SetDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			framing := "Content-Length: 64\r\n\r\nabcde"
+			if chunked {
+				framing = "Transfer-Encoding: chunked\r\n\r\n5\r\nabcde\r\n"
+			}
+			request := fmt.Sprintf("PUT /bucket/chunks/key HTTP/1.1\r\nHost: paused.test\r\n%s", framing)
+			if n, err := io.WriteString(conn, request); err != nil || n != len(request) {
+				t.Fatalf("send paused upload: %d/%d %v", n, len(request), err)
+			}
+			var reply [1]byte
+			if n, err := conn.Read(reply[:]); n != 0 || !errors.Is(err, syscall.ECONNRESET) {
+				t.Fatalf("paused upload: read %d bytes, error=%v, want reset before remaining body", n, err)
+			}
+			assertEvent(t, proxy, "request-cut", http.MethodPut, 0)
+			assertNoEvent(t, proxy)
+		})
 	}
 }

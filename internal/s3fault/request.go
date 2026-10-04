@@ -41,6 +41,15 @@ func (body *cutRequestBody) Read(dst []byte) (int, error) {
 	return n, err
 }
 
+// Close must not drain unread client bytes after a cut. The handler resets the
+// connection, which releases the inbound body without waiting for its producer.
+func (body *cutRequestBody) Close() error {
+	if body.cut.Load() {
+		return nil
+	}
+	return body.ReadCloser.Close()
+}
+
 func resetConnection(w http.ResponseWriter) {
 	conn, _, err := http.NewResponseController(w).Hijack()
 	if err != nil {
