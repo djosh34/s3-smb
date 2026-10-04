@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"testing"
 	"time"
 
 	"github.com/creack/pty"
@@ -122,14 +123,32 @@ func (h *harness) try(timeout time.Duration, args ...string) (string, error) {
 	cmd.Stdout, cmd.Stderr = log, log
 	err = errors.Join(cmd.Run(), log.Close())
 	h.t.Logf("native-command-exit %s %s %v", time.Now().UTC().Format(time.RFC3339), name, err)
+	var output []byte
+	if args[0] != "/usr/bin/log" {
+		var readErr error
+		output, readErr = os.ReadFile(path) //nolint:gosec // Read only the command log just created above.
+		err = errors.Join(err, readErr)
+	}
 	if err != nil {
-		return "", fmt.Errorf("%v: %w; see %s", args, err, name)
+		return string(output), fmt.Errorf("%v: %w; see %s", args, err, name)
 	}
-	if args[0] == "/usr/bin/log" {
-		return "", nil
+	return string(output), nil
+}
+
+func TestTryFailedOutput(t *testing.T) {
+	h := &harness{t: t, ctx: t.Context(), evidence: t.TempDir()}
+	output, err := h.try(time.Minute, "/bin/sh", "-c", "printf stdout; printf stderr >&2; exit 23")
+	var exitErr *exec.ExitError
+	if output != "stdoutstderr" || !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 {
+		t.Fatal("lost failed command output or exit error", output, err)
 	}
-	output, err := os.ReadFile(path) //nolint:gosec // Read only the command log just created above.
-	return string(output), err
+	log, readErr := os.ReadFile(filepath.Join(h.evidence, "0001-sh.log"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(log) != output {
+		t.Fatal("failed command output was not saved", string(log))
+	}
 }
 
 func (h *harness) run(timeout time.Duration, args ...string) string {

@@ -66,8 +66,8 @@ func TestScheduledBackupFailure(t *testing.T) {
 			case <-time.After(15 * time.Second):
 				t.Fatal("no scheduled native metadata PUT/GET reached proxy")
 			}
-			// A backup may take one backup interval and shutdown 30 seconds. Three
-			// failed attempts end sooner. The bound catches a process that never stops.
+			// Retries stop when protection expires, then shutdown has 30 seconds.
+			// The bound catches a process that never stops.
 			deadline := failureStart.Add(2*time.Minute + 35*time.Second)
 			timer := time.NewTimer(time.Until(deadline))
 			defer timer.Stop()

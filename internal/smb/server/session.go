@@ -137,26 +137,31 @@ func needsTree(command wire.Command) bool {
 	}
 }
 
-func (connection *connection) resolveRequest(header wire.Header) (RequestContext, smb.Status) {
+func (connection *connection) resolveRequest(header wire.Header, cancel context.CancelFunc) (RequestContext, *sessionRequest, smb.Status) {
 	request := connection.requestContext()
 	if header.Command == wire.Echo && header.SessionID == 0 {
-		return request, smb.StatusSuccess
+		return request, nil, smb.StatusSuccess
 	}
-	connection.sessionMu.RLock()
-	defer connection.sessionMu.RUnlock()
+	connection.sessionMu.Lock()
+	defer connection.sessionMu.Unlock()
 	session := connection.sessions[header.SessionID]
 	if session == nil || !session.active && (header.Command != wire.Logoff || session.acceptor == nil) {
-		return request, smb.StatusUserSessionDeleted
+		return request, nil, smb.StatusUserSessionDeleted
 	}
 	request.Session = session.identity
 	if needsTree(header.Command) {
 		tree, exists := session.trees[header.TreeID]
 		if !exists {
-			return request, smb.StatusNetworkNameDeleted
+			return request, nil, smb.StatusNetworkNameDeleted
 		}
 		request.Tree = tree
 	}
-	return request, smb.StatusSuccess
+	operation := &sessionRequest{header: header, cancel: cancel, done: make(chan struct{})}
+	if connection.inflight == nil {
+		connection.inflight = make(map[*sessionRequest]struct{})
+	}
+	connection.inflight[operation] = struct{}{}
+	return request, operation, smb.StatusSuccess
 }
 
 func (connection *connection) treeConnect(message wire.Message) (reply, error) {
@@ -190,12 +195,24 @@ func (connection *connection) treeConnect(message wire.Message) (reply, error) {
 	return reply{body: body, treeID: id}, err
 }
 
-// stopRequests cancels and drains work, not sender completions. A completion
+// stopRequests cancels and drains identity holders and pending work, not sender completions. A completion
 // can wait for the client to read while the client is awaiting LOGOFF's reply.
 // The cleanup request itself may be an async related member; it must not wait
 // for its own completion. Other cleanup requests are canceled but not waited
 // on, since two cleanups could otherwise wait on each other.
 func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exceptMessageID uint64) {
+	connection.sessionMu.Lock()
+	var holders []*sessionRequest
+	for operation := range connection.inflight {
+		header := operation.header
+		if (exceptMessageID == 0 || header.MessageID != exceptMessageID) && header.SessionID == sessionID && (treeID == 0 || header.TreeID == treeID) {
+			holders = append(holders, operation)
+		}
+	}
+	connection.sessionMu.Unlock()
+	for _, operation := range holders {
+		operation.cancel()
+	}
 	connection.pendingMu.Lock()
 	var work []*work
 	for _, pending := range connection.pending {
@@ -207,6 +224,11 @@ func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exce
 		}
 	}
 	connection.pendingMu.Unlock()
+	for _, operation := range holders {
+		if operation.header.Command != wire.Logoff && operation.header.Command != wire.TreeDisconnect {
+			<-operation.done
+		}
+	}
 	for _, operation := range work {
 		<-operation.done
 	}
