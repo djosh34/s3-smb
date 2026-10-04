@@ -78,6 +78,11 @@ func TestReceiveSkipsStandaloneLeaseBreak(t *testing.T) {
 	if err != nil || len(reply.Messages) != 1 || reply.Messages[0].Header.MessageID != 2 {
 		t.Fatalf("reply = %+v, error = %v", reply, err)
 	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, waitErr := client.WaitLeaseBreak(ctx); !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("canceled queued wait = %v", waitErr)
+	}
 	got, err := client.WaitLeaseBreak(t.Context())
 	if err != nil || got != want {
 		t.Fatalf("queued break = %+v, error = %v", got, err)
