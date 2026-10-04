@@ -10,7 +10,9 @@ import (
 	"fmt"
 	mathrand "math/rand/v2"
 	"os"
+	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -23,8 +25,17 @@ func Seed(t testing.TB) uint64 {
 		t.Fatalf("chaos seed: %v", err)
 		return 0
 	}
-	t.Logf("chaos seed %d; replay: S3_SMB_CHAOS_SEED=%d go test -v ./test/e2e -run %s", seed, seed, strconv.Quote("^"+t.Name()+"$"))
+	t.Logf("chaos seed %d; replay: %s", seed, replayCommand(seed, t.Name()))
 	return seed
+}
+
+func replayCommand(seed uint64, name string) string {
+	parts := strings.Split(name, "/")
+	for i, part := range parts {
+		parts[i] = "^" + regexp.QuoteMeta(part) + "$"
+	}
+	pattern := strings.ReplaceAll(strings.Join(parts, "/"), "'", "'\"'\"'")
+	return fmt.Sprintf("S3_SMB_CHAOS_SEED=%d go test -race -shuffle=on -count=1 -v ./test/e2e -run '%s'", seed, pattern)
 }
 
 func seedValue(value string, random func([]byte) (int, error)) (uint64, error) {

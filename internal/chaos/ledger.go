@@ -141,7 +141,8 @@ func (l *Ledger) CheckAcknowledged(read ReadFunc) error {
 
 // CheckFlushed checks a crash with local disk intact. Flushed changes must
 // survive. Each later changed byte may have its flushed value or a value from
-// a later acknowledged write. Pending attempts have the same byte allowance.
+// a later acknowledged write. Unflushed growth may end partway through a write.
+// Pending attempts have the same byte allowance.
 func (l *Ledger) CheckFlushed(read ReadFunc) error {
 	return checkFiles(l.Mark(), read, true)
 }
@@ -224,7 +225,7 @@ func (p *possibleFile) write(op operation, optional bool) {
 	end := op.offset + int64(len(op.data))
 	grown := make([]sizeRange, 0, len(p.sizes)+1)
 	for _, size := range p.sizes {
-		if op.kind == attemptOp {
+		if optional {
 			grown = append(grown, sizeRange{low: size.low, high: max(size.high, end)})
 		} else {
 			grown = append(grown, sizeRange{low: max(size.low, end), high: max(size.high, end)})
@@ -232,7 +233,7 @@ func (p *possibleFile) write(op operation, optional bool) {
 	}
 	if p.missing {
 		low := end
-		if op.kind == attemptOp {
+		if optional {
 			low = 0
 		}
 		grown = append(grown, sizeRange{low: low, high: end})
