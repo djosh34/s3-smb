@@ -61,7 +61,7 @@ func TestM4Inventory(t *testing.T) {
 // The Linux integration command still selects only TestSambaInterop.
 // M4 runs explicitly after the feature owners agree activation.
 func TestSambaM4Interop(t *testing.T) {
-	testSambaInterop(t, m4TortureAllowlist)
+	testSambaInterop(t, m4TortureAllowlist, "quit")
 }
 
 func TestM4Runner(t *testing.T) {
@@ -103,7 +103,7 @@ func TestM4Runner(t *testing.T) {
 					return "success: " + last + "\n", nil
 				}
 			}
-			err := runSamba(t.Context(), run, "127.0.0.1:1445", "TimeMachine", "/tmp/auth", m4TortureAllowlist)
+			err := runSamba(t.Context(), run, "127.0.0.1:1445", "TimeMachine", "/tmp/auth", m4TortureAllowlist, "quit")
 			want := names
 			if tt.fail {
 				want = names[:1]

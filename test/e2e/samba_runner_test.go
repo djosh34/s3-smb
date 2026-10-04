@@ -70,10 +70,15 @@ func TestSambaRunner(t *testing.T) {
 	const second = "smb2.example.case.second"
 	commandErr := errors.New("command failed")
 	for _, tt := range []struct {
-		name, failTool, failArg, output, allowlist, addr string
-		commandFailure, invalid                          bool
+		name, failTool, failArg, output, allowlist, addr, clientCommand string
+		commandFailure, invalid                                         bool
 	}{
 		{name: "empty allowlist"},
+		{name: "empty root listing", clientCommand: "ls"},
+		{name: "listing command failure", clientCommand: "ls", failTool: "smbclient", failArg: "ls", commandFailure: true, invalid: true},
+		{name: "listing error with zero exit", clientCommand: "ls", failTool: "smbclient", failArg: "ls", output: "NT_STATUS_NO_SUCH_FILE listing \\*\n", invalid: true},
+		{name: "listing error blocks selected tests", clientCommand: "ls", allowlist: first, failTool: "smbclient", failArg: "ls", output: "NT_STATUS_ACCESS_DENIED listing \\*\n", invalid: true},
+		{name: "status-like filename", clientCommand: "ls", failTool: "smbclient", failArg: "ls", output: "  NT_STATUS_example  N  0\n"},
 		{name: "two exact tests", allowlist: first + "\n" + second},
 		{name: "client version failure", failTool: "smbclient", failArg: "--version", commandFailure: true, invalid: true},
 		{name: "torture version failure", failTool: "smbtorture", failArg: "--version", commandFailure: true, invalid: true},
@@ -115,7 +120,11 @@ func TestSambaRunner(t *testing.T) {
 			if addr == "" {
 				addr = "127.0.0.1:1445"
 			}
-			err := runSamba(t.Context(), run, addr, "TimeMachine", "/tmp/auth", tt.allowlist)
+			clientCommand := tt.clientCommand
+			if clientCommand == "" {
+				clientCommand = "quit"
+			}
+			err := runSamba(t.Context(), run, addr, "TimeMachine", "/tmp/auth", tt.allowlist, clientCommand)
 			if (err != nil) != tt.invalid {
 				t.Fatalf("got %v; invalid=%t", err, tt.invalid)
 			}
@@ -128,15 +137,15 @@ func TestSambaRunner(t *testing.T) {
 				if last == "--version" || last == "--list" {
 					continue
 				}
-				want := append(append([]string{}, common...), "-c", "quit")
+				want := append(append([]string{}, common...), "-c", clientCommand)
 				if call.tool == "smbtorture" {
 					want = append(append([]string{}, common...), "--fullname", "--format=subunit", last)
 				}
 				if !reflect.DeepEqual(call.args, want) {
 					t.Fatalf("%s args: got %v, want %v", call.tool, call.args, want)
 				}
-				if tt.invalid && strings.HasSuffix(last, ".second") {
-					t.Fatal("runner continued after a failed test")
+				if tt.invalid && (strings.HasSuffix(last, ".second") || tt.clientCommand == "ls" && call.tool == "smbtorture") {
+					t.Fatal("runner continued after a failed command")
 				}
 			}
 			if !tt.invalid {

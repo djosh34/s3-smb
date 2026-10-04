@@ -48,7 +48,7 @@ func parseTortureAllowlist(allowlist, listing string) ([]string, error) {
 	return names, nil
 }
 
-func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allowlist string) error {
+func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allowlist, clientCommand string) error {
 	for _, tool := range []string{"smbclient", "smbtorture"} {
 		output, err := run(ctx, tool, "--version")
 		if err != nil {
@@ -79,10 +79,17 @@ func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allo
 		"--use-kerberos=off", "--client-protection=encrypt",
 		"--option=client min protocol=SMB3_11", "--option=client max protocol=SMB3_11",
 	}
-	// quit still authenticates and tree-connects, but sends no file requests.
-	output, err := run(ctx, "smbclient", append(args, "-c", "quit")...)
+	output, err := run(ctx, "smbclient", append(args, "-c", clientCommand)...)
 	if err != nil {
-		return fmt.Errorf("smbclient connect: %w\n%s", err, output)
+		return fmt.Errorf("smbclient %s: %w\n%s", clientCommand, err, output)
+	}
+	if clientCommand == "ls" {
+		// Some smbclient listing errors still exit with status zero.
+		for _, line := range strings.Split(output, "\n") {
+			if strings.HasPrefix(line, "NT_STATUS_") && strings.Contains(line, " listing ") {
+				return fmt.Errorf("smbclient listing failed:\n%s", output)
+			}
+		}
 	}
 	for _, name := range names {
 		output, err := run(ctx, "smbtorture", append(args, "--fullname", "--format=subunit", name)...)
@@ -122,10 +129,10 @@ func requireRaceSmbnextBuild(settings []debug.BuildSetting) error {
 }
 
 func TestSambaInterop(t *testing.T) {
-	testSambaInterop(t, tortureAllowlist)
+	testSambaInterop(t, tortureAllowlist, "quit")
 }
 
-func testSambaInterop(t *testing.T, allowlist string) {
+func testSambaInterop(t *testing.T, allowlist, clientCommand string) {
 	t.Helper()
 	binary := os.Getenv("S3_SMB_SAMBA_BINARY")
 	if binary == "" {
@@ -157,7 +164,7 @@ func testSambaInterop(t *testing.T, allowlist string) {
 		}
 		return string(output), err
 	}
-	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, allowlist); err != nil {
+	if err := runSamba(t.Context(), run, f.addr, "TimeMachine", authFile, allowlist, clientCommand); err != nil {
 		t.Fatal(err)
 	}
 	t.Log("Samba connected with encryption and ran the selected exact tests")
