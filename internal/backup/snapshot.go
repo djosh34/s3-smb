@@ -42,8 +42,10 @@ func takeSnapshot(ctx context.Context, source, target string) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	_, err = db.ExecContext(ctx, "VACUUM INTO ?", target)
-	return err
+	if _, err = db.ExecContext(ctx, "VACUUM INTO ?", target); err != nil {
+		return err
+	}
+	return os.Chmod(target, 0600)
 }
 
 func compressSnapshot(source, target string) (err error) {

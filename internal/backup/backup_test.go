@@ -182,12 +182,13 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			current.AccessKey = "replacement-access"
 			current.SecretKey = "replacement-secret"
 			current.SessionToken = "replacement-token"
+			current.TrashDays = 7
 			path := filepath.Join(t.TempDir(), "restored.db")
 			restored, err := Recover(context.Background(), s, r.Key, path, &current)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if restored.Bucket != current.Bucket || restored.SecretKey != current.SecretKey || restored.SessionToken != current.SessionToken {
+			if restored.Bucket != current.Bucket || restored.SecretKey != current.SecretKey || restored.SessionToken != current.SessionToken || restored.TrashDays != current.TrashDays {
 				t.Fatal("old connection won over current configuration")
 			}
 			recovered, err := meta.NewSQLite(path, meta.DefaultConf())
@@ -196,7 +197,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			}
 			defer recovered.Shutdown()
 			got, err := recovered.Load(false)
-			if err != nil || got.UUID != current.UUID || got.SecretKey != current.SecretKey {
+			if err != nil || got.UUID != current.UUID || got.SecretKey != current.SecretKey || got.TrashDays != current.TrashDays {
 				t.Fatalf("persisted current format mismatch: %v", err)
 			}
 			// Create a real inode and take another snapshot after recovery.

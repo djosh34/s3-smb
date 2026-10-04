@@ -185,6 +185,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	// The stored format supplies identity and data layout. The bucket and the
 	// credentials come from the current configuration.
 	format.Storage = "s3"
+	format.TrashDays = c.Backup.TrashDays
 	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
 		return errors.New("configured encryption mode differs from the existing dataset")
@@ -254,9 +255,6 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if !backup.SameVolume(local, format) {
 			return errors.New("local metadata identity or data layout does not match remote dataset")
 		}
-		// The current configuration sets trash retention. Recovered metadata may
-		// hold an older value.
-		format.TrashDays = c.Backup.TrashDays
 		if !c.SMB.ReadOnly {
 			if err = r.metadata.Init(format, false); err != nil {
 				return err
