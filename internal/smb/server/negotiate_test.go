@@ -51,7 +51,7 @@ func TestNegotiateSelects311AndOfferedAlgorithms(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if response.Dialect != smb.Dialect311 || response.SecurityMode != smb.AdvertisedSecurityMode || response.Capabilities != smb.CapabilityLargeMTU || response.MaxRead != smb.MaxReadSize || response.MaxWrite != smb.MaxWriteSize || response.MaxTransact != smb.MaxTransactSize || len(response.Token) == 0 {
+	if response.Dialect != smb.Dialect311 || response.SecurityMode != smb.AdvertisedSecurityMode || response.Capabilities != 0x06 || response.MaxRead != smb.MaxReadSize || response.MaxWrite != smb.MaxWriteSize || response.MaxTransact != smb.MaxTransactSize || len(response.Token) == 0 {
 		t.Fatalf("negotiate response: %+v", response)
 	}
 	if len(response.Contexts) != 3 {

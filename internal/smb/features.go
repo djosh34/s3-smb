@@ -25,13 +25,13 @@ const (
 )
 
 // NEGOTIATE advertises only capabilities implemented by the current handlers.
-// M5 adds CapabilityLeasing to AdvertisedCapabilities. SMB 3.1.1 negotiates GCM
+// M5 advertises V2 file leases and durable reconnect. SMB 3.1.1 negotiates GCM
 // only through its encryption context, not SMB2_GLOBAL_CAP_ENCRYPTION. No DFS,
 // multichannel, persistent handles, directory leases, compression or RDMA.
 const (
 	CapabilityLeasing      uint32 = 0x00000002
 	CapabilityLargeMTU     uint32 = 0x00000004
-	AdvertisedCapabilities        = CapabilityLargeMTU
+	AdvertisedCapabilities        = CapabilityLargeMTU | CapabilityLeasing
 )
 
 // Exact FileFsAttributeInformation and AAPL masks. Storage is case-sensitive and

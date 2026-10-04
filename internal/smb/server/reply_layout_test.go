@@ -234,7 +234,7 @@ func assertLayoutNegotiateFixed(t *testing.T, raw []byte, options Options, diale
 		layoutField{"NEGOTIATE structure size", 64, 2, 65},
 		layoutField{"security mode", 66, 2, 0x0003},
 		layoutField{"dialect revision", 68, 2, uint64(dialect)},
-		layoutField{"capabilities", 88, 4, 0x00000004},
+		layoutField{"capabilities", 88, 4, 0x00000006},
 		layoutField{"maximum transact size", 92, 4, 0x00100000},
 		layoutField{"maximum read size", 96, 4, 0x00100000},
 		layoutField{"maximum write size", 100, 4, 0x00100000},

@@ -8,8 +8,7 @@ import (
 	"testing"
 )
 
-// These lists are preparation inputs, not selected by TestSambaInterop.
-// Activate the M5 list only after reconnect and the leasing capability are ready.
+// M5 selection is explicit. TestSambaInterop keeps the unchanged M2 list.
 //
 //go:embed smbtorture.m5.allowlist
 var m5TortureCandidates string
@@ -76,12 +75,20 @@ func TestM5InventoryAccountsForEveryPinnedName(t *testing.T) {
 	}
 }
 
-func TestM5PreparationDoesNotChangeSelectedList(t *testing.T) {
+func TestM5DoesNotChangeDefaultSelectedList(t *testing.T) {
 	selected := strings.Split(tortureAllowlist, "\n")
 	for _, name := range m5CandidateNames(t) {
 		if slices.Contains(selected, name) {
-			t.Fatalf("M5 candidate was activated before readiness: %s", name)
+			t.Fatalf("M5 candidate leaked into the default list: %s", name)
 		}
+	}
+}
+
+func TestSambaM5Interop(t *testing.T) {
+	for _, name := range m5CandidateNames(t) {
+		t.Run(name, func(t *testing.T) {
+			testSambaInterop(t, name)
+		})
 	}
 }
 
