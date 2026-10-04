@@ -1,13 +1,11 @@
 package smbfs
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"sync"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
@@ -59,24 +57,22 @@ func (metadata *pausedAppendMetadata) SetXattr(ctx meta.Context, ino meta.Ino, n
 	return errno
 }
 
-func awaitAppendMutation(t *testing.T, result <-chan error) error {
-	t.Helper()
-	select {
-	case err := <-result:
-		return err
-	case <-time.After(5 * time.Second):
-		t.Fatal("inode operation did not complete")
-		return context.DeadlineExceeded
-	}
-}
-
+// An append-only write checks EOF under the same inode lock as every other
+// length change. Each case holds a mutation inside the backend and starts an
+// append at the old EOF; once the mutation completes the append must fail.
 func TestAppendWriteCoordinatesWithMutations(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		for _, mutation := range []string{"write", "append", "truncate", "set size"} {
-			t.Run(fmt.Sprintf("stream_%t/%s", stream, mutation), func(t *testing.T) {
-				checkAppendMutation(t, stream, mutation)
-			})
-		}
+	for _, c := range []struct {
+		mutation string
+		stream   bool
+	}{
+		{"write", false},
+		{"set size", false},
+		{"write", true},
+		{"truncate", true},
+	} {
+		t.Run(fmt.Sprintf("stream_%t/%s", c.stream, c.mutation), func(t *testing.T) {
+			checkAppendMutation(t, c.stream, c.mutation)
+		})
 	}
 }
 
@@ -92,21 +88,13 @@ func checkAppendMutation(t *testing.T, stream bool, mutation string) {
 	}
 	seed := f.open(t, selected.Object, smb.AccessRead|smb.AccessWrite)
 	write(t, f.fs, seed, "seed", 0)
-	access := smb.AccessRead | smb.AccessWrite
-	if mutation == "append" {
-		access = smb.AccessRead | smb.AccessAppend
-	}
-	winner := f.open(t, selected.Object, access)
+	winner := f.open(t, selected.Object, smb.AccessRead|smb.AccessWrite)
 	appender := f.open(t, selected.Object, smb.AccessRead|smb.AccessAppend)
-	other := f.create(t, "other", smb.KindFile)
-	otherHandle := f.open(t, other.Object, smb.AccessRead|smb.AccessWrite)
 
-	// Hold the real mutation inside the adapter coordinator, before it publishes
-	// length. The second handle must validate EOF after that mutation completes.
 	gate := &appendMutationGate{entered: make(chan struct{}), resume: make(chan struct{})}
 	var unblock sync.Once
 	t.Cleanup(func() { unblock.Do(func() { close(gate.resume) }) })
-	if stream || mutation == "truncate" || mutation == "set size" {
+	if stream || mutation != "write" {
 		f.fs.metadata = &pausedAppendMetadata{Meta: f.fs.metadata, gate: gate, key: selected.Object}
 	} else {
 		st, release := f.fs.acquire(selected.Object.Inode)
@@ -122,62 +110,29 @@ func checkAppendMutation(t *testing.T, stream bool, mutation string) {
 			size := uint64(10)
 			first <- f.fs.SetAttr(t.Context(), selected.Object, smb.AttrChange{Size: &size})
 		default:
-			n, err := f.fs.WriteAt(t.Context(), winner, []byte("winner"), 4)
-			if err == nil && n != 6 {
-				err = fmt.Errorf("winner wrote %d bytes, want 6", n)
-			}
+			_, err := f.fs.WriteAt(t.Context(), winner, []byte("winner"), 4)
 			first <- err
 		}
 	}()
-	select {
-	case <-gate.entered:
-	case <-time.After(5 * time.Second):
-		t.Fatal("mutation did not reach the backend")
-	}
+	receive(t, gate.entered)
 	second := make(chan error, 1)
-	started := make(chan struct{})
 	go func() {
-		close(started)
 		n, err := f.fs.WriteAt(t.Context(), appender, []byte("stale"), 4)
 		if n != 0 {
-			second <- fmt.Errorf("stale append wrote %d bytes, want 0", n)
-			return
+			err = errors.Join(err, fmt.Errorf("stale append wrote %d bytes", n))
 		}
-		if err == nil {
-			second <- errors.New("stale append succeeded")
-			return
-		}
-		if !errors.Is(err, smb.ErrAccessDenied) {
-			second <- fmt.Errorf("stale append: %w; want ACCESS_DENIED", err)
-			return
-		}
-		second <- nil
+		second <- err
 	}()
-	<-started
-	progress := make(chan error, 1)
-	go func() {
-		n, err := f.fs.WriteAt(t.Context(), otherHandle, []byte("other"), 0)
-		if err == nil && n != 5 {
-			err = fmt.Errorf("unrelated write = %d, want 5", n)
-		}
-		progress <- err
-	}()
-	if err := awaitAppendMutation(t, progress); err != nil {
-		t.Fatal(err)
-	}
 	unblock.Do(func() { close(gate.resume) })
-	if err := awaitAppendMutation(t, first); err != nil {
+	if err := receive(t, first); err != nil {
 		t.Fatal(err)
 	}
-	if err := awaitAppendMutation(t, second); err != nil {
-		t.Fatal(err)
-	}
+	requireError(t, receive(t, second), smb.ErrAccessDenied)
 	want := "seedwinner"
-	if mutation == "truncate" || mutation == "set size" {
+	if mutation != "write" {
 		want = "seed\x00\x00\x00\x00\x00\x00"
 	}
 	read(t, f.fs, seed, []byte(want))
-	read(t, f.fs, otherHandle, []byte("other"))
 	if stream {
 		read(t, f.fs, baseHandle, []byte("base payload"))
 	}

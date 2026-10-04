@@ -331,11 +331,6 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	if change.Size != nil && *change.Size >= maxFileSize || change.SizeCap != nil && *change.SizeCap >= maxFileSize {
 		return smb.ErrFileTooLarge
 	}
-	if change.SizeCap != nil {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-	}
 	attr, err := s.attr(ctx, key, st)
 	if err != nil {
 		return err
