@@ -1,5 +1,7 @@
 name: Time Machine end-to-end
-# Build the dispatch ref, then run backup and restore, M4, interruption scenarios or discovery.
+# Builds the checked-out code on Mac runners and runs the Time Machine test:
+# backup and restore on a fresh Mac, Mac share features, failed-backup scenarios or
+# exclusion discovery.
 on:
   workflow_dispatch:
     inputs:
@@ -19,7 +21,7 @@ on:
         options:
           - discover
           - acceptance
-          - m4
+          - features
           - scenarios
       scenarios:
         description: Failed-backup scenarios to run, as a JSON list
@@ -130,13 +132,13 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
-  m4:
-    name: M4 Mac features and backup
-    if: inputs.mode == 'm4'
+  features:
+    name: Mac share features and backup
+    if: inputs.mode == 'features'
     runs-on: macos-15-intel
     timeout-minutes: 150
     env:
-      MAC_PHASE: m4
+      MAC_PHASE: features
       MAC_SERVER: smbnext
     steps:
       - name: Set task paths
@@ -158,11 +160,11 @@ jobs:
       - name: Make evidence readable by the uploader
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload M4 evidence
+      - name: Upload features evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: mac-m4-${{ github.sha }}-${{ github.run_attempt }}
+          name: mac-features-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ env.MAC_ARTIFACTS }}
             ${{ runner.temp }}/mac-harness.log

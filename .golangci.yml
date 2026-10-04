@@ -82,9 +82,6 @@ linters:
       - '^internal/juicefs/'
       - '^internal/thirdparty/'
       - '^internal/smb-old/'
-      # P5 removes this list after the rewrite.
-      - '^test/e2e/[^/]+\.go$'
-      - '^test/macos/fixture/[^/]+\.go$'
 
 formatters:
   enable:

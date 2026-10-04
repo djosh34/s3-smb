@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
@@ -19,8 +20,8 @@ import (
 func TestFilesystemOperations(t *testing.T) {
 	f := newFixture(t, false)
 	d := f.start()
-	s, close := f.share()
-	if err := s.Mkdir("directory", 0750); err != nil {
+	s, disconnect := f.share()
+	if err := s.Mkdir("directory", 0o750); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, s, "directory/original", []byte("original data"))
@@ -45,12 +46,10 @@ func TestFilesystemOperations(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyFiles(t, s, map[string][]byte{"directory/renamed": []byte("original")})
-	started := time.Now()
 	entries, err := s.ReadDir("directory")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("directory listing entries=%d duration=%s", len(entries), time.Since(started))
 	if len(entries) != 1 || entries[0].Name() != "renamed" {
 		t.Fatalf("unexpected directory entries %v", entries)
 	}
@@ -60,7 +59,7 @@ func TestFilesystemOperations(t *testing.T) {
 	if err = s.Remove("directory"); err != nil {
 		t.Fatal(err)
 	}
-	close()
+	disconnect()
 	d.stop()
 }
 
@@ -69,19 +68,19 @@ func TestZeroCacheUnusableDirectory(t *testing.T) {
 	// A regular file cannot contain cache blocks. Explicit zero must neither use
 	// this path nor silently choose a positive fallback directory.
 	stale := []byte("old cache path must be ignored")
-	if err := os.WriteFile(filepath.Join(f.root, "cache"), stale, 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "cache"), stale, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	d := f.start()
-	s, close := f.share()
+	s, disconnect := f.share()
 	data := bytes.Repeat([]byte("zero cache MinIO data\n"), 100000)
 	writeFile(t, s, "remote.bin", data)
-	close()
+	disconnect()
 	d.stop()
 	d = f.start()
-	s, close = f.share()
+	s, disconnect = f.share()
 	verifyFiles(t, s, map[string][]byte{"remote.bin": data})
-	close()
+	disconnect()
 	d.stop()
 	got, err := os.ReadFile(filepath.Join(f.root, "cache"))
 	if err != nil || !bytes.Equal(got, stale) {
@@ -92,10 +91,10 @@ func TestZeroCacheUnusableDirectory(t *testing.T) {
 func TestResourceForkOffsetsAndResize(t *testing.T) {
 	f := newFixture(t, false)
 	d := f.start()
-	s, closeShare := f.share()
+	s, disconnect := f.share()
 	base := []byte("ordinary file content stays unchanged")
 	writeFile(t, s, "forked.bin", base)
-	stream, err := s.OpenFile("forked.bin:AFP_Resource", os.O_CREATE|os.O_RDWR, 0600)
+	stream, err := s.OpenFile("forked.bin:AFP_Resource", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,14 +142,14 @@ func TestResourceForkOffsetsAndResize(t *testing.T) {
 		t.Fatal(err)
 	}
 	verifyFiles(t, s, map[string][]byte{"forked.bin": base, "forked.bin:AFP_Resource": want})
-	closeShare()
+	disconnect()
 	f.protectedAfter(time.Now())
 	d.stop()
 	f.freshLocal()
 	d = f.start()
-	s, closeShare = f.share()
+	s, disconnect = f.share()
 	verifyFiles(t, s, map[string][]byte{"forked.bin": base, "forked.bin:AFP_Resource": want})
-	closeShare()
+	disconnect()
 	d.stop()
 }
 
@@ -160,9 +159,9 @@ func TestMissingDataIsSMBError(t *testing.T) {
 	}
 	f := newFixture(t, false)
 	d := f.start()
-	s, close := f.share()
+	s, disconnect := f.share()
 	writeFile(t, s, "missing.bin", bytes.Repeat([]byte("missing data must not be empty-file success\n"), 10000))
-	close()
+	disconnect()
 	f.protectedAfter(time.Now())
 	d.stop()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -174,8 +173,8 @@ func TestMissingDataIsSMBError(t *testing.T) {
 	deleted := 0
 	for _, obj := range objects.Contents {
 		if strings.Contains(aws.ToString(obj.Key), "/chunks/") {
-			if _, err := f.store.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(f.bucket), Key: obj.Key}); err != nil {
-				t.Fatal(err)
+			if _, deleteErr := f.store.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(f.bucket), Key: obj.Key}); deleteErr != nil {
+				t.Fatal(deleteErr)
 			}
 			deleted++
 		}
@@ -185,7 +184,7 @@ func TestMissingDataIsSMBError(t *testing.T) {
 	}
 	f.freshLocal()
 	d = f.start()
-	s, close = f.share()
+	s, disconnect = f.share()
 	readCtx, readCancel := context.WithTimeout(context.Background(), 7*time.Minute)
 	defer readCancel()
 	s = s.WithContext(readCtx)
@@ -198,6 +197,6 @@ func TestMissingDataIsSMBError(t *testing.T) {
 		t.Fatalf("expected explicit SMB error rather than connection/timeout failure: %T %v", err, err)
 	}
 	t.Logf("deleted referenced chunks=%d explicit SMB error=%v", deleted, response)
-	close()
+	disconnect()
 	d.stop()
 }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package helpers
 
 import (
@@ -6,13 +7,14 @@ import (
 	"strings"
 )
 
-// Confirmation allows only the documented prompt for this start and returns its recovery key.
+// Confirmation accepts only the expected start prompt for phase, initialize or
+// recover, and returns the metadata point a recovery names.
 func Confirmation(phase, text string) (string, error) {
 	expected := "Initialize a genuinely empty S3 dataset?"
 	if phase == "recover" {
 		expected = "Recover metadata from "
 	}
-	if phase == "restart" || (phase != "initialize" && phase != "recover") || !strings.Contains(text, expected) || !strings.Contains(text, "Continue? [yes/no]: ") {
+	if (phase != "initialize" && phase != "recover") || !strings.Contains(text, expected) || !strings.Contains(text, "Continue? [yes/no]: ") {
 		return "", errors.New("unexpected application confirmation; refusing automatic answer")
 	}
 	if phase == "initialize" {

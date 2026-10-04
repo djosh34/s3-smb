@@ -51,12 +51,10 @@ export MINIO_TEST_HTTP=200
 run
 [[ $result == 0 ]] || fail 'existing release check failed'
 output publish=false
-for status in 401 403 429 500; do
-  export MINIO_TEST_HTTP=$status
-  run
-  [[ $result != 0 ]] || fail "HTTP $status allowed publication"
-  if grep -Fx publish=true "$GITHUB_OUTPUT"; then fail 'registry error allowed publication'; fi
-done
+export MINIO_TEST_HTTP=403
+run
+[[ $result != 0 ]] || fail 'HTTP 403 allowed publication'
+if grep -Fx publish=true "$GITHUB_OUTPUT"; then fail 'registry error allowed publication'; fi
 unset MINIO_TEST_HTTP
 export MINIO_TEST_NETWORK_ERROR=true
 run

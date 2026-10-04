@@ -1,15 +1,5 @@
-# Exact test IDs from smbtorture --list in Samba 4.17.12-Debian.
-# Debian packages: 2:4.17.12+dfsg-0+deb12u4, pinned in test/Dockerfile.
-# Add one full test ID per line. No suite names or patterns.
+# smbtorture tests the new server must pass, one full test ID per line, as
+# printed by `smbtorture --list` from the Samba version pinned in test/Dockerfile.
 #
-# M2 has no eligible credit tests. The manager decision on #188 keeps the
-# 256-credit target. session_setup_credits_granted requires at least 8192,
-# which is Samba's policy, not an MS-SMB2 rule or a promise of this server.
-# The Go credit tests gate M2 instead.
-#
-# Enumerated credit tests, all excluded:
-# smb2.credits.session_setup_credits_granted.session_setup_credits_granted
-# smb2.credits.single_req_credits_granted.single_req_credits_granted
-# smb2.credits.skipped_mid.skipped_mid
-# The last two require CREATE and also expect 8192 credits.
-# Source: samba-4.17.12/source4/torture/smb2/credits.c in samba-team/samba.
+# None yet. The smb2.credits tests expect 8192 credits, which is Samba's own
+# policy; this server targets 256.

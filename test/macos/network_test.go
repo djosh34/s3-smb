@@ -1,6 +1,7 @@
 //go:build macos
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package macos
 
 import (
@@ -9,12 +10,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
+// networkScenario runs network-drop or network-outage. Every SMB client of the
+// Mac, including Time Machine and restore mounts, connects through a fault
+// proxy that cuts the connection during a backup.
 func (h *harness) networkScenario(name string) result {
 	if os.Getenv("MAC_SERVER") != "smbnext" {
 		h.t.Fatal("network scenarios require MAC_SERVER=smbnext")
@@ -25,15 +31,13 @@ func (h *harness) networkScenario(name string) result {
 	h.proxy, h.smbAddress = proxy, proxy.Address()
 	h.save("network-proxy.json", map[string]string{"client": h.smbAddress, "server": "127.0.0.1:1445"})
 	outcome := h.baseline()
-	h.smbLogging, err = helpers.EnableSMBLogging(h.smbLogCommand)
-	h.save("smb-kernel-logging.json", h.smbLogging)
-	h.must(err)
+	h.enableSMBLogging()
 	outcome.Scenario = name
 	if name == "network-outage" {
 		return h.networkOutage(outcome)
 	}
-	var updated string
-	report, err := helpers.RunDropAttempts(h.ctx, func(number int) (helpers.DropAttempt, error) {
+	var updated []helpers.Entry
+	report, err := helpers.RunDropAttempts(func(number int) helpers.DropAttempt {
 		attempt, tree, commandErr := h.dropBackup(number, false)
 		updated = tree
 		if commandErr != nil {
@@ -43,7 +47,7 @@ func (h *harness) networkScenario(name string) result {
 		if attempt.Log.Refused {
 			h.t.Log("not tested: macOS refused reconnect", number)
 		}
-		return attempt, nil
+		return attempt
 	})
 	outcome.NetworkDrop = &report
 	h.save("network-drop-result.json", report)
@@ -61,7 +65,7 @@ func (h *harness) networkScenario(name string) result {
 	h.must(h.detach())
 	h.mount()
 	baseline := h.remoteBackup("baseline-intact", outcome.Baseline)
-	outcome.BaselineRestore = h.restore(baseline, filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.BaselineRestore = h.restore(baseline, h.reference(), "restore-baseline")
 	h.must(h.detach())
 	return outcome
 }
@@ -73,7 +77,7 @@ func (h *harness) networkOutage(outcome result) result {
 	h.mount()
 	latest := h.remoteBackup("after-outage", "")
 	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, commandErr, filepath.Base(latest), outcome.Baseline))
-	outcome.BaselineRestore = h.restore(latest, filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.BaselineRestore = h.restore(latest, h.reference(), "restore-baseline")
 	h.must(h.detach())
 	latest = h.resumeBackup(outcome.Baseline, true)
 	outcome.Resumed, outcome.ResumedRestore = filepath.Base(latest), h.restore(latest, updated, "restore-next-backup")
@@ -81,15 +85,17 @@ func (h *harness) networkOutage(outcome result) result {
 	return outcome
 }
 
-func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string, error) {
+// dropBackup changes the test tree, starts a backup and cuts the connection
+// while Time Machine writes bands. A short drop restores forwarding after five
+// seconds. A long one waits at least 45 seconds and until the backup fails.
+func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []helpers.Entry, error) {
 	label := fmt.Sprintf("network-attempt-%d", number)
 	if number > 1 {
-		h.must(os.Remove(filepath.Join(h.proof, "later.bin")))
+		h.must(h.proofDir.Remove("later.bin"))
 	}
 	h.randomFile("later.bin", 4<<30)
-	h.must(os.WriteFile(filepath.Join(h.proof, "nested/message.txt"), []byte(label+"\n"), 0o600))
-	updated := filepath.Join(h.evidence, label+"-tree.json")
-	h.manifest(h.proof, updated)
+	h.must(h.proofDir.WriteFile("nested/message.txt", []byte(label+"\n"), 0o600))
+	updated, _ := h.manifest(h.proof, h.evidenceDir, label+"-tree.json")
 	before := h.objects("s3-smb/chunks/")
 	started := time.Now().UTC()
 	h.startBackup(label)
@@ -116,7 +122,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 		return ready, nil
 	}))
 	attempt := helpers.DropAttempt{StatusAtCut: current, CutAt: time.Now().UTC()}
-	h.must(h.proxy.SetFault(netfault.Fault{Drop: true}))
+	h.must(h.proxy.Drop())
 	h.save(label+"-cut.json", attempt)
 	if long {
 		h.pause(45 * time.Second)
@@ -130,7 +136,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	} else {
 		h.pause(5 * time.Second)
 	}
-	h.must(h.proxy.SetFault(netfault.Fault{}))
+	h.proxy.Restore()
 	attempt.RestoredAt = time.Now().UTC()
 	_, commandErr := h.completeBackup(label)
 	attempt.Completed = commandErr == nil
@@ -142,15 +148,40 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	return attempt, updated, commandErr
 }
 
-func (h *harness) smbLogCommand(args ...string) (string, error) {
-	return h.try(time.Minute, append([]string{"/usr/sbin/sysctl"}, args...)...)
+// enableSMBLogging sets the kernel SMB log level to 1, which logs the
+// reconnect refusal. smbfs must be loaded, so call it after the first mount.
+// finish restores the previous level.
+func (h *harness) enableSMBLogging() {
+	previous := h.sysctlSMBLogLevel()
+	h.smbLogLevel = previous
+	h.run(time.Minute, "/usr/sbin/sysctl", "-w", "net.smb.fs.loglevel=1")
+	active := h.sysctlSMBLogLevel()
+	h.save("smb-kernel-logging.json", map[string]string{"previous": previous, "active": active})
+	if active == "0" {
+		h.t.Fatal("SMB warning logging is still disabled")
+	}
+}
+
+func (h *harness) sysctlSMBLogLevel() string {
+	level := strings.TrimSpace(h.run(time.Minute, "/usr/sbin/sysctl", "-n", "net.smb.fs.loglevel"))
+	_, err := strconv.ParseUint(level, 10, 32)
+	h.must(err)
+	return level
+}
+
+func (h *harness) restoreSMBLogging() error {
+	if h.smbLogLevel == "" {
+		return nil
+	}
+	_, err := h.try(time.Minute, "/usr/sbin/sysctl", "-w", "net.smb.fs.loglevel="+h.smbLogLevel)
+	return err
 }
 
 func (h *harness) dropLog(start, end time.Time) helpers.DropLog {
 	format := "2006-01-02 15:04:05-0700"
 	h.run(2*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", `process == "backupd" OR senderImagePath CONTAINS "smbfs"`)
-	// try leaves log-show output on disk rather than returning large diagnostic logs.
-	data, err := os.ReadFile(filepath.Join(h.evidence, fmt.Sprintf("%04d-log.log", h.serial)))
+	// try leaves log show output on disk rather than returning it.
+	data, err := h.evidenceDir.ReadFile(fmt.Sprintf("%04d-log.log", h.serial))
 	h.must(err)
 	log, err := helpers.ParseDropLog(data)
 	h.must(err)

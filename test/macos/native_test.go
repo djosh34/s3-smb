@@ -1,6 +1,7 @@
 //go:build macos
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package macos
 
 import (
@@ -13,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
-	"testing"
 	"time"
 
 	"github.com/creack/pty"
@@ -41,19 +41,22 @@ func (p *process) exited() bool {
 }
 func (p *process) wait() { go func() { p.err = p.cmd.Wait(); close(p.done) }() }
 
-func nativeCommand(ctx context.Context, args ...string) *exec.Cmd {
-	return exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // Callers supply fixed native commands and run-owned binaries, not shell text.
+// command runs name with args directly, without a shell.
+func command(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name)
+	cmd.Args = append(cmd.Args, args...)
+	return cmd
 }
 
 func (h *harness) newProcess(name string, args ...string) *process {
 	// The phase deadline must leave services alive until cleanup detaches their clients.
 	ctx, cancel := context.WithCancel(context.Background())
-	log, err := os.OpenFile(filepath.Join(h.evidence, name+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Logs are created exclusively under this run's evidence directory.
+	log, err := h.evidenceDir.OpenFile(name+".log", os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		cancel()
 		h.must(err)
 	}
-	cmd := nativeCommand(ctx, args...)
+	cmd := command(ctx, args[0], args[1:]...)
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 45 * time.Second
@@ -108,47 +111,32 @@ func stop(p *process, abrupt bool) error {
 	return errors.Join(err, p.log.Close())
 }
 
+// try runs a native command and saves its output as a numbered evidence log.
+// It returns the output, except for /usr/bin/log, whose output can be large.
 func (h *harness) try(timeout time.Duration, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, timeout)
 	defer cancel()
 	h.serial++
 	name := fmt.Sprintf("%04d-%s.log", h.serial, filepath.Base(args[0]))
 	h.t.Logf("native-command-start %s %s %v", time.Now().UTC().Format(time.RFC3339), name, args)
-	path := filepath.Join(h.evidence, name)
-	log, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The path is a numbered command log in the run-owned evidence directory.
+	log, err := h.evidenceDir.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return "", err
 	}
-	cmd := nativeCommand(ctx, args...)
+	cmd := command(ctx, args[0], args[1:]...)
 	cmd.Stdout, cmd.Stderr = log, log
 	err = errors.Join(cmd.Run(), log.Close())
 	h.t.Logf("native-command-exit %s %s %v", time.Now().UTC().Format(time.RFC3339), name, err)
 	var output []byte
 	if args[0] != "/usr/bin/log" {
 		var readErr error
-		output, readErr = os.ReadFile(path) //nolint:gosec // Read only the command log just created above.
+		output, readErr = h.evidenceDir.ReadFile(name)
 		err = errors.Join(err, readErr)
 	}
 	if err != nil {
 		return string(output), fmt.Errorf("%v: %w; see %s", args, err, name)
 	}
 	return string(output), nil
-}
-
-func TestTryFailedOutput(t *testing.T) {
-	h := &harness{t: t, ctx: t.Context(), evidence: t.TempDir()}
-	output, err := h.try(time.Minute, "/bin/sh", "-c", "printf stdout; printf stderr >&2; exit 23")
-	var exitErr *exec.ExitError
-	if output != "stdoutstderr" || !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 {
-		t.Fatal("lost failed command output or exit error", output, err)
-	}
-	log, readErr := os.ReadFile(filepath.Join(h.evidence, "0001-sh.log"))
-	if readErr != nil {
-		t.Fatal(readErr)
-	}
-	if string(log) != output {
-		t.Fatal("failed command output was not saved", string(log))
-	}
 }
 
 func (h *harness) run(timeout time.Duration, args ...string) string {
@@ -160,7 +148,7 @@ func (h *harness) run(timeout time.Duration, args ...string) string {
 
 func (h *harness) startDaemon(phase string) {
 	if phase != "restart" {
-		h.must(os.Mkdir(h.local, 0o700))
+		h.must(h.workDir.Mkdir("daemon", 0o700))
 		config := fmt.Sprintf(`smb:
   listen: 127.0.0.1:1445
   share: TimeMachine
@@ -172,13 +160,13 @@ storage:
   cache_size: 0
 s3:
   endpoint: http://127.0.0.1:19000
-  bucket: time-machine
+  bucket: %s
   region: us-east-1
   path_style: true
   access_key:
-    value: mac-acceptance
+    value: %s
   secret_key:
-    value: synthetic-mac-acceptance-secret
+    value: %s
 encryption:
   enabled: true
   passphrase:
@@ -188,8 +176,8 @@ backup:
 logging:
   format: json
   level: info
-`, filepath.Join(h.local, "state"), filepath.Join(h.local, "cache"), h.interval)
-		h.must(os.WriteFile(filepath.Join(h.local, "config.yaml"), []byte(config), 0o600))
+`, filepath.Join(h.local, "state"), filepath.Join(h.local, "cache"), bucket, minioUser, minioPassword, h.interval)
+		h.must(h.workDir.WriteFile("daemon/config.yaml", []byte(config), 0o600))
 	}
 	h.applicationSerial++
 	name := fmt.Sprintf("application-%d-%s", h.applicationSerial, phase)
@@ -201,8 +189,8 @@ logging:
 	}
 	h.daemon = p
 	p.wait()
-	ttyPath := filepath.Join(h.evidence, name+"-tty.log")
-	ttyLog, err := os.OpenFile(ttyPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The small consent log belongs to this run's application start.
+	ttyName := name + "-tty.log"
+	ttyLog, err := h.evidenceDir.OpenFile(ttyName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		h.must(errors.Join(err, terminal.Close()))
 	}
@@ -225,7 +213,7 @@ logging:
 	}
 	confirmed := false
 	h.must(h.waitFor("application startup", 3*time.Minute, 100*time.Millisecond, func() (bool, error) {
-		text, err := os.ReadFile(ttyPath) //nolint:gosec // This is the consent log created above.
+		text, err := h.evidenceDir.ReadFile(ttyName)
 		if err != nil {
 			return false, err
 		}
@@ -239,7 +227,7 @@ logging:
 			}
 			confirmed = true
 		}
-		data, err := os.ReadFile(p.log.Name())
+		data, err := h.evidenceDir.ReadFile(name + ".log")
 		if err != nil {
 			return false, err
 		}

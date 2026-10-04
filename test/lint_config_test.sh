@@ -26,8 +26,7 @@ lint_fails() {
 # Every excluded package has deliberate errors. New subpackages must not inherit
 # the temporary exclusions. Frozen and vendored trees stay excluded recursively.
 for directory in internal/app internal/backup internal/config internal/logging \
-  internal/storage test/e2e test/macos/fixture internal/juicefs/probe \
-  internal/thirdparty/probe internal/smb-old/probe; do
+  internal/storage internal/juicefs/probe internal/thirdparty/probe internal/smb-old/probe; do
   mkdir -p "$directory"
   cat > "$directory/probe.go" <<'GO'
 package probe
