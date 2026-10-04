@@ -76,6 +76,7 @@ type Open struct {
 	LeaseKey         GUID
 	DurableTimeout   time.Duration
 	GrantedAccess    uint32
+	CreateAction     uint32
 	SharingIntent    Rights
 	Sharing          ShareMode
 	DeleteOnClose    bool
@@ -111,6 +112,7 @@ type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
 	Key        GUID
+	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
 	Epoch      uint16
@@ -169,13 +171,16 @@ type Grant struct {
 	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
+	CreateAction   uint32
 	Directory      bool
 	DeleteOnClose  bool
 }
 
-// CloseAction transfers cleanup to the server. The table has already removed
-// the open and ranges. The server closes Handle and, if Remove is true, calls
-// identity-checked Remove after resolving the current name under a parent guard.
+// CloseAction transfers cleanup to the server. FileID names the removed open;
+// active references use its persistent half across reconnects. The table has
+// already removed the open and ranges. The server closes Handle and, if Remove
+// is true, calls identity-checked Remove after resolving the current name under
+// a parent guard.
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
@@ -186,6 +191,8 @@ type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	// FileID identifies the removed open, even when Object selects a pending base deletion.
+	FileID FileID
 	Remove bool
 }
 
@@ -228,6 +235,7 @@ type Table struct {
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64
 	nextPersistent  uint64
