@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
@@ -70,7 +71,7 @@ func TestChaosConnectionDrops(t *testing.T) {
 	}
 	check := func(share *smb.Share) {
 		t.Helper()
-		if err := ledger.CheckAcknowledged(share.ReadFile); err != nil {
+		if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
 			t.Fatal(err)
 		}
 	}
