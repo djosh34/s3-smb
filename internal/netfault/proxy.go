@@ -45,8 +45,8 @@ type Proxy struct {
 	links     map[*link]struct{}
 	changed   chan struct{}
 	closeErr  error
-	upstream  string
 	address   string
+	upstreams []string
 	fault     Fault
 	mu        sync.Mutex
 	workers   sync.WaitGroup
@@ -63,19 +63,12 @@ type link struct {
 }
 
 // New starts a proxy for an explicit TCP host:port. The listener binds only to
-// 127.0.0.1. It rejects an upstream equal to its own address. The upstream is
-// dialed separately for each accepted connection.
+// 127.0.0.1. It resolves the upstream once and rejects its own port when any
+// target address is loopback or matches the listener. Each accepted connection
+// tries the resolved addresses in order; later DNS changes cannot bypass the check.
 func New(ctx context.Context, upstream string) (*Proxy, error) {
-	host, port, err := net.SplitHostPort(upstream)
-	if err != nil {
-		return nil, fmt.Errorf("parse network fault peer: %w", err)
-	}
-	number, err := strconv.ParseUint(port, 10, 16)
-	if err != nil || host == "" || number == 0 {
-		return nil, errors.New("network fault peer requires a host and port in 1..65535")
-	}
-	if contextErr := ctx.Err(); contextErr != nil {
-		return nil, contextErr
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	var config net.ListenConfig
 	listener, err := config.Listen(ctx, "tcp", "127.0.0.1:0")
@@ -88,19 +81,54 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 // start owns the listener, including on failure. Keeping listener creation
 // separate lets tests force a collision with the upstream address.
 func start(ctx context.Context, upstream string, listener net.Listener) (*Proxy, error) {
-	if upstream == listener.Addr().String() {
-		return nil, errors.Join(errors.New("network fault proxy cannot target its own address"), listener.Close())
+	addresses, port, err := resolvePeer(ctx, upstream)
+	if err != nil {
+		return nil, errors.Join(err, listener.Close())
+	}
+	local, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		return nil, errors.Join(errors.New("network fault listener requires a TCP address"), listener.Close())
+	}
+	if int(port) == local.Port {
+		for _, address := range addresses {
+			if address.IP.IsLoopback() || address.IP.Equal(local.IP) {
+				return nil, errors.Join(errors.New("network fault proxy cannot target its own address"), listener.Close())
+			}
+		}
+	}
+	targets := make([]string, len(addresses))
+	for i, address := range addresses {
+		targets[i] = net.JoinHostPort(address.String(), strconv.Itoa(int(port)))
 	}
 	lifetime, cancel := context.WithCancel(ctx)
 	p := &Proxy{
 		ctx: lifetime, cancel: cancel, listener: listener,
 		links: make(map[*link]struct{}), changed: make(chan struct{}),
-		upstream: upstream, address: listener.Addr().String(),
+		upstreams: targets, address: listener.Addr().String(),
 	}
 	p.workers.Add(1)
 	go p.accept()
 	context.AfterFunc(lifetime, p.stop)
 	return p, nil
+}
+
+func resolvePeer(ctx context.Context, upstream string) ([]net.IPAddr, uint16, error) {
+	host, port, err := net.SplitHostPort(upstream)
+	if err != nil {
+		return nil, 0, fmt.Errorf("parse network fault peer: %w", err)
+	}
+	number, err := strconv.ParseUint(port, 10, 16)
+	if err != nil || host == "" || number == 0 {
+		return nil, 0, errors.New("network fault peer requires a host and port in 1..65535")
+	}
+	addresses, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, 0, fmt.Errorf("resolve network fault peer: %w", err)
+	}
+	if len(addresses) == 0 {
+		return nil, 0, errors.New("network fault peer has no addresses")
+	}
+	return addresses, uint16(number), nil
 }
 
 // Address returns the proxy's loopback host:port.
@@ -235,8 +263,7 @@ func (p *Proxy) forward(connection *link) {
 		delete(p.links, connection)
 		p.mu.Unlock()
 	}()
-	var dialer net.Dialer
-	upstream, err := dialer.DialContext(connection.ctx, "tcp", p.upstream)
+	upstream, err := p.dialPeer(connection.ctx)
 	if err != nil {
 		// Closing the client exposes an unavailable peer to its caller.
 		return
@@ -260,6 +287,22 @@ func (p *Proxy) forward(connection *link) {
 	}
 	// The deferred cleanup handles completion or failure in the second direction.
 	<-results
+}
+
+func (p *Proxy) dialPeer(ctx context.Context) (net.Conn, error) {
+	var dialer net.Dialer
+	var dialErr error
+	for _, address := range p.upstreams {
+		conn, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			return conn, nil
+		}
+		dialErr = errors.Join(dialErr, err)
+		if ctx.Err() != nil {
+			break
+		}
+	}
+	return nil, dialErr
 }
 
 func (p *Proxy) relay(ctx context.Context, src, dst net.Conn) error {

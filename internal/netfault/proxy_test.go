@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -345,26 +346,13 @@ func testName(fault Fault, canceled bool) string {
 }
 
 func TestInvalidInputs(t *testing.T) {
-	t.Run("self target", func(t *testing.T) {
-		var config net.ListenConfig
-		listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
-		if err != nil {
-			t.Fatal(err)
+	for _, host := range []string{"localhost", "127.0.0.1", "::1", "127.0.0.2", "::ffff:127.0.0.1"} {
+		for _, prefix := range []string{"", "00"} {
+			t.Run("self target/"+host+"/port prefix="+prefix, func(t *testing.T) {
+				testSelfTarget(t, host, prefix)
+			})
 		}
-		// Force the port collision at the constructor seam used by New.
-		proxy, startErr := start(t.Context(), listener.Addr().String(), listener)
-		if proxy != nil {
-			if closeErr := proxy.Close(); closeErr != nil {
-				t.Error(closeErr)
-			}
-		}
-		if startErr == nil {
-			t.Fatal("accepted the proxy's own address as its upstream")
-		}
-		if _, acceptErr := listener.Accept(); !errors.Is(acceptErr, net.ErrClosed) {
-			t.Fatalf("rejected constructor did not close listener: %v", acceptErr)
-		}
-	})
+	}
 	for _, upstream := range []string{"", "http://127.0.0.1:123", ":123", "localhost:0", "localhost:65536", "localhost:abc"} {
 		if proxy, err := New(t.Context(), upstream); err == nil {
 			if closeErr := proxy.Close(); closeErr != nil {
@@ -397,7 +385,37 @@ func TestInvalidInputs(t *testing.T) {
 	readBytes(t, conn, payload)
 }
 
-func TestUnavailablePeer(t *testing.T) {
+func testSelfTarget(t *testing.T, host, portPrefix string) {
+	t.Helper()
+	var config net.ListenConfig
+	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		if closeErr := listener.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+		t.Fatal("listener address is not TCP")
+	}
+	// Force the port collision at the constructor seam used by New.
+	upstream := net.JoinHostPort(host, portPrefix+strconv.Itoa(address.Port))
+	proxy, startErr := start(t.Context(), upstream, listener)
+	if proxy != nil {
+		if closeErr := proxy.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}
+	if startErr == nil {
+		t.Fatalf("accepted a self target: %s", upstream)
+	}
+	if _, acceptErr := listener.Accept(); !errors.Is(acceptErr, net.ErrClosed) {
+		t.Fatalf("rejected constructor did not close listener: %v", acceptErr)
+	}
+}
+
+func TestPeerClosesAtOnce(t *testing.T) {
 	var config net.ListenConfig
 	listener, err := config.Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
