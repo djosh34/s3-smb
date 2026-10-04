@@ -38,6 +38,9 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 	if create.Disposition > fileOverwriteIf || create.ShareAccess & ^uint32(7) != 0 || create.Options&(fileDirectoryFile|fileNonDirectoryFile) == fileDirectoryFile|fileNonDirectoryFile {
 		return create, smb.StatusInvalidParameter
 	}
+	if create.Options&fileDirectoryFile != 0 && create.Disposition != fileCreateDisposition && create.Disposition != fileOpen && create.Disposition != fileOpenIf {
+		return create, smb.StatusInvalidParameter
+	}
 	return create, smb.StatusSuccess
 }
 
@@ -136,6 +139,9 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
+	if create.Options&fileDeleteOnClose != 0 && granted&fileDelete == 0 {
+		return reply{status: smb.StatusAccessDenied}, nil
+	}
 	result, unlock, err := createLocked(ctx, request, create, granted)
 	if unlock != nil {
 		unlock()

@@ -43,6 +43,7 @@ type FS struct {
 	flushes    atomic.Uint64
 	capacity   uint64
 	volumeID   uint64
+	readWindow time.Duration
 	readOnly   bool
 }
 
@@ -81,7 +82,7 @@ var _ smb.Storage = (*FS)(nil)
 // New constructs an adapter. The caller owns the JuiceFS runtime and chunk store,
 // and calls Shutdown after draining requests and closing storage references.
 func New(options Options) (*FS, error) {
-	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil {
+	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil || options.ReadRetryWindow < 0 {
 		return nil, smb.ErrInvalidParameter
 	}
 	m := options.Filesystem.Meta()
@@ -93,12 +94,16 @@ func New(options Options) (*FS, error) {
 	if err != nil {
 		return nil, storageError(err)
 	}
+	window := options.ReadRetryWindow
+	if window == 0 {
+		window = readRetryWindow
+	}
 	reader := vfs.NewDataReader(options.Config, m, options.Store)
 	writer := vfs.NewDataWriter(options.Config, m, options.Store, reader)
 	return &FS{
 		filesystem: options.Filesystem, metadata: m, barrier: options.Barrier, reader: reader, writer: writer,
 		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), directory: directory,
-		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly,
+		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly, readWindow: window,
 	}, nil
 }
 
@@ -376,7 +381,7 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 			h.state.reader = nil
 		}
 		return n, eno
-	}, readRetryWindow)
+	}, s.readWindow)
 	if err != nil {
 		return n, err
 	}

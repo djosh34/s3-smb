@@ -35,6 +35,12 @@ The wire codecs preserve FILETIME sentinels until the handler interprets them.
 The raw client issue (#269) starts after the wire PR (#200) merges, still in M1.
 Its M1 scope is framing and exact messages.
 M2 (#188) adds client login, signing and encryption against a running server.
+`smbtest.NewStorage(testing.TB)` supplies a real JuiceFS adapter and registers
+its cleanup. `smbtest/fixture.Start(ctx, server.Options)` serves it on loopback
+and returns a fixture with `Address` and `Close`. Close drains the server, not
+JuiceFS. Tests close the fixture before the storage helper's cleanup runs.
+The fixture subpackage avoids an import cycle in in-package server tests, which
+use the raw client and storage helper in `smbtest`.
 
 ## Handler request context
 
