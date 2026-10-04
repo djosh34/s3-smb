@@ -1,11 +1,35 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
+
+func TestAAPLNegotiationIsPerConnection(t *testing.T) {
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	first := newConnection(ctx, cancel, server, nil).requestContext()
+	second := newConnection(ctx, cancel, server, nil).requestContext()
+	if first.aaplNegotiated() || second.aaplNegotiated() {
+		t.Fatal("new connection has negotiated AAPL")
+	}
+	first.markAAPL()
+	if !first.aaplNegotiated() || second.aaplNegotiated() {
+		t.Fatal("AAPL state crossed connections")
+	}
+	var empty RequestContext
+	empty.markAAPL()
+	if empty.aaplNegotiated() {
+		t.Fatal("empty request negotiated AAPL")
+	}
+}
 
 func TestAAPLRequestedFields(t *testing.T) {
 	for _, requested := range []uint64{0, 1, 2, 3, 4, 5, 6, 7, 0xffffffffffffffff} {
