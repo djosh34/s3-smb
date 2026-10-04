@@ -97,6 +97,9 @@ func (connection *connection) authenticate(message wire.Message, request wire.Se
 			return reply{status: smb.StatusUserSessionDeleted}, nil
 		}
 	}
+	// SESSION_SETUP creates its reply identity during authentication, rather
+	// than receiving one from decodePayload. Save it while sessionMu is held.
+	connection.replyProtection[message.Header.MessageID] = savedProtection{session: session}
 	session.preauth.Update(message.Raw)
 	result, authErr := session.acceptor.Step(request.Token)
 	if authErr != nil {
