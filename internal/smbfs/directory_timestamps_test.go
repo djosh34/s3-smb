@@ -135,6 +135,129 @@ func TestDirectoryTimesAcrossTruncateAndReopen(t *testing.T) {
 	}
 }
 
+func TestDirectoryTimesAcrossSetAttr(t *testing.T) {
+	initial := time.Unix(1000000000, 0).UTC()
+	stamp := time.Date(2100, 1, 1, 0, 0, 0, 123456700, time.UTC)
+	bits := uint32(0x02)
+	changes := []struct {
+		name   string
+		change smb.AttrChange
+		want   smb.Attr
+	}{
+		{
+			name:   "times",
+			change: smb.AttrChange{Accessed: &stamp, Modified: &stamp, Changed: &stamp},
+			want:   smb.Attr{Created: initial, Accessed: stamp, Modified: stamp, Changed: stamp, Attributes: 0x80},
+		},
+		{
+			name:   "created_only",
+			change: smb.AttrChange{Created: &stamp},
+			want:   smb.Attr{Created: stamp, Accessed: initial, Modified: initial, Changed: initial, Attributes: 0x80},
+		},
+		{
+			name:   "attributes_only",
+			change: smb.AttrChange{Attributes: &bits},
+			want:   smb.Attr{Created: initial, Accessed: initial, Modified: initial, Changed: initial, Attributes: 0x02},
+		},
+	}
+	for _, retention := range []struct {
+		name     string
+		retained bool
+	}{
+		{name: "without_handle"},
+		{name: "with_handle", retained: true},
+	} {
+		for _, change := range changes {
+			t.Run(retention.name+"/"+change.name, func(t *testing.T) {
+				f := newFixture(t, 0)
+				r := f.create(t, "data", smb.KindFile)
+				if retention.retained {
+					f.open(t, r.Object, smb.AccessRead)
+				}
+				if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Created: &initial, Accessed: &initial, Modified: &initial, Changed: &initial}); err != nil {
+					t.Fatal(err)
+				}
+				generation := f.fs.directoryGeneration()
+				page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+				if err != nil || len(page) != 1 {
+					t.Fatalf("pre-setattr page = %+v, %v", page, err)
+				}
+				if err = f.fs.SetAttr(t.Context(), r.Object, change.change); err != nil {
+					t.Fatal(err)
+				}
+				got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+				want := change.want
+				if err != nil || !got.Created.Equal(want.Created) || !got.Accessed.Equal(want.Accessed) || !got.Modified.Equal(want.Modified) || !got.Changed.Equal(want.Changed) || got.Attributes != want.Attributes {
+					t.Fatalf("page across setattr = %+v, %v; want %+v", got, err, want)
+				}
+			})
+		}
+	}
+}
+
+func TestDirectoryTimesAcrossFailedSetAttr(t *testing.T) {
+	f := newFixture(t, 0)
+	r := f.create(t, "data", smb.KindFile)
+	f.open(t, r.Object, smb.AccessRead)
+	generation := f.fs.directoryGeneration()
+	page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+	if err != nil || len(page) != 1 {
+		t.Fatalf("pre-setattr page = %+v, %v", page, err)
+	}
+	stamp := time.Unix(1000000000, 123456700).UTC()
+	invalid := time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	// Accessed is stored before Modified fails to marshal as an exact time.
+	err = f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Accessed: &stamp, Modified: &invalid})
+	requireError(t, err, smb.ErrInvalidParameter)
+	got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+	if err != nil || !got.Accessed.Equal(stamp) {
+		t.Fatalf("page across failed setattr = %+v, %v; want accessed %v", got, err, stamp)
+	}
+}
+
+func TestDirectoryTimesAcrossStreamChanges(t *testing.T) {
+	for _, operation := range []string{"write", "truncate", "set_attr_size"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newFixture(t, 0)
+			r := f.create(t, "data", smb.KindFile)
+			stream := f.create(t, "data:resource", smb.KindFile)
+			h := f.open(t, stream.Object, smb.AccessWrite)
+			initial := time.Unix(1000000000, 0).UTC()
+			if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Modified: &initial, Changed: &initial}); err != nil {
+				t.Fatal(err)
+			}
+			generation := f.fs.directoryGeneration()
+			page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+			if err != nil || len(page) != 1 {
+				t.Fatalf("pre-stream-change page = %+v, %v", page, err)
+			}
+			switch operation {
+			case "write":
+				write(t, f.fs, h, "stream data", 0)
+			case "truncate":
+				err = f.fs.Truncate(t.Context(), h, 8)
+			case "set_attr_size":
+				size := uint64(8)
+				err = f.fs.SetAttr(t.Context(), stream.Object, smb.AttrChange{Size: &size})
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := f.fs.GetAttr(t.Context(), r.Object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want.Modified.Equal(initial) || want.Changed.Equal(initial) {
+				t.Fatal("stream change did not replace the explicit times")
+			}
+			got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+			if err != nil || !got.Modified.Equal(want.Modified) || !got.Changed.Equal(want.Changed) || got.Size != want.Size {
+				t.Fatalf("page across stream %s = %+v, %v; want %+v", operation, got, err, want)
+			}
+		})
+	}
+}
+
 func TestFlushTimesStayUnchangedAfterLastClose(t *testing.T) {
 	f := newFixture(t, 0)
 	r := f.create(t, "data", smb.KindFile)

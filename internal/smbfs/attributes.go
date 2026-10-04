@@ -212,11 +212,12 @@ func validStream(name string) bool {
 	return name != "" && len(name) <= 255 && !strings.ContainsAny(name, "\x00:/\\") && !strings.HasPrefix(name, privatePrefix)
 }
 
-func (s *FS) touchStream(ctx context.Context, ino smb.Inode) error {
+func (s *FS) touchStream(ctx context.Context, ino smb.Inode, st *inodeState) error {
 	var attr meta.Attr
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &attr)); err != nil {
 		return err
 	}
+	defer s.invalidateDirectoryRow(st)
 	if !attr.Parent.IsTrash() {
 		return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
 	}
@@ -330,6 +331,10 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	if _, err := s.attr(ctx, key, st); err != nil {
 		return err
 	}
+	if change.Accessed != nil || change.Modified != nil || change.Changed != nil || change.Created != nil || change.Attributes != nil {
+		// A later error can leave some attributes changed, so invalidate on error too.
+		defer s.invalidateDirectoryRow(st)
+	}
 	if change.Size != nil {
 		if err := s.truncate(ctx, key, st, *change.Size); err != nil {
 			return err
@@ -405,6 +410,16 @@ func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange)
 		}
 	}
 	return nil
+}
+
+func (s *FS) invalidateDirectoryRow(st *inodeState) {
+	st.liveMu.Lock()
+	st.live.flushed = s.flushes.Add(1)
+	st.liveMu.Unlock()
+	// Without a retained handle, the per-inode generation leaves with its state.
+	if st.refs.Load() == 0 {
+		s.commits.Add(1)
+	}
 }
 
 func (s *FS) setProperties(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
