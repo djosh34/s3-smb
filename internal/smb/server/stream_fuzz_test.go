@@ -154,6 +154,7 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 	if wantReply {
 		payload, readErr = readFrame(conn, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
 		if readErr != nil {
+			readErr = fmt.Errorf("read reply: %w", readErr)
 			// Unblock the writer before waiting for its result.
 			if err := conn.Close(); err != nil {
 				return nil, false, errors.Join(readErr, err, <-written)
@@ -162,10 +163,10 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 	}
 	writeErr := <-written
 	if readErr != nil && !streamPeerClosed(readErr) {
-		return nil, false, fmt.Errorf("reply did not arrive within the bound: %w", readErr)
+		return nil, false, readErr
 	}
 	if writeErr != nil && !streamPeerClosed(writeErr) {
-		return nil, false, fmt.Errorf("request did not finish within the bound: %w", writeErr)
+		return nil, false, fmt.Errorf("write request: %w", writeErr)
 	}
 	peerClosed := streamPeerClosed(readErr) || streamPeerClosed(writeErr)
 	if peerClosed {

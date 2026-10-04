@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -158,6 +159,20 @@ func TestStreamCancelNeedsNoReply(t *testing.T) {
 	_, closed, err := feedStream(conn, frame, streamBound)
 	if err != nil || closed {
 		t.Fatalf("CANCEL: closed %v, error %v", closed, err)
+	}
+}
+
+func TestStreamReportsReadError(t *testing.T) {
+	conn := streamPeer(t, func(peer net.Conn) error {
+		if _, err := readFrame(peer, smb.CreditUnit); err != nil {
+			return err
+		}
+		_, err := io.Copy(peer, bytes.NewReader(make([]byte, 4)))
+		return err
+	})
+	_, closed, err := feedStream(conn, streamFrame(t, echo(t, 1)), streamBound)
+	if err == nil || closed || !strings.HasPrefix(err.Error(), "read reply: ") {
+		t.Fatalf("malformed reply frame: closed %v, error %v", closed, err)
 	}
 }
 
