@@ -32,6 +32,7 @@ const (
 )
 
 // Options joins the independent M1 modules. ShareName is the only disk share.
+// State must be constructed with Now so authentication and expiry share a clock.
 // ServerGUID is stable for the running daemon. Now drives deadlines; Logger logs
 // rejected frames and negotiation reasons without passwords, tokens or keys.
 type Options struct {
@@ -53,7 +54,8 @@ type Options struct {
 // ServeConn owns one connection and its ordered sender. Each queued frame has
 // its own completion channel. A partial write error closes the connection and
 // fails queued work without sending another frame.
-// Shutdown stops accepting and drains requests. It closes every attached and
+// The first Serve or ServeConn starts one expiry timer shared by all connections.
+// Shutdown stops the timer, stops accepting and drains requests. It closes every attached and
 // detached open, applies pending deletion, and returns all cleanup errors.
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
 type Server struct {
@@ -62,6 +64,8 @@ type Server struct {
 	connections   map[*connection]struct{}
 	listeners     map[*ownedListener]struct{}
 	shutdownDone  chan struct{}
+	scavengerStop chan struct{}
+	scavengerDone chan struct{}
 	options       Options
 	workers       sync.WaitGroup
 	mu            sync.Mutex

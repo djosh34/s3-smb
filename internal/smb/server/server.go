@@ -59,6 +59,7 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 		return errors.Join(net.ErrClosed, owned.close())
 	}
 	server.listeners[owned] = struct{}{}
+	server.startScavenger(ctx)
 	server.mu.Unlock()
 	stop := context.AfterFunc(ctx, func() {
 		if err := owned.close(); err != nil {
@@ -112,6 +113,7 @@ func (server *Server) addConnection(ctx context.Context, cancel context.CancelFu
 		cancel()
 		return nil, errors.Join(net.ErrClosed, conn.Close())
 	}
+	server.startScavenger(ctx)
 	connection := newConnection(ctx, cancel, server, conn)
 	server.connections[connection] = struct{}{}
 	server.workers.Add(1)
@@ -133,6 +135,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	server.mu.Lock()
 	if !server.stopping {
 		server.stopping = true
+		server.stopScavenger()
 		var closeErr error
 		for listener := range server.listeners {
 			closeErr = errors.Join(closeErr, listener.close())
@@ -153,6 +156,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 
 func (server *Server) drain(ctx context.Context, closeErr error) {
 	server.workers.Wait()
+	server.waitScavenger()
 	server.shutdownErr = errors.Join(closeErr, server.cleanup(ctx, server.options.State.CloseAll()))
 	close(server.shutdownDone)
 }

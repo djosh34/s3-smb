@@ -186,6 +186,8 @@ type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	// ID identifies the removed open, even when Object selects a pending base deletion.
+	ID     FileID
 	Remove bool
 }
 

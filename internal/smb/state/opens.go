@@ -349,7 +349,7 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
-	action := CloseAction{Handle: open.Handle, Object: key}
+	action := CloseAction{ID: open.ID, Handle: open.Handle, Object: key}
 	if open.DeleteOnClose || open.dispositionPending {
 		if !record.DeletePending {
 			record.DeleteName = open.deleteName
