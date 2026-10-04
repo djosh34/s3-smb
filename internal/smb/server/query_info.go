@@ -38,8 +38,10 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	case wire.InfoSecurity:
 		// The storage contract and #169 promise no ACL queries or ACL fidelity.
 		result.status = smb.StatusNotSupported
-	default:
+	case 4: // Quota.
 		result.status = smb.StatusNotSupported
+	default:
+		result.status = smb.StatusInvalidParameter
 	}
 	if result.status != smb.StatusSuccess && result.status != smb.StatusBufferOverflow {
 		return result, nil
@@ -51,8 +53,8 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	return result, nil
 }
 
-// Fixed portions are from MS-FSCC 2.4. MS-SMB2 3.3.5.20.1 permits a
-// truncated variable portion, but requires the whole fixed portion.
+// Fixed portions are from MS-FSCC 2.4. Name and All may return a truncated
+// variable portion; Stream must return only complete entries.
 func fileInfoFixedSize(class wire.FileInfoClass) uint32 {
 	switch class {
 	case wire.ClassFileBasic:
@@ -75,6 +77,9 @@ func fileInfoFixedSize(class wire.FileInfoClass) uint32 {
 }
 
 func queryFileInfo(ctx context.Context, request RequestContext, open state.Open, class wire.FileInfoClass, outputLength uint32) ([]byte, smb.Status) {
+	if class == 48 { // FileNormalizedNameInformation, MS-SMB2 3.3.5.20.1.
+		return nil, smb.StatusNotSupported
+	}
 	fixed := fileInfoFixedSize(class)
 	if fixed == 0 {
 		return nil, smb.StatusInvalidInfoClass
@@ -91,9 +96,34 @@ func queryFileInfo(ctx context.Context, request RequestContext, open state.Open,
 		return nil, smb.StatusFromError(err)
 	}
 	if uint64(len(data)) > uint64(outputLength) {
+		if class == wire.ClassFileStream {
+			return streamInfoPrefix(data, outputLength), smb.StatusBufferOverflow
+		}
 		return data[:outputLength], smb.StatusBufferOverflow
 	}
 	return data, smb.StatusSuccess
+}
+
+// streamInfoPrefix receives an encoded list and keeps only complete entries.
+// The last retained entry needs no alignment padding or link to the omitted one.
+func streamInfoPrefix(data []byte, outputLength uint32) []byte {
+	end, last := 0, 0
+	for offset := 0; offset < len(data); {
+		entryEnd := offset + 24 + int(binary.LittleEndian.Uint32(data[offset+4:offset+8]))
+		if entryEnd > int(outputLength) {
+			break
+		}
+		end, last = entryEnd, offset
+		next := binary.LittleEndian.Uint32(data[offset : offset+4])
+		if next == 0 {
+			break
+		}
+		offset += int(next)
+	}
+	if end != 0 {
+		binary.LittleEndian.PutUint32(data[last:last+4], 0)
+	}
+	return data[:end]
 }
 
 func queryBasicInfo(attr smb.Attr) (wire.FileBasicInformation, error) {
