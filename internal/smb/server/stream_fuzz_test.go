@@ -13,6 +13,7 @@ import (
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -28,7 +29,7 @@ func FuzzServerStream(f *testing.F) {
 			t.Skip("stream exceeds corpus limit")
 		}
 		options := testOptions(t)
-		options.Storage = fuzzStorage(t)
+		options.Storage = smbtest.NewStorage(t)
 		server, err := New(options)
 		if err != nil {
 			t.Fatal(err)
