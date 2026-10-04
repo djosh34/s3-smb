@@ -30,11 +30,12 @@ type Config struct {
 	path       string
 }
 type SMBConfig struct {
-	Listen   string `yaml:"listen"`
-	Share    string `yaml:"share"`
-	Username string `yaml:"username"`
-	Password string `yaml:"password"`
-	ReadOnly bool   `yaml:"read_only"`
+	Listen     string `yaml:"listen"`
+	Share      string `yaml:"share"`
+	Username   string `yaml:"username"`
+	Password   string `yaml:"password"`
+	ReadOnly   bool   `yaml:"read_only"`
+	Encryption bool   `yaml:"encryption"`
 }
 type StorageConfig struct {
 	StateDir  string    `yaml:"state_dir"`
@@ -142,7 +143,7 @@ func parse(data []byte, path string) (*Config, error) {
 		return nil, err
 	}
 	c := &Config{
-		SMB:        SMBConfig{Listen: "127.0.0.1:445", Share: "TimeMachine"},
+		SMB:        SMBConfig{Listen: "127.0.0.1:445", Share: "TimeMachine", Encryption: true},
 		Storage:    StorageConfig{StateDir: filepath.Join(dataDir, "s3-smb"), CacheDir: filepath.Join(cacheDir, "s3-smb")},
 		Encryption: EncryptionConfig{Enabled: true}, Backup: BackupConfig{Interval: time.Hour, TrashDays: 14},
 		Logging: LoggingConfig{Format: "text", Level: "info"}, path: path,
