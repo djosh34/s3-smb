@@ -1,0 +1,14 @@
+# M5 candidates from Samba 4.17.12-Debian, not active in the runner yet.
+# Debian package 2:4.17.12+dfsg-0+deb12u4, pinned in test/Dockerfile.
+# Enable only after #347 proves reconnect and these cases pass on smbnext.
+# See docs/smb-m5-capabilities.md for scope, sources and exclusions.
+smb2.lease.v2_epoch1.v2_epoch1
+smb2.lease.v2_breaking3.v2_breaking3
+smb2.lease.v2_complex1.v2_complex1
+smb2.lease.v2_complex2.v2_complex2
+smb2.lease.v2_rename.v2_rename
+smb2.lease.v2_bug15148.v2_bug15148
+# No durable-v2 case is eligible unchanged. V2-lease reopen tests assert
+# a 300000 ms cap, but decision #169 requires 960000 ms. Other durable-v2
+# cases require classic oplocks, V1 leases or AppInstanceId/persistence.
+# This is an enumeration finding, not an approved M5 gate amendment.
