@@ -164,6 +164,7 @@ func TestFakeClockExpiryUsesClosePath(t *testing.T) {
 	if len(table.Expire()) != 0 || len(table.CloseAll()) != 0 {
 		t.Fatal("expired twice")
 	}
+	table.CompleteDelete(actions[0].Object)
 	fresh := commit(t, table, request(1), state.Grant{})
 	statusIs(t, table.CheckIO(fresh.ID, binding, 1, 1, true), smb.StatusSuccess)
 	commit(t, table, req, durableGrant(req))

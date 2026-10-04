@@ -27,6 +27,12 @@ func newFilesMetaStorage(t *testing.T) *smbfs.FS {
 
 func newFilesMetaStorageWithCapacity(t *testing.T, capacity uint64) *smbfs.FS {
 	t.Helper()
+	storage, _ := newFilesMetaStorageWithMetadata(t, capacity)
+	return storage
+}
+
+func newFilesMetaStorageWithMetadata(t *testing.T, capacity uint64) (*smbfs.FS, meta.Meta) {
+	t.Helper()
 	dir := t.TempDir()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
 	if err != nil {
@@ -82,7 +88,7 @@ func newFilesMetaStorageWithCapacity(t *testing.T, capacity uint64) *smbfs.FS {
 			t.Error(err)
 		}
 	})
-	return storage
+	return storage, metadata
 }
 
 // newFilesMetaClient drives the public connection entry point with raw SMB.

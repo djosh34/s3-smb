@@ -169,6 +169,9 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 	if !exists {
 		return Open{}, smb.StatusInvalidParameter
 	}
+	if table.deletePending(request.Object) {
+		return Open{}, smb.StatusDeletePending
+	}
 	if status := table.validateGrant(request, reservation, grant); status != smb.StatusSuccess {
 		return Open{}, status
 	}
@@ -377,17 +380,34 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	base := table.objects[baseKey]
 	if base != nil && base.DeletePending && !table.inodeOpen(key.Inode) {
 		action.Object, action.Name, action.Remove = baseKey, base.DeleteName, true
-		base.DeletePending, base.deleteCommitted = false, false
+		base.removalPending = true
 		if record != base {
 			record.DeletePending, record.deleteCommitted = false, false
 		}
 		table.prune(baseKey)
 	} else if key.Stream != "" && record.DeletePending && len(record.Opens) == 0 {
 		action.Name, action.Remove = record.DeleteName, true
-		record.DeletePending, record.deleteCommitted = false, false
+		record.removalPending = true
 	}
 	table.prune(key)
 	return action
+}
+
+// CompleteDelete releases the delete-pending barrier after a Remove action,
+// whether cleanup succeeded or failed. Until then Reserve and Commit reject
+// this object, including during bulk-close cleanup before its namespace lock.
+func (table *Table) CompleteDelete(object smb.ObjectKey) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	record := table.objects[object]
+	if record == nil || !record.removalPending {
+		return
+	}
+	record.removalPending = false
+	record.deleteCommitted = false
+	record.DeletePending = false
+	record.DeleteName = smb.Name{}
+	table.prune(object)
 }
 
 // InodeOpen reports whether an inode has any open or sharing reservation,
