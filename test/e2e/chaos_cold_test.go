@@ -16,6 +16,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/chaos"
 	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/internal/s3fault"
+	"github.com/djosh34/s3-smb/internal/storage"
 	smb "github.com/hirochachacha/go-smb2"
 )
 
@@ -245,7 +246,8 @@ func chaosColdLatest(t *testing.T, f *fixture, want string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket), Prefix: aws.String("meta/snapshot-")})
+	prefix := storage.VolumeName + "/"
+	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket), Prefix: aws.String(prefix + "meta/snapshot-")})
 	var latest string
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
@@ -253,7 +255,7 @@ func chaosColdLatest(t *testing.T, f *fixture, want string) {
 			t.Fatal(err)
 		}
 		for _, object := range page.Contents {
-			key := aws.ToString(object.Key)
+			key := strings.TrimPrefix(aws.ToString(object.Key), prefix)
 			if strings.HasSuffix(key, ".db.gz") && key > latest {
 				latest = key
 			}
