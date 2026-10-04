@@ -125,14 +125,6 @@ func decorateAttr(ino smb.Inode, a *meta.Attr, values privateAttrs, live liveSta
 	}
 	if live.valid && out.Kind == smb.KindFile {
 		out.Size = live.size
-		// A flush may finish after the directory's SQL snapshot. Keep the
-		// acknowledged write time when it is newer than that row's times.
-		if live.modified.After(out.Modified) {
-			out.Modified = live.modified
-		}
-		if live.modified.After(out.Changed) {
-			out.Changed = live.modified
-		}
 	}
 	if live.dirty && out.Kind == smb.KindFile {
 		out.Size = live.size
@@ -350,12 +342,6 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	}
 	if err := s.setTimes(ctx, key.Inode, change); err != nil {
 		return err
-	}
-	if change.Modified != nil || change.Changed != nil {
-		// Explicit times, even older ones, replace the last write's overlay.
-		live := st.snapshot()
-		live.modified = time.Time{}
-		st.publish(live)
 	}
 	if err := s.setProperties(ctx, key.Inode, change); err != nil {
 		return err

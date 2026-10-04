@@ -40,6 +40,7 @@ type FS struct {
 	mu         sync.Mutex
 	renameMu   sync.Mutex
 	commits    atomic.Uint64
+	flushes    atomic.Uint64
 	capacity   uint64
 	volumeID   uint64
 	readOnly   bool
@@ -48,6 +49,7 @@ type FS struct {
 type liveState struct {
 	modified time.Time
 	size     uint64
+	flushed  uint64 // generation of the last dirty flush on this inode
 	dirty    bool
 	valid    bool // size is authoritative while the native reference is retained
 }
@@ -259,6 +261,10 @@ func (s *FS) flush(ctx context.Context, st *inodeState) error {
 		}
 	}
 	live := st.snapshot()
+	if live.dirty {
+		// Invalidate only this inode's pre-flush directory timestamps.
+		live.flushed = s.flushes.Add(1)
+	}
 	live.dirty = false
 	st.publish(live)
 	return ctx.Err()

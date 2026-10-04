@@ -253,7 +253,7 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 	defer release()
 	var out []smb.DirEntry
 	for uint64(len(out)) < uint64(limit) {
-		generation := s.commits.Load()
+		generation := s.directoryGeneration()
 		entries, err := s.directoryPage(ctx, ino, cookie, min(limit, 512))
 		if err != nil {
 			return nil, storageError(err)
@@ -285,13 +285,23 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 	return out, nil
 }
 
-func (s *FS) directoryAttr(ctx context.Context, entry directoryEntry, generation uint64) (smb.Attr, error) {
+type directoryGeneration struct {
+	commits uint64
+	flushes uint64
+}
+
+func (s *FS) directoryGeneration() directoryGeneration {
+	return directoryGeneration{commits: s.commits.Load(), flushes: s.flushes.Load()}
+}
+
+func (s *FS) directoryAttr(ctx context.Context, entry directoryEntry, generation directoryGeneration) (smb.Attr, error) {
 	st, unpin := s.pin(entry.inode)
 	live := st.snapshot()
 	unpin()
-	// Open references retain the authoritative length across flushes. If a
-	// reference closed after the SQL snapshot, reread its committed attributes.
-	if !live.valid && s.commits.Load() != generation {
+	// A dirty flush changes committed times even while the live length stays
+	// valid. Reread only the affected inode, not entries beside unrelated I/O.
+	// Last close drops the live length, so it still needs the commit counter.
+	if live.flushed > generation.flushes || (!live.valid && s.commits.Load() != generation.commits) {
 		return s.GetAttr(ctx, smb.ObjectKey{Inode: entry.inode})
 	}
 	return decorateAttr(entry.inode, &entry.attr, entry.values, live)

@@ -198,7 +198,7 @@ func TestDirectoryLengthAcrossFlushAndClose(t *testing.T) {
 			r := f.create(t, "data", smb.KindFile)
 			h := f.open(t, r.Object, smb.AccessWrite)
 			write(t, f.fs, h, "abcdef", 0)
-			generation := f.fs.commits.Load()
+			generation := f.fs.directoryGeneration()
 			page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
 			if err != nil || len(page) != 1 || page[0].attr.Length != 0 {
 				t.Fatalf("pre-commit SQL snapshot = %+v, %v", page, err)
