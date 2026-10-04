@@ -22,23 +22,28 @@ var errSelfTarget = errors.New("network fault proxy cannot target its own addres
 // forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
 // without discarding buffered data. Drop closes current connections and rejects
 // new ones without dialing the peer. A zero Fault restores normal forwarding.
-// Changes wake pending delays and stalls; bytes already written cannot be recalled.
+// BytesPerSecond caps each connection in each direction by waiting for each
+// buffer's transfer time before writing it. Zero is unlimited. Connections and
+// directions have separate budgets, with no saved credit while idle.
+// Changes wake pending delays, stalls and bandwidth waits; bytes already written
+// cannot be recalled. A write already started uses the old fault.
 // CutAfter closes each connection after exactly that many bytes are forwarded in
 // CutDirection. Zero disables byte cuts. Replacing a fault resets the count for
 // each connection. Bytes whose write already started belong to the old fault
 // and cannot count toward or trigger the replacement's cut. Any buffered suffix
 // is forwarded under the replacement fault without losing bytes.
 type Fault struct {
-	Delay        time.Duration
-	CutAfter     int64
-	CutDirection Direction
-	Stall        bool
-	Drop         bool
+	Delay          time.Duration
+	CutAfter       int64
+	BytesPerSecond int64
+	CutDirection   Direction
+	Stall          bool
+	Drop           bool
 }
 
 func (f Fault) validate() error {
-	if f.Delay < 0 || f.CutAfter < 0 {
-		return errors.New("negative network fault delay or cut threshold")
+	if f.Delay < 0 || f.CutAfter < 0 || f.BytesPerSecond < 0 {
+		return errors.New("negative network fault delay, cut threshold or bandwidth cap")
 	}
 	if f.CutDirection > ServerToClient || (f.CutAfter > 0 && f.CutDirection == 0) {
 		return errors.New("invalid network fault cut direction")
