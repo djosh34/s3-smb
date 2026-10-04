@@ -131,6 +131,9 @@ func TestLockVectorsNeverWait(t *testing.T) {
 					if conflict {
 						offset, want = 0, smb.StatusLockNotGranted
 					}
+					if flags&lockFailImmediately == 0 {
+						want = smb.StatusInvalidParameter
+					}
 					message := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 32, Length: 8, Flags: flags}, wire.LockElement{Offset: offset, Length: 8, Flags: flags})
 					if compound {
 						prefix := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 64 + offset, Length: 8, Flags: flags})
@@ -143,12 +146,14 @@ func TestLockVectorsNeverWait(t *testing.T) {
 						lockExchange(ctx, t, client, []smb.Status{want}, message)
 						id++
 					}
-					if !conflict {
+					if want == smb.StatusSuccess {
 						lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 32, Length: 8, Flags: lockUnlock}, wire.LockElement{Offset: offset, Length: 8, Flags: lockUnlock}))
 						id++
 					} else {
 						// A failed vector must not keep its otherwise-free first range.
 						lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Offset: 32, Length: 8, Flags: lockExclusive}))
+						id++
+						lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Offset: 32, Length: 8, Flags: lockUnlock}))
 						id++
 					}
 				}
@@ -191,12 +196,12 @@ func TestLockRejectsInvalidVectorsWithoutMutation(t *testing.T) {
 	other := insertLockOpen(t, server, session, "invalid")
 	id := session.NextMessageID
 	for _, flags := range []uint32{0, 3, 5, 6, 0x14, 0x20, math.MaxUint32} {
-		lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidParameter}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: flags}))
+		lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidParameter}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive | lockFailImmediately}, wire.LockElement{Offset: 16, Length: 8, Flags: flags | lockFailImmediately}))
 		id++
 	}
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidParameter}, lockMessage(t, session, id, owner.ID, wire.LockElement{Flags: lockUnlock}, wire.LockElement{Flags: lockShared}))
 	id++
-	lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidLockRange}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: math.MaxUint64, Length: 2, Flags: lockExclusive}))
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusInvalidLockRange}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive | lockFailImmediately}, wire.LockElement{Offset: math.MaxUint64, Length: 2, Flags: lockExclusive | lockFailImmediately}))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive}))
 	id++

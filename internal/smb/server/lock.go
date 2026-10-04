@@ -65,6 +65,10 @@ func lockRanges(elements []wire.LockElement) ([]state.Range, bool, smb.Status) {
 		} else if flags != lockShared && flags != lockExclusive && flags != lockShared|lockFailImmediately && flags != lockExclusive|lockFailImmediately {
 			return nil, false, smb.StatusInvalidParameter
 		}
+		// MS-SMB2 3.3.5.14.2 requires immediate failure for multi-range locks.
+		if !unlock && len(elements) > 1 && flags&lockFailImmediately == 0 {
+			return nil, false, smb.StatusInvalidParameter
+		}
 		ranges[index] = state.Range{Offset: element.Offset, Length: element.Length, Exclusive: flags&lockExclusive != 0}
 	}
 	return ranges, unlock, smb.StatusSuccess

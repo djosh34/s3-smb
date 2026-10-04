@@ -1,6 +1,7 @@
 package server
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -26,18 +27,27 @@ func TestLockCloseReleasesRanges(t *testing.T) {
 	owner := insertLockOpen(t, server, session, "close-lock")
 	other := insertLockOpen(t, server, session, "close-lock")
 	id := session.NextMessageID
-	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: lockShared}))
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive | lockFailImmediately}, wire.LockElement{Offset: 16, Length: 8, Flags: lockShared | lockFailImmediately}))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusLockNotGranted}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive}))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, closeLockOpen(t, session, id, owner.ID))
 	id++
-	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive}))
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive | lockFailImmediately}, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive | lockFailImmediately}))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusFileClosed}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockShared}))
 }
 
 func TestLockCompoundConflictDoesNotBlockDisconnect(t *testing.T) {
+	for _, flags := range []uint32{lockShared, lockExclusive, lockShared | lockFailImmediately, lockExclusive | lockFailImmediately} {
+		t.Run(fmt.Sprintf("flags_%x", flags), func(t *testing.T) {
+			checkLockCompoundConflictDoesNotBlockDisconnect(t, flags)
+		})
+	}
+}
+
+func checkLockCompoundConflictDoesNotBlockDisconnect(t *testing.T, flags uint32) {
+	t.Helper()
 	server := lockServer(t)
 	client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
 	owner := insertLockOpen(t, server, session, "disconnect-lock")
@@ -45,8 +55,8 @@ func TestLockCompoundConflictDoesNotBlockDisconnect(t *testing.T) {
 	id := session.NextMessageID
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive}))
 	id++
-	prefix := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive})
-	conflict := lockMessage(t, session, id+1, state.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}, wire.LockElement{Length: 8, Flags: lockExclusive})
+	prefix := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 16, Length: 8, Flags: flags})
+	conflict := lockMessage(t, session, id+1, state.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}, wire.LockElement{Length: 8, Flags: flags})
 	conflict.Header.Flags |= wire.FlagRelated
 	conflict.Header.SessionID, conflict.Header.TreeID = math.MaxUint64, math.MaxUint32
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess, smb.StatusLockNotGranted}, prefix, conflict)
@@ -71,7 +81,7 @@ func TestLockCompoundConflictDoesNotBlockDisconnect(t *testing.T) {
 	}
 	nextClient, nextCtx, nextSession := loginClient(t, server, smb.CipherAES128GCM, smb.SigningCMAC)
 	next := insertLockOpen(t, server, nextSession, "disconnect-lock")
-	lockExchange(nextCtx, t, nextClient, []smb.Status{smb.StatusSuccess}, lockMessage(t, nextSession, nextSession.NextMessageID, next.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive}))
+	lockExchange(nextCtx, t, nextClient, []smb.Status{smb.StatusSuccess}, lockMessage(t, nextSession, nextSession.NextMessageID, next.ID, wire.LockElement{Length: 8, Flags: lockExclusive | lockFailImmediately}, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive | lockFailImmediately}))
 }
 
 func TestLockMissingRelatedFileIDAndMalformedBodyKeepConnection(t *testing.T) {
