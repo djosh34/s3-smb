@@ -69,7 +69,7 @@ func protectedResourcesAt(t *testing.T, dir string) (*resources, *smbfs.FS, *sta
 	}
 	r.raw = raw
 	r.manager, err = backup.New(r.metadata, startupStore{raw, remote}, backup.Options{
-		StateDir: dir, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Attempts: 1, Protection: p,
+		StateDir: dir, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Protection: p,
 	})
 	if err != nil {
 		t.Fatal(err)
