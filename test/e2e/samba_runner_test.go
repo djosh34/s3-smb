@@ -27,7 +27,7 @@ func TestParseTortureAllowlist(t *testing.T) {
 		{name: "duplicate", input: "smb2.example.case.first\nsmb2.example.case.first", invalid: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := parseTortureAllowlist(tt.input, listing)
+			got, err := parseTestAllowlist(tt.input, listing)
 			if (err != nil) != tt.invalid || !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, %v; want %v, invalid=%t", got, err, tt.want, tt.invalid)
 			}

@@ -51,6 +51,9 @@ case "$command $*" in
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
   "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
     [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
+  "go test -race -shuffle=on -count=1 -timeout=35m -run ^TestSmbnextE2ESubset$ ./test/e2e")
+    [[ ${S3_SMB_E2E_SUBSET_BINARY:-} == /tmp/s3-smb-next &&
+       ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && ${GORACE:-} == halt_on_error=1 ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
@@ -298,6 +301,7 @@ export S3_SMB_CHECK_MODE=pr
 run_internal
 contains 'go [pr] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
 contains 'go [pr] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=35m -run ^TestSmbnextE2ESubset$ ./test/e2e'
 export S3_SMB_CHECK_MODE=gate
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
@@ -305,12 +309,14 @@ contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
 contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
 contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=35m -run ^TestSmbnextE2ESubset$ ./test/e2e'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
   'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
   'go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...' \
   'go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .' \
-  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'; do
+  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e' \
+  'go test -race -shuffle=on -count=1 -timeout=35m -run ^TestSmbnextE2ESubset$ ./test/e2e'; do
   export CHECK_TEST_FAIL=$command
   if run_internal; then fail "internal failure ignored: $command"; fi
   [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'failure logs not made readable'
