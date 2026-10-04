@@ -3,7 +3,7 @@
 // It must not own SMB opens, directory cursors, share modes, deletion intent,
 // byte locks or leases, and must not call JuiceFS plocks. It never imports server.
 //
-// M1 provides New(options Options) (smb.Storage, error) and
+// M1 provides New(options Options) (*FS, error) and
 // NewMetadataBarrier(metadataPath string) (MetadataBarrier, error). The latter
 // covers the SQLite database and WAL with ordinary fsync or the platform's
 // full-fsync barrier. It owns no persistent file descriptor or metadata connection.
