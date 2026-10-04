@@ -3,7 +3,7 @@ package app
 
 import (
 	"context"
-	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -14,13 +14,18 @@ import (
 	"github.com/djosh34/s3-smb/internal/logging"
 )
 
-// Main runs the foreground process. When shutdown exceeds its deadline the
-// process exits with the state lock held, because JuiceFS I/O may still be
-// running.
-func Main(args []string, version string) int {
-	logging.Install(os.Stderr)
-	if override := logOverride(args); override != "" {
-		_ = logging.Configure(override, "info")
+// Main runs the foreground process and returns its exit code. When shutdown
+// exceeds its deadline, Main calls exit while the state lock is still held,
+// because JuiceFS I/O may still be running.
+func Main(args []string, version string, stdout, stderr io.Writer, exit func(code int)) int {
+	logging.Install(stderr)
+	// Apply --log-format before parsing, so an error in the command line or the
+	// config is reported in that format too.
+	if format := logOverride(args); format != "" {
+		if err := logging.Configure(format, "info"); err != nil {
+			slog.Error("command line error", "error", err)
+			return 2
+		}
 	}
 	a, err := parseArguments(args)
 	if err != nil {
@@ -29,11 +34,13 @@ func Main(args []string, version string) int {
 	}
 	switch a.command {
 	case "help":
-		printHelp(os.Stdout)
-		return 0
+		return write(stdout, usage)
 	case "version":
-		fmt.Fprintln(os.Stdout, "s3-smb "+version+"\nSource: https://github.com/djosh34/s3-smb")
-		return 0
+		return write(stdout, "s3-smb "+version+"\nSource: https://github.com/djosh34/s3-smb\n")
+	}
+	hardExit := func() {
+		logFailure("hard shutdown deadline exceeded; exiting with local state lock retained until process termination", nil)
+		exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -81,7 +88,7 @@ func Main(args []string, version string) int {
 		slog.Error("resolve startup credentials or TLS failed", "error", err)
 		return 1
 	}
-	if err = serve(ctx, resolved); err != nil {
+	if err = serve(ctx, resolved, hardExit); err != nil {
 		logFailure("service stopped with failure", err)
 		return 1
 	}
@@ -90,13 +97,11 @@ func Main(args []string, version string) int {
 
 const shutdownTimeout = 30 * time.Second
 
-func hardExit() {
-	exitFailure("hard shutdown deadline exceeded; exiting with local state lock retained until process termination", nil)
-}
-
-func exitFailure(message string, err error) {
-	logFailure(message, err)
-	os.Exit(1)
+func write(w io.Writer, text string) int {
+	if _, err := io.WriteString(w, text); err != nil {
+		return 1
+	}
+	return 0
 }
 
 func logFailure(message string, err error) {

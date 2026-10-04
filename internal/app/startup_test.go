@@ -24,10 +24,10 @@ type startupStore struct {
 
 func (s startupStore) PutIfAbsent(_ context.Context, key string, r io.Reader) error {
 	path := filepath.Join(s.dir, filepath.FromSlash(key))
-	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -36,7 +36,7 @@ func (s startupStore) PutIfAbsent(_ context.Context, key string, r io.Reader) er
 }
 
 func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
-	ctx := context.Background()
+	ctx := t.Context()
 	state := t.TempDir()
 	remote := t.TempDir() + string(os.PathSeparator)
 	raw, err := object.CreateStorage("file", remote, "", "", "")
@@ -56,7 +56,11 @@ func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer m.Shutdown()
+	defer func() {
+		if e := m.Shutdown(); e != nil {
+			t.Error(e)
+		}
+	}()
 	if err = m.Init(format, false); err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +100,7 @@ func TestLocalMetadataNeverTreatsPartialStateAsAbsent(t *testing.T) {
 	if exists, err := localMetadataExists(path); err != nil || exists {
 		t.Fatalf("absent: %v %v", exists, err)
 	}
-	if err := os.WriteFile(path, nil, 0600); err != nil {
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := localMetadataExists(path); err == nil {
