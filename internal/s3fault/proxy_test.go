@@ -277,8 +277,18 @@ func TestTimedOutage(t *testing.T) {
 			t.Fatal("outage was not observed")
 		}
 	}
-	if res := request(t, proxy, http.MethodGet, "/bucket/meta/key"); res.status != http.StatusServiceUnavailable || calls.Load() != 0 {
-		t.Fatal("outage did not block all S3 requests")
+	for _, method := range []string{http.MethodHead, http.MethodGet, http.MethodPut} {
+		if res := request(t, proxy, method, "/bucket/meta/key"); res.status != http.StatusServiceUnavailable || calls.Load() != 0 {
+			t.Fatal("outage did not block all S3 requests")
+		}
+		select {
+		case event := <-proxy.MetadataFailureSeen():
+			if event.Method != method || event.Path != "/bucket/meta/key" || event.Status != http.StatusServiceUnavailable {
+				t.Fatalf("metadata outage event = %+v", event)
+			}
+		default:
+			t.Fatal("metadata outage was not observed")
+		}
 	}
 	time.Sleep(time.Until(start.Add(900 * time.Millisecond)))
 	if res := request(t, proxy, http.MethodGet, "/bucket/chunks/key"); res.status != http.StatusServiceUnavailable {
