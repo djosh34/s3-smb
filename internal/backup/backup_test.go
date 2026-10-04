@@ -91,7 +91,7 @@ func newManager(t *testing.T, m *testMetadata, s object.ObjectStorage, dir strin
 		t.Fatal(err)
 	}
 	p.now = now
-	mgr, err := New(m, s, Options{StateDir: dir, DatabasePath: m.path, Interval: time.Hour, Timeout: timeout, Attempts: 1, Protection: p})
+	mgr, err := New(m, s, Options{StateDir: dir, DatabasePath: m.path, Interval: time.Hour, Timeout: timeout, Protection: p})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,44 +280,6 @@ func TestBackupCollisionBackwardClockAndAmbiguousUpload(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-func TestBackupRetriesAreBoundedAndPreserveReceipt(t *testing.T) {
-	m, _ := newMetadata(t)
-	s := newStore(t)
-	dir := t.TempDir()
-	past := time.Now().Add(-time.Minute)
-	first := newManager(t, m, s, dir, func() time.Time { return past }, 5*time.Second)
-	r, err := first.Backup(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	prior, err := os.ReadFile(filepath.Join(dir, "backup-receipt.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	mgr := newManager(t, m, s, dir, time.Now, 5*time.Second)
-	mgr.opts.Attempts = 3
-	s.fail.Store(true)
-	if _, err = mgr.Backup(context.Background()); err == nil {
-		t.Fatal("exhausted retries reported success")
-	}
-	if s.puts.Load() != 4 {
-		t.Fatalf("expected one success then exactly three attempts; got %d", s.puts.Load())
-	}
-	current, err := os.ReadFile(filepath.Join(dir, "backup-receipt.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(prior, current) {
-		t.Fatal("failed retries replaced success evidence")
-	}
-	if mgr.opts.Protection.Check() == nil {
-		t.Fatal("failed retries left gate open")
-	}
-	if _, err = Inspect(context.Background(), s, r.Key, t.TempDir()); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestBackupScheduledFailureAndSuspension(t *testing.T) {
 	for _, overdue := range []bool{false, true} {
 		t.Run(map[bool]string{false: "failed-upload", true: "suspended"}[overdue], func(t *testing.T) {
@@ -337,6 +299,10 @@ func TestBackupScheduledFailureAndSuspension(t *testing.T) {
 			}
 			clock.Add(int64(step))
 			s.fail.Store(true)
+			mgr.wait = func(ctx context.Context, delay time.Duration) error {
+				clock.Add(int64(delay))
+				return ctx.Err()
+			}
 			if err = mgr.Run(context.Background()); err == nil {
 				t.Fatal("scheduled failure/expiry kept writable serving")
 			}

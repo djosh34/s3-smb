@@ -67,6 +67,11 @@ func checkNotifyRefusal(t *testing.T, response, request wire.Message, status smb
 		header.CreditCharge != request.Header.CreditCharge || header.Credit != max(uint16(1), request.Header.Credit) {
 		t.Fatalf("CHANGE_NOTIFY refusal: %+v", header)
 	}
+	checkNotifyErrorBody(t, response)
+}
+
+func checkNotifyErrorBody(t *testing.T, response wire.Message) {
+	t.Helper()
 	body, err := wire.DecodeErrorResponse(response)
 	if err != nil {
 		t.Fatal(err)
@@ -219,51 +224,133 @@ func checkNotifyCompound(t *testing.T, cipher uint16, notifyFirst bool) {
 }
 
 func TestChangeNotifyChecksSessionAndTree(t *testing.T) {
-	server := notifyServer(t, 0)
-	client, ctx := corePipeClient(t, server)
-	exchange(ctx, t, client, negotiateMessage(t, 3))
-	session := smbtest.Session{SessionID: 77, TreeID: 12}
-	open := insertNotifyDirectory(t, server, session)
-	for index, status := range []smb.Status{smb.StatusUserSessionDeleted, smb.StatusNetworkNameDeleted, smb.StatusNotSupported} {
-		request := notifyMessage(t, open, uint64(index+1))
-		switch index {
-		case 0:
-			request.Header.SessionID++
-		case 1:
-			request.Header.TreeID++
-		}
-		responses := exchange(ctx, t, client, request)
-		if len(responses) != 1 {
-			t.Fatalf("CHANGE_NOTIFY reply members: %d", len(responses))
-		}
-		checkNotifyRefusal(t, responses[0], request, status)
+	for _, cipher := range []uint16{0, smb.CipherAES256GCM} {
+		t.Run(notifyProtectionName(cipher), func(t *testing.T) {
+			server := notifyServer(t, cipher)
+			var calls atomic.Int32
+			server.handlers[wire.ChangeNotify] = func(context.Context, RequestContext, wire.Message) (reply, error) {
+				calls.Add(1)
+				return reply{status: smb.StatusSuccess}, nil
+			}
+			client, ctx, session := loginClient(t, server, cipher, smb.SigningGMAC)
+			_, _, foreign := loginClient(t, server, cipher, smb.SigningGMAC)
+			open := insertNotifyDirectory(t, server, session)
+			for index, status := range []smb.Status{smb.StatusNetworkNameDeleted, smb.StatusNotSupported} {
+				request := notifyMessage(t, open, session.NextMessageID+uint64(index))
+				if index == 0 {
+					request.Header.TreeID = foreign.TreeID
+				}
+				responses := exchange(ctx, t, client, request)
+				if len(responses) != 1 {
+					t.Fatalf("CHANGE_NOTIFY reply members: %d", len(responses))
+				}
+				checkNotifyRefusal(t, responses[0], request, status)
+			}
+			checkFollowingEcho(ctx, t, client, session, session.NextMessageID+2)
+			// A foreign session cannot authenticate a transform on this connection.
+			// Check its dispatch status on a separate negotiated transport.
+			plain, plainCtx := pipeClient(t, server)
+			exchange(plainCtx, t, plain, negotiateMessage(t, 1))
+			request := notifyMessage(t, open, 1)
+			request.Header.SessionID = foreign.SessionID
+			responses := exchange(plainCtx, t, plain, request)
+			if len(responses) != 1 {
+				t.Fatalf("missing session reply members: %d", len(responses))
+			}
+			checkNotifyRefusal(t, responses[0], request, smb.StatusUserSessionDeleted)
+			checkFollowingEcho(plainCtx, t, plain, smbtest.Session{}, 2)
+			checkNotifyState(t, server, open)
+			if calls.Load() != 0 {
+				t.Fatal("CHANGE_NOTIFY ran a registered handler")
+			}
+		})
 	}
-	checkNotifyState(t, server, open)
 }
 
 func TestRelatedChangeNotifyFollowsPendingPredecessor(t *testing.T) {
-	server := notifyServer(t, smb.CipherAES256GCM)
+	for _, cipher := range []uint16{0, smb.CipherAES256GCM} {
+		t.Run(notifyProtectionName(cipher), func(t *testing.T) {
+			for _, test := range []struct {
+				name   string
+				status smb.Status
+			}{
+				{"success", smb.StatusSuccess},
+				{"warning", smb.StatusBufferOverflow},
+				{"error", smb.StatusIODeviceError},
+			} {
+				t.Run(test.name, func(t *testing.T) { checkRelatedNotify(t, cipher, test.status) })
+			}
+		})
+	}
+}
+
+func checkRelatedNotify(t *testing.T, cipher uint16, status smb.Status) {
+	t.Helper()
+	server := notifyServer(t, cipher)
 	release := make(chan struct{})
-	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
+	server.handlers[wire.Read] = func(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
+		decoded, err := wire.DecodeReadRequest(message)
+		if err != nil {
+			return reply{}, err
+		}
+		id, resolved := request.FileID(decoded.ID)
+		if resolved != smb.StatusSuccess {
+			return reply{status: resolved}, nil
+		}
 		select {
 		case <-release:
 			body, err := wire.EncodeReadResponse(wire.ReadResponse{Data: []byte("x")})
-			return reply{body: body}, err
+			return reply{body: body, status: status, fileID: id}, err
 		case <-ctx.Done():
 			return reply{}, ctx.Err()
 		}
 	}
-	client, ctx, session := loginClient(t, server, smb.CipherAES256GCM, smb.SigningGMAC)
+	var calls atomic.Int32
+	server.handlers[wire.ChangeNotify] = func(context.Context, RequestContext, wire.Message) (reply, error) {
+		calls.Add(1)
+		return reply{}, nil
+	}
+	client, ctx, session := loginClient(t, server, cipher, smb.SigningGMAC)
 	open := insertNotifyDirectory(t, server, session)
-	read := treeRequest(t, session, session.NextMessageID, wire.Read)
-	notify := notifyMessage(t, open, session.NextMessageID+1)
-	notify.Header.Flags = wire.FlagRelated
-	notify.Header.SessionID, notify.Header.TreeID = ^uint64(0), ^uint32(0)
-	if err := client.Send(ctx, []wire.Message{read, notify}); err != nil {
+	read := compoundFileRequest(t, session, wire.Read, session.NextMessageID+1,
+		wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}, false)
+	notify := notifyMessage(t, open, session.NextMessageID+2)
+	body, err := wire.EncodeChangeNotifyRequest(wire.ChangeNotifyRequest{ID: placeholderFileID(), OutputLength: 4096, Filter: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
+	notify.Body = body
+	notify.Header.Flags = wire.FlagRelated
+	notify.Header.SessionID, notify.Header.TreeID = ^uint64(0), ^uint32(0)
+	prefix := sessionEcho(t, session, session.NextMessageID)
+	if sendErr := client.Send(ctx, []wire.Message{prefix, read, notify}); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	response, err := client.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Messages) != 1 || response.Messages[0].Header.Command != wire.Echo ||
+		response.Messages[0].Header.MessageID != prefix.Header.MessageID || response.Messages[0].Header.Status != smb.StatusSuccess ||
+		response.Messages[0].Header.NextCommand != 0 || response.Messages[0].Header.Credit != 1 {
+		t.Fatalf("completed prefix: %+v", response.Messages)
+	}
+	requests := []wire.Message{read, notify}
+	pending := readNotifyPending(ctx, t, client, session, requests)
+	checkFollowingEcho(ctx, t, client, session, session.NextMessageID+3)
+	close(release)
+	readNotifyFinals(ctx, t, client, session, requests, pending, status)
+	checkFollowingEcho(ctx, t, client, session, session.NextMessageID+4)
+	checkNotifyOpen(t, server, open)
+	if calls.Load() != 0 {
+		t.Fatal("dependent CHANGE_NOTIFY ran a registered handler")
+	}
+}
+
+func readNotifyPending(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, requests []wire.Message) map[uint64]uint64 {
+	t.Helper()
 	pending := make(map[uint64]uint64)
-	for index := range 2 {
+	for _, request := range requests {
 		response, err := client.Receive(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -272,17 +359,24 @@ func TestRelatedChangeNotifyFollowsPendingPredecessor(t *testing.T) {
 			t.Fatalf("pending reply members: %d", len(response.Messages))
 		}
 		header := response.Messages[0].Header
-		if header.MessageID != session.NextMessageID+uint64(index) || header.Status != smb.StatusPending || header.Flags&wire.FlagAsync == 0 || header.Credit == 0 || header.AsyncID == 0 {
+		if header.Command != request.Header.Command || header.MessageID != request.Header.MessageID || header.Status != smb.StatusPending ||
+			header.SessionID != session.SessionID || header.Flags&(wire.FlagResponse|wire.FlagAsync) != wire.FlagResponse|wire.FlagAsync ||
+			header.Credit != max(request.Header.CreditCharge, request.Header.Credit) || header.CreditCharge != request.Header.CreditCharge ||
+			header.AsyncID == 0 || header.NextCommand != 0 || header.TreeID != 0 {
 			t.Fatalf("related pending: %+v", header)
 		}
+		checkNotifyErrorBody(t, response.Messages[0])
 		pending[header.MessageID] = header.AsyncID
 	}
-	if pending[read.Header.MessageID] == pending[notify.Header.MessageID] {
+	if pending[requests[0].Header.MessageID] == pending[requests[1].Header.MessageID] {
 		t.Fatal("related CHANGE_NOTIFY shares its predecessor's async ID")
 	}
-	checkFollowingEcho(ctx, t, client, session, session.NextMessageID+2)
-	close(release)
-	for range 2 {
+	return pending
+}
+
+func readNotifyFinals(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, requests []wire.Message, pending map[uint64]uint64, predecessorStatus smb.Status) {
+	t.Helper()
+	for range requests {
 		response, err := client.Receive(ctx)
 		if err != nil {
 			t.Fatal(err)
@@ -293,21 +387,23 @@ func TestRelatedChangeNotifyFollowsPendingPredecessor(t *testing.T) {
 		message := response.Messages[0]
 		header := message.Header
 		asyncID, exists := pending[header.MessageID]
-		if !exists || header.AsyncID != asyncID || header.SessionID != session.SessionID || header.Flags&wire.FlagAsync == 0 || header.Credit != 0 {
+		if !exists || header.AsyncID != asyncID || header.SessionID != session.SessionID ||
+			header.Flags&(wire.FlagResponse|wire.FlagAsync) != wire.FlagResponse|wire.FlagAsync ||
+			header.Credit != 0 || header.CreditCharge != 1 || header.NextCommand != 0 || header.TreeID != 0 {
 			t.Fatalf("related final: %+v", header)
 		}
 		delete(pending, header.MessageID)
-		if header.MessageID == notify.Header.MessageID {
-			if header.Status != smb.StatusNotSupported {
-				t.Fatalf("related CHANGE_NOTIFY status: %+v", header)
+		command, status := wire.Read, predecessorStatus
+		if header.MessageID == requests[1].Header.MessageID {
+			command = wire.ChangeNotify
+			status = smb.StatusNotSupported
+			if predecessorStatus == smb.StatusIODeviceError {
+				status = predecessorStatus
 			}
-			if _, err := wire.DecodeErrorResponse(message); err != nil {
-				t.Fatal(err)
-			}
-		} else if header.Status != smb.StatusSuccess {
-			t.Fatalf("predecessor status: %+v", header)
+			checkNotifyErrorBody(t, message)
+		}
+		if header.Command != command || header.Status != status {
+			t.Fatalf("related final status: %+v, want %v", header, status)
 		}
 	}
-	checkFollowingEcho(ctx, t, client, session, session.NextMessageID+3)
-	checkNotifyOpen(t, server, open)
 }
