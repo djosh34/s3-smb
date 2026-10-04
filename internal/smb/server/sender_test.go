@@ -87,18 +87,31 @@ func TestEachProducerReceivesOwnCompletion(t *testing.T) {
 	sender, conn, client, ctx := senderPipe(t)
 	first := sender.enqueue([]byte("first"))
 	firstWrite := waitWrite(ctx, t, conn)
-	second := sender.enqueue([]byte("second"))
+	second := make(chan error, 1)
+	queued := make(chan struct{})
+	go func() {
+		completion := sender.enqueue([]byte("second"))
+		close(queued)
+		second <- <-completion
+	}()
+	<-queued
 	noCompletion(t, first)
 	noCompletion(t, second)
 	firstWrite.release <- nil
 	if payload, err := client.ReceiveRaw(ctx); err != nil || string(payload) != "first" {
 		t.Fatalf("first frame %q: %v", payload, err)
 	}
+	secondWrite := waitWrite(ctx, t, conn)
+	// The second producer is already waiting while the first result remains
+	// unread. A shared completion channel would deliver that result to it.
+	select {
+	case err := <-second:
+		t.Fatalf("second producer stole first completion: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
 	if err := <-first; err != nil {
 		t.Fatal(err)
 	}
-	secondWrite := waitWrite(ctx, t, conn)
-	noCompletion(t, second)
 	secondWrite.release <- nil
 	if payload, err := client.ReceiveRaw(ctx); err != nil || string(payload) != "second" {
 		t.Fatalf("second frame %q: %v", payload, err)

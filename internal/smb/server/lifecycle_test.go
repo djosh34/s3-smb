@@ -163,8 +163,25 @@ func TestShutdownClosesOpensAppliesDeletionAndReturnsAllErrors(t *testing.T) {
 	if status != smb.StatusSuccess {
 		t.Fatal(status)
 	}
-	if _, status := options.State.Commit(reservation, state.Grant{Handle: cleanupHandle{object: object}, DeleteOnClose: true, DeleteName: smb.Name{Parent: 1, Base: "old"}}); status != smb.StatusSuccess {
+	if _, commitStatus := options.State.Commit(reservation, state.Grant{Handle: cleanupHandle{object: object}, DeleteOnClose: true, DeleteName: smb.Name{Parent: 1, Base: "old"}}); commitStatus != smb.StatusSuccess {
+		t.Fatal(commitStatus)
+	}
+	// A detached durable open must be closed too, regardless of map order.
+	reservation, status = options.State.Reserve(state.OpenRequest{
+		Object: object, Binding: state.Binding{SessionID: 2, TreeID: 2},
+		ClientGUID: state.GUID{3}, CreateGUID: state.GUID{4}, GrantedAccess: 1, Sharing: 7,
+	})
+	if status != smb.StatusSuccess {
 		t.Fatal(status)
+	}
+	if _, status := options.State.Commit(reservation, state.Grant{
+		Handle: cleanupHandle{object: object}, DurableTimeout: time.Minute,
+		Lease: state.Lease{ClientGUID: state.GUID{3}, Key: state.GUID{5}, State: smb.LeaseRead | smb.LeaseHandle},
+	}); status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	if actions := options.State.Disconnect(2); len(actions) != 0 {
+		t.Fatal("durable open was not detached")
 	}
 	server, err := New(options)
 	if err != nil {
@@ -176,7 +193,7 @@ func TestShutdownClosesOpensAppliesDeletionAndReturnsAllErrors(t *testing.T) {
 			t.Fatalf("shutdown errors: %v", err)
 		}
 	}
-	if storage.closed.Load() != 1 || storage.removed.Load() != 1 {
+	if storage.closed.Load() != 2 || storage.removed.Load() != 1 {
 		t.Fatalf("cleanup repeated: close %d remove %d", storage.closed.Load(), storage.removed.Load())
 	}
 }
