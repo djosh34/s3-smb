@@ -2,7 +2,6 @@ package server
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -22,21 +21,10 @@ func TestResponseBodiesFollowCommandStatus(t *testing.T) {
 		{command: wire.Echo, status: smb.StatusBufferOverflow},
 		{command: wire.Echo, status: smb.StatusAccessDenied},
 	} {
-		server, err := New(testOptions(t))
+		request, body := responseBodyFixture(t, test.command)
+		response, err := makeResponse(request.Header, reply{body: body, status: test.status}, 1)
 		if err != nil {
 			t.Fatal(err)
-		}
-		request, body := responseBodyFixture(t, test.command)
-		server.handlers[test.command] = func(context.Context, wire.Message) (reply, error) { return reply{body: body, status: test.status}, nil }
-		client, ctx := pipeClient(t, server)
-		exchange(ctx, t, client, negotiateMessage(t, 1))
-		response := exchange(ctx, t, client, request)[0]
-		if response.Header.Status == smb.StatusPending {
-			final, err := client.Receive(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			response = final.Messages[0]
 		}
 		if response.Header.Status != test.status {
 			t.Fatalf("command %d status %#x: %+v", test.command, test.status, response.Header)

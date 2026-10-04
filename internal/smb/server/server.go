@@ -32,7 +32,7 @@ func New(options Options) (*Server, error) {
 	}
 	return &Server{
 		options: options, handlers: map[wire.Command]handler{wire.Echo: handleEcho},
-		connections: make(map[*connection]struct{}), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
+		connections: make(map[*connection]struct{}), sessions: make(map[uint64]*connection), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }
 

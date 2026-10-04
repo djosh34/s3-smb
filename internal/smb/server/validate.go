@@ -18,8 +18,8 @@ func validateCompound(messages []wire.Message) error {
 		if index == 0 && header.Flags&wire.FlagRelated != 0 {
 			return errors.New("first compound member is related")
 		}
-		if header.Command == wire.Negotiate && len(messages) != 1 {
-			return errors.New("NEGOTIATE cannot be compounded")
+		if (header.Command == wire.Negotiate || header.Command == wire.SessionSetup) && len(messages) != 1 {
+			return errors.New("NEGOTIATE and SESSION_SETUP cannot be compounded")
 		}
 		size, err := requestSize(message)
 		if err != nil {
