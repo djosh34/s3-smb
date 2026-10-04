@@ -14,6 +14,26 @@ func (table *Table) LeaseFor(object smb.ObjectKey, clientGUID, key GUID) (Lease,
 	return *lease, true
 }
 
+// LeasesNeedBreak reports other leases that exceed the target or have a pending
+// break. The exact client and key are excluded, as in BreakLeases.
+func (table *Table) LeasesNeedBreak(object smb.ObjectKey, clientGUID, key GUID, target uint32) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	record := table.objects[object]
+	if record == nil {
+		return false
+	}
+	for _, lease := range record.Leases {
+		if lease.ClientGUID == clientGUID && lease.Key == key {
+			continue
+		}
+		if lease.Breaking || lease.State & ^target != 0 {
+			return true
+		}
+	}
+	return false
+}
+
 // PrepareLease selects safe caching rights for a live CREATE reservation.
 // It does not publish a grant. Commit checks it again. Other opens or reservations
 // remove W, and another writer removes R and H. A shared lease is never demoted
