@@ -108,6 +108,87 @@ After passing probes and dependency readiness, copy only verified exact IDs to
 the central default list and record the checked daemon head, command, shuffle
 seed and output. M2's 256-credit decision and M4/M5 staged selections stay intact.
 
+## Checked probe results
+
+The disposable production union was
+`6578d39b2ce953037bbaf3728fa27a2bf54a8773`. It merged these owner-approved heads,
+in order:
+
+- FLUSH/CREATE/READ/WRITE/runtime: #376 `1f1b5d4a6b5a3f6415c94215e68633b5b358f11f`,
+  containing #380 `f0c1353541e291483a5e5fa66d0d90fe38bac37f`,
+  #399 `0e5d912b4a22498c8ea522a8b6d16299f750f940` and
+  #410 `365c90773d19796e39f24f2220688cc205c1ed3e`.
+- QUERY_INFO: #395 `f2680fe98fb4884753daa9a7b633f87261364561`.
+- SET_INFO: #398 `4064e5b688a5dc2aa43e741008c3f788ca359e13`.
+- QUERY_DIRECTORY: #397 `7252f347f7119dfa8ac8163ed439c903e3e6dc11`.
+- Filesystem information: #374 `e137e2ba729fa14d5e40ab3cd88b69a6be4c390a`.
+- Base rename/disposition: #404 `1e7f4e35584a1bbfed03a29900cb1e109eace782`.
+
+Conflicts retained the sorted registration union and the exact #398 metadata
+fixture superset, with metadata-owner approval. No production repair was made.
+The owner-approved test-only correction at
+`09bc43de8409cb229a41307f7ba7227f76355ae6` expects NOT_SUPPORTED for filesystem
+class 8 when #374 is present, instead of standalone #395's INVALID_INFO_CLASS.
+The corrected server package passed race/shuffle, saved seeds, raw in-process
+real-adapter tests, vet and pinned lint. Its shuffle seed was
+`1791117872778439415`.
+
+The actual race-enabled daemon's SHA256 was
+`007ff523c39f50b126ac7358430c3b680c67342541e10867a54f35ad1be80543`.
+The selected-list test executable ran inside the pinned Docker image, with an
+owned loopback MinIO and `GORACE=halt_on_error=1`. Each candidate got its own
+fresh daemon through the sole shared helper. All 34 ran: **20 passed, 14 failed,
+none skipped**. The run exited 1. Exact names, Samba seeds, binary hashes and raw
+log hashes are in [`testdata/smbtorture-m3.proof`](testdata/smbtorture-m3.proof).
+The Go shuffle seed was `1791118396382503198`.
+
+Failures remain candidates and blockers:
+
+| Exact ID | Observed failure | Routed owner |
+| --- | --- | --- |
+| smb2.read.dir.dir | FILE_IS_A_DIRECTORY instead of INVALID_DEVICE_REQUEST, read.c:204. | files-io |
+| smb2.read.access.access | EXECUTE-only READ gets ACCESS_DENIED instead of success, read.c:283. | files-io |
+| smb2.dir.many.many | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
+| smb2.dir.modify.modify | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
+| smb2.dir.sorted.sorted | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
+| smb2.dir.large-files.large-files | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
+| smb2.compound.related5.related5 | NOT_SUPPORTED instead of FILE_CLOSED, compound.c:599. | Mac/file operations (IOCTL) |
+| smb2.compound.invalid1.invalid1 | Connection closes instead of INVALID_PARAMETER, compound.c:1493. | connection |
+| smb2.compound.invalid2.invalid2 | Connection closes instead of first-member success, compound.c:1575. | connection |
+| smb2.compound.invalid4.invalid4 | NOT_SUPPORTED instead of INVALID_PARAMETER, compound.c:1724. | connection |
+| smb2.compound_find.compound_find_close.compound_find_close | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
+| smb2.rename.rename_dir_openfile.rename_dir_openfile | Rename succeeds instead of ACCESS_DENIED, rename.c:1038. | file operations |
+| smb2.rename.close-full-information.close-full-information | CREATE attributes are 0x80 instead of archive 0x20, rename.c:1469. | file operations |
+| smb2.rw.invalid.invalid | READ at INT64_MAX with length 1 gets END_OF_FILE instead of INVALID_PARAMETER, read_write.c:233. This occurs before the test's maximum-file-size policy check. | files-io |
+
+The five race reports identify a read in `dbMeta.genLog` at `sql.go:1085` and a
+write in `baseMeta.Load` at `base.go:733`, called by
+`backup.Manager.attempts` at `backup.go:196`. Full stderr reports are retained
+with hashes in the proof file. No library or backup patch was authored here.
+
+An earlier informational external run used one daemon and a one-hour backup
+interval. It reported 22 passes and 12 failures, including two command timeouts.
+Timed-out Docker clients left containers running; only those owned containers
+were removed. That run is not gate evidence. It also observed archive/hidden/
+system attribute mismatches in `dir.modify`, routed to metadata and file-I/O
+owners. The fresh canonical run above supersedes its pass claims. The canonical
+fixture's normal two-second backup interval was not weakened to avoid the races.
+
+Empty-root `smbclient -c ls` failed in two separate external fresh roots and in
+the separate canonical `TestSambaM3EmptyRootListing`. All reported
+`NT_STATUS_NO_SUCH_FILE listing \\*`. The canonical shuffle seed was
+`1791118659901920595`; it failed without a skip. Populated-directory listing
+succeeded in both external runs. The metadata owner classified the empty-root
+failure as a reproduced area-C defect, superseding the provisional root policy.
+The combined metadata writer owns its fix and regression. Root/dot-entry policy
+is unchanged on this test branch. The informational `dir.modify` attribute and
+listing findings need C/B diagnosis; rename/open-file and CREATE attributes belong
+to B, and the `related5` IOCTL failure belongs to Mac/B, not QUERY_INFO.
+
+Even the 20 passing candidates remain disabled: this was an approved local probe
+union, not a landed dependency stack. Area F must rerun against the final server
+union and resolve every compatible failure before activating the M3 gate.
+
 The [combined-PR amendment](https://github.com/djosh34/s3-smb/issues/176#issuecomment-5980023245)
 now places this work in area F. Draft #451 predates that amendment and must be
 folded into the combined test-tools PR, not merged separately.

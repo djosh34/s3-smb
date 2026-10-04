@@ -1,0 +1,68 @@
+# M3 selected-list probe, 2026-10-04. No default activation.
+# Fresh race-enabled smbnext daemon for each exact candidate, shared #348 helper.
+# Tools: Samba 4.17.12-Debian; Debian 2:4.17.12+dfsg-0+deb12u4.
+# Image: s3-smb-test:2e9c43ba8ee0436c3f9b0fc99707bf061bb898f6ddd72936b4ae5f54db95d7bb.
+# Production union: 6578d39b2ce953037bbaf3728fa27a2bf54a8773.
+# Test-only filesystem class-8 reconciliation: 09bc43de8409cb229a41307f7ba7227f76355ae6.
+# Daemon SHA256: 007ff523c39f50b126ac7358430c3b680c67342541e10867a54f35ad1be80543.
+# Test executable SHA256: 4c48189bb3c743d469a8a8f911259806cf6640b2e6b94bdd4410804cb2cb53fd.
+# Test: TestSambaM3Interop; Go shuffle seed 1791118396382503198; GORACE=halt_on_error=1.
+# Result: 20 pass, 14 fail, 0 skip; exit 1; 180.93 seconds.
+# Full raw log: /tmp/448-probe-evidence/canonical.log.
+# Raw log SHA256: b638b64bb3b9f3d397069fed9f36027b735442f33de8ae3e5a58ea61673e2bf4.
+# Exact ID<TAB>result<TAB>Samba seed. Passes have their exact subunit success marker.
+smb2.getinfo.granted.granted	pass	1791118396
+smb2.read.eof.eof	pass	1791118398
+smb2.read.dir.dir	fail	1791118399
+smb2.read.access.access	fail	1791118400
+smb2.dir.find.find	pass	1791118402
+smb2.dir.fixed.fixed	pass	1791118404
+smb2.dir.many.many	fail	1791118409
+smb2.dir.modify.modify	fail	1791118411
+smb2.dir.sorted.sorted	fail	1791118414
+smb2.dir.large-files.large-files	fail	1791118418
+smb2.compound.related1.related1	pass	1791118532
+smb2.compound.related2.related2	pass	1791118533
+smb2.compound.related5.related5	fail	1791118535
+smb2.compound.unrelated1.unrelated1	pass	1791118536
+smb2.compound.invalid1.invalid1	fail	1791118538
+smb2.compound.invalid2.invalid2	fail	1791118539
+smb2.compound.invalid3.invalid3	pass	1791118541
+smb2.compound.invalid4.invalid4	fail	1791118542
+smb2.compound.create-write-close.create-write-close	pass	1791118544
+smb2.compound_find.compound_find_related.compound_find_related	pass	1791118545
+smb2.compound_find.compound_find_unrelated.compound_find_unrelated	pass	1791118547
+smb2.compound_find.compound_find_close.compound_find_close	fail	1791118548
+smb2.compound_async.flush_close.flush_close	pass	1791118556
+smb2.compound_async.flush_flush.flush_flush	pass	1791118560
+smb2.rename.simple.simple	pass	1791118563
+smb2.rename.simple_nodelete.simple_nodelete	pass	1791118564
+smb2.rename.no_sharing.no_sharing	pass	1791118566
+smb2.rename.msword.msword	pass	1791118567
+smb2.rename.rename_dir_openfile.rename_dir_openfile	fail	1791118569
+smb2.rename.rename_dir_bench.rename_dir_bench	pass	1791118570
+smb2.rename.close-full-information.close-full-information	fail	1791118571
+smb2.rw.rw1.rw1	pass	1791118573
+smb2.rw.rw2.rw2	pass	1791118574
+smb2.rw.invalid.invalid	fail	1791118576
+
+# Separate empty-root listing through the approved explicit client command.
+# Test: TestSambaM3EmptyRootListing; Go shuffle seed 1791118659901920595.
+# Test executable SHA256: 4da9ec0d28c72343a80a87e12f0a50fc687ded3521ff935fac1e0e6ef3b59b44.
+# Result: fail, no skip; exit 1; 1.31 seconds.
+# Raw log SHA256: 3c1bdc99d90476ce873181973e7802abbddd44e4888a417afe4022ca3c69e21b.
+# Raw log: /tmp/448-probe-evidence/canonical-empty.log.
+NT_STATUS_NO_SUCH_FILE listing \*
+
+# Five canonical cases stopped on a data race, with daemon exit 66.
+# The original shared fixture uses a 2-second metadata backup interval.
+# Reader: dbMeta.genLog, internal/juicefs/pkg/meta/sql.go:1085.
+# Writer: baseMeta.Load, internal/juicefs/pkg/meta/base.go:733,
+# called by backup.Manager.attempts, internal/backup/backup.go:196.
+# Full stderr logs below are under /tmp/448-probe-evidence/canonical-daemon-logs/.
+# Test directory<TAB>stderr.log SHA256 (each path ends in /1/stderr.log).
+TestSambaM3Interop-smb2.dir.many.many	78e6fec256af7f8cd1173b4e761a718a060995709fcb81fa271162e7101a49ee
+TestSambaM3Interop-smb2.dir.modify.modify	4297002564c4e68ca51bba8cc9acca99bf015c1773bb24a1191976dbe941c5fb
+TestSambaM3Interop-smb2.dir.sorted.sorted	d1bd3a8d28b286e78ae72ff9dbdf7ecbfba27777461f713ddcbb7204feefe5ac
+TestSambaM3Interop-smb2.dir.large-files.large-files	f2a7efe9ac42cf191d66cbb03be2d651d626a23ac0f235bc09e4a6a1ec9e4373
+TestSambaM3Interop-smb2.compound_find.compound_find_close.compound_find_close	bc5194637c42335e456407ab2074ed8c9d94a441b0df6fc8d187968bbe0bb57c
