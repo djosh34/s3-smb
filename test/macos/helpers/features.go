@@ -98,8 +98,11 @@ func sparsebundleRoundTrip(command func(...string) (string, error), bundle strin
 		return errors.New("sparsebundle attachment has no device")
 	}
 	defer func() {
-		_, detachErr := command("/usr/bin/hdiutil", "detach", device)
-		err = errors.Join(err, detachErr)
+		if detachErr := Eject(command, device, false); detachErr != nil {
+			if forceErr := Eject(command, device, true); forceErr != nil {
+				err = errors.Join(err, detachErr, forceErr)
+			}
+		}
 	}()
 	if mounts != 1 {
 		return fmt.Errorf("sparsebundle attachment has %d mounted volumes, want one", mounts)
