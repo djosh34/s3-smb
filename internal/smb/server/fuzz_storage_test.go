@@ -1,76 +1,134 @@
 package server
 
 import (
-	"path/filepath"
+	"bytes"
+	"context"
+	"fmt"
+	"runtime/pprof"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
-	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
-	"github.com/djosh34/s3-smb/internal/smbfs"
+	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 )
 
-// Each fuzz input owns a fresh runtime and scratch directory. CREATE and I/O
-// mutations must not affect the next input.
-func fuzzStorage(t testing.TB) *smbfs.FS {
+const fuzzResetPageSize = 64
+
+func resetFuzzStorage(ctx context.Context, storage smb.Storage, root smb.Attr) error {
+	if err := removeFuzzChildren(ctx, storage, root.Inode); err != nil {
+		return err
+	}
+	return storage.SetAttr(ctx, smb.ObjectKey{Inode: root.Inode}, smb.AttrChange{
+		Created: &root.Created, Accessed: &root.Accessed, Modified: &root.Modified,
+		Changed: &root.Changed, Attributes: &root.Attributes,
+	})
+}
+
+func removeFuzzChildren(ctx context.Context, storage smb.Storage, parent smb.Inode) error {
+	var cookie smb.Cookie
+	for {
+		entries, err := storage.ReadDir(ctx, parent, cookie, fuzzResetPageSize)
+		if err != nil {
+			return fmt.Errorf("list fuzz directory: %w", err)
+		}
+		if len(entries) == 0 {
+			return nil
+		}
+		for _, entry := range entries {
+			if entry.Attr.Kind == smb.KindDirectory {
+				if err := removeFuzzChildren(ctx, storage, entry.Attr.Inode); err != nil {
+					return err
+				}
+			}
+			if err := storage.Remove(ctx, smb.Name{Parent: parent, Base: entry.Name}, entry.Attr.Inode); err != nil {
+				return fmt.Errorf("remove fuzz entry %q: %w", entry.Name, err)
+			}
+			cookie = entry.Next
+		}
+	}
+}
+
+func fuzzRuntimeWorkers(t *testing.T) int {
 	t.Helper()
-	dir := t.TempDir()
-	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
-	if err != nil {
+	var stacks bytes.Buffer
+	if err := pprof.Lookup("goroutine").WriteTo(&stacks, 2); err != nil {
 		t.Fatal(err)
 	}
-	mc := meta.DefaultConf()
-	mc.NoBGJob = true
-	mc.MaxDeletes = 0
-	mc.Retries = 0
-	database := filepath.Join(dir, "meta.db")
-	metadata, err := meta.NewSQLite(database, mc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if shutdownErr := metadata.Shutdown(); shutdownErr != nil {
-			t.Error(shutdownErr)
+	count := 0
+	for _, stack := range strings.Split(stacks.String(), "\n\n") {
+		if strings.Contains(stack, "internal/juicefs/pkg/chunk.NewCachedStore.func") ||
+			strings.Contains(stack, ").cleanupCache(") ||
+			strings.Contains(stack, ").checkReadBuffer(") ||
+			strings.Contains(stack, ").flushAll(") {
+			count++
 		}
-	})
-	format := meta.Format{Name: "server-fuzz", UUID: "server-fuzz", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true}
-	if initErr := metadata.Init(&format, true); initErr != nil {
-		t.Fatal(initErr)
 	}
-	root := meta.Attr{Uid: smbfs.UID, Gid: smbfs.GID, Mode: 0o700}
-	if eno := metadata.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &root); eno != 0 {
-		t.Fatal(eno)
-	}
-	if sessionErr := metadata.NewSession(true); sessionErr != nil {
-		t.Fatal(sessionErr)
-	}
-	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
-	store := chunk.NewCachedStore(blob, cc, nil)
-	config := &vfs.Config{Meta: mc, Format: format, Chunk: &cc}
-	native, err := jfs.NewFileSystem(config, metadata, store, nil)
+	return count
+}
+
+func TestFuzzStorageRuntimeStaysBounded(t *testing.T) {
+	storage := smbtest.NewStorage(t)
+	root, err := storage.Lookup(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if closeErr := native.Close(); closeErr != nil {
-			t.Error(closeErr)
+	stream := streamSeeds(t)[0].stream
+	t.Run("warmup", func(t *testing.T) { runFuzzInput(t, storage, root.Attr, stream) })
+	before := fuzzRuntimeWorkers(t)
+	if before < 6 {
+		t.Fatalf("runtime worker diagnostic found only %d workers", before)
+	}
+	for i := range 12 {
+		t.Run(fmt.Sprintf("input_%d", i), func(t *testing.T) { runFuzzInput(t, storage, root.Attr, stream) })
+		if after := fuzzRuntimeWorkers(t); after != before {
+			t.Fatalf("input %d changed runtime workers: %d -> %d", i, before, after)
 		}
-	})
-	barrier, err := smbfs.NewMetadataBarrier(database)
+	}
+}
+
+func TestFuzzStorageResetIsolatesMutations(t *testing.T) {
+	storage := smbtest.NewStorage(t)
+	root, err := storage.Lookup(t.Context(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := smbfs.New(smbfs.Options{Filesystem: native, Barrier: barrier, MetadataPath: database, Config: config, Store: store})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := adapter.Shutdown(); err != nil {
-			t.Error(err)
+	for input := range 2 {
+		t.Run(fmt.Sprintf("input_%d", input), func(t *testing.T) {
+			t.Cleanup(func() {
+				ctx, cancel := context.WithTimeout(context.Background(), streamBound)
+				defer cancel()
+				if err := resetFuzzStorage(ctx, storage, root.Attr); err != nil {
+					t.Error(err)
+				}
+			})
+			client := newReadWriteClient(t, storage)
+			file := createdFile(t, client.create(t, createRequest("file", fileCreateDisposition)))
+			writeCreatedFile(t, client, file.ID, "old bytes")
+			stream := createdFile(t, client.create(t, createRequest("file:AFP_AfpInfo", fileCreateDisposition)))
+			writeCreatedFile(t, client, stream.ID, "old stream")
+			request := createRequest("dir", fileCreateDisposition)
+			request.Options = fileDirectoryFile
+			createdFile(t, client.create(t, request))
+			for i := range fuzzResetPageSize + 1 {
+				createdFile(t, client.create(t, createRequest(fmt.Sprintf("dir/file-%d", i), fileCreateDisposition)))
+			}
+			stamp := time.Unix(1700000000, 0).UTC()
+			attributes := uint32(0x12)
+			if err := storage.SetAttr(t.Context(), root.Object, smb.AttrChange{
+				Created: &stamp, Accessed: &stamp, Modified: &stamp, Changed: &stamp, Attributes: &attributes,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			// Leave every open live; server cleanup must close them before reset.
+		})
+		entries, err := storage.ReadDir(t.Context(), root.Object.Inode, 0, fuzzResetPageSize)
+		if err != nil || len(entries) != 0 {
+			t.Fatalf("input %d retained entries: %+v, %v", input, entries, err)
 		}
-	})
-	return adapter
+		after, err := storage.GetAttr(t.Context(), root.Object)
+		if err != nil || after != root.Attr {
+			t.Fatalf("input %d retained root attributes: %+v, want %+v, %v", input, after, root.Attr, err)
+		}
+	}
 }
