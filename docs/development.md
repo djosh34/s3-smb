@@ -130,7 +130,7 @@ data goes away with the containers.
 
 `test/Dockerfile` holds the MinIO release and source commit as ARGs, and copies
 MinIO from `ghcr.io/djosh34/minio` by release tag and image digest. It also
-installs `samba-testsuite` and `smbclient`. The local test image is tagged with
+pins `samba-testsuite` and `smbclient` to Samba 4.17.12-Debian. The local test image is tagged with
 the SHA-256 hash of `test/Dockerfile` and reused while that file is unchanged.
 It is not published.
 
@@ -147,6 +147,16 @@ lock operations, missing data, uncompressed objects, startup with a damaged buck
 failed scheduled backup, a kill during an S3 upload, and recovery after deleting
 all local state, including from a metadata backup taken while files were being
 written.
+
+The Docker step also builds a race-enabled `smbnext` daemon and runs
+`TestSambaInterop` with `GORACE=halt_on_error=1`. The test checks the daemon's
+build information for `-race` and the `smbnext` tag before starting it.
+smbclient authenticates and connects to `TimeMachine` with
+SMB 3.1.1 and encryption, then quits without listing files. The smbtorture runner
+checks tool versions, validates `test/e2e/smbtorture.allowlist` against `--list`,
+and runs each exact test ID separately. A failure, skip or missing success fails
+the check. M2 has no eligible Samba credit tests; the allowlist records why.
+Later milestones add names to that file without changing the runner.
 
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
