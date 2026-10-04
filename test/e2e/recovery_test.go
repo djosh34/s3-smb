@@ -36,8 +36,9 @@ type fixture struct {
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
-	compression                  string // Empty means omitted, including fresh-local recovery.
-	interval                     string // Metadata backup interval. Empty means 2s.
+	storageCapacity              string        // Empty means no volume limit.
+	interval                     string        // Metadata backup interval. Empty means 2s.
+	startupTimeout               time.Duration // Zero means 45s.
 	readonly, failStart          bool
 	store                        *s3.Client
 	generation                   int
@@ -96,9 +97,9 @@ func (f *fixture) config() string {
 	if capacity == "" {
 		capacity = "0 MB"
 	}
-	compression := ""
-	if f.compression != "" {
-		compression = fmt.Sprintf("  compression: %q\n", f.compression)
+	storageSettings := ""
+	if f.storageCapacity != "" {
+		storageSettings = fmt.Sprintf("  capacity: %q\n", f.storageCapacity)
 	}
 	interval := f.interval
 	if interval == "" {
@@ -133,7 +134,7 @@ backup:
 logging:
   format: json
   level: info
-`, f.addr, f.password, f.readonly, compression, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
+`, f.addr, f.password, f.readonly, storageSettings, capacity, f.bucket, f.endpoint, f.encrypted, key, interval)
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()
@@ -213,7 +214,11 @@ func (f *fixture) start() *daemon {
 		}
 	}()
 	f.t.Cleanup(func() { d.stop() })
-	deadline := time.After(45 * time.Second)
+	timeout := f.startupTimeout
+	if timeout == 0 {
+		timeout = 45 * time.Second
+	}
+	deadline := time.After(timeout)
 	for {
 		select {
 		case err := <-d.done:
@@ -423,14 +428,14 @@ func TestRecovery(t *testing.T) {
 			verifyFiles(t, s, files)
 			close()
 			d.stop()
-			// Inspect actual remote export: plaintext gzip only when encryption disabled.
+			// Inspect the remote snapshot: plaintext gzip only when encryption is disabled.
 			objects, err := f.store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			count := 0
 			for _, obj := range objects.Contents {
-				if strings.Contains(aws.ToString(obj.Key), "meta/dump-") {
+				if strings.Contains(aws.ToString(obj.Key), "meta/snapshot-") {
 					count++
 					o, e := f.store.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: obj.Key})
 					if e != nil {

@@ -21,14 +21,18 @@ All import paths were rewritten to `github.com/djosh34/s3-smb/internal/...`. Eve
 | --- | --- | --- |
 | `pkg/fs/fs.go` | `pread` flushes the inode's writer and refetches the length before the end-of-file check. A second open handle saw a stale length after another handle wrote. | `internal/smb-old/smbfs/coherence_test.go` |
 | `pkg/chunk/disk_cache.go` | The two cache-full flags are `atomic.Bool`. The free-space monitor raced with cache reads and writes. | `test/e2e` under `-race` |
+| `pkg/utils/utils.go`, `pkg/chunk/cached_store.go` | Backport the upstream [timeout result fix](https://github.com/juicedata/juicefs/pull/7503) and [GET result fix](https://github.com/juicedata/juicefs/pull/7500) for the [WithTimeout result race](https://github.com/djosh34/s3-smb/issues/110). `WithTimeout` sends the callback error through a buffered channel. GET callbacks keep their byte count and request attributes private until success, and never write the caller's return error. Include the one-line [range-read timeout fix](https://github.com/juicedata/juicefs/pull/7509) so a timed-out range read cannot start a full read while the first callback still writes the page. | `pkg/utils/timeout_s3smb_test.go`, `pkg/chunk/timeout_s3smb_test.go` under `-race`. Both fail without their fixes. Tests also cover successful reads, GET errors, cancellation, timeout and ordinary range-read fallback. |
+| `pkg/chunk/cached_store.go` | Apply only the cache publication fix from swarm commit `0db3360`, also proposed upstream as the [cache publication fix](https://github.com/juicedata/juicefs/pull/7346), for the [cache upload and flush race](https://github.com/djosh34/s3-smb/issues/128). Finish compression and the page slice-header write before handing the page to the asynchronous disk cache. The zstd change from that commit is not included. | `pkg/chunk/cache_publication_s3smb_test.go`: `TestCachedStoreUploadPublication` fails under `-race` without the fix and passes with it. It checks that a partial-block write reaches disk and reads back unchanged. |
+| `pkg/chunk/disk_cache.go` | Apply swarm commit `f024cc84` for the [disk-cache scan race](https://github.com/djosh34/s3-smb/issues/144). Read the scan-complete flag under the same cache mutex used by startup scans and rescans, so the staging upload check cannot race with either scan. | `pkg/chunk/disk_cache_scan_s3smb_test.go`: `TestDiskCacheScanWithStagingCheck` fails under `-race` without the fix and passes with it. Both scan modes keep the cached block and its content. |
 | `pkg/chunk/disk_cache.go`, `mem_cache.go`, `cached_store.go`, `pkg/meta/quota.go`, `sql.go` | Log lines print decimal units. | `pkg/chunk/logging_s3smb_test.go` |
 | `pkg/meta/config.go` | New `Config.CheckMaintenance` hook. The application uses it to block slice deletion and compaction while a metadata backup still needs the older data. | `pkg/meta/protection_test.go`, `trash_protection_test.go`, `test/e2e/protection_test.go` |
 | `pkg/meta/sql.go`, `base.go` | Transactions that delete, truncate or compact call the hook, through `maintenanceTxn`. So do `compactChunk`, `deleteSlice_` and trash cleanup. | same |
 | `pkg/meta/base.go` | `refresh` and background deletes and compactions join the session wait group. `CloseSession` waits for them before SQLite closes. | `pkg/meta/protection_test.go` |
 | `pkg/meta/sql.go` | The SQLite connection string forces `_synchronous=FULL`, so local metadata survives a crash. | `pkg/meta/protection_test.go`, `sqlite_path_test.go`, `sqlite_io_test.go` |
+| `pkg/meta/sql_sqlite.go` | A SQLite driver connection hook sets `fullfsync=ON` and `checkpoint_fullfsync=ON` on every connection. macOS uses `F_FULLFSYNC` to flush the drive cache. The flags have no effect on other platforms. The driver has no DSN options for these flags, and JuiceFS exposes no connection hook. The engine name, dialect and existing DSN settings stay the same. | `pkg/meta/sqlite_fullfsync_test.go`, also run by the Mac acceptance backup job |
 | `pkg/meta/sql.go`, `sql_lock.go` | `txn` is split so that flock and plock go through `lockTxn`. A read-only mount can still take advisory locks. | `pkg/meta/orphan_locks_test.go`, `internal/smb-old/smbfs/readonly_test.go`, `locks_test.go` |
 | `pkg/meta/sql.go` | `DumpMeta` takes a mutex, always exports in one transaction on SQLite, returns directory errors, and no longer prints the payload on panic. A failed export is not reported as success. | `pkg/meta/protection_test.go` |
-| `pkg/vfs/backup.go` | The periodic backup calls the new `BackupTo`, which stages the dump, syncs it, uploads it only if the key is absent, and reads it back. It sets the timestamp only on success. New `WriteBackup` and `CleanupBackups`. | `pkg/vfs/backup_smb_test.go`, `internal/backup/backup_test.go`, `test/e2e/recovery_test.go` |
+| `pkg/vfs/backup.go` | The periodic backup calls the new `BackupTo`, which stages the dump, syncs it, uploads it only if the key is absent, and reads it back. It sets the timestamp only on success. New `WriteBackup` and `CleanupBackups`. The application no longer calls this path since switching to SQLite snapshots. | `pkg/vfs/backup_smb_test.go` |
 | `pkg/object/s3.go` | `GetObject` maps `NoSuchKey` to `os.ErrNotExist`, so startup can tell an empty bucket from a failed login. The AWS SDK logs through the application logger. | `internal/storage/s3_test.go` |
 | `pkg/utils/logger.go`, `logger_syslog.go` | Logrus output goes to the application logger. The syslog hook is removed. | `pkg/utils/logging_s3smb_test.go` |
 | `pkg/utils/progress.go` | `NewProgress` never draws bars. | same |
@@ -55,6 +59,37 @@ Deleted: `pkg/sync`, `pkg/fs/http.go`.
 Added files: `server/cleanup.go`, `server/request_validation.go`, `server/status.go`, `server/xattr.go`, `server/xattr_missing_darwin.go`, `server/xattr_missing_linux.go`, `vfs/xattr.go`.
 
 Deleted: `internal/msrpc`, `stats`.
+
+### New SMB authentication
+
+`internal/smb/auth/ntlm.go` and `crypto.go` port the reviewed NTLMv2 constants
+and authentication formulas from the SMB version above. They keep the upstream
+AGPL licence and attribution in `internal/smb/auth/LICENSE` and
+`internal/smb/auth/Attributions.txt`. The new decoders, SPNEGO wrapper and exchange
+state are written here, not copied from the old server. No old package is changed
+or imported.
+
+The review found wrapping uint32 offset sums, unchecked short response slices,
+unchecked MIC layouts, input mutation while checking the MIC and nonconstant
+proof comparisons in the old server half. The port uses widened bounds checks,
+validated AV pairs, verification of each supplied MIC, private transcript copies
+and constant-time proof comparisons. SPNEGO selects NTLM anywhere in the client
+list and requires a mechanism-list MIC when NTLM is not the first choice, as
+RFC 4178 requires. It removes guest, anonymous, NTLMv1 and NTLM
+session sealing. MD4, HMAC-MD5 and RC4 remain only where MS-NLMP requires them.
+`auth_test.go` checks the MS-NLMP section 4.2.4 proof and key vectors and the test
+initiator exchange. Decoder tests and fuzz targets cover malformed tokens.
+
+### New SMB crypt package
+
+`internal/smb/crypt/cmac.go` ports the AES-CMAC algorithm from
+`internal/smb-old/smb2/internal/crypto/cmac/cmac.go` at the SMB upstream commit
+listed above. Review checked its subkey doubling, final-block handling and
+RFC 4493 padding. The port is AES-only, has call-local state, removes the
+panic and streaming hash interface, and uses fixed-size arrays.
+`internal/smb/crypt/cmac_test.go` checks all four RFC 4493 vectors.
+The file retains the Go Authors and Hiroshi Ioka copyright and BSD-3-Clause
+notice. The old package is unchanged.
 
 ### xorm and mpb
 

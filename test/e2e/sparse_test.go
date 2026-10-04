@@ -18,7 +18,7 @@ import (
 // Exercise signed SMB EOF/WRITE/FLUSH against encrypted, uncompressed storage.
 // This is not an Apple sparsebundle-formatting or FSCTL_SET_SPARSE test.
 func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
-	f := newFixture(t, true) // Omitted compression: the released rc6 none path.
+	f := newFixture(t, true)
 	proxy := newFaultProxy(t, f.endpoint)
 	f.endpoint = proxy.URL() // f.store still measures the real MinIO directly.
 	d := f.start()
@@ -67,7 +67,7 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 				}
 			}
 		}
-		result.puts = proxy.chunkPuts.Load()
+		result.puts = proxy.ChunkPuts()
 		return result
 	}
 	read := func(offset int64, want []byte) {

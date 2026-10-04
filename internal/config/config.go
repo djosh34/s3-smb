@@ -40,9 +40,7 @@ type StorageConfig struct {
 	StateDir  string    `yaml:"state_dir"`
 	CacheDir  string    `yaml:"cache_dir"`
 	CacheSize *ByteSize `yaml:"cache_size"`
-	// When omitted, an existing dataset keeps its stored compression. A set
-	// value must match it.
-	Compression *string `yaml:"compression"`
+	Capacity  ByteSize  `yaml:"capacity"`
 }
 type S3Config struct {
 	Bucket       string       `yaml:"bucket"`
@@ -166,6 +164,9 @@ func parse(data []byte, path string) (*Config, error) {
 	for _, p := range []*string{&c.Storage.StateDir, &c.Storage.CacheDir, &c.S3.TLS.CAFile, &c.S3.TLS.ClientCertFile, &c.S3.TLS.ClientKeyFile} {
 		absolute(p)
 	}
+	if err := validateCacheDirectory(c.Storage.CacheDir); err != nil {
+		return nil, err
+	}
 	for _, s := range []*SecretSource{&c.S3.AccessKey, &c.S3.SecretKey, &c.Encryption.Passphrase} {
 		if s.File != nil {
 			absolute(s.File)
@@ -187,6 +188,13 @@ func plainYAML(n *yaml.Node) bool {
 	}
 	return true
 }
+func validateCacheDirectory(path string) error {
+	if strings.ContainsAny(path, `:,*?[\`) {
+		return errors.New("storage.cache_dir must be one directory without path lists, glob characters or backslashes")
+	}
+	return nil
+}
+
 func (c *Config) validate() error {
 	_, port, err := net.SplitHostPort(c.SMB.Listen)
 	p, e := strconv.Atoi(port)
@@ -208,11 +216,14 @@ func (c *Config) validate() error {
 	if c.Storage.StateDir == "" || c.Storage.CacheDir == "" || strings.ContainsRune(c.Storage.StateDir+c.Storage.CacheDir, 0) {
 		return errors.New("storage directories must be nonempty paths without NUL")
 	}
-	if c.Storage.Compression != nil && *c.Storage.Compression != "none" && *c.Storage.Compression != "zstd" {
-		return errors.New("storage.compression must be none or zstd")
+	if err := validateCacheDirectory(c.Storage.CacheDir); err != nil {
+		return err
 	}
 	if c.Storage.CacheSize != nil && *c.Storage.CacheSize < 0 {
 		return errors.New("storage.cache_size must be nonnegative")
+	}
+	if c.Storage.Capacity < 0 {
+		return errors.New("storage.capacity must be nonnegative")
 	}
 	if c.S3.Bucket == "" || strings.ContainsAny(c.S3.Bucket, "/\\\x00") {
 		return errors.New("s3.bucket is required and must be a bucket name")

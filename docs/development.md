@@ -104,6 +104,12 @@ PR mode uses ordinary `go test` to replay fuzz seeds and saved inputs in
 `testdata/fuzz`. Gate mode also discovers every fuzz target and explores each
 for one minute with two workers. Tests receive `S3_SMB_CHECK_MODE=pr` or `gate`,
 including inside Docker, so they can choose short or full-length outage tests.
+The namespace measurement test runs an encrypted snapshot and cold recovery
+through the daemon and MinIO. PR mode seeds 4,096 bands; gate mode seeds 524,288.
+It checks peak daemon RSS and elapsed time and writes `namespace-measurement.json`
+to the log directory. CI keeps that file on passing runs too. See the measured
+costs and limits in [recovery](recovery.md#measured-snapshot-costs-and-limits).
+
 Go saves failing fuzz inputs in the package's `testdata/fuzz` directory. Keep
 those inputs as regression tests.
 
@@ -128,7 +134,7 @@ For a MinIO bump, publish the new release and update the image digest in
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file and
-lock operations, missing data, compression, startup with a damaged bucket, a
+lock operations, missing data, uncompressed objects, startup with a damaged bucket, a
 failed scheduled backup, a kill during an S3 upload, and recovery after deleting
 all local state, including from a metadata backup taken while files were being
 written.
@@ -166,6 +172,10 @@ from `go version -m`. Evidence uploads use `always()`, including after timeout
 or cancellation. Transfer artifact names use the run ID, not the attempt, so
 re-running failed recovery jobs can use a successful earlier producer. The
 harness does not install a released version from the Go proxy.
+
+The acceptance backup job first runs the SQLite full-fsync pool test on macOS.
+It checks both pragma values on four live connections and four replacements.
+The same test runs in the Linux checks. SQLite uses full fsync only on macOS.
 
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,

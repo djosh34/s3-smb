@@ -31,8 +31,6 @@ s3:
   secret_key: {file: ./secret-key}
 encryption:
   passphrase: {file: ./passphrase}
-storage:
-  compression: zstd
 ```
 
 Put the S3 keys and an encryption passphrase in those three files, next to the
@@ -87,8 +85,8 @@ backup on a second Mac that had only the bucket.
 
 The bucket holds the file data in blocks, a metadata backup every hour and,
 when encryption is on, the encryption key protected by your passphrase. Data and
-metadata backups are encrypted by default. The local SQLite database and cache
-are not.
+metadata backups are encrypted by default. File data is not compressed. The
+local SQLite database and cache are not encrypted.
 
 If the machine running s3-smb is lost, install s3-smb on a new one with the same
 config and an empty state directory. s3-smb finds the newest metadata backup in
@@ -108,7 +106,7 @@ bucket layout are in [recovery](docs/recovery.md).
   replaced blocks for `backup.trash_days` (default 14) and compaction uploads
   data again, with unwritten gaps filled with zeros. The share reports at most
   1 TiB free, so Time Machine uses 268.4 MB bands and a small first backup takes
-  about 1.3 to 1.8 GB. `storage.compression: zstd` shrinks the zeros.
+  about 1.3 to 1.8 GB.
 - The S3 provider must support `PutObject` with `If-None-Match: *`.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
 - The Time Machine tests kill the application and the Time Machine client

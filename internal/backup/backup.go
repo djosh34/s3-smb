@@ -19,18 +19,18 @@ import (
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
 )
 
 type Options struct {
 	StateDir          string
+	DatabasePath      string
 	Interval, Timeout time.Duration // Timeout covers all attempts of one backup.
 	Attempts          int
 	Protection        *Protection
 }
 type Receipt struct {
 	Key, UUID, SHA256 string
-	Snapshot          time.Time // when the export started
+	Snapshot          time.Time // when the snapshot started
 }
 type Manager struct {
 	meta    meta.Meta
@@ -43,7 +43,7 @@ type Manager struct {
 }
 
 func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error) {
-	if m == nil || blob == nil || opts.StateDir == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Attempts < 1 || opts.Protection == nil {
+	if m == nil || blob == nil || opts.StateDir == "" || opts.DatabasePath == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Attempts < 1 || opts.Protection == nil {
 		return nil, errors.New("invalid metadata backup options")
 	}
 	if opts.Protection.interval != opts.Interval || opts.Timeout > opts.Protection.budget {
@@ -54,28 +54,14 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 			return nil, err
 		}
 	}
-	// Remove export files left by an earlier run. Links and other names stay.
-	entries, err := os.ReadDir(filepath.Join(opts.StateDir, "backup-staging"))
-	if err != nil {
+	if err := cleanupSnapshotStaging(filepath.Join(opts.StateDir, "backup-staging")); err != nil {
 		return nil, err
-	}
-	for _, e := range entries {
-		if !e.Type().IsRegular() {
-			continue
-		}
-		ok, _ := filepath.Match("export-*.json.gz", e.Name())
-		if ok {
-			if err = os.Remove(filepath.Join(opts.StateDir, "backup-staging", e.Name())); err != nil {
-				return nil, err
-			}
-		}
 	}
 	return &Manager{meta: m, blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now}, nil
 }
 
-// Backup takes one metadata backup within Timeout. A JuiceFS dump cannot be
-// cancelled, so on timeout Backup closes protection and returns while the dump
-// may still run. The caller then calls Wait or exits with the state lock held.
+// Backup takes one metadata backup within Timeout. On timeout it closes
+// protection. The caller calls Wait before closing the database or state lock.
 func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)
 	defer cancel()
@@ -104,8 +90,8 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 		// startup, so that one removes nothing.
 		if e == nil && m.opts.Protection.Check() == nil {
 			cleanupCtx, stop := context.WithTimeout(ctx, 10*time.Second)
-			if err := vfs.CleanupBackups(cleanupCtx, guardedStore{m.blob, m.opts.Protection}, m.now()); err != nil {
-				slog.Warn("metadata backup retention deferred")
+			if err := m.cleanup(cleanupCtx, m.now()); err != nil {
+				slog.Warn("metadata backup retention deferred", "error", err)
 			}
 			stop()
 		}
@@ -148,7 +134,7 @@ wait:
 	return r, nil
 }
 
-// Wait blocks until an export left running by a timeout has ended. Call it
+// Wait blocks until a backup left running by a timeout has ended. Call it
 // before closing the metadata database.
 func (m *Manager) Wait() { m.busy <- struct{}{}; <-m.busy }
 
@@ -159,11 +145,11 @@ func (m *Manager) attempts(ctx context.Context) (Receipt, error) {
 			return Receipt{}, err
 		}
 		now := m.now().UTC().Round(0)
-		key := "meta/dump-" + now.Format("2006-01-02-150405") + ".json.gz"
+		key := "meta/snapshot-" + now.Format("2006-01-02-150405") + ".db.gz"
 		if err := m.reserve(key); err != nil {
 			last = err
 		} else {
-			digest, err := vfs.BackupTo(ctx, m.meta, m.blob, filepath.Join(m.opts.StateDir, "backup-staging"), key)
+			digest, err := m.snapshot(ctx, key)
 			if err == nil {
 				f, e := m.meta.Load(false)
 				if e != nil {

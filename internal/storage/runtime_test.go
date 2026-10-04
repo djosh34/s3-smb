@@ -10,11 +10,31 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
+
+func TestNewFormatUsesNoCompression(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		f, err := NewFormat("test", encrypted, 14)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Compression != "none" {
+			t.Fatalf("encrypted=%t: new format compression = %q, want none", encrypted, f.Compression)
+		}
+		c, err := CacheConfig(f, t.TempDir(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Compress != "none" {
+			t.Fatalf("encrypted=%t: chunk compression = %q, want none", encrypted, c.Compress)
+		}
+	}
+}
 
 func TestCacheConfig(t *testing.T) {
 	f, err := NewFormat("test", false, 14)
@@ -39,6 +59,62 @@ func TestCacheConfig(t *testing.T) {
 		if size == 0 && (c.CacheDir != "memory" || c.Prefetch != 0 || c.Writeback) {
 			t.Fatal("zero retained cache not disabled")
 		}
+	}
+}
+
+func TestChunkUploadConcurrencyAndTimeouts(t *testing.T) {
+	format, err := NewFormat("test", false, 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, err := CacheConfig(format, t.TempDir(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.MaxUpload != 4 {
+		t.Errorf("MaxUpload = %d, want 4 for a home uplink", c.MaxUpload)
+	}
+	if c.PutTimeout != 60*time.Second || c.GetTimeout != 60*time.Second {
+		t.Errorf("block timeouts changed: put=%s get=%s", c.PutTimeout, c.GetTimeout)
+	}
+}
+
+func TestDataPathRetryBudget(t *testing.T) {
+	format, err := NewFormat("test", false, 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zero := int64(0)
+	c, err := CacheConfig(format, "/unusable", &zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf := filesystemConfig(format, &c)
+
+	// Mirror vfs/writer.go flush, vfs/reader.go retry_time, and
+	// chunk/cached_store.go upload. Ignore request time for the shortest budget.
+	flush := max(time.Duration((conf.Meta.Retries+2)*(conf.Meta.Retries+2)/2)*time.Second, 5*time.Minute)
+	var download, upload time.Duration
+	for attempt := 1; attempt <= conf.Meta.Retries; attempt++ {
+		if attempt < 30 {
+			download += time.Duration((attempt-1)*300+1) * time.Millisecond
+		} else {
+			download += 10 * time.Second
+		}
+	}
+	for attempt := 0; attempt <= conf.Chunk.MaxRetries; attempt++ {
+		upload += time.Duration(attempt*attempt) * time.Second
+	}
+	for name, budget := range map[string]time.Duration{"flush": flush, "download": download, "upload": upload} {
+		if budget < 6*time.Minute {
+			t.Errorf("%s budget %s must cover a 300s outage with at least 60s margin", name, budget)
+		}
+	}
+	if flush != 1512*time.Second || download != 361829*time.Millisecond || upload != 650*time.Second {
+		t.Fatalf("retry budgets changed: flush=%s download=%s upload=%s", flush, download, upload)
+	}
+	if flush <= upload+conf.Chunk.PutTimeout {
+		t.Fatal("flush deadline must allow the last upload attempt to finish")
 	}
 }
 

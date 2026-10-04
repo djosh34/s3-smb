@@ -151,7 +151,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if e != nil {
 			return fmt.Errorf("discover existing volume without identity: %w", e)
 		}
-		point, format, e = newestPoint(ctx, discovered)
+		point, format, e = newestPoint(ctx, discovered, c.Storage.StateDir)
 		if e != nil {
 			return fmt.Errorf("remote volume identity is missing; refusing initialization: %w", e)
 		}
@@ -178,20 +178,18 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err != nil {
 			return err
 		}
-		if c.Storage.Compression != nil {
-			format.Compression = *c.Storage.Compression
-		}
 		fresh = true
 	} else if remoteEmpty {
 		return errors.New("remote volume identity contradicts the empty listing")
 	}
-	if !fresh && c.Storage.Compression != nil && *c.Storage.Compression != format.Compression {
-		return errors.New("configured compression differs from existing dataset; omit storage.compression to use its stored format")
-	}
 	// The stored format supplies identity and data layout. The bucket and the
 	// credentials come from the current configuration.
 	format.Storage = "s3"
+	format.TrashDays = c.Backup.TrashDays
 	format.Bucket, format.AccessKey, format.SecretKey, format.SessionToken = "", "", "", ""
+	// Capacity comes from the current configuration, including on recovery.
+	// An omitted setting clears any stored limit.
+	format.Capacity = uint64(c.Storage.Capacity)
 	if !fresh && (format.EncryptAlgo != "") != c.Encryption.Enabled {
 		return errors.New("configured encryption mode differs from the existing dataset")
 	}
@@ -200,14 +198,14 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		return err
 	}
 	if !fresh {
-		if err = verifyRemoteMarker(ctx, blob, format, point != nil); err != nil {
+		if err = verifyRemoteMarker(ctx, blob, format, point != nil, c.Storage.StateDir); err != nil {
 			return err
 		}
 	}
 	recovered := false
 	if !fresh && !localExists {
 		var saved *meta.Format
-		point, saved, err = newestPoint(ctx, blob)
+		point, saved, err = newestPoint(ctx, blob, c.Storage.StateDir)
 		if err != nil {
 			return fmt.Errorf("local metadata is missing; refusing initialization: %w", err)
 		}
@@ -226,7 +224,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if err = backup.CleanupRecoveryStaging(c.Storage.StateDir); err != nil {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
-		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, format); err != nil {
+		if _, err = backup.Recover(ctx, blob, point.Key, dbPath, c.Storage.CacheDir, format); err != nil {
 			return fmt.Errorf("recover selected metadata: %w", err)
 		}
 		recovered = true
@@ -260,9 +258,6 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		if !backup.SameVolume(local, format) {
 			return errors.New("local metadata identity or data layout does not match remote dataset")
 		}
-		// The current configuration sets trash retention. Recovered metadata may
-		// hold an older value.
-		format.TrashDays = c.Backup.TrashDays
 		if !c.SMB.ReadOnly {
 			if err = r.metadata.Init(format, false); err != nil {
 				return err
@@ -282,7 +277,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
 		if err != nil {
 			return err
 		}
@@ -362,7 +357,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 
 // verifyRemoteMarker accepts a missing volume marker when the newest metadata
 // backup matches the volume. It runs before recovered metadata is put in place.
-func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *meta.Format, backupValidated bool) error {
+func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *meta.Format, backupValidated bool, stateDir string) error {
 	if err := storage.VerifyMarker(ctx, blob, format); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -371,7 +366,7 @@ func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *
 	if backupValidated {
 		return nil
 	}
-	_, saved, err := newestPoint(ctx, blob)
+	_, saved, err := newestPoint(ctx, blob, stateDir)
 	if err != nil {
 		return fmt.Errorf("volume marker is missing: %w", err)
 	}
@@ -383,7 +378,7 @@ func verifyRemoteMarker(ctx context.Context, blob object.ObjectStorage, format *
 
 // newestPoint inspects the newest metadata backup. It fails when there is none
 // or when the newest one is invalid, and does not try an older one.
-func newestPoint(ctx context.Context, blob object.ObjectStorage) (*backup.Point, *meta.Format, error) {
+func newestPoint(ctx context.Context, blob object.ObjectStorage, stateDir string) (*backup.Point, *meta.Format, error) {
 	points, err := backup.List(ctx, blob)
 	if err != nil {
 		return nil, nil, fmt.Errorf("list metadata backups: %w", err)
@@ -391,7 +386,7 @@ func newestPoint(ctx context.Context, blob object.ObjectStorage) (*backup.Point,
 	if len(points) == 0 {
 		return nil, nil, errors.New("the bucket holds objects but no metadata backup; if the first start of this dataset never finished, empty the bucket prefix " + storage.VolumeName + "/ and the local state directory, then start again")
 	}
-	format, err := backup.Inspect(ctx, blob, points[0].Key)
+	format, err := backup.Inspect(ctx, blob, points[0].Key, stateDir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("newest metadata backup %s is invalid: %w", points[0].Key, err)
 	}

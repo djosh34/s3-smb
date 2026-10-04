@@ -34,12 +34,12 @@ func TestCompletePaginatedInventory(t *testing.T) {
 			t.Fatal("wrong inventory scope")
 		}
 		if input.ContinuationToken == nil {
-			return &s3.ListObjectsV2Output{IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("next"), Contents: []types.Object{{Key: aws.String("v/meta/dump-1"), Size: aws.Int64(12), LastModified: &now, ETag: aws.String("opaque")}}}, nil
+			return &s3.ListObjectsV2Output{IsTruncated: aws.Bool(true), NextContinuationToken: aws.String("next"), Contents: []types.Object{{Key: aws.String("v/meta/snapshot-1"), Size: aws.Int64(12), LastModified: &now, ETag: aws.String("opaque")}}}, nil
 		}
 		if aws.ToString(input.ContinuationToken) != "next" {
 			t.Fatal("wrong continuation")
 		}
-		return &s3.ListObjectsV2Output{Contents: []types.Object{{Key: aws.String("v/meta/dump-2"), Size: aws.Int64(23), LastModified: &now}}}, nil
+		return &s3.ListObjectsV2Output{Contents: []types.Object{{Key: aws.String("v/meta/snapshot-2"), Size: aws.Int64(23), LastModified: &now}}}, nil
 	}}
 	result, err := listBucket(context.Background(), fake, "owned", "v/meta/")
 	if err != nil {

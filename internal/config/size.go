@@ -10,8 +10,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// ByteSize is a capacity in bytes. A nil *ByteSize means the JuiceFS default,
-// and zero disables the disk cache.
+// ByteSize is a size in bytes, parsed with decimal units.
 type ByteSize int64
 
 var decimalSize = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)?$`)

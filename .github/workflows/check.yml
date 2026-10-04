@@ -25,6 +25,14 @@ jobs:
         run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }}
         env:
           S3_SMB_TEST_LOGS: ${{ runner.temp }}/s3-smb-logs
+      - if: always()
+        name: Save namespace measurements
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: namespace-measurement
+          path: ${{ runner.temp }}/s3-smb-logs/namespace-measurement.json
+          if-no-files-found: ignore
+          retention-days: 7
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
