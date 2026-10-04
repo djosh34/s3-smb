@@ -1,15 +1,24 @@
 package server
 
 import (
-	"context"
 	"math"
 	"testing"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
+
+func closeLockOpen(t *testing.T, session smbtest.Session, messageID uint64, id state.FileID) wire.Message {
+	t.Helper()
+	body, err := wire.EncodeCloseRequest(wire.CloseRequest{ID: wire.FileID(id)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ioMessage(session, messageID, wire.Close, body, 1)
+}
 
 func TestLockCloseReleasesRanges(t *testing.T) {
 	server := lockServer(t)
@@ -20,10 +29,8 @@ func TestLockCloseReleasesRanges(t *testing.T) {
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, owner.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: lockShared}))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusLockNotGranted}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive}))
-	request := RequestContext{Storage: server.options.Storage, Opens: server.options.State, Session: Session{SessionID: session.SessionID}, Tree: Tree{TreeID: session.TreeID}, server: server}
-	if err := closeOpen(ctx, request, owner.ID); err != nil {
-		t.Fatal(err)
-	}
+	id++
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, closeLockOpen(t, session, id, owner.ID))
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, lockMessage(t, session, id, other.ID, wire.LockElement{Length: 8, Flags: lockExclusive}, wire.LockElement{Offset: 16, Length: 8, Flags: lockExclusive}))
 	id++
@@ -85,8 +92,6 @@ func TestLockMissingRelatedFileIDAndMalformedBodyKeepConnection(t *testing.T) {
 	id++
 	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, sessionEcho(t, session, id))
 	// Rejected requests must not leave an active open reference behind.
-	request := RequestContext{Storage: server.options.Storage, Opens: server.options.State, Session: Session{SessionID: session.SessionID}, Tree: Tree{TreeID: session.TreeID}, server: server}
-	if err := closeOpen(context.WithoutCancel(ctx), request, open.ID); err != nil {
-		t.Fatal(err)
-	}
+	id++
+	lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess}, closeLockOpen(t, session, id, open.ID))
 }
