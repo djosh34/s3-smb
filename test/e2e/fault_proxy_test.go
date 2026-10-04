@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // faultEvent holds no headers or bodies, because signed requests contain
@@ -35,6 +36,8 @@ type faultProxy struct {
 	metadataFailure atomic.Bool
 	metadataSeen    chan faultEvent
 	chunkPuts       atomic.Int64 // Successful real data PUTs, no headers/bodies retained.
+	outageUntil     atomic.Int64
+	outageSeen      chan faultEvent
 }
 
 func newFaultProxy(t *testing.T, upstream string) *faultProxy {
@@ -43,7 +46,7 @@ func newFaultProxy(t *testing.T, upstream string) *faultProxy {
 	if err != nil || target.Host == "" || target.Scheme != "http" {
 		t.Fatal("fault proxy requires explicit disposable HTTP MinIO")
 	}
-	p := &faultProxy{metadataSeen: make(chan faultEvent, 32)}
+	p := &faultProxy{metadataSeen: make(chan faultEvent, 32), outageSeen: make(chan faultEvent, 32)}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	// NewSingleHostReverseProxy preserves the signed request Host, including the
 	// loopback proxy port; only the upstream dial address changes.
@@ -76,6 +79,16 @@ func newFaultProxy(t *testing.T, upstream string) *faultProxy {
 		}
 	}
 	p.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if time.Now().UnixNano() < p.outageUntil.Load() {
+			if strings.Contains(r.URL.Path, "/chunks/") {
+				select {
+				case p.outageSeen <- faultEvent{Method: r.Method, Path: r.URL.Path, Status: http.StatusServiceUnavailable}:
+				default:
+				}
+			}
+			http.Error(w, "<Error><Code>ServiceUnavailable</Code><Message>Injected S3 outage</Message></Error>", http.StatusServiceUnavailable)
+			return
+		}
 		if p.metadataFailure.Load() && strings.Contains(r.URL.Path, "/meta/") && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
 			select {
 			case p.metadataSeen <- faultEvent{Method: r.Method, Path: r.URL.Path, Status: http.StatusServiceUnavailable}:
@@ -110,5 +123,15 @@ func (p *faultProxy) Release() {
 	p.next = nil
 	p.active = nil
 }
+
+// FailS3For rejects every S3 request until the deadline, without forwarding it.
+func (p *faultProxy) FailS3For(duration time.Duration) time.Time {
+	start := time.Now()
+	p.outageUntil.Store(start.Add(duration).UnixNano())
+	return start
+}
+
+func (p *faultProxy) RestoreS3() { p.outageUntil.Store(0) }
+
 func (p *faultProxy) SetMetadataFailure(enabled bool)        { p.metadataFailure.Store(enabled) }
 func (p *faultProxy) MetadataFailureSeen() <-chan faultEvent { return p.metadataSeen }

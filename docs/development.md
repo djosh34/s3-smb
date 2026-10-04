@@ -127,7 +127,7 @@ For a MinIO bump, publish the new release and update the image digest in
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file and
-lock operations, missing data, compression, startup with a damaged bucket, a
+lock operations, missing data, uncompressed objects, startup with a damaged bucket, a
 failed scheduled backup, a kill during an S3 upload, and recovery after deleting
 all local state, including from a metadata backup taken while files were being
 written.
