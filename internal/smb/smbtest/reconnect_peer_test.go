@@ -60,7 +60,7 @@ func peerReceive(peer net.Conn, protector *crypt.Protector, encrypted bool) (wir
 	return messages[0], payload, nil
 }
 
-func scriptReconnectLogin(peer net.Conn, previous smbtest.Session, account auth.Account) (*crypt.Protector, error) {
+func scriptReconnectLogin(peer net.Conn, previous smbtest.Session, account auth.Account, requireEncryption bool) (*crypt.Protector, error) {
 	acceptor, err := auth.NewAcceptor(auth.Options{Account: account, ServerName: "server"})
 	if err != nil {
 		return nil, err
@@ -98,7 +98,7 @@ func scriptReconnectLogin(peer net.Conn, previous smbtest.Session, account auth.
 	if writeErr := writePayload(peer, payload); writeErr != nil {
 		return nil, writeErr
 	}
-	protector, err := scriptReconnectSetup(peer, previous, acceptor, preauth)
+	protector, err := scriptReconnectSetup(peer, previous, acceptor, preauth, requireEncryption)
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +161,7 @@ func checkReconnectAlgorithms(contexts []wire.NegotiateContext, previous smbtest
 	return nil
 }
 
-func scriptReconnectSetup(peer net.Conn, previous smbtest.Session, acceptor *auth.Acceptor, preauth *crypt.Preauth) (*crypt.Protector, error) {
+func scriptReconnectSetup(peer net.Conn, previous smbtest.Session, acceptor *auth.Acceptor, preauth *crypt.Preauth, requireEncryption bool) (*crypt.Protector, error) {
 	var protector *crypt.Protector
 	for id := uint64(1); id <= 2; id++ {
 		message, raw, err := peerReceive(peer, nil, false)
@@ -188,7 +188,11 @@ func scriptReconnectSetup(peer net.Conn, previous smbtest.Session, acceptor *aut
 				return nil, err
 			}
 		}
-		body, err := wire.EncodeSessionSetupResponse(wire.SessionSetupResponse{Token: result.Token})
+		flags := uint16(0)
+		if result.Done && requireEncryption {
+			flags = smb.SessionEncryptData
+		}
+		body, err := wire.EncodeSessionSetupResponse(wire.SessionSetupResponse{Token: result.Token, Flags: flags})
 		if err != nil {
 			return nil, err
 		}

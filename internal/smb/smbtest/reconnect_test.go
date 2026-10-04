@@ -57,7 +57,7 @@ func checkReconnectRetainedOpens(t *testing.T, cipher, signing uint16) {
 	opens := retainedOpens(previous.ClientGUID)
 	notification, wantBreak := breakMessage(t)
 	conn := reconnectPeer(t, func(peer net.Conn) error {
-		protector, err := scriptReconnectLogin(peer, previous, account)
+		protector, err := scriptReconnectLogin(peer, previous, account, false)
 		if err != nil {
 			return err
 		}
@@ -198,7 +198,7 @@ func scriptReconnectFailure(peer net.Conn, previous smbtest.Session, account aut
 		_, err := readFrame(peer)
 		return err
 	}
-	protector, err := scriptReconnectLogin(peer, previous, account)
+	protector, err := scriptReconnectLogin(peer, previous, account, false)
 	if err != nil {
 		return err
 	}
