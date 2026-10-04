@@ -54,8 +54,8 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	return result, nil
 }
 
-// Fixed portions are from MS-FSCC 2.4. MS-SMB2 3.3.5.20.1 permits a
-// truncated variable portion, but requires the whole fixed portion.
+// Fixed portions are from MS-FSCC 2.4. Name and All may return a truncated
+// variable portion; Stream must return only complete entries.
 func fileInfoFixedSize(class wire.FileInfoClass) uint32 {
 	switch class {
 	case wire.ClassFileBasic:

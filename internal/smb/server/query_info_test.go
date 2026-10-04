@@ -189,6 +189,60 @@ func TestQueryInfoClassesMatchLiveAttributes(t *testing.T) {
 	}
 }
 
+func TestQueryInfoNamedStreamOpen(t *testing.T) {
+	f := newQueryInfoFixture(t)
+	_, base := f.create(t, "stream-file", smb.KindFile)
+	_, stream := f.create(t, "stream-file:fork", smb.KindFile)
+	for _, write := range []struct {
+		data   string
+		open   state.Open
+		offset uint64
+	}{
+		{"base-file", base, 4096},
+		{"fork", stream, 0},
+	} {
+		if n, err := f.storage.WriteAt(f.ctx, write.open.Handle, []byte(write.data), write.offset); err != nil || n != len(write.data) {
+			t.Fatalf("WriteAt = %d, %v", n, err)
+		}
+	}
+	baseAttr, err := f.storage.GetAttr(f.ctx, base.Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamAttr, err := f.storage.GetAttr(f.ctx, stream.Object)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantStreams := wire.FileStreamInformation{Entries: []wire.FileStreamEntry{
+		{Name: "::$DATA", Size: 4105, AllocationSize: baseAttr.AllocationSize},
+		{Name: ":fork:$DATA", Size: 4, AllocationSize: streamAttr.AllocationSize},
+	}}
+	for _, selected := range []struct {
+		name string
+		open state.Open
+		size uint64
+	}{
+		{"\\stream-file", base, 4105},
+		{"\\stream-file:fork:$DATA", stream, 4},
+	} {
+		t.Run(selected.name, func(t *testing.T) {
+			data := queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileStream), 4096), smb.StatusSuccess)
+			decodeQueryClass(t, data, wire.DecodeFileStreamInformation, wantStreams)
+			data = queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileName), 4096), smb.StatusSuccess)
+			decodeQueryClass(t, data, wire.DecodeFileNameInformation, wire.FileNameInformation{Name: selected.name})
+			data = queryData(t, f.query(t, selected.open, wire.InfoFile, uint8(wire.ClassFileStandard), 24), smb.StatusSuccess)
+			info, err := wire.DecodeFileStandardInformation(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.EndOfFile != selected.size {
+				t.Fatalf("EndOfFile = %d, want %d", info.EndOfFile, selected.size)
+			}
+			f.echo(t)
+		})
+	}
+}
+
 func checkQueryClass(t *testing.T, f *queryInfoFixture, open state.Open, attr smb.Attr, path string, class wire.FileInfoClass, data []byte) {
 	t.Helper()
 	basic := expectedQueryBasic(t, attr)
