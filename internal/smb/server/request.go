@@ -30,6 +30,7 @@ type Tree struct {
 // before executing cleanup returned by Opens. Resolve request IDs with FileID,
 // then set reply.fileID to the ID used or created so related members inherit it.
 type RequestContext struct {
+	server  *Server
 	Storage smb.Storage
 	Opens   *state.Table
 	Tree    Tree
@@ -57,5 +58,5 @@ func (request RequestContext) Binding() state.Binding {
 }
 
 func (connection *connection) requestContext() RequestContext {
-	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State}
+	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State, server: connection.server}
 }
