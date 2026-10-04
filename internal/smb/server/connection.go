@@ -16,6 +16,7 @@ import (
 // reply is independent of header identity and credit allocation.
 type reply struct {
 	body      []byte
+	fileID    wire.FileID
 	sessionID uint64
 	treeID    uint32
 	status    smb.Status
@@ -221,7 +222,7 @@ func errorBodyRequired(command wire.Command, status smb.Status) bool {
 	return true
 }
 
-func (connection *connection) dispatch(ctx context.Context, message wire.Message) (reply, error) {
+func (connection *connection) dispatch(ctx context.Context, message wire.Message, previous compoundState) (reply, error) {
 	if message.Header.Command == wire.Negotiate {
 		return connection.negotiate(message)
 	}
@@ -247,6 +248,8 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 		return connection.treeDisconnect(ctx, message)
 	}
 	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
+		request.related = message.Header.Flags&wire.FlagRelated != 0
+		request.fileID = previous.fileID
 		return handle(ctx, request, message)
 	}
 	return reply{status: smb.StatusNotSupported}, nil

@@ -51,7 +51,7 @@ func TestIdentityHolderReleasedAfterHandlerError(t *testing.T) {
 	connection := &connection{server: server, sessions: map[uint64]*sessionEntry{1: {active: true, identity: Session{SessionID: 1}}}}
 	message := echo(t, 1)
 	message.Header.SessionID = 1
-	if result := connection.execute(t.Context(), message); result.status != smb.StatusIODeviceError {
+	if result := connection.execute(t.Context(), message, compoundState{}); result.status != smb.StatusIODeviceError {
 		t.Fatal(result.status)
 	}
 	connection.sessionMu.Lock()
