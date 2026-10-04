@@ -31,6 +31,7 @@ type harness struct {
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
 	launchdPlist                                                              string
 	daemon, minio, backup                                                     *process
+	backupDirectory                                                           *os.File
 	attachments                                                               []string
 	serial, applicationSerial                                                 int
 	finished                                                                  bool
