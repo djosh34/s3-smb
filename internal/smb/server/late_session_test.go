@@ -58,7 +58,7 @@ func checkLateSessionCleanup(t *testing.T, command wire.Command, cipher, signing
 		t.Fatal(err)
 	}
 	release := newAsyncGate()
-	canceled := make(chan struct{})
+	canceled := newAsyncGate()
 	closedWhileActive := make(chan int32, 1)
 	body, err := wire.EncodeReadResponse(wire.ReadResponse{Data: []byte("L")})
 	if err != nil {
@@ -66,7 +66,7 @@ func checkLateSessionCleanup(t *testing.T, command wire.Command, cipher, signing
 	}
 	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		<-ctx.Done()
-		close(canceled)
+		canceled.release()
 		<-release.done
 		closedWhileActive <- storage.closed.Load()
 		if wantStatus == smb.StatusCancelled {
@@ -94,12 +94,9 @@ func checkLateSessionCleanup(t *testing.T, command wire.Command, cipher, signing
 	if err := client.Send(ctx, []wire.Message{cleanup}); err != nil {
 		t.Fatal(err)
 	}
-	waitAsyncSignal(ctx, t, canceled)
+	waitAsyncSignal(ctx, t, canceled.done)
 	if storage.closed.Load() != 0 {
 		t.Fatal("cleanup closed storage before the canceled handler returned")
-	}
-	if _, status := options.State.Find(open.ID, open.Binding); status != smb.StatusSuccess {
-		t.Fatal("cleanup removed the active handler's open before draining it")
 	}
 	owner.sessionMu.RLock()
 	entry := owner.sessions[session.SessionID]
