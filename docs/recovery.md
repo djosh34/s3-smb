@@ -186,8 +186,10 @@ metadata points at C. A and B go to the trash and are deleted after
 still points at A and B. Once they are deleted, that backup can no longer restore
 those files.
 
-s3-smb deletes nothing while its newest metadata backup is older than two backup
-intervals. If a scheduled backup fails after three attempts, the writer stops.
+A failed metadata backup retries with delays from one to 30 seconds. Writes and
+cleanup continue while the last verified backup is younger than two backup
+intervals. A backup that succeeds within that window renews protection without a
+restart. If the window expires, the writer stops and deletes nothing.
 
 Do not add S3 lifecycle rules that delete or expire objects under `s3-smb/`. They
 bypass this protection and can delete data, metadata backups or the key.
