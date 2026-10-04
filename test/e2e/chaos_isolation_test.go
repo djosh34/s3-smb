@@ -84,9 +84,7 @@ func runIsolation(t *testing.T, seed uint64, kind, operation string) {
 	t.Helper()
 	plan := makeIsolationPlan(seed, kind, os.Getenv("S3_SMB_CHECK_MODE") == "gate")
 	t.Logf("fault hold=%s\nactivate:\n%s\nrestore after healthy probes:\n%s", plan.hold, plan.activate, plan.restore)
-	// Switch to newChaosFixture when #349 supplies the daemon-selection helper.
-	// This draft still depends on #333 and the new server's file handlers.
-	f := newFixture(t, false)
+	f := newChaosFixture(t, false)
 	d := f.start()
 	generation := f.generation
 	t.Cleanup(func() {
