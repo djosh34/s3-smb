@@ -1,0 +1,8 @@
+smbtorture 4.17.12-Debian
+Using seed 1791119116
+time: 2026-10-04 13:05:16.223222
+test: smb2.create.brlocked.brlocked
+time: 2026-10-04 13:05:16.223559
+time: 2026-10-04 13:05:16.301588
+success: smb2.create.brlocked.brlocked
+Testing SMB2 open with a byte range locked file

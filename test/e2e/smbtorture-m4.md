@@ -106,7 +106,19 @@ Raw output is in `testdata/smbtorture-m4-create/`, with artifacts at
 isolated MinIO procedure were used. Daemon exit was 0 with no race; raw stderr
 SHA-256 is `55c0035efc14b392e927b49b26b06ea167f9a5bee5b72478a785d91ab43d14bc`.
 
-The staged selection contains 22 proven IDs. This is not a green M4 gate:
+`smb2.create.brlocked.brlocked` separately passed on the unchanged checked
+LOCK stack `a2e42e77`, which already registers LOCK. Its raw CREATE output
+is also in `testdata/smbtorture-m4-create/`; Samba seed was 1791119116,
+with clean daemon exit 0 and no race output. It was not run on the M3 union,
+which lacks the required LOCK handler.
+
+These external daemon probes used a one-hour metadata-backup interval.
+The canonical shared fixture uses two seconds. M3's canonical probes exposed
+a metadata-backup/Load race under that workload, reported to P1 and test-tools.
+A clean external probe does not establish a clean canonical fixture or gate.
+The complete selected M4 list still needs that checked-stack rerun.
+
+The staged selection contains 23 proven IDs. This is not a green M4 gate:
 passing subsets do not erase the supported blockers below.
 
 ## Probe blockers
@@ -139,6 +151,11 @@ unchanged default list. Run M4 explicitly only on an agreed feature stack.
 Do not merge M5 production activation merely to obtain the helper.
 M5 [#348](https://github.com/djosh34/s3-smb/issues/348) remains a separate
 selection and explicit activation.
+
+The checked client-command seam is reused byte-for-byte from the M3 owner's
+local commit `7f061e141b11856dc0786a715b495349e4c169a6`.
+M2 and M4 explicitly use `quit`; M3's empty-root `ls` check stays separate.
+No helper override or duplicate fixture was added.
 
 The staged files are owned by #449. The M3 owner edits only the default list.
 The combined-PR amendment on #176 puts the final selection in area F;

@@ -19,6 +19,8 @@ smb2.lock.context.context
 smb2.lock.range.range
 smb2.lock.overlap.overlap
 smb2.lock.truncate.truncate
+# Byte-lock CREATE case passed on the same checked LOCK stack.
+smb2.create.brlocked.brlocked
 # CREATE probes on the M3 owner's unchanged checked 6578d39 union.
 smb2.create.open.open
 smb2.create.delete.delete

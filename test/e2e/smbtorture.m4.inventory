@@ -29,7 +29,7 @@ smb2.lock.ctdb-delrec-deadlock.ctdb-delrec-deadlock	excluded	lock.c:3414-3465 sk
 smb2.create.gentest.gentest	excluded	create.c:460-692 requires fixed Windows option/access/attribute masks and maximal-access context, beyond the advertised policy.
 smb2.create.blob.blob	excluded	create.c:698-879 requires maximal-access and on-disk-ID contexts and timewarp behavior; no object-ID feature.
 smb2.create.open.open	selected	create.c:1029-1205 checks every disposition and CREATE/QUERY_INFO field agreement; util.c:66-170 accepts EAS_NOT_SUPPORTED.
-smb2.create.brlocked.brlocked	probe	create.c:1210-1286 checks overwrite-if while another handle holds an immediate byte lock.
+smb2.create.brlocked.brlocked	selected	create.c:1210-1286 checks overwrite-if while another handle holds an immediate byte lock; race daemon a2e42e77 passed.
 smb2.create.multi.multi	selected	create.c:1290-1408 races CREATE across three connections; PR #415 bc71cfdef9ca013192b80ff1c741a3e9ff177aa1 passed.
 smb2.create.delete.delete	selected	create.c:1413-1481 checks DELETE access on a read-only-attribute file.
 smb2.create.leading-slash.leading-slash	blocked	create.c:1489-1517 expects INVALID_PARAMETER for a leading-slash directory CREATE.
