@@ -76,6 +76,39 @@ func TestClosePostqueryWaitsForHeldWriter(t *testing.T) {
 	}
 }
 
+func TestClosePostqueryErrorRetainsRelatedFileID(t *testing.T) {
+	storage := &createFaultStorage{Storage: newFilesMetaStorage(t)}
+	client := newReadWriteClient(t, storage)
+	first := createdFile(t, client.create(t, createRequest("surviving", fileCreateDisposition)))
+	writeCreatedFile(t, client, first.ID, "survivor")
+	second := createdFile(t, client.create(t, createRequest("closing", fileCreateDisposition)))
+	body, err := wire.EncodeCloseRequest(wire.CloseRequest{ID: second.ID, Flags: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := []wire.Message{
+		compoundFileRequest(t, client.session, wire.Read, client.next, first.ID, false),
+		compoundFileRequest(t, client.session, wire.Close, client.next+1, second.ID, true),
+		compoundFileRequest(t, client.session, wire.Echo, client.next+2, wire.FileID{}, true),
+		compoundFileRequest(t, client.session, wire.Read, client.next+3, placeholderFileID(), true),
+	}
+	messages[1].Body = body
+	client.next += uint64(len(messages))
+	storage.failure.Store(createFailGetAttr)
+	if sendErr := client.client.Send(client.ctx, messages); sendErr != nil {
+		t.Fatal(sendErr)
+	}
+	statuses := compoundFinalStatuses(client.ctx, t, client.client, len(messages))
+	for index, want := range []smb.Status{smb.StatusSuccess, smb.StatusIODeviceError, smb.StatusSuccess, smb.StatusFileClosed} {
+		if got := statuses[messages[index].Header.MessageID]; got != want {
+			t.Fatalf("member %d status %#x, want %#x", index, got, want)
+		}
+	}
+	storage.failure.Store(0)
+	readCreatedFile(t, client, first.ID, "survivor")
+	requireIOStatus(t, client.close(t, first.ID, 0), smb.StatusSuccess)
+}
+
 func TestClosePostqueryFailureStillDeletesOnce(t *testing.T) {
 	storage := &createFaultStorage{Storage: newFilesMetaStorage(t)}
 	client := newReadWriteClient(t, storage)
