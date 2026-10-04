@@ -23,7 +23,7 @@ func protectedClient(t *testing.T, cipher, signing uint16) (*Client, *crypt.Prot
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &Client{protector: protector, sessionID: 42, encrypted: cipher != 0}, peer
+	return &Client{protector: protector, sessionID: 42, encrypted: cipher != 0, requireEncryption: cipher != 0}, peer
 }
 
 func peerPayload(t *testing.T, peer *crypt.Protector, encrypted bool, messages ...wire.Message) []byte {
