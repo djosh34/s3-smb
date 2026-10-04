@@ -168,6 +168,38 @@ func TestBreakTimeoutRevokesWholeLease(t *testing.T) {
 	}
 }
 
+func TestSharedLeaseTimeoutRevokesAttachedAndDetachedMembers(t *testing.T) {
+	table, now := clockTable(t)
+	firstReq := durableRequest(1, 2)
+	grant := durableGrant(firstReq)
+	grant.Lease.State |= smb.LeaseWrite
+	first := commit(t, table, firstReq, grant)
+	secondReq := firstReq
+	secondReq.CreateGUID = state.GUID{4}
+	secondReq.Binding.SessionID = 2
+	second := commit(t, table, secondReq, grant)
+	if actions := table.Disconnect(2); len(actions) != 0 {
+		t.Fatalf("shared durable member closed before timeout: %+v", actions)
+	}
+	startBreak(t, table, first.Object, smb.LeaseRead|smb.LeaseHandle)
+	*now = now.Add(state.LeaseBreakTimeout)
+	actions := table.ExpireBreaks()
+	if len(actions) != 1 || actions[0].Handle != second.Handle {
+		t.Fatalf("shared lease timeout cleanup: %+v", actions)
+	}
+	found, status := table.Find(first.ID, binding)
+	statusIs(t, status, smb.StatusSuccess)
+	if found.Durable {
+		t.Fatal("attached member retained H after timeout")
+	}
+	_, status = table.Reconnect(reconnectRequest(second))
+	statusIs(t, status, smb.StatusObjectNameNotFound)
+	writer := request(1)
+	writer.GrantedAccess = 2
+	writer.ClientGUID = state.GUID{9}
+	commit(t, table, writer, state.Grant{})
+}
+
 func TestFullyDetachedHandleBreakClosesImmediately(t *testing.T) {
 	table, _ := clockTable(t)
 	req := durableRequest(1, 2)
