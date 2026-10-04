@@ -44,30 +44,35 @@ func TestFilesystemSetSparseRefused(t *testing.T) {
 
 func TestFilesystemClientSettableAttributes(t *testing.T) {
 	const unsupported = uint32(0x200 | 0x400 | 0x800 | 0x4000) // Sparse, reparse, compressed, encrypted.
-	cases := []struct {
+	type attributeCase struct {
 		attributes uint32
 		want       uint32
-	}{
-		{0x200, 0x80},
-		{0x400, 0x80},
-		{0x800, 0x80},
-		{0x4000, 0x80},
-		{unsupported, 0x80},
-		{unsupported | 0x3127, 0x3127}, // All seven client-settable bits.
+		options    uint32
+	}
+	cases := []attributeCase{
+		{0x200, 0x80, 0},
+		{0x400, 0x80, 0},
+		{0x800, 0x80, 0},
+		{0x4000, 0x80, 0},
+		{unsupported, 0x80, 0},
+		{unsupported | 0x3127, 0x3127, 0}, // All seven client-settable bits.
+		{unsupported, 0x10, fileDirectoryFile},
+		{unsupported | 0x3027, 0x3037, fileDirectoryFile},
 	}
 	for _, bit := range []uint32{1, 2, 4, 0x20, 0x100, 0x1000, 0x2000} {
-		cases = append(cases, struct {
-			attributes uint32
-			want       uint32
-		}{unsupported | bit, bit})
+		cases = append(cases, attributeCase{unsupported | bit, bit, 0})
 	}
 	for _, test := range cases {
-		t.Run(fmt.Sprintf("%x", test.attributes), func(t *testing.T) {
+		normal := uint32(0x80)
+		if test.options == fileDirectoryFile {
+			normal = 0x10
+		}
+		t.Run(fmt.Sprintf("%x_options_%x", test.attributes, test.options), func(t *testing.T) {
 			server := newCapabilityServer(t)
 			client := capabilityConnection(t, server)
 			created := client.create(t, wire.CreateRequest{
 				Name: "attributes", Disposition: fileCreateDisposition, DesiredAccess: fileAllAccess,
-				ShareAccess: 7, FileAttributes: test.attributes,
+				ShareAccess: 7, FileAttributes: test.attributes, Options: test.options,
 			}, smb.StatusSuccess)
 			if created.Attributes != test.want {
 				t.Fatalf("CREATE attributes = %#x, want %#x", created.Attributes, test.want)
@@ -97,11 +102,43 @@ func TestFilesystemClientSettableAttributes(t *testing.T) {
 				client.exchange(t, wire.SetInfo, body, smb.StatusSuccess)
 				want := test.want
 				if attributes == 0x80 {
-					want = 0x80
+					want = normal
 				}
 				assertBasic(want)
 			}
 			client.close(t, created.ID)
+		})
+	}
+}
+
+func TestFilesystemOverwriteAttributes(t *testing.T) {
+	for _, disposition := range []uint32{fileOverwrite, fileOverwriteIf, fileSupersede} {
+		t.Run(fmt.Sprint(disposition), func(t *testing.T) {
+			server := newCapabilityServer(t)
+			client := capabilityConnection(t, server)
+			request := wire.CreateRequest{
+				Name: "overwrite", Disposition: fileCreateDisposition, DesiredAccess: fileAllAccess,
+				ShareAccess: 7, FileAttributes: 2, // FILE_ATTRIBUTE_HIDDEN.
+			}
+			created := client.create(t, request, smb.StatusSuccess)
+			client.close(t, created.ID)
+			request.Disposition, request.FileAttributes = disposition, 0x200
+			opened := client.create(t, request, smb.StatusSuccess)
+			want := uint32(2)
+			if disposition == fileSupersede {
+				want = 0x80
+			}
+			if opened.Attributes != want {
+				t.Fatalf("CREATE attributes = %#x, want %#x", opened.Attributes, want)
+			}
+			basic, err := wire.DecodeFileBasicInformation(client.fileInformation(t, opened.ID, wire.ClassFileBasic))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if basic.Attributes != want {
+				t.Fatalf("Basic attributes = %#x, want %#x", basic.Attributes, want)
+			}
+			client.close(t, opened.ID)
 		})
 	}
 }

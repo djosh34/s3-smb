@@ -10,8 +10,11 @@ import (
 // MS-FSA 2.1.5.14.2 limits client-settable attributes to these seven bits.
 const clientSettableFileAttributes uint32 = 0x00000001 | 0x00000002 | 0x00000004 | 0x00000020 | 0x00000100 | 0x00001000 | 0x00002000
 
-func normalizeFileAttributes(attributes uint32) uint32 {
+func normalizeFileAttributes(attributes uint32, directory bool) uint32 {
 	attributes &= clientSettableFileAttributes
+	if directory {
+		return attributes | 0x10 // FILE_ATTRIBUTE_DIRECTORY is determined by storage.
+	}
 	if attributes == 0 {
 		return 0x80 // FILE_ATTRIBUTE_NORMAL.
 	}
@@ -26,6 +29,6 @@ func setCreateAttributes(ctx context.Context, storage smb.Storage, create wire.C
 	if action == 3 {
 		attributes |= resolved.Attr.Attributes
 	}
-	attributes = normalizeFileAttributes(attributes)
+	attributes = normalizeFileAttributes(attributes, resolved.Attr.Kind == smb.KindDirectory)
 	return storage.SetAttr(ctx, resolved.Object, smb.AttrChange{Attributes: &attributes})
 }
