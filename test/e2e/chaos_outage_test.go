@@ -137,7 +137,9 @@ func runChaosOutage(t *testing.T, seed uint64, command wire.Command, permanent b
 		if err != nil {
 			t.Fatal(err)
 		}
-		wait := time.NewTimer(time.Until(baseline.Snapshot.Add(interval - time.Second)))
+		due := baseline.Snapshot.Add(interval - time.Second)
+		t.Logf("waiting %s for the scheduled metadata backup", time.Until(due))
+		wait := time.NewTimer(time.Until(due))
 		defer wait.Stop()
 		select {
 		case <-wait.C:
@@ -181,6 +183,7 @@ func runChaosOutage(t *testing.T, seed uint64, command wire.Command, permanent b
 	pendingCancel()
 	assertOutagePending(t, request, interim)
 	awaitOutageReach(t, ctx, proxy, method, metadata, permanent)
+	t.Logf("pending reply and failed %s observed; storage completion bound %s", method, bound)
 	// The same connection must answer ECHO while the storage request waits.
 	echo, err := wire.EncodeEchoRequest(wire.EmptyRequest{})
 	if err != nil {
