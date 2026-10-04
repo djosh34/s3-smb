@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -74,6 +75,63 @@ func echoIOClient(t *testing.T, client *readWriteClient) {
 	if _, err := wire.DecodeEchoResponse(response); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestTwoConnectionDeniedDestructiveCreate(t *testing.T) {
+	_, a, b := twoIOClients(t, nil)
+	writer := createIOFile(t, a, wire.CreateRequest{Name: "protected", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 1, Disposition: fileCreateDisposition})
+	reader := createIOFile(t, b, wire.CreateRequest{Name: "protected", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen})
+	payload := "preserve these acknowledged bytes"
+	writeIOBytes(t, a, writer.ID, []byte(payload))
+	for _, disposition := range []uint32{fileOverwrite, fileSupersede} {
+		response := fileCreate(b.ctx, t, b.client, b.session, b.next, wire.CreateRequest{Name: "protected", DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: disposition})
+		b.next++
+		requireIOStatus(t, response, smb.StatusSharingViolation)
+		if _, err := wire.DecodeErrorResponse(response); err != nil {
+			t.Fatal(err)
+		}
+		// Check the existing bytes before proving the rejected CREATE left
+		// the connection usable. B reads through its own CREATE-created open.
+		readIOBytes(t, b, reader.ID, 128, payload)
+		echoIOClient(t, b)
+	}
+	closeIOFile(t, a, writer.ID)
+	closeIOFile(t, b, reader.ID)
+}
+
+func TestTwoConnectionTruncateBeforeStaleFlush(t *testing.T) {
+	fixture, a, b := twoIOClients(t, nil)
+	writer := createIOFile(t, a, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition})
+	old := "old buffered bytes that must never reappear after truncation"
+	writeIOBytes(t, a, writer.ID, []byte(old))
+	if fixture.store.puts.Load() != 0 {
+		t.Fatal("test needs buffered writes before the destructive CREATE")
+	}
+	replacement := createIOFile(t, b, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileOverwrite})
+	if replacement.Size != 0 || replacement.Action != 3 {
+		t.Fatalf("OVERWRITE = %+v", replacement)
+	}
+	requireIOStatus(t, b.read(t, wire.ReadRequest{ID: replacement.ID, Length: 1}, 1), smb.StatusEndOfFile)
+	payload := "new"
+	writeIOBytes(t, b, replacement.ID, []byte(payload))
+	response := ioRoundTrip(a.ctx, t, a.client, flushMessage(t, a.session, a.next, writer.ID, 0))
+	a.next++
+	requireIOStatus(t, response, smb.StatusSuccess)
+	if _, err := wire.DecodeFlushResponse(response); err != nil {
+		t.Fatal(err)
+	}
+	// Check committed length and bytes before any READ can flush again.
+	info, eno := fixture.native.Stat(meta.Background(), "/flush-data")
+	if eno != 0 {
+		t.Fatal(eno)
+	}
+	if info.Size() != int64(len(payload)) {
+		t.Fatalf("stale-handle FLUSH restored length %d, want %d", info.Size(), len(payload))
+	}
+	assertCommittedFlushData(t, fixture, []byte(payload))
+	readIOBytes(t, b, replacement.ID, uint32(len(old)), payload)
+	closeIOFile(t, a, writer.ID)
+	closeIOFile(t, b, replacement.ID)
 }
 
 func TestTwoConnectionReadAndFlush(t *testing.T) {
