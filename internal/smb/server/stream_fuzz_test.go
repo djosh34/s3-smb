@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -21,14 +22,13 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
-	storage := fuzzStorage(f)
 	f.Fuzz(func(t *testing.T, stream []byte) {
 		// Bound total work as well as individual frame allocations.
 		if len(stream) > 64<<10 {
 			t.Skip("stream exceeds corpus limit")
 		}
 		options := testOptions(t)
-		options.Storage = storage
+		options.Storage = fuzzStorage(t)
 		server, err := New(options)
 		if err != nil {
 			t.Fatal(err)
@@ -49,11 +49,47 @@ func streamSeeds(t testing.TB) []streamSeed {
 	first := streamFrame(t, echo(t, 1))
 	second := streamFrame(t, echo(t, 2))
 	compound := streamFrame(t, echo(t, 1), echo(t, 2))
+	setup := streamFrame(t, sessionSetupSeed(t))
+	body, err := wire.EncodeTreeConnectRequest(wire.TreeConnectRequest{Path: "\\\\server\\backup"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Session 1 is in progress after the first NTLM step. This seed checks
+	// the tree request decoder and session check, not an authenticated tree.
+	tree := streamFrame(t, wire.Message{Header: wire.Header{Command: wire.TreeConnect, MessageID: 2, SessionID: 1, CreditCharge: 1, Credit: 16}, Body: body})
 	return []streamSeed{
 		{name: "negotiate", stream: negotiate, wantReplies: 1},
 		{name: "echo stream", stream: bytes.Join([][]byte{negotiate, first, second}, nil), wantReplies: 3},
 		{name: "echo compound", stream: bytes.Join([][]byte{negotiate, compound}, nil), wantReplies: 3},
+		{name: "session setup", stream: bytes.Join([][]byte{negotiate, setup}, nil), wantReplies: 2},
+		{name: "tree connect", stream: bytes.Join([][]byte{negotiate, setup, tree}, nil), wantReplies: 3},
 	}
+}
+
+func sessionSetupSeed(t testing.TB) wire.Message {
+	t.Helper()
+	account := auth.Account{User: "backup", Password: "password"}
+	acceptor, err := auth.NewAcceptor(auth.Options{Account: account, ServerName: "s3-smb"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := acceptor.InitialToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator, err := auth.NewInitiator(account, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := initiator.Start(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := wire.EncodeSessionSetupRequest(wire.SessionSetupRequest{Token: result.Token, SecurityMode: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return wire.Message{Header: wire.Header{Command: wire.SessionSetup, MessageID: 1, CreditCharge: 1, Credit: 16}, Body: body}
 }
 
 func streamFrame(t testing.TB, messages ...wire.Message) []byte {

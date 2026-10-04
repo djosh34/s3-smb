@@ -129,7 +129,11 @@ func TestReconnectRejectsEveryIdentityMismatch(t *testing.T) {
 			bad := good
 			test.modify(&bad)
 			_, status = table.Reconnect(bad)
-			statusIs(t, status, smb.StatusObjectNameNotFound)
+			want := smb.StatusObjectNameNotFound
+			if test.name == "user" {
+				want = smb.StatusAccessDenied
+			}
+			statusIs(t, status, want)
 			_, status = table.Reconnect(good)
 			statusIs(t, status, smb.StatusSuccess)
 			_, status = table.Reconnect(good)

@@ -43,9 +43,9 @@ func TestBadCompoundBodyDoesNotDispatchPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	server.handlers[wire.Echo] = func(ctx context.Context, message wire.Message) (reply, error) {
+	server.handlers[wire.Echo] = func(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 		calls.Add(1)
-		return handleEcho(ctx, message)
+		return handleEcho(ctx, request, message)
 	}
 	client, ctx := pipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 2))
@@ -90,7 +90,7 @@ func TestMalformedCompoundLinkClosesConnection(t *testing.T) {
 
 func TestAsyncRelatedSuffixGetsSeparatePendingIdentities(t *testing.T) {
 	server, release := controlledAsync(t, wire.Read, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 4))
 	suffix := echo(t, 3)
 	suffix.Header.Flags, suffix.Header.SessionID, suffix.Header.TreeID = wire.FlagRelated, ^uint64(0), ^uint32(0)
@@ -129,7 +129,7 @@ func TestAsyncRelatedSuffixGetsSeparatePendingIdentities(t *testing.T) {
 		header := response.Messages[0].Header
 		want := smb.StatusFileLockConflict
 		if header.MessageID == 3 {
-			want = smb.StatusInvalidParameter
+			want = smb.StatusSuccess
 		}
 		if header.MessageID != 2 && header.MessageID != 3 || seen[header.MessageID] || header.Status != want || header.Credit != 0 {
 			t.Fatalf("dependent completion: %+v", header)

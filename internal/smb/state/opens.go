@@ -26,6 +26,7 @@ func New(now func() time.Time) (*Table, error) {
 		objects:      make(map[smb.ObjectKey]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
 		leaseObjects: make(map[leaseIdentity]smb.ObjectKey),
+		breakChanges: make(chan struct{}),
 	}, nil
 }
 
@@ -180,7 +181,7 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		Handle: grant.Handle, User: request.User, Share: request.Share, Object: request.Object,
 		ID: FileID{Persistent: table.nextPersistent, Volatile: table.nextVolatile}, Binding: request.Binding,
 		ClientGUID: request.ClientGUID, CreateGUID: request.CreateGUID, CreateParameters: request.CreateParameters,
-		GrantedAccess: request.GrantedAccess, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
+		GrantedAccess: request.GrantedAccess, CreateAction: grant.CreateAction, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
 		DeleteOnClose: grant.DeleteOnClose, Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
 	}
 	if grant.Lease.State != 0 {
@@ -349,7 +350,7 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
-	action := CloseAction{Handle: open.Handle, Object: key}
+	action := CloseAction{FileID: open.ID, Handle: open.Handle, Object: key}
 	if open.DeleteOnClose || open.dispositionPending {
 		if !record.DeletePending {
 			record.DeleteName = open.deleteName

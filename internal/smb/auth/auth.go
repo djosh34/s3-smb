@@ -189,8 +189,8 @@ func (acceptor *Acceptor) startNTLM(raw []byte, firstReply bool) (Result, error)
 	if negotiate.kind != messageNegotiate || negotiate.flags&requiredFlags != requiredFlags || negotiate.flags&flagAnonymous != 0 {
 		return Result{}, errLogin
 	}
-	flags := negotiate.flags&offeredFlags | flagTargetInfo | flagTarget | flagServer
-	if flags&flagSign == 0 {
+	flags := negotiate.flags&(offeredFlags|flagSeal) | flagTargetInfo | flagTarget | flagServer
+	if flags&(flagSign|flagSeal) == 0 {
 		flags &^= flagKeyExch
 	}
 	challenge, err := acceptor.makeChallenge(flags)

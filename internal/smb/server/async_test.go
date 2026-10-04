@@ -14,6 +14,8 @@ func asyncMessage(t *testing.T, command wire.Command, id uint64) wire.Message {
 	var body []byte
 	var err error
 	switch uint16(command) {
+	case uint16(wire.Create):
+		body, err = wire.EncodeCreateRequest(wire.CreateRequest{Name: "file"})
 	case uint16(wire.Read):
 		body, err = wire.EncodeReadRequest(wire.ReadRequest{Length: 16})
 	case uint16(wire.Write):
@@ -37,8 +39,8 @@ func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr
 	}
 	release := make(chan struct{})
 	// Install controlled work at the handler boundary, before ServeConn starts.
-	// No file handler or authenticated session is needed to test completion.
-	server.handlers[command] = func(ctx context.Context, _ wire.Message) (reply, error) {
+	// corePipeClient supplies identity; these tests do not exercise login.
+	server.handlers[command] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		select {
 		case <-release:
 			return result, resultErr
@@ -51,10 +53,10 @@ func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr
 
 // Regression for #104: the async error keeps all three request identities.
 func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
-	for _, command := range []wire.Command{wire.Read, wire.Write} {
+	for _, command := range []wire.Command{wire.Create, wire.Read, wire.Write} {
 		t.Run(commandName(command), func(t *testing.T) {
 			server, release := controlledAsync(t, command, reply{status: smb.StatusFileLockConflict}, nil)
-			client, ctx := pipeClient(t, server)
+			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 2))
 			request := asyncMessage(t, command, 1)
 			pending := exchange(ctx, t, client, request)[0]
@@ -81,10 +83,10 @@ func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
 
 // Regression for #132: the final error does not allocate a second credit grant.
 func TestAsyncBackendErrorGrantsNoFinalCredits(t *testing.T) {
-	for _, command := range []wire.Command{wire.Read, wire.Write, wire.Flush} {
+	for _, command := range []wire.Command{wire.Create, wire.Read, wire.Write, wire.Flush} {
 		t.Run(commandName(command), func(t *testing.T) {
 			server, release := controlledAsync(t, command, reply{}, errors.New("controlled storage error"))
-			client, ctx := pipeClient(t, server)
+			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 1))
 			pending := exchange(ctx, t, client, asyncMessage(t, command, 1))[0]
 			if pending.Header.Status != smb.StatusPending || pending.Header.Credit != 16 {
@@ -105,6 +107,8 @@ func TestAsyncBackendErrorGrantsNoFinalCredits(t *testing.T) {
 
 func commandName(command wire.Command) string {
 	switch uint16(command) {
+	case uint16(wire.Create):
+		return "create"
 	case uint16(wire.Read):
 		return "read"
 	case uint16(wire.Write):
