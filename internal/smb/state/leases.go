@@ -102,6 +102,7 @@ func (table *Table) commitLease(object smb.ObjectKey, grant Lease) {
 }
 
 func (table *Table) releaseLeases(record *objectEntry) {
+	before := len(record.Leases)
 	record.Leases = slices.DeleteFunc(record.Leases, func(lease Lease) bool {
 		for _, id := range record.Opens {
 			open := table.opens[id]
@@ -112,6 +113,9 @@ func (table *Table) releaseLeases(record *objectEntry) {
 		delete(table.leaseObjects, leaseIdentity{client: lease.ClientGUID, key: lease.Key})
 		return true
 	})
+	if len(record.Leases) != before {
+		table.signalBreakChanges()
+	}
 }
 
 func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
@@ -130,7 +134,7 @@ func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
 func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite {
+	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite && target != smb.LeaseHandle {
 		return nil, nil
 	}
 	record := table.objects[object]
@@ -171,16 +175,21 @@ func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey 
 			lease.Deadline = time.Time{}
 		}
 	}
+	if len(breaks) != 0 {
+		table.signalBreakChanges()
+	}
 	return breaks, table.revokeLeases(detached)
 }
 
 // AckBreak accepts only a pending break's identity and a subset of its target.
-// Dropping H returns cleanup for any detached members of the lease.
+// Dropping H returns cleanup for any detached members of the lease. A zero
+// TreeID matches any attached member in the authenticated session, because lease
+// acknowledgments have no tree identity. A nonzero TreeID must match exactly.
 func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]CloseAction, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	identity := leaseIdentity{client: clientGUID, key: key}
-	if !validBinding(binding) {
+	if binding.SessionID == 0 {
 		return nil, smb.StatusInvalidParameter
 	}
 	object, exists := table.leaseObjects[identity]
@@ -201,13 +210,14 @@ func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseSt
 		return nil, smb.StatusRequestNotAccepted
 	}
 	lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = leaseState, leaseState, false, time.Time{}
+	table.signalBreakChanges()
 	return table.dropDurability(object, identity, leaseState), smb.StatusSuccess
 }
 
 func (table *Table) ownsLease(binding Binding, object smb.ObjectKey, identity leaseIdentity) bool {
 	for _, id := range table.objects[object].Opens {
 		open := table.opens[id]
-		if open.Binding == binding && open.ClientGUID == identity.client && open.LeaseKey == identity.key {
+		if open.Binding.SessionID == binding.SessionID && (binding.TreeID == 0 || open.Binding.TreeID == binding.TreeID) && open.ClientGUID == identity.client && open.LeaseKey == identity.key {
 			return true
 		}
 	}
@@ -248,6 +258,7 @@ func (table *Table) revokeLeases(leases []leaseRef) []CloseAction {
 			continue
 		}
 		lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = 0, 0, false, time.Time{}
+		table.signalBreakChanges()
 		actions = append(actions, table.dropDurability(ref.object, ref.identity, 0)...)
 	}
 	return actions

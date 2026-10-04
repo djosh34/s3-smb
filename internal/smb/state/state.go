@@ -111,6 +111,7 @@ type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
 	Key        GUID
+	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
 	Epoch      uint16
@@ -186,6 +187,7 @@ type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	FileID FileID
 	Remove bool
 }
 
@@ -228,6 +230,7 @@ type Table struct {
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64
 	nextPersistent  uint64
