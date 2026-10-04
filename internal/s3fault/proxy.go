@@ -168,15 +168,16 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 		}
 		// A per-request copy avoids sharing ModifyResponse state across requests.
 		requestProxy := *proxy
+		ctx := r.Context()
 		requestProxy.ModifyResponse = func(res *http.Response) error {
-			if err := p.holdChunkResponse(res); err != nil {
+			if err := p.holdChunkResponse(ctx, res); err != nil {
 				return err
 			}
-			if err := p.wait(res.Request.Context(), fault.HeaderDelay); err != nil {
+			if err := p.wait(ctx, fault.HeaderDelay); err != nil {
 				return err
 			}
 			if fault.BodyDelay != 0 || fault.CutBody {
-				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: res.Request.Context(), delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
+				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: ctx, delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
 			}
 			return nil
 		}
@@ -221,7 +222,7 @@ func (p *Proxy) wait(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-func (p *Proxy) holdChunkResponse(res *http.Response) error {
+func (p *Proxy) holdChunkResponse(ctx context.Context, res *http.Response) error {
 	if res.Request.Method != http.MethodPut || !strings.Contains(res.Request.URL.Path, "/chunks/") || res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil
 	}
@@ -240,8 +241,8 @@ func (p *Proxy) holdChunkResponse(res *http.Response) error {
 	select {
 	case <-hold.release:
 		return nil
-	case <-res.Request.Context().Done():
-		return res.Request.Context().Err()
+	case <-ctx.Done():
+		return ctx.Err()
 	case <-p.done:
 		return errors.New("fault proxy closed")
 	}

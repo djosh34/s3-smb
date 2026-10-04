@@ -340,45 +340,50 @@ func TestCancelAndClose(t *testing.T) {
 	for _, phase := range []string{"headers", "body", "hold"} {
 		for _, action := range []string{"cancel", "close"} {
 			t.Run(phase+"/"+action, func(t *testing.T) {
-				seen := make(chan struct{}, 1)
-				proxy := newProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					seen <- struct{}{}
-					payload(w, r)
-				}))
-				switch phase {
-				case "headers":
-					setFault(t, proxy, s3fault.Fault{HeaderDelay: time.Hour})
-				case "body":
-					setFault(t, proxy, s3fault.Fault{BodyDelay: time.Hour})
-				case "hold":
-					if _, err := proxy.HoldNextChunkResponse(); err != nil {
-						t.Fatal(err)
-					}
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				defer cancel()
-				done := make(chan response, 1)
-				go func() { done <- fetch(ctx, proxy, http.MethodPut, "/bucket/chunks/key") }()
-				select {
-				case <-seen:
-				case <-time.After(time.Second):
-					t.Fatal("request did not reach upstream")
-				}
-				if action == "cancel" {
-					cancel()
-				} else if err := proxy.Close(); err != nil {
-					t.Fatal(err)
-				}
-				select {
-				case res := <-done:
-					if res.err == nil && res.status != http.StatusBadGateway {
-						t.Fatal("interrupted request succeeded")
-					}
-				case <-time.After(time.Second):
-					t.Fatal("interrupted request remained blocked")
-				}
+				testInterruption(t, phase, action)
 			})
 		}
+	}
+}
+
+func testInterruption(t *testing.T, phase, action string) {
+	t.Helper()
+	seen := make(chan struct{}, 1)
+	proxy := newProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- struct{}{}
+		payload(w, r)
+	}))
+	switch phase {
+	case "headers":
+		setFault(t, proxy, s3fault.Fault{HeaderDelay: time.Hour})
+	case "body":
+		setFault(t, proxy, s3fault.Fault{BodyDelay: time.Hour})
+	case "hold":
+		if _, err := proxy.HoldNextChunkResponse(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan response, 1)
+	go func() { done <- fetch(ctx, proxy, http.MethodPut, "/bucket/chunks/key") }()
+	select {
+	case <-seen:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach upstream")
+	}
+	if action == "cancel" {
+		cancel()
+	} else if err := proxy.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case res := <-done:
+		if res.err == nil && res.status != http.StatusBadGateway {
+			t.Fatal("interrupted request succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("interrupted request remained blocked")
 	}
 }
 
