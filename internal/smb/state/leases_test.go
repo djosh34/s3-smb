@@ -283,6 +283,38 @@ func TestBreakTargetOnlyLosesRights(t *testing.T) {
 	}
 }
 
+func TestLeaseUpgradeAdvancesServerEpoch(t *testing.T) {
+	table := newTable(t)
+	req := request(1)
+	grant := leaseGrant(req, smb.LeaseRead)
+	grant.Lease.Epoch = 7
+	first := commit(t, table, req, grant)
+	grant.Lease.State = smb.LeaseRead | smb.LeaseHandle
+	grant.Lease.Epoch = 100
+	second := commit(t, table, req, grant)
+	closeOpen(t, table, first)
+	notification := startBreak(t, table, req.Object, 0)
+	if notification.Epoch != 9 || notification.CurrentState != smb.LeaseRead|smb.LeaseHandle {
+		t.Fatalf("upgrade notification: %+v", notification)
+	}
+	_, status := table.AckBreak(second.Binding, second.ClientGUID, second.LeaseKey, 0)
+	statusIs(t, status, smb.StatusSuccess)
+}
+
+func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	open := commit(t, table, req, durableGrant(req))
+	startBreak(t, table, req.Object, smb.LeaseRead)
+	table.Disconnect(1)
+	fresh, status := table.Reconnect(reconnectRequest(open))
+	statusIs(t, status, smb.StatusSuccess)
+	_, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
+	statusIs(t, status, smb.StatusInvalidParameter)
+	_, status = table.AckBreak(fresh.Binding, fresh.ClientGUID, fresh.LeaseKey, smb.LeaseRead)
+	statusIs(t, status, smb.StatusSuccess)
+}
+
 func TestInvalidLeaseGrantsDoNotChangeState(t *testing.T) {
 	for _, test := range []struct {
 		modify func(*state.OpenRequest, *state.Grant)

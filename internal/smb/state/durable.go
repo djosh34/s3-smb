@@ -29,7 +29,7 @@ func (table *Table) closeMatching(match func(Open) bool) []CloseAction {
 	var actions []CloseAction
 	for _, id := range table.openIDs() {
 		open := table.opens[id]
-		if match(open.Open) {
+		if match(*open) {
 			actions = append(actions, table.closeOpen(open))
 		}
 	}
@@ -102,7 +102,7 @@ func (table *Table) Reconnect(request ReconnectRequest) (Open, smb.Status) {
 	open.ID.Volatile = table.nextVolatile
 	open.Binding = request.Binding
 	open.DurableDeadline = time.Time{}
-	return open.Open, smb.StatusSuccess
+	return *open, smb.StatusSuccess
 }
 
 // Expire closes detached opens at their granted deadline, returning cleanup.

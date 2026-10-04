@@ -216,6 +216,7 @@ func (table *Table) dropDurability(object smb.ObjectKey, identity leaseIdentity,
 }
 
 // ExpireBreaks applies timed-out targets and releases detached opens losing H.
+// Attached opens lose durability but remain usable.
 func (table *Table) ExpireBreaks() []CloseAction {
 	table.mu.Lock()
 	defer table.mu.Unlock()

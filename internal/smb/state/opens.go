@@ -21,7 +21,7 @@ func New(now func() time.Time) (*Table, error) {
 	}
 	return &Table{
 		now:          now,
-		opens:        make(map[uint64]*openEntry),
+		opens:        make(map[uint64]*Open),
 		reservations: make(map[Reservation]OpenRequest),
 		objects:      make(map[smb.ObjectKey]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
@@ -96,7 +96,7 @@ func sharingCompatible(left, right OpenRequest) bool {
 
 func (table *Table) sharingAllowed(request OpenRequest, except uint64, reservation Reservation) bool {
 	for id, open := range table.opens {
-		if id != except && !sharingCompatible(request, openRequest(open.Open)) {
+		if id != except && !sharingCompatible(request, openRequest(*open)) {
 			return false
 		}
 	}
@@ -173,7 +173,7 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		table.commitLease(request.Object, grant.Lease)
 	}
 	table.releaseReservation(reservation, request)
-	table.opens[open.ID.Persistent] = &openEntry{Open: open, deleteName: grant.DeleteName}
+	table.opens[open.ID.Persistent] = &open
 	record := table.object(request.Object)
 	record.Opens = append(record.Opens, open.ID.Persistent)
 	if grant.DeleteOnClose {
@@ -219,6 +219,8 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 }
 
 // Replay finds a marked duplicate CREATE without changing the original open.
+// Identity, full granted access, sharing intent and canonical parameters must
+// match. The server calls this only for a marked replay and repeats no mutations.
 func (table *Table) Replay(request OpenRequest) (Open, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
@@ -227,13 +229,13 @@ func (table *Table) Replay(request OpenRequest) (Open, smb.Status) {
 		return Open{}, smb.StatusObjectNameNotFound
 	}
 	open := table.opens[entry.persistent]
-	if openRequest(open.Open) != request || !validBinding(request.Binding) {
+	if openRequest(*open) != request || !validBinding(request.Binding) {
 		return Open{}, smb.StatusInvalidParameter
 	}
-	return open.Open, smb.StatusSuccess
+	return *open, smb.StatusSuccess
 }
 
-func (table *Table) find(id FileID, binding Binding) (*openEntry, smb.Status) {
+func (table *Table) find(id FileID, binding Binding) (*Open, smb.Status) {
 	open := table.opens[id.Persistent]
 	if open == nil || open.ID != id || open.Binding != binding || !validBinding(binding) {
 		return nil, smb.StatusFileClosed
@@ -249,7 +251,7 @@ func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status) {
 	if status != smb.StatusSuccess {
 		return Open{}, status
 	}
-	return open.Open, smb.StatusSuccess
+	return *open, smb.StatusSuccess
 }
 
 // SetDirectory saves a cursor, reusing the search pattern on continuation.
@@ -267,7 +269,8 @@ func (table *Table) SetDirectory(id FileID, binding Binding, cursor DirectoryCur
 	return smb.StatusSuccess
 }
 
-// SetDelete changes this open's deletion intent, not another open's intent.
+// SetDelete requires delete access and compatible sharing. It changes this
+// open's deletion intent, not another open's intent or an already closed intent.
 func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending bool) smb.Status {
 	table.mu.Lock()
 	defer table.mu.Unlock()
@@ -282,12 +285,11 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 		if !validName(name, open.Object) {
 			return smb.StatusInvalidParameter
 		}
-		request := openRequest(open.Open)
+		request := openRequest(*open)
 		request.SharingIntent |= RightDelete
 		if !table.sharingAllowed(request, id.Persistent, 0) {
 			return smb.StatusSharingViolation
 		}
-		open.deleteName = name
 	}
 	record := table.objects[open.Object]
 	if pending && !record.DeletePending {
@@ -334,19 +336,16 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 	return table.closeOpen(open), smb.StatusSuccess
 }
 
-func (table *Table) closeOpen(open *openEntry) CloseAction {
+func (table *Table) closeOpen(open *Open) CloseAction {
 	key := open.Object
 	record := table.objects[key]
 	action := CloseAction{Handle: open.Handle, Object: key}
 	if open.DeleteOnClose {
 		record.deleteCommitted = true
-		if !record.DeletePending {
-			record.DeleteName = open.deleteName
-		}
 	}
 	delete(table.opens, open.ID.Persistent)
 	if open.CreateGUID != (GUID{}) {
-		delete(table.creates, identity(openRequest(open.Open)))
+		delete(table.creates, identity(openRequest(*open)))
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
 	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })

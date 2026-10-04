@@ -34,6 +34,8 @@ func lockConflict(request, held Range) bool {
 // Lock applies a vector on a private copy, publishing it only on full success.
 // Owner zero is filled from id; a different explicit owner is rejected.
 // Free ranges always succeed, including requests without FAIL_IMMEDIATELY.
+// Conflicts return LOCK_NOT_GRANTED immediately; unlock requires the exact owner
+// and range and returns RANGE_NOT_LOCKED when there is no match.
 func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool) smb.Status {
 	table.mu.Lock()
 	defer table.mu.Unlock()
@@ -72,7 +74,9 @@ func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool
 	return smb.StatusSuccess
 }
 
-// CheckIO checks ranges only. Handlers separately enforce granted access.
+// CheckIO follows MS-FSA 2.1.4.10. Shared locks allow reads but block writes,
+// including their owner's writes. Exclusive locks allow their owner's I/O but
+// block another open's reads and writes. Handlers enforce granted access.
 func (table *Table) CheckIO(id FileID, binding Binding, offset, length uint64, write bool) smb.Status {
 	table.mu.Lock()
 	defer table.mu.Unlock()
