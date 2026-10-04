@@ -158,6 +158,14 @@ and runs each exact test ID separately. A failure, skip or missing success fails
 the check. M2 has no eligible Samba credit tests; the allowlist records why.
 Later milestones add names to that file without changing the runner.
 
+A separate chaos step follows Samba and reuses `/tmp/s3-smb-next`, without another
+build. It sets `S3_SMB_CHAOS_BINARY` and `GORACE=halt_on_error=1`, and runs only
+`TestChaos*` with race detection and shuffle. Its timeout is 15 minutes in PR
+mode and 90 minutes in gate mode. The dispatched gate job allows 240 minutes:
+91 one-minute fuzz targets, 30 minutes for normal Linux tests, 10 minutes for
+Samba and 90 minutes for chaos total 221 minutes, leaving 19 minutes for lint,
+unit tests, builds and artifacts. The PR job keeps its 60-minute limit.
+
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
@@ -187,6 +195,16 @@ S3_SMB_CHECK_MODE=gate S3_SMB_CHAOS_SEED=349 go test -race -shuffle=on -count=1 
 `TestChaosMixedFaults` runs one round in PR mode and three rounds in gate mode.
 Each round includes a real five-minute S3 outage. Reuse the failed run's mode
 when replaying it.
+
+To replay through CI after the tests land on the integration branch:
+
+```sh
+gh workflow run check.yml --ref p3/smb-next -f gate=true -f chaos_seed=349
+```
+
+The optional `chaos_seed` dispatch input reaches the Linux test container as
+`S3_SMB_CHAOS_SEED`. Leave it empty for new random seeds. It is passed as an
+environment value, not inserted into a shell command.
 
 Without `S3_SMB_CHAOS_BINARY`, daemon-backed chaos tests skip. Long scenarios use
 `gate` mode; PR runs use their short variants. The ledger checks acknowledged
