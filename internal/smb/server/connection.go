@@ -213,7 +213,7 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 		return connection.negotiate(message)
 	}
 	if message.Header.Command == wire.SessionSetup {
-		return connection.sessionSetup(message)
+		return connection.sessionSetup(ctx, message)
 	}
 	if message.Header.Command > wire.OplockBreak {
 		return reply{status: smb.StatusNotSupported}, nil
