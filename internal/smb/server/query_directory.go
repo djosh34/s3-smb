@@ -48,8 +48,8 @@ func handleQueryDirectory(ctx context.Context, request RequestContext, message w
 		result.status = smb.StatusAccessDenied
 		return result, nil
 	}
-	if !directoryClassSupported(query.InfoClass) {
-		result.status = smb.StatusInvalidInfoClass
+	if status = directoryClassStatus(query.InfoClass); status != smb.StatusSuccess {
+		result.status = status
 		return result, nil
 	}
 	if query.OutputLength > smb.MaxTransactSize || query.Flags & ^uint8(directoryRestart|directorySingle|directoryIndex|directoryReopen) != 0 {
@@ -78,12 +78,14 @@ func handleQueryDirectory(ctx context.Context, request RequestContext, message w
 	return result, err
 }
 
-func directoryClassSupported(class wire.DirectoryInfoClass) bool {
-	switch uint8(class) {
-	case uint8(wire.ClassDirectory), uint8(wire.ClassDirectoryFull), uint8(wire.ClassDirectoryBoth), uint8(wire.ClassDirectoryNames), uint8(wire.ClassDirectoryIDBoth), uint8(wire.ClassDirectoryIDFull):
-		return true
+func directoryClassStatus(class wire.DirectoryInfoClass) smb.Status {
+	switch class {
+	case wire.ClassDirectory, wire.ClassDirectoryFull, wire.ClassDirectoryBoth, wire.ClassDirectoryNames, wire.ClassDirectoryIDBoth, wire.ClassDirectoryIDFull:
+		return smb.StatusSuccess
+	case 0x3c, 0x4e, 0x4f, 0x50, 0x51: // Extended ID layouts from MS-SMB2 2.2.33.
+		return smb.StatusNotSupported
 	default:
-		return false
+		return smb.StatusInvalidInfoClass
 	}
 }
 
@@ -92,9 +94,7 @@ func directoryCursor(saved state.DirectoryCursor, query wire.QueryDirectoryReque
 		saved.Cookie, saved.DotEntries, saved.Started = 0, 0, false
 	}
 	if saved.Pattern == "" || query.Flags&directoryReopen != 0 {
-		if query.Pattern != "" {
-			saved.Pattern = query.Pattern
-		}
+		saved.Pattern = query.Pattern
 	}
 	if saved.Pattern == "" {
 		saved.Pattern = "*"
@@ -194,7 +194,7 @@ func (scan *directoryScan) appendEntry(encoded []byte) bool {
 }
 
 func directoryDots(ctx context.Context, storage smb.Storage, inode smb.Inode, cursor state.DirectoryCursor) ([]smb.DirEntry, error) {
-	if cursor.Pattern != "*" || cursor.DotEntries >= 2 {
+	if cursor.DotEntries >= 2 || !matchPattern(cursor.Pattern, ".") && !matchPattern(cursor.Pattern, "..") {
 		return nil, nil
 	}
 	name, err := storage.PathOf(ctx, inode)

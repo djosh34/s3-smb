@@ -267,10 +267,12 @@ func TestDirectoryRestartAndReopen(t *testing.T) {
 	}{
 		{"*", "alpha", directorySingle},
 		{"", "alpha", directoryRestart | directorySingle},
-		{"beta", "beta", directorySingle},
+		{"alpha", "beta", directorySingle},
 		{"alpha", "alpha", directoryReopen | directorySingle},
 		{"", "alpha", directoryRestart | directorySingle},
 		{"beta", "beta", directoryReopen | directorySingle},
+		{"", "alpha", directoryReopen | directorySingle},
+		{"", "beta", directorySingle},
 	}
 	for _, test := range cases {
 		status, entries := f.query(t, open, test.pattern, test.flags, wire.ClassDirectoryNames, 4096)
@@ -280,7 +282,7 @@ func TestDirectoryRestartAndReopen(t *testing.T) {
 	}
 	status, _ := f.query(t, open, "", 0, wire.ClassDirectoryNames, 4096)
 	if status != smb.StatusNoMoreFiles {
-		t.Fatalf("exact search continued: %#x", status)
+		t.Fatalf("exhausted search: %#x", status)
 	}
 }
 
@@ -315,6 +317,54 @@ func TestDirectoryDotsAndSmallBuffer(t *testing.T) {
 	}
 }
 
+func TestDirectoryFilteredDots(t *testing.T) {
+	f := newDirectoryFixture(t)
+	f.create(t, "child", smb.KindDirectory)
+	f.create(t, "child/alpha.txt", smb.KindFile)
+	open := f.open(t, "child", 1)
+	for _, test := range []struct {
+		pattern string
+		want    []string
+	}{
+		{"*", []string{".", "..", "alpha.txt"}},
+		{"*.*", []string{".", "..", "alpha.txt"}},
+		{".*", []string{".", ".."}},
+		{".", []string{"."}},
+		{"..", []string{".."}},
+		{"alpha*", []string{"alpha.txt"}},
+	} {
+		t.Run(test.pattern, func(t *testing.T) {
+			for i, name := range test.want {
+				pattern, flags := "", uint8(directorySingle)
+				if i == 0 {
+					pattern, flags = test.pattern, directoryReopen|directorySingle
+				}
+				status, entries := f.query(t, open, pattern, flags, wire.ClassDirectoryNames, 4096)
+				if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{name}) {
+					t.Fatalf("entry %d: %#x, %v, want %q", i, status, directoryNames(entries), name)
+				}
+			}
+			status, _ := f.query(t, open, "", directorySingle, wire.ClassDirectoryNames, 4096)
+			if status != smb.StatusNoMoreFiles {
+				t.Fatalf("exhausted search: %#x", status)
+			}
+		})
+	}
+}
+
+func TestDirectoryEmptyRootHasNoDots(t *testing.T) {
+	f := newDirectoryFixture(t)
+	root := f.open(t, "", 1)
+	status, _ := f.query(t, root, "*", 0, wire.ClassDirectoryNames, 4096)
+	if status != smb.StatusNoSuchFile {
+		t.Fatalf("empty root: %#x", status)
+	}
+	status, _ = f.query(t, root, "", 0, wire.ClassDirectoryNames, 4096)
+	if status != smb.StatusNoMoreFiles {
+		t.Fatalf("empty root continuation: %#x", status)
+	}
+}
+
 func TestDirectoryStatusRepliesAndEcho(t *testing.T) {
 	f := newDirectoryFixture(t)
 	f.create(t, "alpha", smb.KindFile)
@@ -332,6 +382,15 @@ func TestDirectoryStatusRepliesAndEcho(t *testing.T) {
 		flags   uint8
 	}{
 		{&root, "*", 4096, smb.StatusInvalidInfoClass, 255, 0},
+		{&root, "*", 4096, smb.StatusNotSupported, 0x3c, 0},
+		{&root, "*", 4096, smb.StatusNotSupported, 0x4e, 0},
+		{&root, "*", 4096, smb.StatusNotSupported, 0x4f, 0},
+		{&root, "*", 4096, smb.StatusNotSupported, 0x50, 0},
+		{&root, "*", 4096, smb.StatusNotSupported, 0x51, 0},
+		{&root, "*", 4096, smb.StatusInvalidInfoClass, 0x3b, 0},
+		{&root, "*", 4096, smb.StatusInvalidInfoClass, 0x3d, 0},
+		{&root, "*", 4096, smb.StatusInvalidInfoClass, 0x4d, 0},
+		{&root, "*", 4096, smb.StatusInvalidInfoClass, 0x52, 0},
 		{&root, strings.Repeat("a", 256), 4096, smb.StatusObjectNameInvalid, wire.ClassDirectoryNames, 0},
 		{&root, strings.Repeat("😀", 128), 4096, smb.StatusObjectNameInvalid, wire.ClassDirectoryNames, 0},
 		{&file, "*", 4096, smb.StatusInvalidParameter, wire.ClassDirectoryNames, 0},
