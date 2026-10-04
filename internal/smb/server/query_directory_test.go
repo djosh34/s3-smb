@@ -356,6 +356,50 @@ func TestDirectoryStatusRepliesAndEcho(t *testing.T) {
 	}
 }
 
+func TestDirectoryPatternBelongsToEachOpen(t *testing.T) {
+	f := newDirectoryFixture(t)
+	f.create(t, "alpha", smb.KindFile)
+	f.create(t, "beta", smb.KindFile)
+	alpha := f.open(t, "", 1)
+	beta := f.open(t, "", 1)
+	for _, test := range []struct {
+		pattern string
+		open    state.Open
+	}{
+		{"alpha", alpha},
+		{"beta", beta},
+	} {
+		status, entries := f.query(t, test.open, test.pattern, directorySingle, wire.ClassDirectoryNames, 4096)
+		if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{test.pattern}) {
+			t.Fatalf("first search %q: %#x, %+v", test.pattern, status, entries)
+		}
+		status, _ = f.query(t, test.open, "*", directorySingle, wire.ClassDirectoryNames, 4096)
+		if status != smb.StatusNoMoreFiles {
+			t.Fatalf("continuation replaced pattern %q: %#x", test.pattern, status)
+		}
+	}
+	for _, test := range []struct {
+		pattern string
+		open    state.Open
+	}{{"alpha", alpha}, {"beta", beta}} {
+		status, entries := f.query(t, test.open, "", directoryRestart, wire.ClassDirectoryNames, 4096)
+		if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{test.pattern}) {
+			t.Fatalf("restart %q: %#x, %+v", test.pattern, status, entries)
+		}
+	}
+}
+
+func TestDirectoryAcceptsMaximumPatternLength(t *testing.T) {
+	f := newDirectoryFixture(t)
+	name := strings.Repeat("a", 255)
+	f.create(t, name, smb.KindFile)
+	open := f.open(t, "", 1)
+	status, entries := f.query(t, open, name, 0, wire.ClassDirectoryNames, 4096)
+	if status != smb.StatusSuccess || !reflect.DeepEqual(directoryNames(entries), []string{name}) {
+		t.Fatalf("255-unit pattern: %#x, %+v", status, entries)
+	}
+}
+
 func TestDirectoryLiteralBracketsInPattern(t *testing.T) {
 	f := newDirectoryFixture(t)
 	f.create(t, "part[1].txt", smb.KindFile)
