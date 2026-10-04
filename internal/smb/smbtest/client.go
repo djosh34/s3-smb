@@ -13,6 +13,7 @@ import (
 	"net"
 	"sync"
 
+	"github.com/djosh34/s3-smb/internal/smb/crypt"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -33,11 +34,14 @@ type Reply struct {
 // never retried. Callers must use NewClient and close the client when done.
 // M2 adds protection after Login without repairing headers.
 type Client struct {
-	conn      net.Conn
-	pending   map[uint64]pendingReply
-	sendSlot  chan struct{}
-	closeErr  error
-	closeOnce sync.Once
+	conn         net.Conn
+	protector    *crypt.Protector
+	pending      map[uint64]pendingReply
+	sendSlot     chan struct{}
+	closeErr     error
+	protectionMu sync.RWMutex
+	closeOnce    sync.Once
+	encrypted    bool
 }
 
 type pendingReply struct {

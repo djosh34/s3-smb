@@ -15,7 +15,7 @@ func TestAsyncSuccessUsesFinalBodyAndNoCredits(t *testing.T) {
 		t.Fatal(err)
 	}
 	server, release := controlledAsync(t, wire.Read, reply{body: body}, nil)
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 1))
 	pending := exchange(ctx, t, client, asyncMessage(t, wire.Read, 1))[0]
 	close(release)
@@ -35,7 +35,7 @@ func TestAsyncSuccessUsesFinalBodyAndNoCredits(t *testing.T) {
 
 func TestCancelAffectsOnlyItsPendingRequest(t *testing.T) {
 	server, release := controlledAsync(t, wire.Read, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 2))
 	pending := exchange(ctx, t, client, asyncMessage(t, wire.Read, 1))[0]
 	exchange(ctx, t, client, asyncMessage(t, wire.Read, 2))
@@ -78,7 +78,7 @@ func TestCancelAffectsOnlyItsPendingRequest(t *testing.T) {
 
 func TestShutdownCancelsPendingWorkAndDrains(t *testing.T) {
 	server, _ := controlledAsync(t, wire.Read, reply{}, nil)
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 1))
 	exchange(ctx, t, client, asyncMessage(t, wire.Read, 1))
 	shutdownCtx, cancel := context.WithTimeout(ctx, time.Second)

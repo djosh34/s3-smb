@@ -56,13 +56,15 @@ type Options struct {
 // detached open, applies pending deletion, and returns all cleanup errors.
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
 type Server struct {
-	shutdownErr  error
-	handlers     map[wire.Command]handler
-	connections  map[*connection]struct{}
-	listeners    map[*ownedListener]struct{}
-	shutdownDone chan struct{}
-	options      Options
-	workers      sync.WaitGroup
-	mu           sync.Mutex
-	stopping     bool
+	shutdownErr   error
+	handlers      map[wire.Command]handler
+	connections   map[*connection]struct{}
+	listeners     map[*ownedListener]struct{}
+	shutdownDone  chan struct{}
+	options       Options
+	workers       sync.WaitGroup
+	mu            sync.Mutex
+	nextSessionID uint64
+	nextTreeID    uint32
+	stopping      bool
 }

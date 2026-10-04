@@ -1,0 +1,222 @@
+package server
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"math"
+	"strings"
+
+	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/auth"
+	"github.com/djosh34/s3-smb/internal/smb/crypt"
+	"github.com/djosh34/s3-smb/internal/smb/state"
+	"github.com/djosh34/s3-smb/internal/smb/wire"
+)
+
+const sessionEncryptData = 0x0004
+
+// sessionEntry is connection-owned. sessionMu protects its mutable fields.
+// Keys remain available for replies after LOGOFF, but active becomes false
+// before cleanup, so no new request can acquire this identity.
+type sessionEntry struct {
+	acceptor  *auth.Acceptor
+	preauth   *crypt.Preauth
+	protector *crypt.Protector
+	trees     map[uint32]Tree
+	identity  Session
+	active    bool
+}
+
+func (server *Server) allocateSessionID() (uint64, error) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.nextSessionID == math.MaxUint64 {
+		return 0, errors.New("session ID space exhausted")
+	}
+	server.nextSessionID++
+	return server.nextSessionID, nil
+}
+
+func (server *Server) allocateTreeID() (uint32, error) {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.nextTreeID == math.MaxUint32 {
+		return 0, errors.New("tree ID space exhausted")
+	}
+	server.nextTreeID++
+	return server.nextTreeID, nil
+}
+
+func (connection *connection) sessionSetup(message wire.Message) (reply, error) {
+	request, err := wire.DecodeSessionSetupRequest(message)
+	if err != nil {
+		return reply{}, err
+	}
+	// Binding another channel and reauthenticating an existing session are not
+	// supported. PreviousSessionID is accepted for a fresh reconnect exchange.
+	if request.Flags != 0 {
+		return reply{status: smb.StatusNotSupported}, nil
+	}
+	connection.sessionMu.Lock()
+	defer connection.sessionMu.Unlock()
+	id := message.Header.SessionID
+	var session *sessionEntry
+	if id == 0 {
+		// Bound retained keys and incomplete authentication exchanges per transport.
+		if len(connection.sessions) >= 64 {
+			return reply{status: smb.StatusInsufficientResources}, nil
+		}
+		id, err = connection.server.allocateSessionID()
+		if err != nil {
+			return reply{}, err
+		}
+		options := connection.server.options
+		acceptor, authErr := auth.NewAcceptor(auth.Options{Account: options.Account, ServerName: options.ServerName, Now: options.Now})
+		if authErr != nil {
+			return reply{}, authErr
+		}
+		session = &sessionEntry{acceptor: acceptor, preauth: connection.preauth.Fork(), trees: make(map[uint32]Tree), identity: Session{SessionID: id, ClientGUID: state.GUID(connection.clientGUID)}}
+		connection.sessions[id] = session
+	} else {
+		session = connection.sessions[id]
+		if session == nil || session.acceptor == nil {
+			return reply{status: smb.StatusUserSessionDeleted}, nil
+		}
+	}
+	session.preauth.Update(message.Raw)
+	result, err := session.acceptor.Step(request.Token)
+	if err != nil {
+		delete(connection.sessions, id)
+		connection.server.options.Logger.Info("login refused", "reason", "NTLMv2 authentication failed")
+		return reply{status: smb.StatusLogonFailure, sessionID: id}, nil
+	}
+	flags := uint16(0)
+	status := smb.StatusMoreProcessingRequired
+	if result.Done {
+		protector, protectErr := crypt.NewProtector(crypt.Options{SessionKey: result.SessionKey, Preauth: session.preauth.Sum(), SessionID: id, Cipher: connection.cipher, Signing: connection.signing, Role: crypt.RoleServer})
+		if protectErr != nil {
+			delete(connection.sessions, id)
+			return reply{}, protectErr
+		}
+		session.protector, session.acceptor = protector, nil
+		session.identity.User = result.User
+		session.identity.Encrypted = connection.server.options.Encryption == RequireEncryption
+		session.active = true
+		if session.identity.Encrypted {
+			flags = sessionEncryptData
+		}
+		status = smb.StatusSuccess
+	}
+	body, err := wire.EncodeSessionSetupResponse(wire.SessionSetupResponse{Token: result.Token, Flags: flags})
+	return reply{body: body, status: status, sessionID: id}, err
+}
+
+func needsTree(command wire.Command) bool {
+	switch uint16(command) {
+	case uint16(wire.Negotiate), uint16(wire.SessionSetup), uint16(wire.Logoff), uint16(wire.TreeConnect), uint16(wire.Echo), uint16(wire.Cancel), uint16(wire.OplockBreak):
+		return false
+	default:
+		return command <= wire.OplockBreak
+	}
+}
+
+func (connection *connection) resolveRequest(header wire.Header) (RequestContext, smb.Status) {
+	request := connection.requestContext()
+	if header.Command == wire.Echo && header.SessionID == 0 {
+		return request, smb.StatusSuccess
+	}
+	connection.sessionMu.RLock()
+	defer connection.sessionMu.RUnlock()
+	session := connection.sessions[header.SessionID]
+	if session == nil || !session.active {
+		return request, smb.StatusUserSessionDeleted
+	}
+	request.Session = session.identity
+	if needsTree(header.Command) {
+		tree, exists := session.trees[header.TreeID]
+		if !exists {
+			return request, smb.StatusNetworkNameDeleted
+		}
+		request.Tree = tree
+	}
+	return request, smb.StatusSuccess
+}
+
+func (connection *connection) treeConnect(message wire.Message) (reply, error) {
+	request, err := wire.DecodeTreeConnectRequest(message)
+	if err != nil {
+		return reply{}, err
+	}
+	if request.Flags != 0 {
+		return reply{status: smb.StatusNotSupported}, nil
+	}
+	parts := strings.Split(request.Path, "\\")
+	if len(parts) != 4 || parts[0] != "" || parts[1] != "" || parts[2] == "" || !strings.EqualFold(parts[3], connection.server.options.ShareName) {
+		return reply{status: smb.StatusBadNetworkName}, nil
+	}
+	id, err := connection.server.allocateTreeID()
+	if err != nil {
+		return reply{}, err
+	}
+	connection.sessionMu.Lock()
+	connection.sessions[message.Header.SessionID].trees[id] = Tree{TreeID: id, Share: connection.server.options.ShareName}
+	connection.sessionMu.Unlock()
+	body, err := wire.EncodeTreeConnectResponse(wire.TreeConnectResponse{ShareType: 1, MaximalAccess: 0x001f01ff})
+	return reply{body: body, treeID: id}, err
+}
+
+// stopRequests cancels and drains work, not sender completions. A completion
+// can wait for the client to read while the client is awaiting LOGOFF's reply.
+func (connection *connection) stopRequests(sessionID uint64, treeID uint32) {
+	connection.pendingMu.Lock()
+	var work []*work
+	for _, pending := range connection.pending {
+		if pending.header.SessionID == sessionID && (treeID == 0 || pending.header.TreeID == treeID) {
+			pending.work.cancel()
+			work = append(work, pending.work)
+		}
+	}
+	connection.pendingMu.Unlock()
+	for _, operation := range work {
+		<-operation.done
+	}
+}
+
+func (connection *connection) logoff(ctx context.Context, message wire.Message) (reply, error) {
+	id := message.Header.SessionID
+	connection.sessionMu.Lock()
+	connection.sessions[id].active = false
+	connection.sessions[id].trees = make(map[uint32]Tree)
+	connection.sessionMu.Unlock()
+	connection.stopRequests(id, 0)
+	if err := connection.server.cleanup(ctx, connection.server.options.State.CloseSession(id)); err != nil {
+		return reply{}, fmt.Errorf("logoff cleanup: %w", err)
+	}
+	body, err := wire.EncodeLogoffResponse(wire.EmptyResponse{})
+	return reply{body: body}, err
+}
+
+func (connection *connection) treeDisconnect(ctx context.Context, message wire.Message) (reply, error) {
+	id, treeID := message.Header.SessionID, message.Header.TreeID
+	connection.sessionMu.Lock()
+	delete(connection.sessions[id].trees, treeID)
+	connection.sessionMu.Unlock()
+	connection.stopRequests(id, treeID)
+	if err := connection.server.cleanup(ctx, connection.server.options.State.CloseTree(state.Binding{SessionID: id, TreeID: treeID})); err != nil {
+		return reply{}, fmt.Errorf("tree disconnect cleanup: %w", err)
+	}
+	body, err := wire.EncodeTreeDisconnectResponse(wire.EmptyResponse{})
+	return reply{body: body}, err
+}
+
+func (connection *connection) detachSessions() []state.CloseAction {
+	connection.sessionMu.Lock()
+	defer connection.sessionMu.Unlock()
+	var actions []state.CloseAction
+	for id, session := range connection.sessions {
+		session.active = false
+		actions = append(actions, connection.server.options.State.Disconnect(id)...)
+	}
+	return actions
+}

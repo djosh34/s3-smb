@@ -209,7 +209,7 @@ func TestLocalWriteCompoundGetsOneSuccessAndCreditGrant(t *testing.T) {
 		body, err := wire.EncodeWriteResponse(wire.WriteResponse{Count: uint32(len(request.Data) & 0xffffff)})
 		return reply{body: body}, err
 	}
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 2))
 	first, second := asyncMessage(t, wire.Write, 1), asyncMessage(t, wire.Write, 2)
 	first.Header.Credit, second.Header.Credit = 0, 0

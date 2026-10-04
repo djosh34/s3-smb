@@ -55,6 +55,7 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 		if err != nil {
 			return err
 		}
+		preceding = response.Header
 		responses = append(responses, response)
 	}
 	return connection.send(responses)

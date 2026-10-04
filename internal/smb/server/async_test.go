@@ -37,7 +37,7 @@ func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr
 	}
 	release := make(chan struct{})
 	// Install controlled work at the handler boundary, before ServeConn starts.
-	// No file handler or authenticated session is needed to test completion.
+	// corePipeClient supplies identity; these tests do not exercise login.
 	server.handlers[command] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		select {
 		case <-release:
@@ -54,7 +54,7 @@ func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
 	for _, command := range []wire.Command{wire.Read, wire.Write} {
 		t.Run(commandName(command), func(t *testing.T) {
 			server, release := controlledAsync(t, command, reply{status: smb.StatusFileLockConflict}, nil)
-			client, ctx := pipeClient(t, server)
+			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 2))
 			request := asyncMessage(t, command, 1)
 			pending := exchange(ctx, t, client, request)[0]
@@ -84,7 +84,7 @@ func TestAsyncBackendErrorGrantsNoFinalCredits(t *testing.T) {
 	for _, command := range []wire.Command{wire.Read, wire.Write, wire.Flush} {
 		t.Run(commandName(command), func(t *testing.T) {
 			server, release := controlledAsync(t, command, reply{}, errors.New("controlled storage error"))
-			client, ctx := pipeClient(t, server)
+			client, ctx := corePipeClient(t, server)
 			exchange(ctx, t, client, negotiateMessage(t, 1))
 			pending := exchange(ctx, t, client, asyncMessage(t, command, 1))[0]
 			if pending.Header.Status != smb.StatusPending || pending.Header.Credit != 16 {

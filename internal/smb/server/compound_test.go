@@ -90,7 +90,7 @@ func TestMalformedCompoundLinkClosesConnection(t *testing.T) {
 
 func TestAsyncRelatedSuffixGetsSeparatePendingIdentities(t *testing.T) {
 	server, release := controlledAsync(t, wire.Read, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 4))
 	suffix := echo(t, 3)
 	suffix.Header.Flags, suffix.Header.SessionID, suffix.Header.TreeID = wire.FlagRelated, ^uint64(0), ^uint32(0)
