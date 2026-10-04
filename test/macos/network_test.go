@@ -25,36 +25,44 @@ func (h *harness) networkScenario(name string) result {
 	h.proxy, h.smbAddress = proxy, proxy.Address()
 	h.save("network-proxy.json", map[string]string{"client": h.smbAddress, "server": "127.0.0.1:1445"})
 	outcome := h.baseline()
+	h.smbLogging, err = helpers.EnableSMBLogging(h.smbLogCommand)
+	h.save("smb-kernel-logging.json", h.smbLogging)
+	h.must(err)
 	outcome.Scenario = name
 	if name == "network-outage" {
 		return h.networkOutage(outcome)
 	}
+	var updated string
 	report, err := helpers.RunDropAttempts(h.ctx, func(number int) (helpers.DropAttempt, error) {
-		attempt, updated, commandErr := h.dropBackup(number, false)
+		attempt, tree, commandErr := h.dropBackup(number, false)
+		updated = tree
 		if commandErr != nil {
 			h.t.Log("interrupted-backup-exit", commandErr)
 		}
 		h.stopClient()
 		if attempt.Log.Refused {
 			h.t.Log("not tested: macOS refused reconnect", number)
-			return attempt, nil
-		}
-		if attempt.Completed && attempt.Log.Reconnected && attempt.Log.BackupStarts == 1 {
-			h.mount()
-			latest := h.remoteBackup("same-backup", "")
-			if filepath.Base(latest) == outcome.Baseline {
-				return attempt, errors.New("cut backup produced no completed backup")
-			}
-			outcome.Resumed = filepath.Base(latest)
-			outcome.ResumedRestore = h.restore(latest, updated, "restore-same-backup")
-			outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-intact", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
-			h.must(h.detach())
 		}
 		return attempt, nil
 	})
 	outcome.NetworkDrop = &report
 	h.save("network-drop-result.json", report)
 	h.must(err)
+	if report.Status == "not tested" {
+		return outcome
+	}
+	h.mount()
+	latest := h.remoteBackup("same-backup", "")
+	if filepath.Base(latest) == outcome.Baseline {
+		h.t.Fatal("cut backup produced no completed backup")
+	}
+	outcome.Resumed = filepath.Base(latest)
+	outcome.ResumedRestore = h.restore(latest, updated, "restore-same-backup")
+	h.must(h.detach())
+	h.mount()
+	baseline := h.remoteBackup("baseline-intact", outcome.Baseline)
+	outcome.BaselineRestore = h.restore(baseline, filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	h.must(h.detach())
 	return outcome
 }
 
@@ -65,7 +73,7 @@ func (h *harness) networkOutage(outcome result) result {
 	h.mount()
 	latest := h.remoteBackup("after-outage", "")
 	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, commandErr, filepath.Base(latest), outcome.Baseline))
-	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-intact", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.BaselineRestore = h.restore(latest, filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
 	h.must(h.detach())
 	latest = h.resumeBackup(outcome.Baseline, true)
 	outcome.Resumed, outcome.ResumedRestore = filepath.Base(latest), h.restore(latest, updated, "restore-next-backup")
@@ -132,6 +140,10 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	attempt.Log = h.dropLog(started, time.Now().UTC())
 	h.save(label+"-result.json", attempt)
 	return attempt, updated, commandErr
+}
+
+func (h *harness) smbLogCommand(args ...string) (string, error) {
+	return h.try(time.Minute, append([]string{"/usr/sbin/sysctl"}, args...)...)
 }
 
 func (h *harness) dropLog(start, end time.Time) helpers.DropLog {

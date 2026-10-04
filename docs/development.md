@@ -217,9 +217,12 @@ reconnect and the completed backup must restore the changed tree. A measured
 drop above 30 seconds fails rather than counting as a short-drop attempt. The earlier backup is restored
 and checked too.
 
+After the baseline loads smbfs, both network scenarios enable kernel SMB
+warning logs and save the previous level and readback in
+`smb-kernel-logging.json`. Cleanup restores the previous level, also on failure.
 Only the exact macOS non-idempotent refusal retries the test, up to three
 attempts. Three refusals save `network-drop-result.json` with `not tested` and
-skip the Go test with a clear reason. They are not a passing M5 drop test.
+end the Mac job without a passing check, with a clear `not tested` reason. They are not a passing M5 drop test.
 Ordinary failures and missing reconnect evidence fail without retry.
 `network-outage` holds the drop for at least 45 seconds and until the client
 fails on its own. It checks a visible command failure, no new completed backup,

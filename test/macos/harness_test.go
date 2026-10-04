@@ -32,6 +32,7 @@ type harness struct {
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
 	launchdPlist, smbAddress                                                  string
 	proxy                                                                     *netfault.Proxy
+	smbLogging                                                                helpers.SMBLogging
 	daemon, minio, backup                                                     *process
 	backupDirectory                                                           *os.File
 	attachments                                                               []string
@@ -128,7 +129,7 @@ func TestTimeMachine(t *testing.T) {
 		h.must(os.WriteFile(filepath.Join(h.transfer, "reference/recovery.json"), data, 0o600)) //nolint:gosec // Only the run-owned transfer path is used; recovery fields are file content.
 	}
 	if outcome.NetworkDrop != nil && outcome.NetworkDrop.Status == "not tested" {
-		t.Skip("not tested: macOS refused reconnect in all three connection-drop attempts")
+		t.Fatal("not tested: macOS refused reconnect in all three connection-drop attempts")
 	}
 	h.t.Log("acceptance-passed", outcome)
 }

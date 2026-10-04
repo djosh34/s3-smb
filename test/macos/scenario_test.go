@@ -303,7 +303,7 @@ func (h *harness) finish() {
 		return err
 	}, func(cleanupCtx context.Context) error {
 		h.ctx = cleanupCtx
-		return h.unloadLaunchd()
+		return errors.Join(h.unloadLaunchd(), h.smbLogging.Restore(h.smbLogCommand))
 	}))
 	if h.proxy != nil {
 		report(h.proxy.Close())
