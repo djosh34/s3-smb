@@ -16,6 +16,7 @@ import (
 // reply is independent of header identity and credit allocation.
 type reply struct {
 	body      []byte
+	fileID    wire.FileID
 	sessionID uint64
 	treeID    uint32
 	status    smb.Status
