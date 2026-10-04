@@ -2,12 +2,9 @@
 package backup
 
 import (
-	"compress/gzip"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -25,8 +22,8 @@ type Point struct {
 }
 
 func parsePoint(key string) (Point, error) {
-	const prefix = "meta/dump-"
-	const suffix = ".json.gz"
+	const prefix = "meta/snapshot-"
+	const suffix = ".db.gz"
 	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
 		return Point{}, errors.New("not a metadata backup name")
 	}
@@ -40,7 +37,7 @@ func parsePoint(key string) (Point, error) {
 
 // List returns the metadata backups in the bucket, newest first.
 func List(ctx context.Context, blob object.ObjectStorage) ([]Point, error) {
-	ch, err := object.ListAll(ctx, blob, "meta/dump-", "", true, false)
+	ch, err := object.ListAll(ctx, blob, "meta/snapshot-", "", true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -58,43 +55,27 @@ func List(ctx context.Context, blob object.ObjectStorage) ([]Point, error) {
 	sort.Slice(points, func(i, j int) bool { return points[i].Time.After(points[j].Time) })
 	return points, ctx.Err()
 }
-func inspectReader(r io.Reader) (*meta.Format, error) {
-	gz, err := gzip.NewReader(r)
+
+// Inspect reads the identity from a validated snapshot without creating a local
+// metadata database or opening the snapshot writable. The caller holds the state
+// lock; interrupted inspection files are covered by CleanupRecoveryStaging.
+func Inspect(ctx context.Context, blob object.ObjectStorage, key, stateDir string) (format *meta.Format, err error) {
+	if !filepath.IsAbs(stateDir) {
+		return nil, errors.New("absolute state directory required for snapshot inspection")
+	}
+	if _, err = parsePoint(key); err != nil {
+		return nil, err
+	}
+	dir, err := os.MkdirTemp(stateDir, ".s3-smb-recovery-")
 	if err != nil {
 		return nil, err
 	}
-	defer gz.Close()
-	var dump meta.DumpedMeta
-	dec := json.NewDecoder(gz)
-	if err = dec.Decode(&dump); err != nil {
-		return nil, errors.New("invalid metadata backup")
-	}
-	// Read to EOF, so gzip verifies its checksum.
-	var extra any
-	if err = dec.Decode(&extra); err != io.EOF {
-		return nil, errors.New("invalid metadata backup trailer or trailing content")
-	}
-	if err = gz.Close(); err != nil {
+	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
+	path := filepath.Join(dir, "metadata.db")
+	if err = downloadSnapshot(ctx, blob, key, path); err != nil {
 		return nil, err
 	}
-	if dump.Setting.UUID == "" || dump.Setting.Name == "" || dump.Counters == nil || dump.FSTree == nil || dump.FSTree.Attr == nil || dump.FSTree.Attr.Inode != meta.RootInode || dump.FSTree.Attr.Type != "directory" {
-		return nil, errors.New("metadata backup has no volume identity or root directory")
-	}
-	if err = dump.Setting.CheckVersion(); err != nil {
-		return nil, err
-	}
-	return &dump.Setting, nil
-}
-func Inspect(ctx context.Context, blob object.ObjectStorage, key string) (*meta.Format, error) {
-	if _, err := parsePoint(key); err != nil {
-		return nil, err
-	}
-	r, err := blob.Get(ctx, key, 0, -1)
-	if err != nil {
-		return nil, err
-	}
-	f, err := inspectReader(r)
-	return f, errors.Join(err, r.Close(), ctx.Err())
+	return inspectSnapshot(ctx, path)
 }
 
 // SameVolume reports whether two formats name the same volume with the same
@@ -104,14 +85,13 @@ func SameVolume(a, b *meta.Format) bool {
 }
 
 // CleanupRecoveryStaging removes staging directories left by an interrupted
-// recovery. The caller holds the state lock. A directory with a file this
-// package did not create, or with a symlink, stays as it is.
+// recovery. The caller holds the state lock. Unknown files and symlinks stay.
 func CleanupRecoveryStaging(stateDir string) error {
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		return err
 	}
-	known := map[string]bool{"selected.json.gz": true, "metadata.db": true, "metadata.db-wal": true, "metadata.db-shm": true}
+	known := map[string]bool{"metadata.db": true, "metadata.db-wal": true, "metadata.db-shm": true}
 	for _, entry := range entries {
 		if !entry.IsDir() || !strings.HasPrefix(entry.Name(), ".s3-smb-recovery-") {
 			continue
@@ -132,37 +112,30 @@ func CleanupRecoveryStaging(stateDir string) error {
 			slog.Warn("unknown recovery staging contents left untouched")
 			continue
 		}
-		for _, file := range files {
-			if err = os.Remove(filepath.Join(dir, file.Name())); err != nil {
-				return err
-			}
-		}
-		if err = os.Remove(dir); err != nil {
+		if err = os.RemoveAll(dir); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// Recover loads one metadata backup into a new SQLite file in a staging
-// directory, wipes this volume's cache, then renames the database to dbPath.
-// The caller holds the state lock. It fails when dbPath exists. It checks
-// metadata only and reads no file data. The JuiceFS load cannot be cancelled
-// through ctx.
+// Recover validates a snapshot and clears dead sessions in a staged copy. The
+// caller holds the state lock and has confirmed the old writer has stopped.
+// After preparation, recovery wipes the volume cache and renames the database.
 func Recover(ctx context.Context, blob object.ObjectStorage, key, dbPath, cacheRoot string, current *meta.Format) (*meta.Format, error) {
 	return recoverMetadata(ctx, blob, key, dbPath, current, func() error {
 		return WipeVolumeCache(cacheRoot, current.UUID, filepath.Dir(dbPath))
 	})
 }
 
-func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format, beforePublish func() error) (saved *meta.Format, resultErr error) {
+func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath string, current *meta.Format, beforePublish func() error) (saved *meta.Format, err error) {
 	if current == nil {
 		return nil, errors.New("current validated volume settings required")
 	}
-	if _, err := parsePoint(key); err != nil {
+	if _, err = parsePoint(key); err != nil {
 		return nil, err
 	}
-	if _, err := os.Lstat(dbPath); err == nil {
+	if _, err = os.Lstat(dbPath); err == nil {
 		return nil, errors.New("refusing recovery over existing database")
 	} else if !os.IsNotExist(err) {
 		return nil, err
@@ -172,108 +145,19 @@ func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath
 	if err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, os.RemoveAll(dir)) }()
-	stage, err := os.OpenFile(filepath.Join(dir, "selected.json.gz"), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if err != nil {
+	defer func() { err = errors.Join(err, os.RemoveAll(dir)) }()
+	path := filepath.Join(dir, "metadata.db")
+	if err = downloadSnapshot(ctx, blob, key, path); err != nil {
 		return nil, err
 	}
-	defer func() { resultErr = errors.Join(resultErr, stage.Close()) }()
-	remote, err := blob.Get(ctx, key, 0, -1)
-	if err != nil {
-		return nil, err
-	}
-	_, copyErr := io.Copy(stage, remote)
-	if err = errors.Join(copyErr, remote.Close()); err != nil {
-		return nil, err
-	}
-	if _, err = stage.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	saved, err = inspectReader(stage)
+	saved, err = inspectSnapshot(ctx, path)
 	if err != nil {
 		return nil, err
 	}
 	if !SameVolume(saved, current) {
 		return nil, errors.New("recovery volume identity, layout or encryption mode mismatch")
 	}
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
-	path := filepath.Join(dir, "metadata.db")
-	private, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = private.Close(); err != nil {
-		return nil, err
-	}
-	conf := meta.DefaultConf()
-	conf.NoBGJob = true
-	conf.MaxDeletes = 0
-	m, err := meta.NewSQLite(path, conf)
-	if err != nil {
-		return nil, err
-	}
-	closed := false
-	defer func() {
-		if !closed {
-			resultErr = errors.Join(resultErr, m.Shutdown())
-		}
-	}()
-	if _, err = stage.Seek(0, io.SeekStart); err != nil {
-		return nil, err
-	}
-	gz, err := gzip.NewReader(stage)
-	if err != nil {
-		return nil, err
-	}
-	err = m.LoadMeta(gz)
-	err = errors.Join(err, gz.Close())
-	if err != nil {
-		return nil, err
-	}
-	// Keep the identity and layout from the backup. Take the bucket, the
-	// credentials and the retention from the current configuration, so an old
-	// backup cannot redirect the store.
-	saved.Storage = current.Storage
-	saved.StorageClass = current.StorageClass
-	saved.Tiers = current.Tiers
-	saved.Bucket = current.Bucket
-	saved.AccessKey = current.AccessKey
-	saved.SecretKey = current.SecretKey
-	saved.SessionToken = current.SessionToken
-	saved.EncryptKey = current.EncryptKey
-	saved.KeyEncrypted = current.KeyEncrypted
-	saved.TrashDays = current.TrashDays
-	saved.RangerRestUrl = current.RangerRestUrl
-	saved.RangerService = current.RangerService
-	saved.KerbConf = current.KerbConf
-	if err = m.Init(saved, false); err != nil {
-		return nil, err
-	}
-	var attr meta.Attr
-	if st := m.GetAttr(meta.Background(), meta.RootInode, &attr); st != 0 {
-		return nil, fmt.Errorf("recovered root: %w", st)
-	}
-	if err = ctx.Err(); err != nil {
-		return nil, err
-	}
-	if err = m.Shutdown(); err != nil {
-		return nil, err
-	}
-	closed = true
-	// SQLite checkpoints its WAL when the last connection closes. A nonempty
-	// WAL means the main file is incomplete, so do not move it into place.
-	if st, e := os.Stat(path + "-wal"); e == nil && st.Size() > 0 {
-		return nil, errors.New("recovered SQLite still has an active WAL")
-	} else if e != nil && !os.IsNotExist(e) {
-		return nil, e
-	}
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	if err = errors.Join(file.Sync(), file.Close()); err != nil {
+	if err = prepareSnapshot(ctx, path, saved, current); err != nil {
 		return nil, err
 	}
 	if err = ctx.Err(); err != nil {
@@ -294,4 +178,73 @@ func recoverMetadata(ctx context.Context, blob object.ObjectStorage, key, dbPath
 		return nil, err
 	}
 	return saved, nil
+}
+
+func prepareSnapshot(ctx context.Context, path string, saved, current *meta.Format) (err error) {
+	if err = expireSnapshotSessions(ctx, path); err != nil {
+		return err
+	}
+	conf := meta.DefaultConf()
+	conf.NoBGJob = true
+	conf.MaxDeletes = 0
+	m, err := meta.NewSQLite(path, conf)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			err = errors.Join(err, m.CloseSession(), m.Shutdown())
+		}
+	}()
+	if _, err = m.Load(true); err != nil {
+		return err
+	}
+	// Preserve identity and layout. The current config sets the destination,
+	// credentials, key and retention, so a backup cannot redirect the store.
+	saved.Storage = current.Storage
+	saved.StorageClass = current.StorageClass
+	saved.Tiers = current.Tiers
+	saved.Bucket = current.Bucket
+	saved.AccessKey = current.AccessKey
+	saved.SecretKey = current.SecretKey
+	saved.SessionToken = current.SessionToken
+	saved.EncryptKey = current.EncryptKey
+	saved.KeyEncrypted = current.KeyEncrypted
+	saved.TrashDays = current.TrashDays
+	saved.RangerRestUrl = current.RangerRestUrl
+	saved.RangerService = current.RangerService
+	saved.KerbConf = current.KerbConf
+	if err = m.Init(saved, false); err != nil {
+		return err
+	}
+	if err = cleanSnapshotSessions(ctx, m, path); err != nil {
+		return err
+	}
+	var attr meta.Attr
+	if st := m.GetAttr(meta.Background(), meta.RootInode, &attr); st != 0 {
+		return fmt.Errorf("recovered root: %w", st)
+	}
+	// Session cleanup can queue inode retirement even with background jobs off.
+	// Join it and flush the resulting counters before closing SQLite.
+	if err = m.CloseSession(); err != nil {
+		return err
+	}
+	err = m.Shutdown()
+	closed = true
+	if err != nil {
+		return err
+	}
+	// Last-connection close checkpoints SQLite's WAL. Do not publish an
+	// incomplete main file if a WAL is unexpectedly still active.
+	if st, e := os.Stat(path + "-wal"); e == nil && st.Size() > 0 {
+		return errors.New("recovered SQLite still has an active WAL")
+	} else if e != nil && !os.IsNotExist(e) {
+		return e
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return errors.Join(file.Sync(), file.Close(), ctx.Err())
 }

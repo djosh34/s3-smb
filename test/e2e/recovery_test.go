@@ -423,14 +423,14 @@ func TestRecovery(t *testing.T) {
 			verifyFiles(t, s, files)
 			close()
 			d.stop()
-			// Inspect actual remote export: plaintext gzip only when encryption disabled.
+			// Inspect the remote snapshot: plaintext gzip only when encryption is disabled.
 			objects, err := f.store.ListObjectsV2(context.Background(), &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
 			if err != nil {
 				t.Fatal(err)
 			}
 			count := 0
 			for _, obj := range objects.Contents {
-				if strings.Contains(aws.ToString(obj.Key), "meta/dump-") {
+				if strings.Contains(aws.ToString(obj.Key), "meta/snapshot-") {
 					count++
 					o, e := f.store.GetObject(context.Background(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: obj.Key})
 					if e != nil {

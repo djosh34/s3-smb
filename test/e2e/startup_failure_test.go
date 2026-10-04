@@ -6,7 +6,10 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -230,7 +233,7 @@ func startupProtectedFixture(t *testing.T, encrypted bool) (*fixture, map[string
 	closeShare()
 	f.protectedAfter(time.Now())
 	d.stop()
-	if points := startupKeys(startupRemoteSnapshot(f), "s3-smb/meta/dump-"); len(points) < 2 {
+	if points := startupKeys(startupRemoteSnapshot(f), "s3-smb/meta/snapshot-"); len(points) < 2 {
 		t.Fatal("fixture needs an older valid point plus a newer protected point")
 	}
 	return f, files
@@ -249,7 +252,7 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 			t.Run(mode+"/"+fault, func(t *testing.T) {
 				f, _ := startupProtectedFixture(t, encrypted)
 				objects := startupRemoteSnapshot(f)
-				points := startupKeys(objects, "s3-smb/meta/dump-")
+				points := startupKeys(objects, "s3-smb/meta/snapshot-")
 				if fault == "missing-selected-backup" {
 					f.freshLocal()
 					before := startupLoseSelectedPoint(f, points[len(points)-1])
@@ -401,8 +404,8 @@ func startupLoseSelectedPoint(f *fixture, key string) map[string]remoteFingerpri
 	return before
 }
 
-// Deliberately poison ONLY the selected native fixture export's old connection
-// fields, using the real native decrypt/encrypt wrapper. Recovery must retain
+// Poison only the selected snapshot's connection fields, using the real native
+// decrypt/encrypt wrapper. Recovery must retain
 // the new YAML's destination/credential authority in both encryption modes.
 func startupPoisonSavedConnection(f *fixture) {
 	f.t.Helper()
@@ -421,7 +424,11 @@ func startupPoisonSavedConnection(f *fixture) {
 		f.t.Fatal(err)
 	}
 	if closer, ok := raw.(io.Closer); ok {
-		defer closer.Close()
+		defer func() {
+			if err := closer.Close(); err != nil {
+				f.t.Error(err)
+			}
+		}()
 	}
 	format, err := storage.ReadIdentity(ctx, raw)
 	if err != nil {
@@ -441,36 +448,70 @@ func startupPoisonSavedConnection(f *fixture) {
 	}
 	gz, err := gzip.NewReader(reader)
 	if err != nil {
-		reader.Close()
+		f.t.Fatal(errors.Join(err, reader.Close()))
+	}
+	database, err := io.ReadAll(gz)
+	if err = errors.Join(err, gz.Close(), reader.Close()); err != nil {
 		f.t.Fatal(err)
 	}
-	var dump meta.DumpedMeta
-	err = json.NewDecoder(gz).Decode(&dump)
-	gz.Close()
-	reader.Close()
+	path := filepath.Join(f.t.TempDir(), "snapshot.db")
+	if err = os.WriteFile(path, database, 0600); err != nil {
+		f.t.Fatal(err)
+	}
+	if err = startupPoisonSnapshotFormat(ctx, path); err != nil {
+		f.t.Fatal(err)
+	}
+	database, err = os.ReadFile(path)
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	dump.Setting.Bucket = "http://old-export-destination.invalid:1/old-bucket"
-	dump.Setting.AccessKey = "old-export-access-key"
-	dump.Setting.SecretKey = "old-export-secret-key"
-	dump.Setting.SessionToken = "old-export-token"
+	hash := sha256.Sum256(database)
 	var data bytes.Buffer
 	writer := gzip.NewWriter(&data)
-	if err = json.NewEncoder(writer).Encode(&dump); err != nil {
-		f.t.Fatal(err)
-	}
-	if err = writer.Close(); err != nil {
+	writer.Comment = "sha256:" + hex.EncodeToString(hash[:])
+	_, err = writer.Write(database)
+	if err = errors.Join(err, writer.Close()); err != nil {
 		f.t.Fatal(err)
 	}
 	// Intentional fixture corruption; production never overwrites backup names.
 	if err = blob.Put(ctx, points[0].Key, bytes.NewReader(data.Bytes())); err != nil {
 		f.t.Fatal(err)
 	}
-	if _, err = backup.Inspect(ctx, blob, points[0].Key); err != nil {
-		f.t.Fatalf("fixture export is not valid native metadata: %v", err)
+	if _, err = backup.Inspect(ctx, blob, points[0].Key, resolved.Storage.StateDir); err != nil {
+		f.t.Fatalf("poisoned snapshot is not valid metadata: %v", err)
 	}
 }
+
+func startupPoisonSnapshotFormat(ctx context.Context, path string) (err error) {
+	db, err := sql.Open("sqlite3", path)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, db.Close()) }()
+	db.SetMaxOpenConns(1)
+	if _, err = db.ExecContext(ctx, "PRAGMA journal_mode=DELETE"); err != nil {
+		return err
+	}
+	var encoded string
+	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&encoded); err != nil {
+		return err
+	}
+	var format meta.Format
+	if err = json.Unmarshal([]byte(encoded), &format); err != nil {
+		return err
+	}
+	format.Bucket = "http://old-snapshot-destination.invalid:1/old-bucket"
+	format.AccessKey = "old-snapshot-access-key"
+	format.SecretKey = "old-snapshot-secret-key"
+	format.SessionToken = "old-snapshot-token"
+	data, err := json.Marshal(&format)
+	if err != nil {
+		return err
+	}
+	_, err = db.ExecContext(ctx, "UPDATE jfs_setting SET value=? WHERE name='format'", string(data))
+	return err
+}
+
 func TestIdentityMissingRecoveryUsesCurrentConfig(t *testing.T) {
 	for _, encrypted := range []bool{false, true} {
 		name := "plaintext"
@@ -494,9 +535,9 @@ func TestIdentityMissingRecoveryUsesCurrentConfig(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				for _, secret := range []string{"old-export-access-key", "old-export-secret-key", "old-export-token"} {
+				for _, secret := range []string{"old-snapshot-access-key", "old-snapshot-secret-key", "old-snapshot-token"} {
 					if bytes.Contains(data, []byte(secret)) {
-						t.Fatalf("old export credential leaked in %s", log.Name())
+						t.Fatalf("old snapshot credential leaked in %s", log.Name())
 					}
 				}
 			}
