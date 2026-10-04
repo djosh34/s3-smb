@@ -27,7 +27,9 @@ func TestResponseBodiesFollowCommandStatus(t *testing.T) {
 			t.Fatal(err)
 		}
 		request, body := responseBodyFixture(t, test.command)
-		server.handlers[test.command] = func(context.Context, wire.Message) (reply, error) { return reply{body: body, status: test.status}, nil }
+		server.handlers[test.command] = func(context.Context, RequestContext, wire.Message) (reply, error) {
+			return reply{body: body, status: test.status}, nil
+		}
 		client, ctx := pipeClient(t, server)
 		exchange(ctx, t, client, negotiateMessage(t, 1))
 		response := exchange(ctx, t, client, request)[0]

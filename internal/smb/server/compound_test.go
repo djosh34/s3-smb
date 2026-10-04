@@ -43,9 +43,9 @@ func TestBadCompoundBodyDoesNotDispatchPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
-	server.handlers[wire.Echo] = func(ctx context.Context, message wire.Message) (reply, error) {
+	server.handlers[wire.Echo] = func(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 		calls.Add(1)
-		return handleEcho(ctx, message)
+		return handleEcho(ctx, request, message)
 	}
 	client, ctx := pipeClient(t, server)
 	exchange(ctx, t, client, negotiateMessage(t, 2))

@@ -19,7 +19,7 @@ type reply struct {
 	status smb.Status
 }
 
-type handler func(context.Context, wire.Message) (reply, error)
+type handler func(context.Context, RequestContext, wire.Message) (reply, error)
 
 type connection struct {
 	conn        net.Conn
@@ -200,7 +200,7 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 		return connection.negotiate(message)
 	}
 	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
-		return handle(ctx, message)
+		return handle(ctx, connection.requestContext(), message)
 	}
 	if message.Header.Command <= wire.OplockBreak && (message.Header.Command != wire.SessionSetup || message.Header.SessionID != 0) {
 		return reply{status: smb.StatusUserSessionDeleted}, nil
@@ -208,7 +208,7 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 	return reply{status: smb.StatusNotSupported}, nil
 }
 
-func handleEcho(_ context.Context, message wire.Message) (reply, error) {
+func handleEcho(_ context.Context, _ RequestContext, message wire.Message) (reply, error) {
 	if message.Header.SessionID != 0 {
 		return reply{status: smb.StatusUserSessionDeleted}, nil
 	}

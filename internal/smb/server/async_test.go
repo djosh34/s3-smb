@@ -38,7 +38,7 @@ func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr
 	release := make(chan struct{})
 	// Install controlled work at the handler boundary, before ServeConn starts.
 	// No file handler or authenticated session is needed to test completion.
-	server.handlers[command] = func(ctx context.Context, _ wire.Message) (reply, error) {
+	server.handlers[command] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		select {
 		case <-release:
 			return result, resultErr

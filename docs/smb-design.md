@@ -25,6 +25,17 @@ The raw client issue (#269) starts after the wire PR (#200) merges, still in M1.
 Its M1 scope is framing and exact messages.
 M2 (#188) adds client login, signing and encryption against a running server.
 
+## Handler request context
+
+Handlers receive a cancellation context, a `server.RequestContext` and the wire
+message. The request context contains immutable `Session` and `Tree` snapshots,
+the shared `Opens` table and `Storage`. `Binding()` gives the identity used by
+open-table methods. Session and tree validation belongs to dispatch, not file
+handlers. Commands that need neither identity receive zero snapshots.
+Handlers must not retain snapshots as mutable connection state. They perform
+storage work outside table locks and drain active handle users before cleanup.
+The connection core still owns replies, credits, async identity and protection.
+
 ## CREATE and cleanup
 
 The server holds the parent namespace guard during CREATE.

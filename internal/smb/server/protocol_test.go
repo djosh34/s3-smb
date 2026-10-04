@@ -201,7 +201,7 @@ func TestLocalWriteCompoundGetsOneSuccessAndCreditGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server.handlers[wire.Write] = func(_ context.Context, message wire.Message) (reply, error) {
+	server.handlers[wire.Write] = func(_ context.Context, _ RequestContext, message wire.Message) (reply, error) {
 		request, err := wire.DecodeWriteRequest(message)
 		if err != nil {
 			return reply{}, err
