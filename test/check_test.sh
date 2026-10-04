@@ -48,9 +48,13 @@ if [[ ${CHECK_TEST_FAIL:-} == "$command $*" ]]; then exit 17; fi
 if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFIX"* ]]; then exit 17; fi
 case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
-    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
+    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && -z ${S3_SMB_CHAOS_BINARY:-} ]] ;;
   "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
     [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
+  "go test -race -shuffle=on -count=1 -v -timeout=15m -run ^TestChaos.*$ ./test/e2e"|\
+  "go test -race -shuffle=on -count=1 -v -timeout=90m -run ^TestChaos.*$ ./test/e2e")
+    [[ ${S3_SMB_CHAOS_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 \
+      && ${S3_SMB_CHAOS_SEED:-} == "$CHECK_TEST_CHAOS_SEED" ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
@@ -72,8 +76,8 @@ export CHECK_TEST_COMMANDS="$fixture/commands"
 export S3_SMB_TEST_LOGS="$fixture/logs"
 export GITHUB_OUTPUT="$fixture/github-output"
 unset CHECK_TEST_FAIL CHECK_TEST_FAIL_PREFIX CHECK_TEST_CACHED CHECK_TEST_TARGETS CHECK_TEST_UNFORMATTED CHECK_TEST_CONTAINER_EXIT
-unset GOMAXPROCS GOFLAGS
-export CHECK_TEST_GOMAXPROCS=unset CHECK_TEST_GOFLAGS=unset
+unset GOMAXPROCS GOFLAGS S3_SMB_CHAOS_SEED S3_SMB_CHAOS_BINARY
+export CHECK_TEST_GOMAXPROCS=unset CHECK_TEST_GOFLAGS=unset CHECK_TEST_CHAOS_SEED=''
 
 fail() { echo "check.sh test failed: $*" >&2; exit 1; }
 contains() { grep -F -- "$1" "$CHECK_TEST_COMMANDS" >/dev/null || fail "missing command: $1"; }
@@ -120,6 +124,7 @@ absent 'docker [pr] inspect '
 [[ $(grep -c 'go \[pr\] test -count=1 ./...' "$CHECK_TEST_COMMANDS") == 1 ]] || fail 'unit tests ran more than once'
 contains 'docker [pr] build -f test/Dockerfile -t s3-smb-test:'
 contains '-e S3_SMB_CHECK_MODE=pr'
+contains '-e S3_SMB_CHAOS_SEED= '
 contains 'bash /src/test/run-linux.sh'
 contains 'docker [pr] rm -f'
 contains 'docker [pr] network rm'
@@ -160,6 +165,16 @@ succeeds
 absent ' -fuzz '
 contains 'docker [gate] start -a'
 unset CHECK_TEST_TARGETS
+
+# A supplied chaos seed reaches Docker unchanged in both modes.
+export S3_SMB_CHAOS_SEED=18446744073709551615
+run_check
+succeeds
+contains '-e S3_SMB_CHAOS_SEED=18446744073709551615'
+run_check --gate
+succeeds
+contains '-e S3_SMB_CHAOS_SEED=18446744073709551615'
+unset S3_SMB_CHAOS_SEED
 
 # Neither mode sets defaults or changes caller-supplied Go settings.
 for setting in supplied empty; do
@@ -300,24 +315,42 @@ export S3_SMB_CHECK_MODE=pr
 run_internal
 contains 'go [pr] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
 contains 'go [pr] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
-export S3_SMB_CHECK_MODE=gate
+contains 'go [pr] test -race -shuffle=on -count=1 -v -timeout=15m -run ^TestChaos.*$ ./test/e2e'
+[[ $(grep -c 'build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next' "$CHECK_TEST_COMMANDS") == 1 ]] || fail 'smbnext daemon built more than once'
+samba_line=$(grep -n -F -- '-run ^TestSambaInterop$' "$CHECK_TEST_COMMANDS" | cut -d: -f1)
+chaos_line=$(grep -n -F -- '-run ^TestChaos.*$' "$CHECK_TEST_COMMANDS" | cut -d: -f1)
+[[ $chaos_line -gt $samba_line ]] || fail 'chaos ran before Samba'
+: > "$CHECK_TEST_COMMANDS"
+export S3_SMB_CHECK_MODE=gate S3_SMB_CHAOS_SEED=12467302605388293654
+export CHECK_TEST_CHAOS_SEED=$S3_SMB_CHAOS_SEED
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
 contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
 contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
+contains 'go [gate] test -race -shuffle=on -count=1 -v -timeout=90m -run ^TestChaos.*$ ./test/e2e'
+[[ $(grep -c 'build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next' "$CHECK_TEST_COMMANDS") == 1 ]] || fail 'smbnext daemon built more than once'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
   'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
   'go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...' \
   'go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .' \
-  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'; do
+  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e' \
+  'go test -race -shuffle=on -count=1 -v -timeout=90m -run ^TestChaos.*$ ./test/e2e'; do
   export CHECK_TEST_FAIL=$command
   if run_internal; then fail "internal failure ignored: $command"; fi
   [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'failure logs not made readable'
 done
+export S3_SMB_CHECK_MODE=pr
+export CHECK_TEST_FAIL='go test -race -shuffle=on -count=1 -v -timeout=15m -run ^TestChaos.*$ ./test/e2e'
+if run_internal; then fail 'PR chaos test failure ignored'; fi
 unset CHECK_TEST_FAIL
+export S3_SMB_CHECK_MODE=invalid
+: > "$CHECK_TEST_COMMANDS"
+if run_internal; then fail 'internal step accepted invalid check mode'; fi
+[[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid check mode ran commands'
+export S3_SMB_CHECK_MODE=gate
 export S3_SMB_TEST_ARTIFACTS="$fixture/missing-logs"
 if run_internal; then fail 'log permission failure ignored'; fi
 export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
@@ -327,6 +360,11 @@ for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
   fi
 done
 # Only dispatched gates receive the longer job timeout.
-grep -Fx "    timeout-minutes: \${{ inputs.gate && 180 || 60 }}" \
+grep -Fx "    timeout-minutes: \${{ inputs.gate && 240 || 60 }}" \
   "$root/.github/workflows/check.yml" >/dev/null || fail 'wrong workflow timeout'
+# A dispatch input uses an environment value, never shell interpolation.
+for line in '      chaos_seed:' '        type: string' "        default: ''" \
+  "          S3_SMB_CHAOS_SEED: \${{ inputs.chaos_seed || '' }}"; do
+  grep -Fx "$line" "$root/.github/workflows/check.yml" >/dev/null || fail "missing replay workflow setting: $line"
+done
 echo 'check.sh tests passed'
