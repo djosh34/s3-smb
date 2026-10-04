@@ -34,6 +34,7 @@ func TestMacFeatures(t *testing.T) {
 		{name: "FinderInfo malformed", user: "user attribute round-trip\n", finder: "ZZ", wantError: true, wantCalls: 4},
 		{name: "FinderInfo short", user: "user attribute round-trip\n", finder: "54455854", wantError: true, wantCalls: 4},
 		{name: "FinderInfo changed", user: "user attribute round-trip\n", finder: strings.Repeat("00", 32), wantError: true, wantCalls: 4},
+		{name: "attachment has no device", user: "user attribute round-trip\n", finder: finderInfo, attached: `<plist version="1.0"><dict><key>system-entities</key><array/></dict></plist>`, wantError: true, wantCalls: 7},
 		{name: "attachment malformed", user: "user attribute round-trip\n", finder: finderInfo, attached: "not a plist", wantError: true, wantCalls: 7},
 		{name: "attachment not mounted", user: "user attribute round-trip\n", finder: finderInfo, attached: attachment(t, "/dev/disk42", ""), wantError: true, wantCalls: 8},
 	} {

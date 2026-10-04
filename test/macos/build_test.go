@@ -8,20 +8,13 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 func (h *harness) build() {
-	if os.Getenv("MAC_PHASE") == "m4" && os.Getenv("MAC_SERVER") != "smbnext" {
-		h.t.Fatal("M4 acceptance requires MAC_SERVER=smbnext")
-	}
-	tags := ""
-	switch os.Getenv("MAC_SERVER") {
-	case "default":
-	case "smbnext":
-		tags = "smbnext"
-	default:
-		h.t.Fatal("MAC_SERVER must be default or smbnext")
-	}
+	tags, err := helpers.ServerBuildTags(os.Getenv("MAC_SERVER"), os.Getenv("MAC_PHASE"))
+	h.must(err)
 	root, err := filepath.Abs("../..")
 	h.must(err)
 	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile")) //nolint:gosec // This is the checked-out test pin.
