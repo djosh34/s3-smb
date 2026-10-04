@@ -73,14 +73,17 @@ func (connection *connection) serve(ctx context.Context) error {
 	return errors.Join(err, ctxErr, closeErr)
 }
 
-func readFrame(reader io.Reader) ([]byte, error) {
+func readFrame(reader io.Reader, maxLength uint32) ([]byte, error) {
 	var prefix [4]byte
 	if _, err := io.ReadFull(reader, prefix[:]); err != nil {
 		return nil, err
 	}
-	length := int(prefix[1])<<16 | int(prefix[2])<<8 | int(prefix[3])
-	if prefix[0] != 0 || length < 32 || length > 0xffffff {
+	length := uint32(prefix[1])<<16 | uint32(prefix[2])<<8 | uint32(prefix[3])
+	if prefix[0] != 0 || length < 32 {
 		return nil, errors.New("invalid direct TCP frame")
+	}
+	if length > maxLength {
+		return nil, errors.New("direct TCP frame exceeds connection limit")
 	}
 	payload := make([]byte, length)
 	if _, err := io.ReadFull(reader, payload); err != nil {
@@ -91,7 +94,7 @@ func readFrame(reader io.Reader) ([]byte, error) {
 
 func (connection *connection) receive(ctx context.Context) error {
 	for {
-		payload, err := readFrame(connection.conn)
+		payload, err := readFrame(connection.conn, connection.frameLimit())
 		if err != nil {
 			if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
 				return nil
@@ -123,6 +126,15 @@ func (connection *connection) receive(ctx context.Context) error {
 			return err
 		}
 	}
+}
+
+func (connection *connection) frameLimit() uint32 {
+	if !connection.negotiated {
+		return smb.CreditUnit
+	}
+	// Allow 64 KiB for headers, fixed bodies and compound padding, in addition
+	// to the largest transfer size advertised in the NEGOTIATE response.
+	return max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize) + smb.CreditUnit
 }
 
 func (connection *connection) checkNegotiationState(messages []wire.Message) error {
