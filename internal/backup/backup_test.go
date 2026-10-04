@@ -68,7 +68,7 @@ func newMetadata(t *testing.T) (meta.Meta, *meta.Format) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { m.Shutdown() })
-	f := &meta.Format{Name: "fixture", UUID: "fixture-id", Storage: "s3", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096}
+	f := &meta.Format{Name: "fixture", UUID: "6f4f1a3b-5370-4383-b974-5d1bd26191b4", Storage: "s3", Bucket: "old-destination", AccessKey: "old-access", SecretKey: "old-secret", TrashDays: 14, BlockSize: 4096, Compression: "none"}
 	if err = m.Init(f, false); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +173,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			current.SecretKey = "replacement-secret"
 			current.SessionToken = "replacement-token"
 			path := filepath.Join(t.TempDir(), "restored.db")
-			restored, err := Recover(context.Background(), s, r.Key, path, &current)
+			restored, err := Recover(context.Background(), s, r.Key, path, t.TempDir(), &current)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -200,7 +200,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			if _, err = next.Backup(context.Background()); err != nil {
 				t.Fatal(err)
 			}
-			if _, err = Recover(context.Background(), s, r.Key, path, &current); err == nil {
+			if _, err = Recover(context.Background(), s, r.Key, path, t.TempDir(), &current); err == nil {
 				t.Fatal("replaced existing active database")
 			}
 			st, err := os.Stat(path)
@@ -265,7 +265,7 @@ func TestBackupCollisionBackwardClockAndAmbiguousUpload(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = Recover(context.Background(), s, r.Key, filepath.Join(t.TempDir(), "restore.db"), f); err != nil {
+	if _, err = Recover(context.Background(), s, r.Key, filepath.Join(t.TempDir(), "restore.db"), t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
 }
