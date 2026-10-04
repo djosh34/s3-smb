@@ -168,6 +168,13 @@ so `TestMissingDataIsSMBError` exercises permanent-read retries rather than
 skipping. The parent PR mode and other suites are unchanged.
 The M3 list gains names only after their dependencies land and the tests pass.
 
+The e2e fixture waits for its own daemon's `SMB serving` event and then connects
+to that address. An unrelated listener is not readiness. Only exit 1 with the
+exact JSON bind-collision error for the requested address permits a fresh-port
+retry: at most three attempts within one startup budget (45 seconds by default).
+Other startup failures and expected-failure tests do not retry. Every attempt
+keeps its logs and a `startup.json` record with PID and requested address.
+
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.

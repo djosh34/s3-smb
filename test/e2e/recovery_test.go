@@ -8,9 +8,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -85,13 +87,21 @@ func (f *fixture) freshLocal() {
 		f.t.Fatal(err)
 	}
 	f.t.Cleanup(func() { os.RemoveAll(f.root) })
-	l, err := net.Listen("tcp", "127.0.0.1:0")
+	f.addr, err = unusedSMBAddress()
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	f.addr = l.Addr().String()
-	l.Close()
 }
+
+func unusedSMBAddress() (string, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return "", err
+	}
+	address := listener.Addr().String()
+	return address, listener.Close()
+}
+
 func (f *fixture) config() string {
 	key := fmt.Sprintf("{value: %q}", f.secret)
 	capacity := f.cacheSize
@@ -139,6 +149,33 @@ logging:
 }
 func (f *fixture) start() *daemon {
 	f.t.Helper()
+	return f.startWithPorts(unusedSMBAddress)
+}
+
+func (f *fixture) startWithPorts(nextAddress func() (string, error)) *daemon {
+	f.t.Helper()
+	timeout := f.startupTimeout
+	if timeout == 0 {
+		timeout = 45 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	for attempt := 0; ; attempt++ {
+		if d := f.startAttempt(deadline, attempt < 2); d != nil {
+			return d
+		}
+		address, err := nextAddress()
+		if err != nil {
+			f.t.Fatalf("select SMB port after bind collision: %v", err)
+		}
+		f.addr = address
+	}
+}
+
+func (f *fixture) startAttempt(deadline time.Time, retryCollision bool) *daemon {
+	f.t.Helper()
+	if !time.Now().Before(deadline) {
+		f.t.Fatal("SMB startup timeout after bind collision")
+	}
 	f.generation++
 	config := filepath.Join(f.root, "config.yaml")
 	if err := os.WriteFile(config, []byte(f.config()), 0600); err != nil {
@@ -219,11 +256,18 @@ func (f *fixture) start() *daemon {
 		}
 	}()
 	f.t.Cleanup(func() { d.stop() })
-	timeout := f.startupTimeout
-	if timeout == 0 {
-		timeout = 45 * time.Second
+	metadata, err := json.Marshal(struct {
+		PID     int    `json:"pid"`
+		Address string `json:"requested_address"`
+	}{PID: d.cmd.Process.Pid, Address: f.addr})
+	if err != nil {
+		f.t.Fatal(err)
 	}
-	deadline := time.After(timeout)
+	if err := os.WriteFile(filepath.Join(dir, "startup.json"), append(metadata, '\n'), 0o600); err != nil {
+		f.t.Fatal(err)
+	}
+	startupTimer := time.NewTimer(time.Until(deadline))
+	defer startupTimer.Stop()
 	for {
 		select {
 		case err := <-d.done:
@@ -232,24 +276,98 @@ func (f *fixture) start() *daemon {
 			if f.failStart && err != nil {
 				return d
 			}
-			f.t.Fatalf("unexpected daemon startup exit: %v; logs %s", err, dir)
-		case <-deadline:
-			d.cmd.Process.Kill()
-			f.t.Fatalf("SMB startup timeout; logs %s", dir)
+			stderr, readErr := os.ReadFile(filepath.Join(dir, "stderr.log"))
+			if readErr != nil {
+				f.t.Fatalf("unexpected daemon startup exit: %v; read startup log: %v; logs %s", err, readErr, dir)
+			}
+			var exitErr *exec.ExitError
+			if retryCollision && errors.As(err, &exitErr) && exitErr.ExitCode() == 1 && daemonBindCollision(stderr, f.addr) {
+				f.t.Logf("SMB bind collision at %s, PID %d; retrying within startup deadline; logs %s", f.addr, d.cmd.Process.Pid, dir)
+				return nil
+			}
+			f.t.Fatalf("unexpected daemon startup exit: %v; requested %s; logs %s\n%s", err, f.addr, dir, stderr)
+		case <-startupTimer.C:
+			killErr := d.cmd.Process.Kill()
+			exitErr := <-d.done
+			d.stopped = true
+			d.closeLogs()
+			f.t.Fatalf("SMB startup timeout; requested %s; kill: %v; exit: %v; logs %s", f.addr, killErr, exitErr, dir)
 		default:
-			conn, err := net.DialTimeout("tcp", f.addr, 100*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				if f.failStart {
-					d.stop()
-					f.t.Fatal("unsafe startup unexpectedly reached SMB readiness")
+			stderr, err := os.ReadFile(filepath.Join(dir, "stderr.log"))
+			if err != nil {
+				f.t.Fatal(err)
+			}
+			address, err := daemonListeningAddress(stderr)
+			if err != nil {
+				f.t.Fatalf("daemon readiness: %v; logs %s\n%s", err, dir, stderr)
+			}
+			if address != "" {
+				if address != f.addr {
+					f.t.Fatalf("daemon listening at %s, requested %s; logs %s", address, f.addr, dir)
 				}
-				return d
+				conn, dialErr := net.DialTimeout("tcp", address, 100*time.Millisecond)
+				if dialErr == nil {
+					if err := conn.Close(); err != nil {
+						f.t.Fatal(err)
+					}
+					if f.failStart {
+						d.stop()
+						f.t.Fatal("unsafe startup unexpectedly reached SMB readiness")
+					}
+					f.addr = address
+					return d
+				}
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
 	}
 }
+
+func daemonListeningAddress(output []byte) (string, error) {
+	// The last record may still be in flight. Only complete JSON lines count.
+	end := bytes.LastIndexByte(output, '\n')
+	if end < 0 {
+		return "", nil
+	}
+	for _, line := range bytes.Split(output[:end], []byte{'\n'}) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var record struct {
+			Message string `json:"msg"`
+			Address string `json:"address"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			return "", fmt.Errorf("decode startup log: %w", err)
+		}
+		if record.Message == "SMB serving" {
+			address, err := netip.ParseAddrPort(record.Address)
+			if err != nil || address.Addr().String() != "127.0.0.1" || address.Port() == 0 {
+				return "", fmt.Errorf("invalid daemon listening address %q", record.Address)
+			}
+			return record.Address, nil
+		}
+	}
+	return "", nil
+}
+
+func daemonBindCollision(output []byte, address string) bool {
+	want := fmt.Sprintf("listen on configured SMB address (no fallback): listen tcp %s: bind: address already in use", address)
+	for _, line := range bytes.Split(output, []byte{'\n'}) {
+		var record struct {
+			Message string `json:"msg"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal(line, &record); err != nil {
+			continue
+		}
+		if record.Message == "service stopped with failure" && record.Error == want {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *daemon) stop() {
 	d.t.Helper()
 	if d.stopped {
