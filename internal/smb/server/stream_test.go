@@ -11,11 +11,12 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
 func TestServerStreamSeeds(t *testing.T) {
-	storage := fuzzStorage(t)
+	storage := smbtest.NewStorage(t)
 	root, err := storage.Lookup(t.Context(), "")
 	if err != nil || !root.Exists || root.Attr.Kind != smb.KindDirectory {
 		t.Fatalf("real adapter root: %+v, %v", root, err)
@@ -69,7 +70,7 @@ func checkStreamSeedReply(t *testing.T, id uint64, message wire.Message) {
 }
 
 func TestServerStreamCloseAndIncompleteInput(t *testing.T) {
-	storage := fuzzStorage(t)
+	storage := smbtest.NewStorage(t)
 	for _, stream := range [][]byte{
 		nil,
 		{0, 0},
