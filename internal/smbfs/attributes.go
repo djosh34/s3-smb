@@ -17,6 +17,9 @@ const (
 	privatePrefix = "s3-smb.internal."
 	birthKey      = privatePrefix + "created"
 	attributesKey = privatePrefix + "attributes"
+	accessedKey   = privatePrefix + "accessed"
+	modifiedKey   = privatePrefix + "modified"
+	changedKey    = privatePrefix + "changed"
 )
 
 func volumeIdentity(uuid string) uint64 {
@@ -68,10 +71,11 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 		return smb.Attr{}, backendError(eno)
 	}
 	if eno == 0 {
-		if len(value) != 12 {
-			return smb.Attr{}, smb.ErrIO
+		created, parseErr := time.Parse(time.RFC3339Nano, string(value))
+		if parseErr != nil {
+			return smb.Attr{}, storageError(parseErr)
 		}
-		out.Created = time.Unix(int64(binary.LittleEndian.Uint64(value)), int64(binary.LittleEndian.Uint32(value[8:]))).UTC()
+		out.Created = created.UTC()
 	}
 	eno = s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), attributesKey, &value)
 	if eno != 0 && !errors.Is(eno, meta.ENOATTR) {
@@ -88,18 +92,82 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 			out.Attributes &^= 0x10
 		}
 	}
+	var err error
+	out.Accessed, err = s.explicitTime(ctx, ino, accessedKey, out.Accessed)
+	if err != nil {
+		return smb.Attr{}, err
+	}
+	out.Modified, err = s.explicitTime(ctx, ino, modifiedKey, out.Modified)
+	if err != nil {
+		return smb.Attr{}, err
+	}
+	out.Changed, err = s.explicitTime(ctx, ino, changedKey, out.Changed)
+	if err != nil {
+		return smb.Attr{}, err
+	}
 	if st.dirty && out.Kind == smb.KindFile {
 		out.Size = st.size
 		out.Modified = st.modified
+		out.Changed = st.modified
 	}
 	out.AllocationSize = allocation(out.Size)
 	return out, nil
 }
 
+func (s *FS) explicitTime(ctx context.Context, ino smb.Inode, key string, actual time.Time) (time.Time, error) {
+	var value []byte
+	eno := s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), key, &value)
+	if errors.Is(eno, meta.ENOATTR) {
+		return actual, nil
+	}
+	if eno != 0 {
+		return time.Time{}, backendError(eno)
+	}
+	fields := strings.Split(string(value), "\n")
+	if len(fields) != 2 {
+		return time.Time{}, smb.ErrIO
+	}
+	wanted, err := time.Parse(time.RFC3339Nano, fields[0])
+	if err != nil {
+		return time.Time{}, storageError(err)
+	}
+	reference, err := time.Parse(time.RFC3339Nano, fields[1])
+	if err != nil {
+		return time.Time{}, storageError(err)
+	}
+	if !reference.Equal(actual) {
+		return actual, nil
+	}
+	return wanted.UTC(), nil
+}
+
+func (s *FS) storeTime(ctx context.Context, ino smb.Inode, key string, wanted, actual time.Time) error {
+	requested, err := wanted.UTC().MarshalText()
+	if err != nil {
+		return errors.Join(smb.ErrInvalidParameter, err)
+	}
+	requested = append(requested, '\n')
+	requested = append(requested, actual.UTC().Format(time.RFC3339Nano)...)
+	return backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(ino), key, requested, 0))
+}
+
 func allocation(size uint64) uint64 { return (size + 4095) / 4096 * 4096 }
+
+func nanoseconds(stamp time.Time) uint32 {
+	ns := stamp.Nanosecond()
+	if ns < 0 || ns >= 1e9 {
+		return 0
+	}
+	return uint32(ns)
+}
 
 func validStream(name string) bool {
 	return name != "" && len(name) <= 255 && !strings.ContainsAny(name, "\x00:/\\") && !strings.HasPrefix(name, privatePrefix)
+}
+
+func (s *FS) touchStream(ctx context.Context, ino smb.Inode) error {
+	var attr meta.Attr
+	return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
 }
 
 func (s *FS) stream(ctx context.Context, key smb.ObjectKey) ([]byte, error) {
@@ -158,18 +226,18 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	var a meta.Attr
 	var mask uint16
 	if change.Accessed != nil {
-		a.Atime = change.Accessed.Unix()
-		a.Atimensec = uint32(change.Accessed.Nanosecond())
+		a.Atime = max(int64(0), change.Accessed.Unix())
+		a.Atimensec = nanoseconds(*change.Accessed)
 		mask |= meta.SetAttrAtime
 	}
 	if change.Modified != nil {
-		a.Mtime = change.Modified.Unix()
-		a.Mtimensec = uint32(change.Modified.Nanosecond())
+		a.Mtime = max(int64(0), change.Modified.Unix())
+		a.Mtimensec = nanoseconds(*change.Modified)
 		mask |= meta.SetAttrMtime
 	}
 	if change.Changed != nil {
 		a.Ctime = change.Changed.Unix()
-		a.Ctimensec = uint32(change.Changed.Nanosecond())
+		a.Ctimensec = nanoseconds(*change.Changed)
 		mask |= meta.SetAttrCtime
 	}
 	if mask != 0 {
@@ -177,10 +245,34 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 			return err
 		}
 	}
+	// JuiceFS treats negative atime/mtime as "now" and always generates ctime.
+	// Keep the exact requested value alongside its backend timestamp. A later
+	// backend change invalidates this value, so it is not update suppression.
+	var stored meta.Attr
+	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(key.Inode), &stored)); err != nil {
+		return err
+	}
+	for _, field := range []struct {
+		actual time.Time
+		wanted *time.Time
+		key    string
+	}{
+		{time.Unix(stored.Atime, int64(stored.Atimensec)), change.Accessed, accessedKey},
+		{time.Unix(stored.Mtime, int64(stored.Mtimensec)), change.Modified, modifiedKey},
+		{time.Unix(stored.Ctime, int64(stored.Ctimensec)), change.Changed, changedKey},
+	} {
+		if field.wanted == nil {
+			continue
+		}
+		if err := s.storeTime(ctx, key.Inode, field.key, *field.wanted, field.actual); err != nil {
+			return err
+		}
+	}
 	if change.Created != nil {
-		data := make([]byte, 12)
-		binary.LittleEndian.PutUint64(data, uint64(change.Created.Unix()))
-		binary.LittleEndian.PutUint32(data[8:], uint32(change.Created.Nanosecond()))
+		data, marshalErr := change.Created.UTC().MarshalText()
+		if marshalErr != nil {
+			return errors.Join(smb.ErrInvalidParameter, marshalErr)
+		}
 		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), birthKey, data, 0)); err != nil {
 			return err
 		}

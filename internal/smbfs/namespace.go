@@ -5,13 +5,43 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
+	"time"
 	"unicode/utf8"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
 	"github.com/djosh34/s3-smb/internal/smb"
 )
+
+type parentGuard struct {
+	mu    sync.Mutex
+	users int
+}
+
+// Parent guards are separate from data coherence to avoid lock-order cycles
+// when a renamed directory is both a parent and a stream's base inode.
+func (s *FS) guardParent(ino smb.Inode) func() {
+	s.mu.Lock()
+	guard := s.parents[ino]
+	if guard == nil {
+		guard = &parentGuard{}
+		s.parents[ino] = guard
+	}
+	guard.users++
+	s.mu.Unlock()
+	guard.mu.Lock()
+	return func() {
+		s.mu.Lock()
+		guard.users--
+		if guard.users == 0 {
+			delete(s.parents, ino)
+		}
+		s.mu.Unlock()
+		guard.mu.Unlock()
+	}
+}
 
 func validBase(base string) bool {
 	return base != "" && base != "." && base != ".." && len(base) <= 255 && utf8.ValidString(base) && !strings.ContainsAny(base, "\x00:/\\") && base != meta.TrashName && !vfs.IsSpecialName(base)
@@ -83,16 +113,16 @@ func (s *FS) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 	parent := smb.Inode(meta.RootInode)
 	if len(parts) == 0 {
 		key := smb.ObjectKey{Inode: parent}
-		a, err := s.GetAttr(ctx, key)
-		return smb.Resolved{Object: key, Attr: a, Exists: err == nil}, err
+		a, attrErr := s.GetAttr(ctx, key)
+		return smb.Resolved{Object: key, Attr: a, Exists: attrErr == nil}, attrErr
 	}
 	for _, base := range parts[:len(parts)-1] {
-		ino, a, err := s.lookupEntry(ctx, parent, base)
-		if errors.Is(err, smb.ErrNameNotFound) {
+		ino, a, lookupErr := s.lookupEntry(ctx, parent, base)
+		if errors.Is(lookupErr, smb.ErrNameNotFound) {
 			return smb.Resolved{}, errors.Join(smb.ErrPathNotFound, syscall.ENOENT)
 		}
-		if err != nil {
-			return smb.Resolved{}, err
+		if lookupErr != nil {
+			return smb.Resolved{}, lookupErr
 		}
 		if a.Typ != meta.TypeDirectory {
 			return smb.Resolved{}, smb.ErrNotDirectory
@@ -144,7 +174,7 @@ func (s *FS) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Reso
 	if err := s.checkName(ctx, name); err != nil {
 		return smb.Resolved{}, err
 	}
-	_, release := s.acquire(name.Parent)
+	release := s.guardParent(name.Parent)
 	defer release()
 	var ino meta.Ino
 	var a meta.Attr
@@ -158,8 +188,8 @@ func (s *FS) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Reso
 		}
 		st, done := s.acquire(base)
 		defer done()
-		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(base), name.Stream, []byte{}, meta.XattrCreate)); err != nil {
-			return smb.Resolved{}, err
+		if createErr := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(base), name.Stream, []byte{}, meta.XattrCreate)); createErr != nil {
+			return smb.Resolved{}, createErr
 		}
 		key := smb.ObjectKey{Inode: base, Stream: name.Stream}
 		// The inode mutex is already held.
@@ -169,9 +199,9 @@ func (s *FS) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Reso
 	var eno syscall.Errno
 	switch kind {
 	case smb.KindFile:
-		eno = s.metadata.Mknod(storageContext(ctx), meta.Ino(name.Parent), name.Base, meta.TypeFile, 0600, 0, 0, "", &ino, &a)
+		eno = s.metadata.Mknod(storageContext(ctx), meta.Ino(name.Parent), name.Base, meta.TypeFile, 0o600, 0, 0, "", &ino, &a)
 	case smb.KindDirectory:
-		eno = s.metadata.Mkdir(storageContext(ctx), meta.Ino(name.Parent), name.Base, 0700, 0, 0, &ino, &a)
+		eno = s.metadata.Mkdir(storageContext(ctx), meta.Ino(name.Parent), name.Base, 0o700, 0, 0, &ino, &a)
 	default:
 		return smb.Resolved{}, smb.ErrInvalidParameter
 	}
@@ -179,6 +209,19 @@ func (s *FS) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Reso
 		return smb.Resolved{}, backendError(eno)
 	}
 	s.filesystem.InvalidateEntry(meta.Ino(name.Parent), name.Base)
+	created, marshalErr := time.Unix(a.Ctime, int64(a.Ctimensec)).UTC().MarshalText()
+	if marshalErr != nil {
+		return smb.Resolved{}, storageError(marshalErr)
+	}
+	if err := backendError(s.metadata.SetXattr(storageContext(ctx), ino, birthKey, created, 0)); err != nil {
+		var cleanup syscall.Errno
+		if kind == smb.KindDirectory {
+			cleanup = s.metadata.Rmdir(storageContext(ctx), meta.Ino(name.Parent), name.Base)
+		} else {
+			cleanup = s.metadata.Unlink(storageContext(ctx), meta.Ino(name.Parent), name.Base)
+		}
+		return smb.Resolved{}, errors.Join(err, backendError(cleanup))
+	}
 	key := smb.ObjectKey{Inode: smb.Inode(ino)}
 	attr, err := s.GetAttr(ctx, key)
 	return smb.Resolved{Name: name, Object: key, Attr: attr, Exists: err == nil}, err
@@ -229,8 +272,11 @@ func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limi
 
 func (s *FS) expected(ctx context.Context, name smb.Name, expect smb.Inode) (meta.Attr, error) {
 	ino, a, err := s.lookupEntry(ctx, name.Parent, name.Base)
-	if errors.Is(err, smb.ErrNameNotFound) && expect == 0 {
-		return a, nil
+	if errors.Is(err, smb.ErrNameNotFound) {
+		if expect == 0 {
+			return a, nil
+		}
+		return a, smb.ErrIdentityChanged
 	}
 	if err != nil {
 		return a, err
@@ -252,7 +298,7 @@ func (s *FS) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error 
 	if err := s.checkName(ctx, name); err != nil {
 		return err
 	}
-	_, release := s.acquire(name.Parent)
+	release := s.guardParent(name.Parent)
 	defer release()
 	a, err := s.expected(ctx, name, expect)
 	if err != nil {
@@ -297,10 +343,10 @@ func (s *FS) Rename(ctx context.Context, r smb.RenameRequest) error {
 	if first > second {
 		first, second = second, first
 	}
-	_, release := s.acquire(first)
+	release := s.guardParent(first)
 	defer release()
 	if first != second {
-		_, done := s.acquire(second)
+		done := s.guardParent(second)
 		defer done()
 	}
 	if _, err := s.expected(ctx, r.Source, r.SourceInode); err != nil {

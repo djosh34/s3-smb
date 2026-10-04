@@ -15,7 +15,7 @@ func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 	if !filepath.IsAbs(metadataPath) {
 		return nil, fmt.Errorf("metadata path must be absolute")
 	}
-	info, err := os.Stat(metadataPath)
+	info, err := os.Stat(filepath.Clean(metadataPath))
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,7 @@ func syncPath(ctx context.Context, path string, full, optional bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	file, err := os.OpenFile(filepath.Clean(path), os.O_RDWR, 0)
 	if optional && errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

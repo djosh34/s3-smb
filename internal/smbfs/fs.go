@@ -26,20 +26,21 @@ const (
 // only pins inode state. Each inode mutex owns its file reference and live size.
 // No backend work runs while the map mutex is held.
 type FS struct {
-	mu         sync.Mutex
 	filesystem *jfs.FileSystem
 	metadata   meta.Meta
 	barrier    MetadataBarrier
 	inodes     map[smb.Inode]*inodeState
+	parents    map[smb.Inode]*parentGuard
+	mu         sync.Mutex
 	capacity   uint64
 	volumeID   uint64
 	readOnly   bool
 }
 
 type inodeState struct {
-	mu       sync.Mutex
-	file     *jfs.File
 	modified time.Time
+	file     *jfs.File
+	mu       sync.Mutex
 	size     uint64
 	users    int
 	refs     int
@@ -67,9 +68,11 @@ func New(options Options) (*FS, error) {
 	if err != nil {
 		return nil, storageError(err)
 	}
-	return &FS{filesystem: options.Filesystem, metadata: options.Filesystem.Meta(), barrier: options.Barrier,
-		inodes: make(map[smb.Inode]*inodeState), capacity: options.Capacity,
-		volumeID: volumeIdentity(format.UUID), readOnly: options.ReadOnly}, nil
+	return &FS{
+		filesystem: options.Filesystem, metadata: options.Filesystem.Meta(), barrier: options.Barrier,
+		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), capacity: options.Capacity,
+		volumeID: volumeIdentity(format.UUID), readOnly: options.ReadOnly,
+	}, nil
 }
 
 func storageContext(ctx context.Context) meta.Context {
@@ -194,7 +197,7 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 			return nil, backendError(eno)
 		}
 		if smb.Inode(file.Inode()) != key.Inode {
-			return nil, errors.Join(smb.ErrIdentityChanged, backendError(file.Close(storageContext(ctx))))
+			return nil, errors.Join(smb.ErrIdentityChanged, backendError(file.Close(storageContext(ctx)))) //nolint:contextcheck // JuiceFS Close uses background contexts internally despite receiving this context.
 		}
 		st.file = file
 	}
@@ -204,7 +207,7 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 
 func (s *FS) flush(ctx context.Context, st *inodeState) error {
 	if st.file != nil {
-		if err := backendError(st.file.Fsync(storageContext(ctx))); err != nil {
+		if err := backendError(st.file.Fsync(storageContext(ctx))); err != nil { //nolint:contextcheck // JuiceFS Fsync uses background contexts internally despite receiving this context.
 			return err
 		}
 	}
@@ -225,7 +228,7 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	if h.state.refs != 0 {
 		return flushErr
 	}
-	closeErr := backendError(h.state.file.Close(storageContext(ctx)))
+	closeErr := backendError(h.state.file.Close(storageContext(ctx))) //nolint:contextcheck // JuiceFS Close uses background contexts internally despite receiving this context.
 	h.state.file = nil
 	return errors.Join(flushErr, closeErr)
 }
@@ -246,10 +249,6 @@ func (s *FS) Flush(ctx context.Context, ref smb.Handle, mode smb.SyncMode) error
 	return storageError(s.barrier.Commit(ctx, mode == smb.SyncFull))
 }
 
-func validRange(offset uint64, length int) bool {
-	return offset <= math.MaxInt64 && uint64(length) <= math.MaxInt64-offset
-}
-
 // ReadAt reads the selected data object, including another handle's writes.
 func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint64) (int, error) {
 	h, release, err := s.selected(ctx, ref, false)
@@ -260,7 +259,7 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 	if h.access&smb.AccessRead == 0 {
 		return 0, smb.ErrAccessDenied
 	}
-	if !validRange(offset, len(dst)) {
+	if offset > math.MaxInt64 || uint64(len(dst)) > math.MaxInt64-offset {
 		return 0, smb.ErrInvalidParameter
 	}
 	if len(dst) == 0 {
@@ -274,9 +273,9 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 		return 0, smb.ErrIsDirectory
 	}
 	if h.key.Stream != "" {
-		data, err := s.stream(ctx, h.key)
-		if err != nil {
-			return 0, err
+		data, streamErr := s.stream(ctx, h.key)
+		if streamErr != nil {
+			return 0, streamErr
 		}
 		if offset >= uint64(len(data)) {
 			return 0, io.EOF
@@ -301,7 +300,7 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 		return 0, err
 	}
 	defer release()
-	if !validRange(offset, len(src)) {
+	if offset > math.MaxInt64 || uint64(len(src)) > math.MaxInt64-offset {
 		return 0, smb.ErrInvalidParameter
 	}
 	a, err := s.attr(ctx, h.key, h.state)
@@ -331,16 +330,19 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 		if err != nil {
 			return 0, err
 		}
+		if err = s.touchStream(ctx, h.key.Inode); err != nil {
+			return 0, err
+		}
 		return len(src), nil
 	}
-	n, eno := h.state.file.Pwrite(storageContext(ctx), src, int64(offset))
+	n, eno := h.state.file.Pwrite(storageContext(ctx), src, int64(offset)) //nolint:contextcheck // JuiceFS Pwrite uses background contexts internally despite receiving this context.
 	if eno != 0 {
 		return n, backendError(eno)
 	}
 	if n != len(src) {
 		return n, storageError(io.ErrShortWrite)
 	}
-	h.state.size = max(a.Size, offset+uint64(n))
+	h.state.size = max(a.Size, offset+uint64(len(src)))
 	h.state.modified = time.Now().UTC()
 	h.state.dirty = true
 	return n, nil
@@ -361,16 +363,19 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		if size > maxStreamSize {
 			return smb.ErrFileTooLarge
 		}
-		data, err := s.stream(ctx, key)
-		if err != nil {
-			return err
+		data, streamErr := s.stream(ctx, key)
+		if streamErr != nil {
+			return streamErr
 		}
 		if size > uint64(len(data)) {
 			data = append(data, make([]byte, int(size)-len(data))...)
 		} else {
 			data = data[:size]
 		}
-		return backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace))
+		if err = backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace)); err != nil {
+			return err
+		}
+		return s.touchStream(ctx, key.Inode)
 	}
 	// Drain the shared writer before changing length. Its old slices can no
 	// longer commit after this truncate, even if another handle later flushes.
@@ -378,7 +383,7 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		return err
 	}
 	if st.file != nil {
-		return backendError(st.file.Truncate(storageContext(ctx), size))
+		return backendError(st.file.Truncate(storageContext(ctx), size)) //nolint:contextcheck // JuiceFS Truncate uses background contexts internally despite receiving this context.
 	}
 	return backendError(s.metadata.Truncate(storageContext(ctx), meta.Ino(key.Inode), 0, size, nil, false))
 }

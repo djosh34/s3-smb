@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strconv"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -21,10 +22,10 @@ import (
 
 type testStore struct {
 	object.ObjectStorage
-	fail    atomic.Bool
-	puts    atomic.Int64
 	started chan struct{}
 	resume  chan struct{}
+	puts    atomic.Int64
+	fail    atomic.Bool
 	slow    atomic.Bool
 }
 
@@ -58,7 +59,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, capacity uint64) *fixture {
 	t.Helper()
-	dir := t.TempDir()
+	return fixtureAt(t, t.TempDir(), capacity, true)
+}
+
+func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixture {
+	t.Helper()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
 	if err != nil {
 		t.Fatal(err)
@@ -74,12 +79,20 @@ func newFixture(t *testing.T, capacity uint64) *fixture {
 		t.Fatal(err)
 	}
 	format := meta.Format{Name: "smbfs-test", UUID: "smbfs-fixture", Storage: "file", BlockSize: 64, Compression: "none", Capacity: capacity, DirStats: true, TrashDays: 0}
-	if err = m.Init(&format, true); err != nil {
-		t.Fatal(err)
-	}
-	root := meta.Attr{Uid: UID, Gid: GID, Mode: 0700}
-	if eno := m.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &root); eno != 0 {
-		t.Fatal(eno)
+	if initialize {
+		if err = m.Init(&format, true); err != nil {
+			t.Fatal(err)
+		}
+		root := meta.Attr{Uid: UID, Gid: GID, Mode: 0o700}
+		if eno := m.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &root); eno != 0 {
+			t.Fatal(eno)
+		}
+	} else {
+		loaded, loadErr := m.Load(false)
+		if loadErr != nil {
+			t.Fatal(loadErr)
+		}
+		format = *loaded
 	}
 	if err = m.NewSession(true); err != nil {
 		t.Fatal(err)
@@ -278,7 +291,7 @@ func TestFullSyncWaitsForBarrier(t *testing.T) {
 
 func TestIssue84TruncateCannotResurrectBufferedBytes(t *testing.T) {
 	for _, size := range []uint64{0, 2} {
-		t.Run(string(rune('0'+size)), func(t *testing.T) {
+		t.Run(strconv.FormatUint(size, 10), func(t *testing.T) {
 			f := newFixture(t, 0)
 			r := f.create(t, "data", smb.KindFile)
 			a := f.open(t, r.Object, smb.AccessRead|smb.AccessWrite)
