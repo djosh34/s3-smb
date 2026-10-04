@@ -106,7 +106,7 @@ func chaosColdBeforeMark(t *testing.T, f *fixture, seed uint64, ledger *chaos.Le
 		t.Fatal(err)
 	}
 	ledger.Remove("removed-before-mark")
-	if err := ledger.CheckAcknowledged(share.ReadFile); err != nil {
+	if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -125,7 +125,7 @@ func chaosColdAfterMark(t *testing.T, f *fixture, ledger *chaos.Ledger, large []
 	}
 	ledger.Remove("earlier-文件.txt")
 	chaosColdWrite(t, share, ledger, "after-mark", []byte("lost with the original machine"))
-	if err := ledger.CheckAcknowledged(share.ReadFile); err != nil {
+	if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -134,7 +134,7 @@ func chaosColdRecovered(t *testing.T, f *fixture, ledger *chaos.Ledger, mark cha
 	t.Helper()
 	share, closeShare := f.share()
 	defer closeShare()
-	if err := ledger.CheckMark(mark, share.ReadFile); err != nil {
+	if err := ledger.CheckMark(mark, chaosRead(share.ReadFile)); err != nil {
 		t.Fatal(err)
 	}
 	entries, err := share.ReadDir(".")
@@ -161,7 +161,7 @@ func chaosColdRecovered(t *testing.T, f *fixture, ledger *chaos.Ledger, mark cha
 		recovered.Write(name, 0, data)
 	}
 	chaosColdWrite(t, share, recovered, "after-recovery", []byte("the recovered daemon accepts writes\n"))
-	if err := recovered.CheckAcknowledged(share.ReadFile); err != nil {
+	if err := recovered.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
 		t.Fatal(err)
 	}
 }
