@@ -22,10 +22,10 @@ import (
 )
 
 var state = struct {
-	sync.RWMutex
 	writer  io.Writer
 	handler slog.Handler
 	secrets []string
+	sync.RWMutex
 }{writer: os.Stderr}
 
 // Install sets text output at INFO and routes the standard log package and the
@@ -86,11 +86,14 @@ func RegisterSecret(values ...string) {
 		if value == "" {
 			continue
 		}
-		quoted := strconv.Quote(value)
-		jsonQuoted, _ := json.Marshal(value)
 		// A secret can reach the log quoted by %q, as JSON or URL-escaped.
 		// Redact those forms too.
-		for _, v := range []string{value, url.QueryEscape(value), url.PathEscape(value), quoted[1 : len(quoted)-1], string(jsonQuoted[1 : len(jsonQuoted)-1])} {
+		quoted := strconv.Quote(value)
+		forms := []string{value, url.QueryEscape(value), url.PathEscape(value), quoted[1 : len(quoted)-1]}
+		if encoded, err := json.Marshal(value); err == nil {
+			forms = append(forms, string(encoded[1:len(encoded)-1]))
+		}
+		for _, v := range forms {
 			found := false
 			for _, old := range state.secrets {
 				if old == v {
@@ -134,11 +137,13 @@ func (*handler) Enabled(ctx context.Context, level slog.Level) bool {
 	state.RUnlock()
 	return h != nil && h.Enabled(ctx, level)
 }
+
 func (h *handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	n := *h
 	n.bound = append(append([]bound(nil), h.bound...), bound{append([]string(nil), h.groups...), append([]slog.Attr(nil), attrs...)})
 	return &n
 }
+
 func (h *handler) WithGroup(name string) slog.Handler {
 	if name == "" {
 		return h
@@ -147,6 +152,7 @@ func (h *handler) WithGroup(name string) slog.Handler {
 	n.groups = append(append([]string(nil), h.groups...), name)
 	return &n
 }
+
 func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	state.RLock()
 	out := state.handler
@@ -169,6 +175,7 @@ func (h *handler) Handle(ctx context.Context, r slog.Record) error {
 	r.Attrs(func(a slog.Attr) bool { record.AddAttrs(cleanAttr(a)); return true })
 	return out.Handle(ctx, record)
 }
+
 func cleanAttrs(attrs []slog.Attr) []slog.Attr {
 	out := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
@@ -176,6 +183,7 @@ func cleanAttrs(attrs []slog.Attr) []slog.Attr {
 	}
 	return out
 }
+
 func cleanAttr(a slog.Attr) slog.Attr {
 	key := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(a.Key, "_", ""), "-", ""))
 	switch key {
@@ -191,6 +199,8 @@ func cleanAttr(a slog.Attr) slog.Attr {
 		a.Value = slog.StringValue(Redact(a.Value.String()))
 	case slog.KindAny:
 		a.Value = slog.StringValue(Redact(fmt.Sprint(a.Value.Any())))
+	case slog.KindBool, slog.KindDuration, slog.KindFloat64, slog.KindInt64, slog.KindTime, slog.KindUint64, slog.KindLogValuer:
+		// These hold no text. Resolve has replaced a LogValuer.
 	}
 	return a
 }

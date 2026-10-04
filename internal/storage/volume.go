@@ -12,24 +12,30 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/logging"
-	"github.com/google/uuid"
 )
 
 // VolumeName is the JuiceFS volume name and the bucket prefix of every object.
 const VolumeName = "s3-smb"
 
-const identityKey = VolumeName + "/format.json"
-const keyPrefix = VolumeName + "/keys/"
+const (
+	identityKey = VolumeName + "/format.json"
+	keyPrefix   = VolumeName + "/keys/"
+)
 
 var volumeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]{0,62}$`)
 
+// OpenS3 returns the S3 client for the configured bucket.
 func OpenS3(c *config.Resolved) (object.ObjectStorage, error) {
 	return object.NewS3(object.S3Options{Bucket: c.S3.Bucket, Region: c.S3.Region, Endpoint: c.S3.Endpoint, AccessKey: c.AccessKey, SecretKey: c.SecretKey, SessionToken: c.SessionToken, PathStyle: c.S3.PathStyle, TLSConfig: c.TLSConfig})
 }
+
+// NewFormat returns the format of a new volume with a fresh UUID.
 func NewFormat(name string, encrypted bool, trashDays int) (*meta.Format, error) {
 	f := &meta.Format{Name: name, UUID: uuid.NewString(), Storage: "s3", BlockSize: 4096, Compression: "none", TrashDays: trashDays, MetaVersion: 1, DirStats: true}
 	if encrypted {
@@ -40,6 +46,7 @@ func NewFormat(name string, encrypted bool, trashDays int) (*meta.Format, error)
 	}
 	return f, nil
 }
+
 func validateFormat(f *meta.Format) error {
 	if f == nil || !volumeName.MatchString(f.Name) {
 		return errors.New("invalid volume name")
@@ -64,6 +71,7 @@ func validateFormat(f *meta.Format) error {
 	}
 	return nil
 }
+
 func readBounded(ctx context.Context, raw object.ObjectStorage, key string, max int64) ([]byte, error) {
 	r, err := raw.Get(ctx, key, 0, -1)
 	if err != nil {
@@ -96,14 +104,16 @@ func publishExact(ctx context.Context, raw object.ObjectStorage, key string, dat
 	putErr := p.PutIfAbsent(ctx, key, bytes.NewReader(data))
 	got, err := readBounded(ctx, raw, key, int64(len(data)))
 	if err != nil {
-		return fmt.Errorf("read back %s after upload: %w", key, err)
+		return errors.Join(putErr, fmt.Errorf("read back %s after upload: %w", key, err))
 	}
 	if !bytes.Equal(got, data) {
 		return fmt.Errorf("%s already exists with other content; it was left unchanged", key)
 	}
-	_ = putErr // the readback above decided the result
+	// The stored bytes match, so a PUT error was a lost response or a retry.
 	return nil
 }
+
+// ReadIdentity reads and validates the volume format stored in the bucket.
 func ReadIdentity(ctx context.Context, raw object.ObjectStorage) (*meta.Format, error) {
 	data, err := readBounded(ctx, raw, identityKey, 128*1024)
 	if err != nil {
@@ -118,22 +128,32 @@ func ReadIdentity(ctx context.Context, raw object.ObjectStorage) (*meta.Format, 
 	}
 	return &f, nil
 }
+
+// storedFormat is the volume format as stored in the bucket. The bucket and
+// credentials come from the configuration, so they are not stored.
+type storedFormat meta.Format
+
+func (f storedFormat) MarshalJSON() ([]byte, error) {
+	f.Bucket, f.AccessKey, f.SecretKey, f.SessionToken = "", "", "", ""
+	return json.Marshal(meta.Format(f))
+}
+
+// PublishIdentity stores the volume format without the bucket and credentials.
+// It fails when the bucket already holds another format.
 func PublishIdentity(ctx context.Context, raw object.ObjectStorage, f *meta.Format) error {
 	if err := validateFormat(f); err != nil {
 		return err
 	}
-	copy := *f
-	// The bucket and credentials come from the configuration, so do not store them.
-	copy.Bucket = ""
-	copy.AccessKey = ""
-	copy.SecretKey = ""
-	copy.SessionToken = ""
-	data, err := json.Marshal(&copy)
+	data, err := json.Marshal(storedFormat(*f))
 	if err != nil {
 		return err
 	}
 	return publishExact(ctx, raw, identityKey, data)
 }
+
+// OpenVolume returns the volume's object storage under its name prefix. For an
+// encrypted volume it reads the stored key and records it in f. With create,
+// and no key in f, a missing key is generated and published first.
 func OpenVolume(ctx context.Context, raw object.ObjectStorage, f *meta.Format, passphrase string, create bool) (object.ObjectStorage, error) {
 	if err := validateFormat(f); err != nil {
 		return nil, err
@@ -178,6 +198,8 @@ func OpenVolume(ctx context.Context, raw object.ObjectStorage, f *meta.Format, p
 	}
 	return object.NewEncrypted(blob, enc), nil
 }
+
+// VerifyMarker checks that the volume marker object holds the format's UUID.
 func VerifyMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Format) error {
 	data, err := readBounded(ctx, blob, "juicefs_uuid", 128)
 	if err != nil {
@@ -188,6 +210,8 @@ func VerifyMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Format
 	}
 	return nil
 }
+
+// PublishMarker stores the volume marker object holding the format's UUID.
 func PublishMarker(ctx context.Context, blob object.ObjectStorage, f *meta.Format) error {
 	return publishExact(ctx, blob, "juicefs_uuid", []byte(f.UUID))
 }

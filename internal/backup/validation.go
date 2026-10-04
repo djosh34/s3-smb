@@ -6,11 +6,11 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
@@ -35,13 +35,13 @@ func downloadSnapshot(ctx context.Context, blob object.ObjectStorage, key, path 
 	if !ok || decodeErr != nil || len(decoded) != sha256.Size {
 		return errors.New("metadata snapshot has no valid SHA-256")
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	f, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, f.Close()) }()
 	h := sha256.New()
-	if _, err = io.Copy(io.MultiWriter(f, h), gz); err != nil {
+	if _, err = io.Copy(f, io.TeeReader(gz, h)); err != nil {
 		return err
 	}
 	if hex.EncodeToString(h.Sum(nil)) != digest {
@@ -74,12 +74,7 @@ func inspectSnapshot(ctx context.Context, path string) (format *meta.Format, err
 	if len(results) != 1 || results[0] != "ok" {
 		return nil, errors.New("snapshot integrity_check failed")
 	}
-	var data string
-	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&data); err != nil {
-		return nil, err
-	}
-	format = new(meta.Format)
-	if err = json.Unmarshal([]byte(data), format); err != nil {
+	if format, err = readFormat(ctx, db); err != nil {
 		return nil, err
 	}
 	var rootType int
@@ -95,13 +90,16 @@ func inspectSnapshot(ctx context.Context, path string) (format *meta.Format, err
 	return format, ctx.Err()
 }
 
+// expireSnapshotSessions marks every session in the staged copy as expired, so
+// JuiceFS cleans them, and removes locks of read-only clients. Those use SID
+// zero and have no session row.
 func expireSnapshotSessions(ctx context.Context, path string) (err error) {
 	db, err := openSnapshotDB(path, "rw")
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	_, err = db.ExecContext(ctx, "UPDATE jfs_session2 SET expire=0")
+	_, err = db.ExecContext(ctx, "UPDATE jfs_session2 SET expire=0; DELETE FROM jfs_flock WHERE sid=0; DELETE FROM jfs_plock WHERE sid=0")
 	return err
 }
 
@@ -126,19 +124,15 @@ func cleanSnapshotSessions(ctx context.Context, m meta.Meta, path string) error 
 		if err = ctx.Err(); err != nil {
 			return err
 		}
-		m.CleanStaleSessions(meta.Background())
-		count, err := snapshotSessionCount(ctx, path)
-		if err != nil {
+		m.CleanStaleSessions(meta.WrapContext(ctx))
+		var count int
+		if count, err = snapshotSessionCount(ctx, path); err != nil {
 			return err
 		}
 		if count >= previous {
 			return errors.New("could not clean restored sessions")
 		}
 		previous = count
-	}
-	// Read-only JuiceFS clients use SID zero and have no session row.
-	if err = meta.ClearOrphanLocks(m); err != nil {
-		return err
 	}
 	return checkSnapshotSessions(ctx, path)
 }

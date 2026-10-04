@@ -235,7 +235,7 @@ func TestMinIOSMBNativeByteRangeLocks(t *testing.T) {
 	if er := m.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &root); er != 0 {
 		t.Fatal(er)
 	}
-	zero := int64(0)
+	zero := uint64(0)
 	runtime, e := storage.OpenFilesystem(m, blob, format, t.TempDir(), &zero, denied)
 	if e != nil {
 		t.Fatal(e)

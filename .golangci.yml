@@ -68,18 +68,21 @@ linters:
       - path: '^((cmd/[^/]+|test/macos/fullsync)/)?main\.go$'
         linters: [forbidigo]
         text: 'forbidden by pattern .*os'
+      # The credential helper runs the command from the configuration, and
+      # these tests run their own test binary as a child process.
+      - path: '^internal/(config/secret\.go|(app|backup|logging)/[^/]+_test\.go)$'
+        linters: [gosec]
+        text: 'G204'
+      # Opening the JuiceFS database, cache and old SMB adapter takes no
+      # context: JuiceFS and xorm create their own deep inside.
+      - path: '^internal/(app/serve|backup/recovery)\.go$'
+        linters: [contextcheck]
+        text: 'should pass the context parameter'
     paths: &old-code
       - '^internal/juicefs/'
       - '^internal/thirdparty/'
       - '^internal/smb-old/'
       # P5 removes this list after the rewrite.
-      - '^main\.go$'
-      - '^packaging_test\.go$'
-      - '^internal/app/[^/]+\.go$'
-      - '^internal/backup/[^/]+\.go$'
-      - '^internal/config/[^/]+\.go$'
-      - '^internal/logging/[^/]+\.go$'
-      - '^internal/storage/[^/]+\.go$'
       - '^test/e2e/[^/]+\.go$'
       - '^test/macos/fixture/[^/]+\.go$'
 

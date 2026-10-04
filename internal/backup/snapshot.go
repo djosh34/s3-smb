@@ -15,9 +15,10 @@ import (
 	"os"
 	"path/filepath"
 
+	_ "github.com/mattn/go-sqlite3" // Register the SQLite driver.
+
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
-	_ "github.com/mattn/go-sqlite3" // Register the SQLite driver.
 )
 
 // openSnapshotDB uses a private cache, never JuiceFS's shared connection cache.
@@ -46,15 +47,23 @@ func metadataUUID(ctx context.Context, path string) (uuid string, err error) {
 		return "", err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	var data string
-	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&data); err != nil {
-		return "", err
-	}
-	var format meta.Format
-	if err = json.Unmarshal([]byte(data), &format); err != nil {
+	format, err := readFormat(ctx, db)
+	if err != nil {
 		return "", err
 	}
 	return format.UUID, nil
+}
+
+func readFormat(ctx context.Context, db *sql.DB) (*meta.Format, error) {
+	var data string
+	if err := db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&data); err != nil {
+		return nil, err
+	}
+	format := new(meta.Format)
+	if err := json.Unmarshal([]byte(data), format); err != nil {
+		return nil, err
+	}
+	return format, nil
 }
 
 func takeSnapshot(ctx context.Context, source, target string) (err error) {
@@ -66,11 +75,11 @@ func takeSnapshot(ctx context.Context, source, target string) (err error) {
 	if _, err = db.ExecContext(ctx, "VACUUM INTO ?", target); err != nil {
 		return err
 	}
-	return os.Chmod(target, 0600)
+	return os.Chmod(target, 0o600)
 }
 
 func compressSnapshot(source, target string) (err error) {
-	in, err := os.Open(source)
+	in, err := os.Open(filepath.Clean(source))
 	if err != nil {
 		return err
 	}
@@ -82,7 +91,7 @@ func compressSnapshot(source, target string) (err error) {
 	if _, err = in.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	out, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+	out, err := os.OpenFile(filepath.Clean(target), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
@@ -100,8 +109,8 @@ func compressSnapshot(source, target string) (err error) {
 	return out.Sync()
 }
 
-// uploadSnapshot keeps conditional publication and full read-back verification.
-// A lost upload response burns the name, just as it did before snapshots.
+// uploadSnapshot publishes the file only if key is free, then reads it back and
+// compares hashes. After a lost upload response the name stays used.
 func uploadSnapshot(ctx context.Context, blob object.ObjectStorage, path, key string) (digest string, err error) {
 	if _, err = blob.Head(ctx, key); err == nil {
 		return "", errors.New("metadata backup name already exists")
@@ -114,7 +123,7 @@ func uploadSnapshot(ctx context.Context, blob object.ObjectStorage, path, key st
 	if !ok {
 		return "", errors.New("metadata store does not support conditional publication")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return "", err
 	}

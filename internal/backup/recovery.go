@@ -16,9 +16,10 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
+// Point is a metadata backup in the bucket and the time its snapshot started.
 type Point struct {
-	Key  string
 	Time time.Time
+	Key  string
 }
 
 func parsePoint(key string) (Point, error) {
@@ -32,7 +33,7 @@ func parsePoint(key string) (Point, error) {
 	if err != nil {
 		return Point{}, errors.New("invalid metadata backup timestamp")
 	}
-	return Point{key, t}, nil
+	return Point{Time: t, Key: key}, nil
 }
 
 // List returns the metadata backups in the bucket, newest first.
@@ -222,7 +223,7 @@ func prepareSnapshot(ctx context.Context, path string, saved, current *meta.Form
 		return err
 	}
 	var attr meta.Attr
-	if st := m.GetAttr(meta.Background(), meta.RootInode, &attr); st != 0 {
+	if st := m.GetAttr(meta.WrapContext(ctx), meta.RootInode, &attr); st != 0 {
 		return fmt.Errorf("recovered root: %w", st)
 	}
 	// Session cleanup can queue inode retirement even with background jobs off.
@@ -242,7 +243,7 @@ func prepareSnapshot(ctx context.Context, path string, saved, current *meta.Form
 	} else if e != nil && !os.IsNotExist(e) {
 		return e
 	}
-	file, err := os.Open(path)
+	file, err := os.Open(filepath.Clean(path))
 	if err != nil {
 		return err
 	}

@@ -9,20 +9,22 @@ import (
 	"sync"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
+// OpenMetadata opens the SQLite metadata database at an absolute path. It
+// creates a missing database with mode 0600 and keeps the mode of an existing one.
 func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 	if !filepath.IsAbs(path) {
 		return nil, errors.New("metadata path must be absolute")
 	}
-	// Create the database with mode 0600. An existing file keeps its mode.
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+	file, err := os.OpenFile(filepath.Clean(path), os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err == nil {
 		if err = file.Close(); err != nil {
 			return nil, err
@@ -40,33 +42,35 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 // eight minutes because reads need the same setting. Chunk uploads sleep
 // try^2 seconds for try=0..MaxRetries; 12 gives 650s. All cover a 300s outage
 // with margin, even when requests fail immediately. Concurrent block reads
-// share one retry counter per open file and need the adapter retries in #297.
+// share one retry counter per open file, so the SMB adapter retries reads too.
 const (
 	filesystemRetries = 53
 	uploadRetries     = 12
 )
 
 // CacheConfig returns the JuiceFS defaults with our data-path retry budget and
-// the configured cache directory and size. The size is in bytes.
-func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config, error) {
+// the configured cache directory and size. The size is in bytes; nil keeps the
+// 100 GiB default.
+func CacheConfig(format *meta.Format, dir string, capacity *uint64) (chunk.Config, error) {
 	if err := validateFormat(format); err != nil {
 		return chunk.Config{}, err
 	}
-	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 4, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
+	c := chunk.Config{CacheDir: dir, CacheMode: 0o600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 4, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
-		c.CacheSize = uint64(*capacity)
+		c.CacheSize = *capacity
 	}
 	c.SelfCheck(format.UUID)
 	return c, nil
 }
 
+// Runtime is an open JuiceFS filesystem with its chunk store.
 type Runtime struct {
 	FS    *fs.FileSystem
 	Store chunk.ChunkStore
 	// Config supplies the same I/O settings to the SMB filesystem adapter.
 	Config   *vfs.Config
-	once     sync.Once
 	closeErr error
+	once     sync.Once
 }
 
 // maintenanceStore checks the delete guard again at each object deletion, so a
@@ -86,23 +90,40 @@ func (s *maintenanceStore) Delete(ctx context.Context, key string, getters ...ob
 // OpenFilesystem builds the chunk store and the JuiceFS filesystem and
 // registers the delete and compact callbacks behind the delete guard. The
 // caller starts the session afterwards.
-func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format, cacheDir string, cacheBytes *int64, checkMaintenance func() error) (*Runtime, error) {
+func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format, cacheDir string, cacheBytes *uint64, checkMaintenance func() error) (*Runtime, error) {
 	c, err := CacheConfig(format, cacheDir, cacheBytes)
 	if err != nil {
 		return nil, err
 	}
 	store := chunk.NewCachedStore(&maintenanceStore{blob, checkMaintenance}, c, nil)
-	m.OnMsg(meta.DeleteSlice, func(args ...interface{}) error {
-		if err := checkMaintenance(); err != nil {
-			return err
+	m.OnMsg(meta.DeleteSlice, func(args ...any) error {
+		if denied := checkMaintenance(); denied != nil {
+			return denied
 		}
-		return store.Remove(args[0].(uint64), int(args[1].(uint32)))
+		if len(args) != 2 {
+			return errors.New("unexpected slice deletion arguments")
+		}
+		id, idOK := args[0].(uint64)
+		size, sizeOK := args[1].(uint32)
+		if !idOK || !sizeOK {
+			return errors.New("unexpected slice deletion arguments")
+		}
+		return store.Remove(id, int(size))
 	})
-	m.OnMsg(meta.CompactChunk, func(args ...interface{}) error {
-		if err := checkMaintenance(); err != nil {
-			return err
+	m.OnMsg(meta.CompactChunk, func(args ...any) error {
+		if denied := checkMaintenance(); denied != nil {
+			return denied
 		}
-		return vfs.Compact(c, store, args[0].([]meta.Slice), args[1].(uint64), args[2].(uint8))
+		if len(args) != 3 {
+			return errors.New("unexpected chunk compaction arguments")
+		}
+		slices, slicesOK := args[0].([]meta.Slice)
+		id, idOK := args[1].(uint64)
+		tier, tierOK := args[2].(uint8)
+		if !slicesOK || !idOK || !tierOK {
+			return errors.New("unexpected chunk compaction arguments")
+		}
+		return vfs.Compact(c, store, slices, id, tier)
 	})
 	conf := filesystemConfig(format, &c)
 	filesystem, err := fs.NewFileSystem(conf, m, store, prometheus.NewRegistry())
@@ -120,4 +141,7 @@ func filesystemConfig(format *meta.Format, c *chunk.Config) *vfs.Config {
 
 // Close flushes JuiceFS metadata and closes its session. Call it after the SMB
 // handles are closed and the backup loop has stopped.
-func (r *Runtime) Close() error { r.once.Do(func() { r.closeErr = r.FS.Close() }); return r.closeErr }
+func (r *Runtime) Close() error {
+	r.once.Do(func() { r.closeErr = r.FS.Close() })
+	return r.closeErr
+}

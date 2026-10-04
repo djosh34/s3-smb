@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -14,8 +14,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
-// The child stops after a successful cross-handle flush. The parent kills it
-// without Close or session cleanup, then reopens the same database and objects.
+// The child stops after successful flushes, including one through another
+// handle. The parent kills it without Close or session cleanup, then reopens
+// the same database and objects.
 func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 	if dir := os.Getenv("SMBFS_CRASH_DIR"); dir != "" {
 		mode, err := strconv.ParseUint(os.Getenv("SMBFS_CRASH_MODE"), 10, 8)
@@ -32,25 +33,7 @@ func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
-			defer cancel()
-			command := exec.CommandContext(ctx, executable, "-test.run=^TestCrossHandleFlushSurvivesProcessKill$", "-test.timeout=30s") //nolint:gosec // The child is this test executable, returned by os.Executable.
-			command.Env = append(os.Environ(), "SMBFS_CRASH_DIR="+dir, "SMBFS_CRASH_MODE="+strconv.FormatUint(uint64(mode), 10))
-			var output bytes.Buffer
-			command.Stdout = &output
-			command.Stderr = &output
-			if err = command.Start(); err != nil {
-				t.Fatal(err)
-			}
-			waitForCrashMarker(ctx, t, command, filepath.Join(dir, "flushed"))
-			if err = command.Process.Kill(); err != nil {
-				t.Fatal(err)
-			}
-			err = command.Wait()
-			var exitError *exec.ExitError
-			if !errors.As(err, &exitError) {
-				t.Fatalf("killed child = %v; output: %s", err, output.String())
-			}
+			runUntilFlushed(t, executable, "SMBFS_CRASH_DIR="+dir, "SMBFS_CRASH_MODE="+strconv.FormatUint(uint64(mode), 10))
 			f := fixtureAt(t, dir, 0, false, 0)
 			for _, entry := range []struct {
 				path string
@@ -60,8 +43,7 @@ func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 				if lookupErr != nil || !r.Exists {
 					t.Fatalf("reopened %q = %+v, %v", entry.path, r, lookupErr)
 				}
-				h := f.open(t, r.Object, smb.AccessRead)
-				read(t, f.fs, h, []byte(entry.data))
+				read(t, f.fs, f.open(t, r.Object, smb.AccessRead), []byte(entry.data))
 			}
 			r, err := f.fs.Lookup(t.Context(), "truncated")
 			stamp := time.Unix(1000000000, 123456700)
@@ -69,6 +51,40 @@ func TestCrossHandleFlushSurvivesProcessKill(t *testing.T) {
 				t.Fatalf("reopened timestamp = %v, %v", r.Attr.Modified, err)
 			}
 		})
+	}
+}
+
+// runUntilFlushed runs the crash test in executable with env added, waits until
+// the child reports its flushes through a pipe, and kills it.
+func runUntilFlushed(t *testing.T, executable string, env ...string) {
+	t.Helper()
+	ready, signal, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "-test.run=^TestCrossHandleFlushSurvivesProcessKill$", "-test.timeout=30s")
+	command.Env = append(os.Environ(), env...)
+	command.ExtraFiles = []*os.File{signal}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	err = command.Start()
+	err = errors.Join(err, signal.Close())
+	if err != nil {
+		t.Fatal(errors.Join(err, ready.Close()))
+	}
+	// The read ends with EOF if the child exits or is killed at the deadline.
+	_, readErr := ready.Read(make([]byte, 1))
+	err = errors.Join(ready.Close(), command.Process.Kill())
+	waitErr := command.Wait()
+	if readErr != nil {
+		t.Fatalf("child did not flush: %v, %v; output: %s", readErr, waitErr, output.String())
+	}
+	var exitError *exec.ExitError
+	if err != nil || !errors.As(waitErr, &exitError) {
+		t.Fatalf("kill child: %v, %v; output: %s", err, waitErr, output.String())
 	}
 }
 
@@ -103,35 +119,12 @@ func crashWriter(t *testing.T, dir string, mode smb.SyncMode) {
 	if err := f.fs.Flush(t.Context(), y, mode); err != nil {
 		t.Fatal(err)
 	}
-	root, err := os.OpenRoot(dir)
-	if err != nil {
-		t.Fatal(err)
+	signal := os.NewFile(3, "flushed")
+	if _, err := io.WriteString(signal, "."); err != nil {
+		t.Fatal(errors.Join(err, signal.Close()))
 	}
-	if err = errors.Join(root.WriteFile("flushed", []byte("ready"), 0o600), root.Close()); err != nil {
+	if err := signal.Close(); err != nil {
 		t.Fatal(err)
 	}
 	<-t.Context().Done()
-}
-
-func waitForCrashMarker(ctx context.Context, t *testing.T, command *exec.Cmd, path string) {
-	t.Helper()
-	tick := time.NewTicker(5 * time.Millisecond)
-	defer tick.Stop()
-	for {
-		_, err := os.Stat(path)
-		if err == nil {
-			return
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			t.Error(err)
-		}
-		select {
-		case <-tick.C:
-		case <-ctx.Done():
-			if err := command.Wait(); err != nil {
-				t.Logf("child: %v", err)
-			}
-			t.Fatal("child did not reach flush marker")
-		}
-	}
 }
