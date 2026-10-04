@@ -5,12 +5,26 @@ package e2e
 import (
 	"errors"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/chaos"
 	"github.com/djosh34/s3-smb/internal/smb"
 	smbclient "github.com/hirochachacha/go-smb2"
 )
+
+// newChaosFixture uses only the explicit race-enabled chaos daemon. Ordinary
+// package runs skip daemon-backed chaos scenarios; the dedicated CI step sets it.
+func newChaosFixture(t *testing.T, encrypted bool) *fixture {
+	t.Helper()
+	binary := os.Getenv("S3_SMB_CHAOS_BINARY")
+	if binary == "" {
+		t.Skip("needs S3_SMB_CHAOS_BINARY")
+	}
+	return newFixtureWithBinary(t, encrypted, binary)
+}
 
 // chaosRead adapts STATUS_NO_SUCH_FILE to the ledger contract. The client
 // already maps missing-name and missing-path statuses to fs.ErrNotExist.
@@ -40,6 +54,45 @@ func TestChaosRead(t *testing.T) {
 		if string(data) != "data" || err != original {
 			t.Fatalf("changed ordinary read result: %q %v", data, err)
 		}
+	}
+}
+
+func TestChaosFixtureBinary(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+	t.Setenv("S3_SMB_E2E_ENDPOINT", server.URL)
+	t.Setenv("S3_SMB_E2E_BINARY", "")
+	t.Setenv("S3_SMB_CHAOS_BINARY", "/explicit/race-daemon")
+	f := newChaosFixture(t, true)
+	if f.binary != "/explicit/race-daemon" || !f.encrypted {
+		t.Fatalf("binary=%q, encrypted=%t", f.binary, f.encrypted)
+	}
+	if os.Getenv("S3_SMB_E2E_BINARY") != "" {
+		t.Fatal("chaos fixture changed the default daemon environment")
+	}
+	f.freshLocal()
+	if f.binary != "/explicit/race-daemon" {
+		t.Fatal("cold recovery lost the selected binary")
+	}
+	t.Setenv("S3_SMB_E2E_BINARY", "/default/daemon")
+	ordinary := newFixture(t, false)
+	if ordinary.binary != "/default/daemon" {
+		t.Fatal("ordinary fixture selected the chaos daemon")
+	}
+}
+
+func TestChaosFixtureSkipsWithoutBinary(t *testing.T) {
+	ran := false
+	t.Run("no binary", func(t *testing.T) {
+		t.Setenv("S3_SMB_CHAOS_BINARY", "")
+		t.Setenv("S3_SMB_E2E_BINARY", "/default/daemon")
+		newChaosFixture(t, false)
+		ran = true
+	})
+	if ran {
+		t.Fatal("chaos fixture used a default daemon when its binary was unset")
 	}
 }
 

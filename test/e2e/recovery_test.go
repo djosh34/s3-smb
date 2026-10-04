@@ -36,7 +36,7 @@ type fixture struct {
 	clientAddr                   string // Empty uses the daemon address; chaos tests set a proxy address.
 	encrypted                    bool
 	password, secret             string
-	binary                       string // Empty uses the default integration daemon.
+	binary                       string // Daemon selected when the fixture is created.
 	cacheSize                    string
 	storageCapacity              string        // Empty means no volume limit.
 	interval                     string        // Metadata backup interval. Empty means 2s.
@@ -56,14 +56,19 @@ type daemon struct {
 
 func newFixture(t *testing.T, encrypted bool) *fixture {
 	t.Helper()
+	return newFixtureWithBinary(t, encrypted, os.Getenv("S3_SMB_E2E_BINARY"))
+}
+
+func newFixtureWithBinary(t *testing.T, encrypted bool, binary string) *fixture {
+	t.Helper()
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
 		t.Skip("needs MinIO: run scripts/check.sh")
 	}
-	if os.Getenv("S3_SMB_E2E_BINARY") == "" {
-		t.Fatal("S3_SMB_E2E_BINARY is not set: run scripts/check.sh")
+	if binary == "" {
+		t.Fatal("test daemon binary is not set")
 	}
-	f := &fixture{t: t, endpoint: endpoint, encrypted: encrypted, password: password, secret: passphrase, bucket: fmt.Sprintf("smb-e2e-%d", time.Now().UnixNano())}
+	f := &fixture{t: t, binary: binary, endpoint: endpoint, encrypted: encrypted, password: password, secret: passphrase, bucket: fmt.Sprintf("smb-e2e-%d", time.Now().UnixNano())}
 	f.store = s3.New(s3.Options{Region: "us-east-1", BaseEndpoint: aws.String(endpoint), UsePathStyle: true, Credentials: credentials.NewStaticCredentialsProvider("s3smb-test-access", "s3smb-test-secret-only", "")})
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -171,11 +176,7 @@ func (f *fixture) start() *daemon {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		f.t.Fatal(err)
 	}
-	binary := f.binary
-	if binary == "" {
-		binary = os.Getenv("S3_SMB_E2E_BINARY")
-	}
-	d := &daemon{cmd: exec.Command(binary, "serve", "-c", config), done: make(chan error, 1), tty: master, t: f.t}
+	d := &daemon{cmd: exec.Command(f.binary, "serve", "-c", config), done: make(chan error, 1), tty: master, t: f.t}
 	d.cmd.Stdin = slave
 	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	for _, stream := range []string{"stdout", "stderr"} {
