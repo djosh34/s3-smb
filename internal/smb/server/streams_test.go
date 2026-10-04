@@ -178,6 +178,7 @@ func TestIssue94StreamDispositions(t *testing.T) {
 	c := newStreamClient(t)
 	for _, stream := range []string{"AFP_Resource", "AFP_AfpInfo", "com.apple.FinderInfo", "other.xattr"} {
 		for disposition := uint32(0); disposition <= 5; disposition++ {
+			// A stream requires its base, so these are the three possible states.
 			for _, presence := range []string{"no-base", "base-only", "stream"} {
 				t.Run(fmt.Sprintf("%s/%d/%s", stream, disposition, presence), func(t *testing.T) {
 					testStreamDisposition(t, c, stream, disposition, presence)
@@ -276,6 +277,7 @@ func TestStreamOffsetsResizeAndLimit(t *testing.T) {
 			c.write(t, id, []byte("!"), smb.MaxStreamSize, smb.StatusFileTooLarge)
 			c.write(t, id, []byte("??"), smb.MaxStreamSize-1, smb.StatusFileTooLarge)
 			c.resize(t, id, smb.MaxStreamSize+1, smb.StatusFileTooLarge)
+			assertStreamLength(t, c.query(t, id, wire.ClassFileStandard), wire.ClassFileStandard, smb.MaxStreamSize)
 			c.read(t, id, smb.MaxStreamSize-2, []byte{0, '!'})
 			c.resize(t, id, smb.MaxStreamSize, smb.StatusSuccess)
 			if closed := c.close(t, id); closed.Size != smb.MaxStreamSize {
