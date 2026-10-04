@@ -36,8 +36,9 @@ type fixture struct {
 	encrypted                    bool
 	password, secret             string
 	cacheSize                    string
-	storageCapacity              string // Empty means no volume limit.
-	interval                     string // Metadata backup interval. Empty means 2s.
+	storageCapacity              string        // Empty means no volume limit.
+	interval                     string        // Metadata backup interval. Empty means 2s.
+	startupTimeout               time.Duration // Zero means 45s.
 	readonly, failStart          bool
 	store                        *s3.Client
 	generation                   int
@@ -213,7 +214,11 @@ func (f *fixture) start() *daemon {
 		}
 	}()
 	f.t.Cleanup(func() { d.stop() })
-	deadline := time.After(45 * time.Second)
+	timeout := f.startupTimeout
+	if timeout == 0 {
+		timeout = 45 * time.Second
+	}
+	deadline := time.After(timeout)
 	for {
 		select {
 		case err := <-d.done:

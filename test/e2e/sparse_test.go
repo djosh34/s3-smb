@@ -67,7 +67,7 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 				}
 			}
 		}
-		result.puts = proxy.chunkPuts.Load()
+		result.puts = proxy.ChunkPuts()
 		return result
 	}
 	read := func(offset int64, want []byte) {
