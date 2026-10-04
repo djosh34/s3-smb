@@ -16,7 +16,7 @@ import (
 func lockServer(t *testing.T) *Server {
 	t.Helper()
 	options := testOptions(t)
-	options.Storage = fuzzStorage(t)
+	options.Storage = smbtest.NewStorage(t)
 	server, err := New(options)
 	if err != nil {
 		t.Fatal(err)
