@@ -123,8 +123,12 @@ func createStorageAccess(granted uint32, destructive bool) smb.Access {
 	if granted&fileReadData != 0 {
 		access |= smb.AccessRead
 	}
-	if destructive || granted&(fileWriteData|fileAppendData) != 0 {
+	if destructive || granted&fileWriteData != 0 {
 		access |= smb.AccessWrite
+	}
+	if granted&fileAppendData != 0 && granted&fileWriteData == 0 {
+		// Destructive dispositions may truncate, but later writes remain append-only.
+		access |= smb.AccessAppend
 	}
 	return access
 }
