@@ -33,13 +33,26 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 	return meta.NewSQLite(path, conf)
 }
 
-// CacheConfig returns the JuiceFS defaults with the configured cache directory
-// and size. The size is in bytes.
+// JuiceFS shares Meta.Retries between reads and flushes. At 53, download
+// sleeps for one slice reader at a time total 361.829s:
+// sum((try-1)*300+1 ms, try=1..29), then 10s each.
+// The flush deadline is max((Retries+2)^2/2 s, 300s) = 1512s, longer than
+// eight minutes because reads need the same setting. Chunk uploads sleep
+// try^2 seconds for try=0..MaxRetries; 12 gives 650s. All cover a 300s outage
+// with margin, even when requests fail immediately. Concurrent block reads
+// share one retry counter per open file and need the adapter retries in #297.
+const (
+	filesystemRetries = 53
+	uploadRetries     = 12
+)
+
+// CacheConfig returns the JuiceFS defaults with our data-path retry budget and
+// the configured cache directory and size. The size is in bytes.
 func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config, error) {
 	if err := validateFormat(format); err != nil {
 		return chunk.Config{}, err
 	}
-	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 20, MaxDownload: 200, MaxRetries: 10, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
+	c := chunk.Config{CacheDir: dir, CacheMode: 0600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 20, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
 		c.CacheSize = uint64(*capacity)
 	}
@@ -89,12 +102,17 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 		}
 		return vfs.Compact(c, store, args[0].([]meta.Slice), args[1].(uint64), args[2].(uint8))
 	})
-	conf := &vfs.Config{Meta: meta.DefaultConf(), Format: *format, Chunk: &c, AttrTimeout: time.Second, EntryTimeout: time.Second, DirEntryTimeout: time.Second}
-	filesystem, err := fs.NewFileSystem(conf, m, store, prometheus.NewRegistry())
+	filesystem, err := fs.NewFileSystem(filesystemConfig(format, &c), m, store, prometheus.NewRegistry())
 	if err != nil {
 		return nil, err
 	}
 	return &Runtime{FS: filesystem, Store: store}, nil
+}
+
+func filesystemConfig(format *meta.Format, c *chunk.Config) *vfs.Config {
+	conf := &vfs.Config{Meta: meta.DefaultConf(), Format: *format, Chunk: c, AttrTimeout: time.Second, EntryTimeout: time.Second, DirEntryTimeout: time.Second}
+	conf.Meta.Retries = filesystemRetries
+	return conf
 }
 
 // Close flushes JuiceFS metadata and closes its session. Call it after the SMB

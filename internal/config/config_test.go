@@ -71,23 +71,17 @@ func TestStrictYAML(t *testing.T) {
 		})
 	}
 }
-func TestFreshDatasetCompressionSelector(t *testing.T) {
-	if mustConfig(t).Storage.Compression != nil {
-		t.Fatal("omission must adopt the stored codec on recovery")
-	}
+func TestStorageCompressionIsUnknown(t *testing.T) {
 	for _, codec := range []string{"none", "zstd"} {
-		c, err := loadText(t, validYAML+fmt.Sprintf("storage: {compression: %q}\n", codec))
-		if err != nil {
-			t.Fatalf("supported creation codec %s rejected: %v", codec, err)
-		}
-		if c.Storage.Compression == nil || *c.Storage.Compression != codec {
-			t.Fatal("explicit codec selection lost")
-		}
-	}
-	for _, value := range []string{`""`, `lz4`, `zstd:3`, `invalid`, `null`, `[zstd]`} {
-		if _, err := loadText(t, validYAML+"storage: {compression: "+value+"}\n"); err == nil {
-			t.Fatalf("accepted unsupported compression selector %s", value)
-		}
+		t.Run(codec, func(t *testing.T) {
+			_, err := loadText(t, validYAML+fmt.Sprintf("storage: {compression: %q}\n", codec))
+			if err == nil {
+				t.Fatal("accepted unknown storage.compression field")
+			}
+			if err.Error() != "invalid configuration YAML: unknown, duplicate or incorrectly typed field" {
+				t.Fatalf("expected the unknown-field error, got %v", err)
+			}
+		})
 	}
 }
 
@@ -172,6 +166,7 @@ func TestValidation(t *testing.T) {
 		"interval":                 func(c *Config) { c.Backup.Interval = 0 },
 		"trash":                    func(c *Config) { c.Backup.TrashDays = -1 },
 		"negative cache bytes":     func(c *Config) { n := ByteSize(-1); c.Storage.CacheSize = &n },
+		"negative capacity":        func(c *Config) { c.Storage.Capacity = -1 },
 		"port":                     func(c *Config) { c.SMB.Listen = "127.0.0.1:65536" },
 		"username":                 func(c *Config) { c.SMB.Username = "" },
 		"bucket":                   func(c *Config) { c.S3.Bucket = "" },
@@ -268,9 +263,12 @@ func TestSizeDecimalOmittedZeroSmallPositive(t *testing.T) {
 			if err != nil || int64(got) != want {
 				t.Fatal(got, err, want)
 			}
-			c, err := loadText(t, validYAML+fmt.Sprintf("storage: {cache_size: %q}\n", input))
-			if err != nil || c.Storage.CacheSize == nil || int64(*c.Storage.CacheSize) != want {
-				t.Fatal("YAML capacity", err)
+			c, err := loadText(t, validYAML+fmt.Sprintf("storage: {cache_size: %q, capacity: %q}\n", input, input))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Storage.CacheSize == nil || int64(*c.Storage.CacheSize) != want || int64(c.Storage.Capacity) != want {
+				t.Fatal("YAML size differs from parsed bytes")
 			}
 		})
 	}
@@ -279,7 +277,33 @@ func TestSizeDecimalOmittedZeroSmallPositive(t *testing.T) {
 			t.Fatalf("accepted %q", input)
 		}
 	}
-	if mustConfig(t).Storage.CacheSize != nil {
-		t.Fatal("omitted capacity not nil")
+	c := mustConfig(t)
+	if c.Storage.CacheSize != nil || c.Storage.Capacity != 0 {
+		t.Fatal("incorrect omitted size defaults")
+	}
+}
+
+func TestCapacityYAMLValidation(t *testing.T) {
+	for _, value := range []string{`"-1"`, `"1 MiB"`, `"1e6"`, `"NaN"`, `"1.2.3 MB"`, `"9223372036854775808"`, `"9223372036854775807.1"`, `"999999999999 TB"`, `null`, `true`, `[]`, `{}`} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := loadText(t, validYAML+"storage: {capacity: "+value+"}\n"); err == nil {
+				t.Fatal("accepted invalid capacity")
+			}
+		})
+	}
+	for _, value := range []string{"0", "1234", "0.1"} {
+		t.Run(value, func(t *testing.T) {
+			c, err := loadText(t, validYAML+"storage: {capacity: "+value+"}\n")
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := ParseByteSize(value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c.Storage.Capacity != want {
+				t.Fatal("numeric YAML size differs from parsed bytes")
+			}
+		})
 	}
 }

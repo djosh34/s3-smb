@@ -27,7 +27,7 @@ storage:
   state_dir: ./state
   cache_dir: ./cache
   cache_size: "10 GB"
-  compression: zstd
+  capacity: "2 TB"
 
 s3:
   bucket: your-existing-bucket
@@ -65,7 +65,7 @@ logging:
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
 | `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
-| `storage.compression` | `none` for a new dataset; the stored value for an existing one |
+| `storage.capacity` | `0` (no limit) |
 | `s3.bucket` | Required, must exist |
 | `s3.region` | `us-east-1`. Set the bucket's real region. |
 | `s3.endpoint` | AWS S3 for the region; otherwise an `http://` or `https://` origin |
@@ -90,13 +90,21 @@ values above 9,223,372,036,854,775,807 bytes are errors. Quote sizes.
 memory for I/O buffers (300 MiB by default) and disk for the SQLite database and
 metadata backup staging. The cache does not need to hold the whole dataset.
 
-## Compression
+## Capacity
 
-`storage.compression` is `none` or `zstd`. It applies to a new dataset and
-compresses each data block before encryption. For an existing dataset, leave it
-out and s3-smb uses the value stored in the bucket, including `lz4` from older
-JuiceFS formats. A value that differs from the stored one stops startup. There is
-no way to convert an existing dataset.
+`storage.capacity` limits the total space used by the JuiceFS volume. It uses the
+same decimal sizes as `storage.cache_size`. Omitting it or setting it to `0` means
+no limit.
+
+`serve` stores the capacity when it initializes a volume and updates it on each
+writable start. Restart to change the limit. Removing the setting clears a stored
+limit. Lowering it below current usage does not delete files, but writes that
+need more space fail with a no-space error until usage falls below the limit.
+JuiceFS counts allocated file space, including files kept in trash, not the size
+of encrypted objects or metadata backups in S3. This is not a bucket quota.
+
+The current SMB adapter reports at most 1 TiB of free space. When the capacity
+leaves less free space than that, the share reports the capacity as its size.
 
 ## Retention
 

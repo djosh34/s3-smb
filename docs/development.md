@@ -127,7 +127,7 @@ For a MinIO bump, publish the new release and update the image digest in
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file and
-lock operations, missing data, compression, startup with a damaged bucket, a
+lock operations, missing data, uncompressed objects, startup with a damaged bucket, a
 failed scheduled backup, a kill during an S3 upload, and recovery after deleting
 all local state, including from a metadata backup taken while files were being
 written.
@@ -157,6 +157,10 @@ includes `application-revision`, `harness-revision`, `build-tags` (an empty line
 for the default build), `application-build.log` and `native-build.txt` from
 `go version -m` on the built binary. The harness does not install a released
 version from the Go proxy.
+
+The acceptance backup job first runs the SQLite full-fsync pool test on macOS.
+It checks both pragma values on four live connections and four replacements.
+The same test runs in the Linux checks. SQLite uses full fsync only on macOS.
 
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
