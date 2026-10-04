@@ -21,7 +21,7 @@ import (
 func TestChaosConnectionDrops(t *testing.T) {
 	seed := chaos.Seed(t)
 	rng := chaos.Rand(seed, "connection-drops")
-	f := newFixture(t, false)
+	f := newChaosFixture(t, false)
 	f.interval = "1h"
 	f.cacheSize = "8 MB"
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
