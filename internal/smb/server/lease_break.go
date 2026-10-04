@@ -31,7 +31,11 @@ func (server *Server) BreakLeases(ctx context.Context, object smb.ObjectKey, cli
 			}
 			continue
 		}
-		if err := server.sendLeaseBreak(ctx, notification); err != nil {
+		actions, err := server.sendLeaseBreak(ctx, notification)
+		if cleanupErr := server.cleanup(context.WithoutCancel(ctx), actions); cleanupErr != nil {
+			return cleanupErr
+		}
+		if err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -42,10 +46,8 @@ func (server *Server) BreakLeases(ctx context.Context, object smb.ObjectKey, cli
 	}
 	for {
 		changed := server.options.State.BreakChanges()
-		for _, notification := range notifications {
-			if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreak(notification)); err != nil {
-				return err
-			}
+		if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreaks(object, clientGUID, leaseKey)); err != nil {
+			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
@@ -67,27 +69,32 @@ func (server *Server) sessionConnection(id uint64) *connection {
 	return server.sessions[id]
 }
 
-func (server *Server) sendLeaseBreak(ctx context.Context, notification state.Break) error {
+// sendLeaseBreak leaves queued bytes with the ordered sender. Detached completion
+// can end this wait before delivery; its caller owns the returned cleanup.
+func (server *Server) sendLeaseBreak(ctx context.Context, notification state.Break) ([]state.CloseAction, error) {
 	owner := server.sessionConnection(notification.Binding.SessionID)
 	if owner == nil {
-		return errors.New("lease holder has no connection")
+		return nil, errors.New("lease holder has no connection")
 	}
 	payload, err := owner.encodeLeaseBreak(notification)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	completed := owner.sender.enqueue(payload)
 	for {
 		changed := server.options.State.BreakChanges()
-		if notification.AckRequired && !server.options.State.BreakPending(notification) {
-			return nil
+		if notification.AckRequired {
+			actions := server.options.State.CompleteDetachedBreak(notification)
+			if len(actions) != 0 || !server.options.State.BreakPending(notification) {
+				return actions, nil
+			}
 		}
 		select {
 		case err := <-completed:
-			return err
+			return nil, err
 		case <-changed:
 		case <-ctx.Done():
-			return ctx.Err()
+			return nil, ctx.Err()
 		}
 	}
 }

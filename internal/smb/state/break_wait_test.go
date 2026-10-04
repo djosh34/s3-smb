@@ -58,6 +58,49 @@ func TestBreakChangesBroadcast(t *testing.T) {
 	}
 }
 
+func TestClosingAttachedSharedLeaseMemberBroadcasts(t *testing.T) {
+	for _, closeBy := range []string{"close", "session", "tree"} {
+		t.Run(closeBy, func(t *testing.T) {
+			table, _ := clockTable(t)
+			req := durableRequest(1, 2)
+			grant := durableGrant(req)
+			grant.Lease.State |= smb.LeaseWrite
+			attached := commit(t, table, req, grant)
+			other := req
+			other.Binding.SessionID = 2
+			other.CreateGUID = state.GUID{4}
+			detached := commit(t, table, other, grant)
+			if actions := table.Disconnect(2); len(actions) != 0 {
+				t.Fatal("durable member closed on disconnect")
+			}
+			notification := startBreak(t, table, req.Object, smb.LeaseRead|smb.LeaseHandle)
+			changed := table.BreakChanges()
+			var actions []state.CloseAction
+			switch closeBy {
+			case "close":
+				action, status := table.Close(attached.ID, attached.Binding)
+				statusIs(t, status, smb.StatusSuccess)
+				actions = []state.CloseAction{action}
+			case "session":
+				actions = table.CloseSession(attached.Binding.SessionID)
+			case "tree":
+				actions = table.CloseTree(attached.Binding)
+			}
+			if len(actions) != 1 || actions[0].FileID != attached.ID {
+				t.Fatalf("attached close: %+v", actions)
+			}
+			requireBreakChange(t, changed)
+			if !table.BreakPending(notification) {
+				t.Fatal("close removed the shared lease before detached completion")
+			}
+			actions = table.CompleteDetachedBreak(notification)
+			if len(actions) != 1 || actions[0].FileID != detached.ID || table.BreakPending(notification) {
+				t.Fatalf("detached completion: %+v", actions)
+			}
+		})
+	}
+}
+
 func TestAckBreakWithSessionBindingAfterReconnect(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
@@ -99,6 +142,48 @@ func TestCompleteDetachedBreak(t *testing.T) {
 		t.Fatalf("detached break completion: %+v", actions)
 	}
 	requireBreakChange(t, changed)
+}
+
+func TestCompleteDetachedBreaksScopesPendingCleanup(t *testing.T) {
+	table, _ := clockTable(t)
+	req := durableRequest(1, 2)
+	grant := durableGrant(req)
+	grant.Lease.State |= smb.LeaseWrite
+	open := commit(t, table, req, grant)
+	otherReq := durableRequest(2, 4)
+	otherGrant := durableGrant(otherReq)
+	otherGrant.Lease.State |= smb.LeaseWrite
+	commit(t, table, otherReq, otherGrant)
+	attachedReq := durableRequest(3, 6)
+	attachedReq.Binding.SessionID = 2
+	attachedGrant := durableGrant(attachedReq)
+	attachedGrant.Lease.State |= smb.LeaseWrite
+	commit(t, table, attachedReq, attachedGrant)
+	first := startBreak(t, table, req.Object, smb.LeaseRead|smb.LeaseHandle)
+	other := startBreak(t, table, otherReq.Object, smb.LeaseRead|smb.LeaseHandle)
+	attached := startBreak(t, table, attachedReq.Object, smb.LeaseRead|smb.LeaseHandle)
+	if actions := table.Disconnect(binding.SessionID); len(actions) != 0 {
+		t.Fatal("durable members closed before detached completion")
+	}
+	if notifications, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead|smb.LeaseHandle); len(notifications) != 0 || len(actions) != 0 {
+		t.Fatal("an earlier pending break emitted duplicate work")
+	}
+	if actions := table.CompleteDetachedBreaks(req.Object, req.ClientGUID, open.LeaseKey); len(actions) != 0 || !table.BreakPending(first) {
+		t.Fatal("completion revoked the requesting lease")
+	}
+	actions := table.CompleteDetachedBreaks(req.Object, state.GUID{9}, state.GUID{9})
+	if len(actions) != 1 || actions[0].FileID != open.ID || table.BreakPending(first) {
+		t.Fatalf("earlier pending completion: %+v", actions)
+	}
+	if !table.BreakPending(other) || !table.BreakPending(attached) {
+		t.Fatal("completion changed another object's break")
+	}
+	if actions := table.CompleteDetachedBreaks(attachedReq.Object, state.GUID{9}, state.GUID{9}); len(actions) != 0 || !table.BreakPending(attached) {
+		t.Fatal("completion revoked an attached lease")
+	}
+	if actions := table.CompleteDetachedBreaks(req.Object, state.GUID{9}, state.GUID{9}); len(actions) != 0 {
+		t.Fatal("completion returned duplicate cleanup")
+	}
 }
 
 func TestCompleteDetachedBreakDoesNotRevokeReattachedLease(t *testing.T) {

@@ -373,7 +373,7 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
 	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })
-	table.releaseLeases(record)
+	table.releaseLeases(record, open)
 	table.refreshDelete(record)
 	// A pending base deletion takes precedence when the inode's last open closes.
 	baseKey := smb.ObjectKey{Inode: key.Inode}

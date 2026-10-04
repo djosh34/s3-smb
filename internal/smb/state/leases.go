@@ -101,7 +101,7 @@ func (table *Table) commitLease(object smb.ObjectKey, grant Lease) {
 	table.leaseObjects[identity] = object
 }
 
-func (table *Table) releaseLeases(record *objectEntry) {
+func (table *Table) releaseLeases(record *objectEntry, closed *openEntry) {
 	before := len(record.Leases)
 	record.Leases = slices.DeleteFunc(record.Leases, func(lease Lease) bool {
 		for _, id := range record.Opens {
@@ -113,7 +113,7 @@ func (table *Table) releaseLeases(record *objectEntry) {
 		delete(table.leaseObjects, leaseIdentity{client: lease.ClientGUID, key: lease.Key})
 		return true
 	})
-	if len(record.Leases) != before {
+	if len(record.Leases) != before || validBinding(closed.Binding) && closed.LeaseKey != (GUID{}) {
 		table.signalBreakChanges()
 	}
 }

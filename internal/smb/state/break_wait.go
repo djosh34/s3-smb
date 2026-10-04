@@ -47,6 +47,27 @@ func (table *Table) LeasesBreaking(object smb.ObjectKey, clientGUID, leaseKey GU
 	return false
 }
 
+// CompleteDetachedBreaks completes all fully detached H-preserving breaks on
+// the object, including earlier pending breaks. The requesting lease is excluded.
+func (table *Table) CompleteDetachedBreaks(object smb.ObjectKey, clientGUID, leaseKey GUID) []CloseAction {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	record := table.objects[object]
+	if record == nil {
+		return nil
+	}
+	var detached []leaseRef
+	for _, lease := range record.Leases {
+		if lease.ClientGUID == clientGUID && lease.Key == leaseKey {
+			continue
+		}
+		if lease.Breaking && lease.BreakTo&smb.LeaseHandle != 0 && !validBinding(table.leaseBinding(record, lease)) {
+			detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
+		}
+	}
+	return table.revokeLeases(detached)
+}
+
 // CompleteDetachedBreak completes a captured break as NONE if it retains H and
 // every member is still detached. Reattachment or a later break leaves it alone.
 // This is the server's no-connection path from MS-SMB2 3.3.4.7.

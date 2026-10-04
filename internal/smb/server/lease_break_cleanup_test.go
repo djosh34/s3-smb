@@ -123,7 +123,10 @@ func TestLeaseAcknowledgmentAfterReattachment(t *testing.T) {
 		t.Fatal("missing notification")
 	}
 	sent := make(chan error, 1)
-	go func() { sent <- server.sendLeaseBreak(ctx, breaks[0]) }()
+	go func() {
+		actions, err := server.sendLeaseBreak(ctx, breaks[0])
+		sent <- errors.Join(err, server.cleanup(context.WithoutCancel(ctx), actions))
+	}()
 	if _, err := client.WaitLeaseBreak(ctx); err != nil {
 		t.Fatal(err)
 	}
