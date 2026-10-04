@@ -26,7 +26,9 @@
    metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
    must match the volume identity in the bucket.
 4. Recover the chosen backup into a new SQLite file, or open the existing one.
-5. Clear file locks left in SQLite by an earlier process.
+5. The old server clears only native lock rows with session ID zero, left by
+   an earlier read-only process. The `smbnext` server keeps byte-range locks in
+   memory and neither reads nor clears JuiceFS locks. Its locks vanish on restart.
 6. Take a metadata backup, or reuse the last one if it is younger than
    `backup.interval` and its object in S3 still matches. If this fails, SMB does
    not start.
