@@ -50,7 +50,7 @@ func validateFormat(f *meta.Format) error {
 	if f.BlockSize <= 0 || f.BlockSize > 16384 || f.BlockSize&(f.BlockSize-1) != 0 {
 		return errors.New("invalid block size")
 	}
-	if f.Compression != "none" && f.Compression != "lz4" && f.Compression != "zstd" {
+	if f.Compression != "none" {
 		return errors.New("unsupported compression")
 	}
 	if f.EncryptAlgo != "" && f.EncryptAlgo != object.AES256GCM_RSA {

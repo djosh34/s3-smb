@@ -103,6 +103,32 @@ func assertNoStartupDatabase(f *fixture) {
 	}
 }
 
+func TestStartupRejectsCompressedFormat(t *testing.T) {
+	f := newFixture(t, false)
+	format, err := storage.NewFormat(storage.VolumeName, false, 14)
+	if err != nil {
+		t.Fatal(err)
+	}
+	format.Compression = "zstd"
+	data, err := json.Marshal(format)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startupPut(f, "s3-smb/format.json", data)
+	before := startupRemoteSnapshot(f)
+	f.failStart = true
+	d := f.start()
+	assertNoStartupDatabase(f)
+	assertStartupRemoteUnchanged(f, before)
+	stderr, err := os.ReadFile(d.logs[1].Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(stderr, []byte("unsupported compression")) {
+		t.Fatal("startup did not reject the stored compression format")
+	}
+}
+
 func TestStartupRejectsPartialRemoteState(t *testing.T) {
 	for _, tc := range []struct {
 		name, key           string
