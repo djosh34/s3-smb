@@ -168,8 +168,12 @@ race-enabled smbnext daemon. Keep `GORACE=halt_on_error=1` and the same
 `S3_SMB_CHECK_MODE` (`pr` or `gate`). For example:
 
 ```sh
-S3_SMB_CHAOS_SEED=349 go test -race -shuffle=on -count=1 -v ./test/e2e -run '^TestChaosExample$'
+S3_SMB_CHECK_MODE=gate S3_SMB_CHAOS_SEED=349 go test -race -shuffle=on -count=1 -v -timeout=90m ./test/e2e -run '^TestChaosMixedFaults$'
 ```
+
+`TestChaosMixedFaults` runs one round in PR mode and three rounds in gate mode.
+Each round includes a real five-minute S3 outage. Reuse the failed run's mode
+when replaying it.
 
 Without `S3_SMB_CHAOS_BINARY`, daemon-backed chaos tests skip. Long scenarios use
 `gate` mode; PR runs use their short variants. The ledger checks acknowledged
