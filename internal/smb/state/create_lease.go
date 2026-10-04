@@ -38,6 +38,8 @@ func (table *Table) LeasesNeedBreak(object smb.ObjectKey, clientGUID, key GUID, 
 // It does not publish a grant. Commit checks it again. Other opens or reservations
 // remove W, and another writer removes R and H. A shared lease is never demoted
 // by a smaller request or promoted during a break (MS-SMB2 3.3.5.9.11).
+// A zero State with an existing Key keeps membership without changing the lease;
+// LeaseFor supplies its held state, including H after an acknowledged downgrade.
 func (table *Table) PrepareLease(reservation Reservation, requested Lease) (Lease, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
@@ -56,6 +58,7 @@ func (table *Table) PrepareLease(reservation Reservation, requested Lease) (Leas
 		return Lease{}, smb.StatusInvalidParameter
 	}
 	selected := requested
+	joining := false
 	for _, open := range table.opens {
 		if open.Object == request.Object && (open.ClientGUID != requested.ClientGUID || open.LeaseKey != requested.Key) {
 			selected.State = reduceLease(selected.State, open.SharingIntent)
@@ -67,6 +70,7 @@ func (table *Table) PrepareLease(reservation Reservation, requested Lease) (Leas
 		}
 	}
 	if current := table.lease(request.Object, identity); current != nil {
+		joining = true
 		selected.Epoch, selected.ParentKey = current.Epoch, current.ParentKey
 		if current.Breaking {
 			selected.State &= current.BreakTo
@@ -80,7 +84,7 @@ func (table *Table) PrepareLease(reservation Reservation, requested Lease) (Leas
 		// Acquiring the initial nonzero V2 state is a state change.
 		selected.Epoch++
 	}
-	if selected.State == 0 {
+	if selected.State == 0 && !joining {
 		return Lease{}, smb.StatusSuccess
 	}
 	return selected, smb.StatusSuccess

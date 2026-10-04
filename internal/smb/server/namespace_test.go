@@ -19,14 +19,23 @@ func TestParentGuardsShareServerAndAllowOtherParents(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := RequestContext{server: server}
-	unlock := lockParent(request, 1)
-	done := make(chan struct{})
+	unlock, err := lockParent(t.Context(), request, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
 	go func() {
-		release := lockParent(RequestContext{server: server}, 1)
-		release()
-		close(done)
+		release, lockErr := lockParent(t.Context(), RequestContext{server: server}, 1)
+		if lockErr == nil {
+			release()
+		}
+		done <- lockErr
 	}()
-	other := lockParent(request, 2)
+	other, err := lockParent(t.Context(), request, 2)
+	if err != nil {
+		unlock()
+		t.Fatal(err)
+	}
 	other()
 	select {
 	case <-done:
@@ -35,7 +44,10 @@ func TestParentGuardsShareServerAndAllowOtherParents(t *testing.T) {
 	}
 	unlock()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("parent guard did not release")
 	}
@@ -50,24 +62,34 @@ func TestLockParentsOrdersAndDeduplicates(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := RequestContext{server: server}
-	done := make(chan struct{}, 2)
+	done := make(chan error, 2)
 	for _, pair := range [][2]smb.Inode{{1, 2}, {2, 1}} {
 		go func() {
 			for range 100 {
-				unlock := lockParents(request, pair[0], pair[1])
+				unlock, lockErr := lockParents(t.Context(), request, pair[0], pair[1])
+				if lockErr != nil {
+					done <- lockErr
+					return
+				}
 				unlock()
 			}
-			done <- struct{}{}
+			done <- nil
 		}()
 	}
 	for range 2 {
 		select {
-		case <-done:
+		case lockErr := <-done:
+			if lockErr != nil {
+				t.Fatal(lockErr)
+			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("opposite parent order deadlocked")
 		}
 	}
-	unlock := lockParents(request, 1, 1)
+	unlock, err := lockParents(t.Context(), request, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	unlock()
 }
 
@@ -177,7 +199,10 @@ func TestLookupLockedCancellationWhileWaitingForParent(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := RequestContext{server: server, Storage: &cleanupStorage{}}
-	unlock := lockParent(request, 1)
+	unlock, err := lockParent(t.Context(), request, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer unlock()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
@@ -252,8 +277,12 @@ func TestCloseOpenDoesNotDrainWhileHoldingParent(t *testing.T) {
 		t.Fatal("close did not acquire parent")
 	}
 	go func() {
-		unlock := lockParent(request, 1)
+		unlock, err := lockParent(t.Context(), request, 1)
 		release()
+		if err != nil {
+			t.Error(err)
+			return
+		}
 		unlock()
 	}()
 	waitParentUsers(t, server, 1, 2)
@@ -299,14 +328,17 @@ func TestCleanupDeletionBlocksSameParentLookup(t *testing.T) {
 	request := RequestContext{server: server, Storage: storage}
 	lookup := make(chan error, 1)
 	go func() {
-		_, unlock, err := lookupLocked(context.Background(), request, "file")
+		_, unlock, lookupErr := lookupLocked(context.Background(), request, "file")
 		if unlock != nil {
 			unlock()
 		}
-		lookup <- err
+		lookup <- lookupErr
 	}()
 	waitParentUsers(t, server, 1, 2)
-	other := lockParent(request, 2)
+	other, err := lockParent(t.Context(), request, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
 	other()
 	select {
 	case err := <-lookup:

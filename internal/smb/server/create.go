@@ -210,7 +210,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 		return reply{status: leaseStatus}, nil
 	}
 	grant.CreateAction = action
-	if durableErr := grantCreateDurable(create, &grant); durableErr != nil {
+	if durableErr := grantCreateDurable(request, create, reservation, &grant); durableErr != nil {
 		return reply{}, errors.Join(smb.ErrInvalidParameter, durableErr)
 	}
 	open, status := request.Opens.Commit(reservation, grant)
