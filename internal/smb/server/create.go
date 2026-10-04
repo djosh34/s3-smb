@@ -200,6 +200,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 		if action == 3 {
 			attributes |= resolved.Attr.Attributes
 		}
+		attributes = normalizeFileAttributes(attributes)
 		if attrErr := request.Storage.SetAttr(ctx, resolved.Object, smb.AttrChange{Attributes: &attributes}); attrErr != nil {
 			return reply{}, attrErr
 		}
