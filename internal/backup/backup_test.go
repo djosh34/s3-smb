@@ -58,12 +58,19 @@ func newStore(t *testing.T) *fixtureStore {
 	}
 	return &fixtureStore{ObjectStorage: s, dir: dir}
 }
-func newMetadata(t *testing.T) (meta.Meta, *meta.Format) {
+
+type testMetadata struct {
+	meta.Meta
+	path string
+}
+
+func newMetadata(t *testing.T) (*testMetadata, *meta.Format) {
 	t.Helper()
 	c := meta.DefaultConf()
 	c.NoBGJob = true
 	c.MaxDeletes = 0
-	m, err := meta.NewSQLite(filepath.Join(t.TempDir(), "metadata.db"), c)
+	path := filepath.Join(t.TempDir(), "metadata.db")
+	m, err := meta.NewSQLite(path, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,16 +79,16 @@ func newMetadata(t *testing.T) (meta.Meta, *meta.Format) {
 	if err = m.Init(f, false); err != nil {
 		t.Fatal(err)
 	}
-	return m, f
+	return &testMetadata{m, path}, f
 }
-func newManager(t *testing.T, m meta.Meta, s object.ObjectStorage, dir string, now func() time.Time, timeout time.Duration) *Manager {
+func newManager(t *testing.T, m *testMetadata, s object.ObjectStorage, dir string, now func() time.Time, timeout time.Duration) *Manager {
 	t.Helper()
 	p, err := NewProtection(time.Hour, timeout, 14)
 	if err != nil {
 		t.Fatal(err)
 	}
 	p.now = now
-	mgr, err := New(m, s, Options{StateDir: dir, Interval: time.Hour, Timeout: timeout, Attempts: 1, Protection: p})
+	mgr, err := New(m, s, Options{StateDir: dir, DatabasePath: m.path, Interval: time.Hour, Timeout: timeout, Attempts: 1, Protection: p})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +203,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 				t.Fatal(st)
 			}
 			now = now.Add(time.Second)
-			next := newManager(t, recovered, s, t.TempDir(), clock, 5*time.Second)
+			next := newManager(t, &testMetadata{recovered, path}, s, t.TempDir(), clock, 5*time.Second)
 			if _, err = next.Backup(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -237,7 +244,7 @@ func TestBackupCollisionBackwardClockAndAmbiguousUpload(t *testing.T) {
 	if _, err = ambiguous.Backup(context.Background()); err == nil {
 		t.Fatal("lost response reported success")
 	}
-	lostKey := "meta/dump-" + now.Format("2006-01-02-150405") + ".json.gz"
+	lostKey := "meta/snapshot-" + now.Format("2006-01-02-150405") + ".db.gz"
 	lostData := readObject(t, s, lostKey)
 	// Same name after restart must remain burned even if response was ambiguous.
 	s.lost.Store(false)
@@ -342,21 +349,23 @@ func TestBackupScheduledFailureAndSuspension(t *testing.T) {
 	}
 }
 
-type stalledMeta struct {
-	meta.Meta
-	started, release chan struct{}
+type stalledStore struct {
+	*fixtureStore
+	release chan struct{}
 }
 
-func (m stalledMeta) DumpMeta(w io.Writer, r meta.Ino, n int, s, f, t bool) error {
-	close(m.started)
-	<-m.release
-	return m.Meta.DumpMeta(w, r, n, s, f, t)
+func (s stalledStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	<-s.release
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return s.fixtureStore.PutIfAbsent(ctx, key, r)
 }
-func TestBackupTimeoutWaitJoinsNativeExport(t *testing.T) {
+func TestBackupTimeoutWaitJoinsWorker(t *testing.T) {
 	m, _ := newMetadata(t)
 	s := newStore(t)
-	stalled := stalledMeta{m, make(chan struct{}), make(chan struct{})}
-	mgr := newManager(t, stalled, s, t.TempDir(), time.Now, 30*time.Millisecond)
+	stalled := stalledStore{s, make(chan struct{})}
+	mgr := newManager(t, m, stalled, t.TempDir(), time.Now, 100*time.Millisecond)
 	if _, err := mgr.Backup(context.Background()); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("timeout=%v", err)
 	}
@@ -424,7 +433,7 @@ func TestCleanupRecoveryStagingLeavesUnknownFiles(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for _, name := range []string{"selected.json.gz", "metadata.db", "metadata.db-wal", "metadata.db-shm"} {
+	for _, name := range []string{"metadata.db", "metadata.db-wal", "metadata.db-shm"} {
 		if err := os.WriteFile(filepath.Join(owned, name), []byte("abandoned"), 0600); err != nil {
 			t.Fatal(err)
 		}

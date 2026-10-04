@@ -25,8 +25,8 @@ type Point struct {
 }
 
 func parsePoint(key string) (Point, error) {
-	const prefix = "meta/dump-"
-	const suffix = ".json.gz"
+	const prefix = "meta/snapshot-"
+	const suffix = ".db.gz"
 	if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, suffix) {
 		return Point{}, errors.New("not a metadata backup name")
 	}
@@ -40,7 +40,7 @@ func parsePoint(key string) (Point, error) {
 
 // List returns the metadata backups in the bucket, newest first.
 func List(ctx context.Context, blob object.ObjectStorage) ([]Point, error) {
-	ch, err := object.ListAll(ctx, blob, "meta/dump-", "", true, false)
+	ch, err := object.ListAll(ctx, blob, "meta/snapshot-", "", true, false)
 	if err != nil {
 		return nil, err
 	}
