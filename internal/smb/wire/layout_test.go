@@ -94,6 +94,34 @@ func TestCommandFieldOffsets(t *testing.T) {
 	}
 }
 
+func TestNegotiateResponseEmptySecurityBufferOffset(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		dialect uint16
+	}{
+		{name: "wildcard", dialect: 0x02ff},
+		{name: "3.1.1", dialect: 0x0311},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			encoded, err := EncodeNegotiateResponse(NegotiateResponse{Dialect: test.dialect})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(encoded) != 64 {
+				t.Fatalf("empty NEGOTIATE response body length = %d, want 64", len(encoded))
+			}
+			// MS-SMB2 3.3.5.3.1 and 3.3.5.4 place Buffer after the 64-byte
+			// header and 64-byte fixed body, even when the buffer is empty.
+			if offset := binary.LittleEndian.Uint16(encoded[56:58]); offset != 128 {
+				t.Errorf("security buffer offset = %d, want 128", offset)
+			}
+			if length := binary.LittleEndian.Uint16(encoded[58:60]); length != 0 {
+				t.Errorf("security buffer length = %d, want 0", length)
+			}
+		})
+	}
+}
+
 func TestContextVariantsAndReservedBytes(t *testing.T) {
 	checkRoundTrip(t, LeaseContext{Key: [16]byte{1}, Duration: 2, State: 3, Flags: 4, Version: 1}, func(v LeaseContext) ([]byte, error) { c, err := EncodeLeaseContext(v); return c.Data, err }, func(b []byte) (LeaseContext, error) { return DecodeLeaseContext(CreateContext{Name: "RqLs", Data: b}) })
 	for bits := uint64(0); bits < 8; bits++ {
