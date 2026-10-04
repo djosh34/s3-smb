@@ -9,6 +9,9 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
+// Matches smbfs allocation accounting and the filesystem information replies.
+const setInfoAllocationUnit uint64 = 4096
+
 func handleSetInfo(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	info, err := wire.DecodeSetInfoRequest(message)
 	if err != nil {
@@ -89,6 +92,13 @@ func setEndOfFileInfo(ctx context.Context, request RequestContext, open state.Op
 	if info.EndOfFile >= 1<<63 {
 		return smb.StatusInvalidParameter
 	}
+	attr, err := request.Storage.GetAttr(ctx, open.Object)
+	if err != nil {
+		return setInfoStorageStatus(ctx, request, err)
+	}
+	if attr.Kind == smb.KindDirectory {
+		return smb.StatusInvalidParameter
+	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &info.EndOfFile}))
 }
 
@@ -100,17 +110,22 @@ func setAllocationInfo(ctx context.Context, request RequestContext, open state.O
 	if err != nil {
 		return smb.StatusInfoLengthMismatch
 	}
-	if info.AllocationSize >= 1<<63 {
+	// The rounded allocation must still fit the signed protocol size field.
+	if info.AllocationSize > 1<<63-setInfoAllocationUnit {
 		return smb.StatusInvalidParameter
 	}
+	allocation := (info.AllocationSize + setInfoAllocationUnit - 1) / setInfoAllocationUnit * setInfoAllocationUnit
 	attr, err := request.Storage.GetAttr(ctx, open.Object)
 	if err != nil {
 		return setInfoStorageStatus(ctx, request, err)
 	}
-	if info.AllocationSize >= attr.Size {
+	if attr.Kind == smb.KindDirectory {
+		return smb.StatusInvalidParameter
+	}
+	if allocation >= attr.Size {
 		return smb.StatusSuccess
 	}
-	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &info.AllocationSize}))
+	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &allocation}))
 }
 
 func setInfoStorageStatus(ctx context.Context, request RequestContext, err error) smb.Status {
