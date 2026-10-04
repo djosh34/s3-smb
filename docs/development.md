@@ -26,7 +26,9 @@
    metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
    must match the volume identity in the bucket.
 4. Recover the chosen backup into a new SQLite file, or open the existing one.
-5. Clear file locks left in SQLite by an earlier process.
+5. The old server clears only native lock rows with session ID zero, left by
+   an earlier read-only process. The `smbnext` server keeps byte-range locks in
+   memory and neither reads nor clears JuiceFS locks. Its locks vanish on restart.
 6. Take a metadata backup, or reuse the last one if it is younger than
    `backup.interval` and its object in S3 still matches. If this fails, SMB does
    not start.
@@ -148,7 +150,8 @@ prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
 GitHub's `check` job calls `scripts/check.sh` on every pull request and on
-`main`. Dispatch the workflow with `gate=true` for a gate run. The job name
+`main`. It also runs when a merge queue group requests checks.
+Dispatch the workflow with `gate=true` for a gate run. The job name
 `check` is fixed because branch protection requires it. Failed runs upload
 daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
 

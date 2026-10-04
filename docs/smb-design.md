@@ -80,6 +80,8 @@ The encryption setting can permit signed plaintext, but never AES-CCM or another
 ## Async I/O and credits
 
 The server sends an interim STATUS_PENDING when READ, WRITE or FLUSH waits on S3.
+CREATE uses the same path when it waits for a lease acknowledgment or holder CLOSE,
+so those requests can progress on the same connection.
 The server allows a short bounded wait for local work before choosing that reply.
 A request that finishes locally gets one synchronous reply.
 Each pending request owns its async ID and completion state.
@@ -90,8 +92,9 @@ After that window, the server returns the storage error visibly.
 The server validates the whole compound before dispatch.
 The server verifies request signatures and credit charges before changing state.
 A missing or bad signature, or plaintext on an encrypted session, gets
-ACCESS_DENIED before any member of that compound is dispatched. Invalid GCM
-authentication or malformed framing still closes the transport.
+ACCESS_DENIED before any member of that compound is dispatched. A denial for
+multiple encrypted sessions uses separate transforms, one session per frame.
+Invalid GCM authentication or malformed framing still closes the transport.
 Each command consumes its credit charge once.
 For multi-credit commands, the charge rounds the larger of input and expected output up to 64 KiB units.
 A synchronous response grants credits once.
