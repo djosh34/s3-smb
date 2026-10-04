@@ -40,7 +40,7 @@ control the scope, not a Samba server's defaults.
 | samba-private-ioctl | [`read.c`, `test_read_bug14607`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/read.c#L293-L441) requires Samba's private padding-control IOCTL and otherwise skips. |
 | windows-eas-shortnames | [`dir.c`, `test_one_file`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/dir.c#L452-L674) uses complex-file Windows EA setup and requires alternate-name information for short-name comparisons. Ordinary directory classes remain candidates. |
 | optional-file-index | [`dir.c`, `test_file_index`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/dir.c#L1170-L1281) explicitly skips a zero file index. M0 uses opaque storage cookies; the QUERY_DIRECTORY contract permits ignoring INDEX_SPECIFIED and returns zero indexes. This optional feature cannot pass the fail-on-skip gate. |
-| objectids | [`compound.c`, `test_compound_related3`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/compound.c#L376-L444) requires successful FSCTL_CREATE_OR_GET_OBJECT_ID, refused by the contract. `related5` remains a candidate because it tests a closed-handle error, not a successful object-ID grant. |
+| objectids | [`compound.c`, `test_compound_related3`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/compound.c#L376-L444) requires successful FSCTL_CREATE_OR_GET_OBJECT_ID, refused by the contract. `related5` remains a candidate because its first, unrelated IOCTL uses an unbound all-ones FileId and expects FILE_CLOSED; the following CLOSE is related. It does not require a successful object-ID grant. |
 | acls-objectids | [`compound.c`, `test_compound_related4`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/compound.c#L446-L563) sets a DACL before testing inherited errors. |
 | compound-error-policy | [`compound.c`, `test_compound_related6`](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/compound.c#L616-L731) requires successful related READ and CLOSE after an ACCESS_DENIED WRITE. M0's recorded simple dispatch policy propagates an error-severity predecessor to dependent FileId commands. No runtime policy change is proposed here. |
 | change-notify | [`compound.c`, related7/8/9 and interim1/2](https://github.com/samba-team/samba/blob/samba-4.17.12/source4/torture/smb2/compound.c#L733-L1071) require pending notifications and success or cancellation, while #169 requires immediate NOT_SUPPORTED. The interim tests use the same unsupported notification operation at lines 1740-1880. |
@@ -142,7 +142,8 @@ none skipped**. The run exited 1. Exact names, Samba seeds, binary hashes and ra
 log hashes are in [`testdata/smbtorture-m3.proof`](testdata/smbtorture-m3.proof).
 The Go shuffle seed was `1791118396382503198`.
 
-Failures remain candidates and blockers:
+The historical failures remain recorded below. The later source-backed compound
+classification follows the table; compatible failures still block activation.
 
 | Exact ID | Observed failure | Routed owner |
 | --- | --- | --- |
@@ -153,13 +154,47 @@ Failures remain candidates and blockers:
 | smb2.dir.sorted.sorted | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
 | smb2.dir.large-files.large-files | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
 | smb2.compound.related5.related5 | NOT_SUPPORTED instead of FILE_CLOSED, compound.c:599. | Mac/file operations (IOCTL) |
-| smb2.compound.invalid1.invalid1 | Connection closes instead of INVALID_PARAMETER, compound.c:1493. | connection |
-| smb2.compound.invalid2.invalid2 | Connection closes instead of first-member success, compound.c:1575. | connection |
-| smb2.compound.invalid4.invalid4 | NOT_SUPPORTED instead of INVALID_PARAMETER, compound.c:1724. | connection |
+| smb2.compound.invalid1.invalid1 | Historical encrypted probe disconnected, while Samba expected INVALID_PARAMETER, compound.c:1493. Later A triage identifies the required GCM first-RELATED binding check. | connection; not a compatible encrypted gate expectation |
+| smb2.compound.invalid2.invalid2 | Historical encrypted probe disconnected, while Samba expected first-member success, compound.c:1575. Later A triage identifies the required GCM compound-session binding check. | connection; signed variant is separate |
+| smb2.compound.invalid4.invalid4 | Historical probe returned NOT_SUPPORTED instead of Samba's INVALID_PARAMETER, compound.c:1724. MS-SMB2 requires disconnect for unknown opcode 0xff, not either status. | connection; Samba expectation is incompatible |
 | smb2.compound_find.compound_find_close.compound_find_close | Daemon data race and exit 66 during file creation. | storage/backup via coordinator |
 | smb2.rename.rename_dir_openfile.rename_dir_openfile | Rename succeeds instead of ACCESS_DENIED, rename.c:1038. | file operations |
 | smb2.rename.close-full-information.close-full-information | CREATE attributes are 0x80 instead of archive 0x20, rename.c:1469. | file operations |
 | smb2.rw.invalid.invalid | READ at INT64_MAX with length 1 gets END_OF_FILE instead of INVALID_PARAMETER, read_write.c:233. This occurs before the test's maximum-file-size policy check. | files-io |
+
+### Current compound disposition
+
+The original 34-name probe remains **20 PASS, 14 FAIL, 0 SKIP**. These later
+classifications do not turn a failed command into a pass or activate a name.
+The staged selector and historical proof are unchanged pending final selection.
+
+A's minimised diagnosis is recorded in
+`/tmp/p3-area-connection-triage/compound/triage.md`. The CLI uses SMB encryption
+by default; `encryption.enabled: false` controls S3 at-rest encryption, not SMB.
+[MS-SMB2 3.3.5.2.1.1](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/94398d18-48ff-4b6c-a32d-0154b2e88238)
+requires disconnect for first-RELATED decrypted requests and unrelated members
+whose SessionId differs from the transform session. The observed encrypted
+`invalid1` and `invalid2` disconnects therefore must not be repaired by weakening
+GCM identity guards. Any compatible signed-plaintext variant needs an explicitly
+plaintext fixture and A's raw regression, not rewritten expected values.
+
+[MS-SMB2 3.3.5.2.6](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/853e5234-d5d6-4a18-a2f5-1c792e562947)
+requires disconnect without an error response for an unrecognised command.
+`invalid4`'s unknown 0xff opcode cannot become a compatible gate by changing the
+server to return Samba's INVALID_PARAMETER. A owns the conformance regression
+and correction; the earlier NOT_SUPPORTED result remains historical evidence.
+
+The current #363 contract propagates error-severity predecessor status. A's
+signed `invalid2` diagnosis ends with USER_SESSION_DELETED under that policy.
+[MS-SMB2 3.3.5.2.7.2](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/46dd4182-62d3-4e30-9fe5-e2ec124edca1)
+and the recorded project contract control any later amendment. F does not
+rewrite that expected value or add a protocol whitelist.
+
+D's checked `448f4c1` adds a plain handle-validating refusal for `related5`, not
+an FSCTL implementation. It is not yet a passing F Samba rerun on landed code.
+Directory READ/access/boundary checks, CREATE attributes, rename behavior,
+empty-root listing and all five actual backup races remain genuine blockers
+until their owners' checked fixes land and the corresponding real tests pass.
 
 The five race reports identify a read in `dbMeta.genLog` at `sql.go:1085` and a
 write in `baseMeta.Load` at `base.go:733`, called by
