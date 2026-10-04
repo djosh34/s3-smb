@@ -176,6 +176,57 @@ func TestCancelCannotCrossSessionOrConnection(t *testing.T) {
 	}
 }
 
+func TestCancelCannotTargetAnotherAuthenticatedSession(t *testing.T) {
+	for _, asynchronous := range []bool{false, true} {
+		t.Run(fmt.Sprintf("async_%t", asynchronous), func(t *testing.T) {
+			server, release := controlledAsync(t, wire.Read, reply{status: smb.StatusFileLockConflict}, nil)
+			client := newRawSessions(t, server)
+			first := client.start(t, 0)
+			firstKey := client.finish(t, first, 0)
+			second := client.start(t, 0)
+			secondKey := client.finish(t, second, 0)
+			body, err := wire.EncodeTreeConnectRequest(wire.TreeConnectRequest{Path: "\\\\server\\backup"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tree := client.protected(t, firstKey, wire.Message{Header: wire.Header{Command: wire.TreeConnect, SessionID: first.id, CreditCharge: 1, Credit: 16}, Body: body})
+			request := asyncMessage(t, wire.Read, client.nextID)
+			request.Header.SessionID, request.Header.TreeID = first.id, tree.Header.TreeID
+			pending := client.protected(t, firstKey, request)
+			cancel := cancelMessage(t, pending.Header, asynchronous)
+			cancel.Header.SessionID = second.id
+			payload, err := wire.Join([]wire.Message{cancel})
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err = secondKey.Seal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sendPayload(client.ctx, t, client.client, payload)
+			barrier := echo(t, client.nextID)
+			barrier.Header.SessionID = second.id
+			if response := client.protected(t, secondKey, barrier); response.Header.Command != wire.Echo || response.Header.Status != smb.StatusSuccess {
+				t.Fatal("CANCEL crossed authenticated sessions or got a reply")
+			}
+			close(release)
+			payload, err = client.client.ReceiveRaw(client.ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			payload, err = firstKey.Open(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			final, err := wire.Split(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			assertAsyncFinal(t, final[0], pending, smb.StatusFileLockConflict)
+		})
+	}
+}
+
 func TestCancelHandlerThatFinishesAnywayRepliesOnce(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {
