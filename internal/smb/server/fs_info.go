@@ -15,7 +15,8 @@ const (
 
 // queryFilesystemInfo returns class data for the request's disk share.
 // Open validation belongs to QUERY_INFO; volume information needs no handle.
-func queryFilesystemInfo(ctx context.Context, request RequestContext, class uint8, outputLength uint32) ([]byte, smb.Status) {
+// It returns an error only when the data cannot be encoded.
+func queryFilesystemInfo(ctx context.Context, request RequestContext, class uint8, outputLength uint32) ([]byte, smb.Status, error) {
 	infoClass := wire.FilesystemInfoClass(class)
 	var minimum uint32
 	switch infoClass {
@@ -33,29 +34,29 @@ func queryFilesystemInfo(ctx context.Context, request RequestContext, class uint
 		// MS-FSCC 2.5 defines classes 1 through 11. None of the other
 		// defined classes, including object IDs (8), are implemented.
 		if class >= 1 && class <= 11 {
-			return nil, smb.StatusNotSupported
+			return nil, smb.StatusNotSupported, nil
 		}
-		return nil, smb.StatusInvalidInfoClass
+		return nil, smb.StatusInvalidInfoClass, nil
 	}
 	if outputLength < minimum {
-		return nil, smb.StatusInfoLengthMismatch
+		return nil, smb.StatusInfoLengthMismatch, nil
 	}
 	var space smb.Space
 	if infoClass == wire.ClassFilesystemVolume || infoClass == wire.ClassFilesystemSize || infoClass == wire.ClassFilesystemFullSize {
 		var err error
 		space, err = request.Storage.StatFS(ctx)
 		if err != nil {
-			return nil, smb.StatusFromError(err)
+			return nil, smb.StatusFromError(err), nil
 		}
 	}
 	data, err := encodeFilesystemInfo(infoClass, request.Tree.Share, space)
 	if err != nil {
-		return nil, smb.StatusInternalError
+		return nil, smb.StatusSuccess, err
 	}
 	if uint64(outputLength) < uint64(len(data)) {
-		return data[:outputLength], smb.StatusBufferOverflow
+		return data[:outputLength], smb.StatusBufferOverflow, nil
 	}
-	return data, smb.StatusSuccess
+	return data, smb.StatusSuccess, nil
 }
 
 func encodeFilesystemInfo(class wire.FilesystemInfoClass, label string, space smb.Space) ([]byte, error) {

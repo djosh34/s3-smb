@@ -63,6 +63,7 @@ type ShareMode Rights
 // granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
 // is tracked separately and makes the object delete-pending at once.
 // WriteThrough retains CREATE's durability mode for every WRITE on this open.
+// Kind is the opened object's kind, which never changes.
 // This table is never persisted across restart.
 type Open struct {
 	DurableDeadline time.Time
@@ -84,6 +85,7 @@ type Open struct {
 	DeleteOnClose   bool
 	WriteThrough    bool
 	Durable         bool
+	Kind            smb.Kind
 }
 
 // DirectoryCursor belongs to one SMB open. Empty continuation patterns reuse
@@ -180,6 +182,7 @@ type Grant struct {
 	CreateAction   uint32
 	DeleteOnClose  bool
 	WriteThrough   bool
+	Kind           smb.Kind
 }
 
 // CloseAction transfers cleanup to the server. FileID names the removed open;
@@ -228,8 +231,7 @@ type Break struct {
 }
 
 // Table owns all indexes. Returned structs and slices are copies. Failed methods
-// leave state unchanged, except LockSequence invalidates mismatched replay metadata
-// before applying a vector. Status-returning methods return StatusSuccess on success,
+// leave state unchanged. Status-returning methods return StatusSuccess on success,
 // otherwise a command-specific status, such as SHARING_VIOLATION, DELETE_PENDING,
 // LOCK_NOT_GRANTED, FILE_LOCK_CONFLICT, RANGE_NOT_LOCKED or DUPLICATE_OBJECTID.
 // Detached durable opens still participate in every sharing and lock check.
@@ -251,7 +253,6 @@ type Table struct {
 type openEntry struct {
 	deleteName smb.Name
 	Open
-	lockSequences      [64]lockSequenceEntry
 	dispositionPending bool
 }
 

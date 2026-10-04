@@ -15,7 +15,11 @@ const (
 	lockFailImmediately uint32 = 0x10
 )
 
-func handleLock(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
+// handleLock never waits: LOCK is not async eligible and does no storage I/O.
+// A conflicting range fails at once with LOCK_NOT_GRANTED, also when the
+// client asked to wait, so a single-range lock without FAIL_IMMEDIATELY acts
+// as if it had the flag.
+func handleLock(_ context.Context, request RequestContext, message wire.Message) (reply, error) {
 	body, err := wire.DecodeLockRequest(message)
 	if err != nil {
 		return reply{status: smb.StatusInvalidParameter}, nil
@@ -31,19 +35,12 @@ func handleLock(ctx context.Context, request RequestContext, message wire.Messag
 		result.status = status
 		return result, nil
 	}
-	attr, err := request.Storage.GetAttr(ctx, open.Object)
-	if err != nil {
-		return result, err
-	}
-	if attr.Kind == smb.KindDirectory {
-		// MS-FSA 2.1.5.7 forbids byte-range locks on directory streams.
+	if open.Kind == smb.KindDirectory {
+		// MS-FSA 2.1.5.7 forbids byte-range locks on directories.
 		result.status = smb.StatusInvalidParameter
 		return result, nil
 	}
-	// The table keys ranges by the open's complete ObjectKey and applies the
-	// vector atomically. FAIL_IMMEDIATELY never changes our non-blocking policy.
-	result.status = request.Opens.LockSequence(open.ID, request.Binding(), ranges, unlock, body.Sequence)
-	if result.status != smb.StatusSuccess {
+	if result.status = request.Opens.Lock(open.ID, request.Binding(), ranges, unlock); result.status != smb.StatusSuccess {
 		return result, nil
 	}
 	result.body, err = wire.EncodeLockResponse(wire.EmptyResponse{})

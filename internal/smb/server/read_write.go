@@ -22,7 +22,7 @@ func handleRead(ctx context.Context, request RequestContext, message wire.Messag
 		return reply{status: status}, nil
 	}
 	defer release()
-	result := reply{fileID: wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}}
+	result := reply{fileID: wire.FileID(open.ID)}
 	if open.GrantedAccess&fileReadData == 0 {
 		result.status = smb.StatusAccessDenied
 		return result, nil
@@ -31,15 +31,11 @@ func handleRead(ctx context.Context, request RequestContext, message wire.Messag
 		result.status = smb.StatusInvalidParameter
 		return result, nil
 	}
+	if open.Kind == smb.KindDirectory {
+		result.status = smb.StatusInvalidDeviceRequest
+		return result, nil
+	}
 	if read.Length == 0 {
-		attr, attrErr := request.Storage.GetAttr(ctx, open.Object)
-		if attrErr != nil {
-			return result, attrErr
-		}
-		if attr.Kind == smb.KindDirectory {
-			result.status = smb.StatusInvalidDeviceRequest
-			return result, nil
-		}
 		if read.MinimumCount != 0 {
 			result.status = smb.StatusEndOfFile
 			return result, nil
@@ -57,10 +53,6 @@ func handleRead(ctx context.Context, request RequestContext, message wire.Messag
 		return result, fmt.Errorf("%w: invalid read count %d", smb.ErrIO, n)
 	}
 	if err != nil && smb.StatusFromError(err) != smb.StatusEndOfFile {
-		if smb.StatusFromError(err) == smb.StatusFileIsADirectory {
-			result.status = smb.StatusInvalidDeviceRequest
-			return result, nil
-		}
 		return result, err
 	}
 	if uint64(n) < uint64(read.MinimumCount) || n == 0 && read.Length != 0 {
@@ -81,7 +73,7 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 		return reply{status: status}, nil
 	}
 	defer release()
-	result := reply{fileID: wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}}
+	result := reply{fileID: wire.FileID(open.ID)}
 	if open.GrantedAccess&(fileWriteData|fileAppendData) == 0 {
 		result.status = smb.StatusAccessDenied
 		return result, nil

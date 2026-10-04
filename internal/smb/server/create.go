@@ -99,28 +99,26 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 		return 0, false, smb.StatusObjectNameCollision
 	case fileOpen, fileOpenIf:
 		return 1, false, smb.StatusSuccess // FILE_OPENED.
-	case fileSupersede, fileOverwrite, fileOverwriteIf:
-		if resolved.Attr.Kind == smb.KindDirectory {
-			return 0, false, smb.StatusFileIsADirectory
-		}
-		if resolved.Object.Stream == "" && resolved.Attr.Attributes&0x6&^create.FileAttributes != 0 {
-			// MS-FSA refuses destructive unnamed-stream opens that omit an
-			// existing HIDDEN or SYSTEM attribute, before truncation.
-			return 0, false, smb.StatusAccessDenied
-		}
-		if create.Disposition == fileSupersede {
-			if granted&fileDelete == 0 {
-				return 0, false, smb.StatusAccessDenied
-			}
-			return 0, true, smb.StatusSuccess // FILE_SUPERSEDED.
-		}
-		if granted&fileWriteData == 0 {
-			return 0, false, smb.StatusAccessDenied
-		}
-		return 3, true, smb.StatusSuccess // FILE_OVERWRITTEN.
-	default:
-		return 0, false, smb.StatusInvalidParameter
 	}
+	// Supersede and overwrite replace the data of an existing file.
+	if resolved.Attr.Kind == smb.KindDirectory {
+		return 0, false, smb.StatusFileIsADirectory
+	}
+	if resolved.Object.Stream == "" && resolved.Attr.Attributes&0x6&^create.FileAttributes != 0 {
+		// MS-FSA refuses destructive unnamed-stream opens that omit an
+		// existing HIDDEN or SYSTEM attribute, before truncation.
+		return 0, false, smb.StatusAccessDenied
+	}
+	if create.Disposition == fileSupersede {
+		if granted&fileDelete == 0 {
+			return 0, false, smb.StatusAccessDenied
+		}
+		return 0, true, smb.StatusSuccess // FILE_SUPERSEDED.
+	}
+	if granted&fileWriteData == 0 {
+		return 0, false, smb.StatusAccessDenied
+	}
+	return 3, true, smb.StatusSuccess // FILE_OVERWRITTEN.
 }
 
 func openRequestForCreate(request RequestContext, create wire.CreateRequest, contexts createContexts, object smb.ObjectKey, granted uint32) state.OpenRequest {
@@ -187,15 +185,16 @@ func createOnce(ctx context.Context, request RequestContext, create wire.CreateR
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, resolved smb.Resolved, granted uint32) (result reply, conflict *leaseBreak, resultErr error) {
-	aapl, validAAPLQuery, err := createAAPLContexts(create.Contexts)
+	aapl, err := createAAPLContexts(create.Contexts)
 	if err != nil {
 		return reply{status: smb.StatusInvalidParameter}, nil, nil
 	}
+	aaplQuery := len(aapl) != 0
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
 	}
-	if status = streamOpenStatus(request.aaplNegotiated() || validAAPLQuery, create, resolved); status != smb.StatusSuccess {
+	if status = streamOpenStatus(request.aaplNegotiated() || aaplQuery, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
 	}
 	if !resolved.Exists {
@@ -250,6 +249,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	created, status := request.Opens.Commit(reservation, state.Grant{
 		Handle: handle, DeleteName: resolved.Name, Lease: lease, DurableTimeout: contexts.durableTimeout(resolved),
 		CreateAction: action, DeleteOnClose: create.Options&fileDeleteOnClose != 0, WriteThrough: create.Options&fileWriteThrough != 0,
+		Kind: attr.Kind,
 	})
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
@@ -264,7 +264,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if err != nil {
 		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
 	}
-	if validAAPLQuery {
+	if aaplQuery {
 		request.markAAPL()
 	}
 	return reply{body: body, fileID: response.ID}, nil, nil

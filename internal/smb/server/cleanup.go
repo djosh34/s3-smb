@@ -39,38 +39,17 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
 	request := RequestContext{server: server, Storage: server.options.Storage}
-	for {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		path, err := request.Storage.PathOf(ctx, action.Object.Inode)
-		if errors.Is(err, smb.ErrNameNotFound) {
-			return nil
-		}
-		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("find deletion name: %w", err)
-		}
-		resolved, unlock, err := lookupLocked(ctx, request, path)
-		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) || errors.Is(err, smb.ErrNameNotFound) {
-			continue
-		}
-		if err != nil {
-			return fmt.Errorf("resolve deletion name: %w", err)
-		}
-		if !resolved.Exists || resolved.Object.Inode != action.Object.Inode {
-			unlock()
-			continue
-		}
-		name := resolved.Name
-		name.Stream = action.Object.Stream
-		err = request.Storage.Remove(ctx, name, action.Object.Inode)
-		unlock()
-		if err != nil {
-			return fmt.Errorf("remove closed object: %w", err)
-		}
-		return nil
+	name, unlock, err := lockName(ctx, request, action.Object.Inode)
+	if errors.Is(err, smb.ErrNameNotFound) {
+		return nil // Already unlinked.
 	}
+	if err != nil {
+		return fmt.Errorf("find deletion name: %w", err)
+	}
+	defer unlock()
+	name.Stream = action.Object.Stream
+	if err = request.Storage.Remove(ctx, name, action.Object.Inode); err != nil {
+		return fmt.Errorf("remove closed object: %w", err)
+	}
+	return nil
 }

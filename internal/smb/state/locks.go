@@ -39,9 +39,8 @@ func lockConflict(request, held Range) bool {
 }
 
 // Lock applies a vector on a private copy, publishing it only on full success.
-// Owner zero is filled from id; a different explicit owner is rejected.
-// Free ranges always succeed, including requests without FAIL_IMMEDIATELY.
-// Conflicts return LOCK_NOT_GRANTED immediately; unlock requires the exact owner
+// It sets each range's Owner to the open's persistent ID. Lock never waits:
+// a conflict returns LOCK_NOT_GRANTED at once. Unlock requires the exact owner
 // and range and returns RANGE_NOT_LOCKED when there is no match.
 func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool) smb.Status {
 	table.mu.Lock()
@@ -50,11 +49,6 @@ func (table *Table) Lock(id FileID, binding Binding, ranges []Range, unlock bool
 	if status != smb.StatusSuccess {
 		return status
 	}
-	return table.applyLocks(open, ranges, unlock)
-}
-
-// applyLocks requires table.mu and publishes only a complete vector.
-func (table *Table) applyLocks(open *openEntry, ranges []Range, unlock bool) smb.Status {
 	if len(ranges) == 0 {
 		return smb.StatusInvalidParameter
 	}
@@ -63,9 +57,6 @@ func (table *Table) applyLocks(open *openEntry, ranges []Range, unlock bool) smb
 	for _, requested := range ranges {
 		if !validRange(requested.Offset, requested.Length) {
 			return smb.StatusInvalidLockRange
-		}
-		if requested.Owner != 0 && requested.Owner != open.ID.Persistent {
-			return smb.StatusInvalidParameter
 		}
 		requested.Owner = open.ID.Persistent
 		if unlock {

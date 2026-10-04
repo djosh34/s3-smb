@@ -26,7 +26,7 @@ func handleFlush(ctx context.Context, request RequestContext, message wire.Messa
 		return reply{status: status}, nil
 	}
 	defer release()
-	result := reply{fileID: wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}}
+	result := reply{fileID: wire.FileID(open.ID)}
 	if flushErr := request.Storage.Flush(ctx, open.Handle, mode); flushErr != nil {
 		return result, flushErr
 	}

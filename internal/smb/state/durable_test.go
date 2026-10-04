@@ -177,26 +177,3 @@ func TestLogoffAndTreeDisconnectCloseDurableOpens(t *testing.T) {
 		t.Fatalf("logoff cleanup: %+v", actions)
 	}
 }
-
-func TestLockSequenceReplaysByNumber(t *testing.T) {
-	table, _ := clockTable(t)
-	req := durableRequest(1, 2)
-	open := commit(t, table, req, durableGrant(req))
-	ranges := []state.Range{{Length: 10, Exclusive: true}}
-	// Index 1, number 0, then the same index with number 1.
-	statusIs(t, table.LockSequence(open.ID, binding, ranges, false, 16), smb.StatusSuccess)
-	statusIs(t, table.LockSequence(open.ID, binding, ranges, false, 16), smb.StatusSuccess)
-	statusIs(t, table.LockSequence(open.ID, binding, ranges, false, 17), smb.StatusLockNotGranted)
-	statusIs(t, table.LockSequence(open.ID, binding, ranges, false, 16), smb.StatusLockNotGranted)
-	table.Disconnect(binding.SessionID)
-	reattached, status := table.Reconnect(reconnectRequest(open))
-	statusIs(t, status, smb.StatusSuccess)
-	statusIs(t, table.LockSequence(reattached.ID, reattached.Binding, ranges, true, 32), smb.StatusSuccess)
-	statusIs(t, table.LockSequence(reattached.ID, reattached.Binding, ranges, true, 32), smb.StatusSuccess)
-	// Index 0 is not a replay slot, and ordinary opens never replay.
-	statusIs(t, table.LockSequence(reattached.ID, reattached.Binding, ranges, false, 0), smb.StatusSuccess)
-	statusIs(t, table.LockSequence(reattached.ID, reattached.Binding, ranges, false, 0), smb.StatusLockNotGranted)
-	ordinary := commit(t, table, request(2), state.Grant{})
-	statusIs(t, table.LockSequence(ordinary.ID, binding, ranges, false, 16), smb.StatusSuccess)
-	statusIs(t, table.LockSequence(ordinary.ID, binding, ranges, false, 16), smb.StatusLockNotGranted)
-}

@@ -8,20 +8,21 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// createAAPLContexts parses queries without changing connection state.
-// Unknown requested bits and unrelated create contexts receive no grant.
-func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, bool, error) {
+// createAAPLContexts answers an AAPL query among contexts without changing
+// connection state. It returns no reply without a query. Unknown requested
+// bits get no answer.
+func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, error) {
 	var replies []wire.CreateContext
 	for _, context := range contexts {
 		if context.Name != "AAPL" {
 			continue
 		}
 		if len(replies) != 0 {
-			return nil, false, errors.New("duplicate AAPL query")
+			return nil, errors.New("duplicate AAPL query")
 		}
 		query, err := wire.DecodeAAPLQuery(context)
 		if err != nil {
-			return nil, false, fmt.Errorf("decode AAPL query: %w", err)
+			return nil, fmt.Errorf("decode AAPL query: %w", err)
 		}
 		reply := wire.AAPLReply{Returned: query.Requested & 7}
 		if reply.Returned&1 != 0 {
@@ -35,9 +36,9 @@ func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, bo
 		}
 		encoded, err := wire.EncodeAAPLReply(reply)
 		if err != nil {
-			return nil, false, fmt.Errorf("encode AAPL reply: %w", err)
+			return nil, fmt.Errorf("encode AAPL reply: %w", err)
 		}
 		replies = append(replies, encoded)
 	}
-	return replies, len(replies) != 0, nil
+	return replies, nil
 }

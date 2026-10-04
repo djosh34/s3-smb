@@ -82,9 +82,10 @@ func lockParents(ctx context.Context, request RequestContext, first, second smb.
 }
 
 // lookupLocked selects a name under its parent guard. The caller unlocks once.
-// The first lookup discovers only the parent; changes to it require a retry.
+// The first lookup discovers only the parent; a rename that changes it makes
+// lookupLocked look again, at most nameTries times.
 func lookupLocked(ctx context.Context, request RequestContext, path string) (smb.Resolved, func(), error) {
-	for {
+	for range nameTries {
 		if err := ctx.Err(); err != nil {
 			return smb.Resolved{}, nil, err
 		}
@@ -110,6 +111,7 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 		}
 		unlock()
 	}
+	return smb.Resolved{}, nil, fmt.Errorf("parent of %q kept changing: %w", path, smb.ErrIdentityChanged)
 }
 
 func closeOpen(ctx context.Context, request RequestContext, id state.FileID) error {
@@ -128,7 +130,7 @@ func removeOpen(ctx context.Context, request RequestContext, id state.FileID) (s
 	if status != smb.StatusSuccess {
 		return state.CloseAction{}, smb.ErrInvalidHandle
 	}
-	unlock, lookupErr := closingParent(ctx, request, open.Object.Inode)
+	_, unlock, lookupErr := lockName(ctx, request, open.Object.Inode)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if unlock != nil {
 			unlock()
@@ -151,30 +153,33 @@ func removeOpen(ctx context.Context, request RequestContext, id state.FileID) (s
 	return action, lookupErr
 }
 
-// closingParent discovers and guards the inode's current name. An unlinked
-// inode returns ErrNameNotFound. Rename races retry without holding any guard.
-func closingParent(ctx context.Context, request RequestContext, inode smb.Inode) (func(), error) {
-	for {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
+// nameTries bounds how often a lookup retries a name that a concurrent rename
+// keeps moving. Storage that keeps failing this way gets an error.
+const nameTries = 4
+
+// lockName finds the current name of inode and locks its parent until the
+// returned unlock. An unlinked inode returns ErrNameNotFound. A rename between
+// finding and locking the name makes it look again, at most nameTries times.
+func lockName(ctx context.Context, request RequestContext, inode smb.Inode) (smb.Name, func(), error) {
+	for range nameTries {
 		path, err := request.Storage.PathOf(ctx, inode)
 		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("find closing name: %w", err)
+			return smb.Name{}, nil, err
 		}
 		selected, unlock, err := lookupLocked(ctx, request, path)
 		if errors.Is(err, smb.ErrIdentityChanged) || errors.Is(err, smb.ErrPathNotFound) || errors.Is(err, smb.ErrNameNotFound) {
 			continue
 		}
 		if err != nil {
-			return nil, fmt.Errorf("resolve closing name: %w", err)
+			return smb.Name{}, nil, err
 		}
 		if selected.Exists && selected.Object.Inode == inode {
-			return unlock, nil
+			return selected.Name, unlock, nil
 		}
 		unlock()
 	}
+	return smb.Name{}, nil, fmt.Errorf("name of inode %d kept changing: %w", inode, smb.ErrIdentityChanged)
 }

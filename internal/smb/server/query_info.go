@@ -34,7 +34,9 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 	case wire.InfoFile:
 		data, result.status = queryFileInfo(ctx, request, open, wire.FileInfoClass(query.InfoClass), query.OutputLength)
 	case wire.InfoFilesystem:
-		data, result.status = queryFilesystemInfo(ctx, request, query.InfoClass, query.OutputLength)
+		if data, result.status, err = queryFilesystemInfo(ctx, request, query.InfoClass, query.OutputLength); err != nil {
+			return result, err
+		}
 	case wire.InfoSecurity, 4: // Security and quota: there are no ACLs or quotas.
 		result.status = smb.StatusNotSupported
 	default:
