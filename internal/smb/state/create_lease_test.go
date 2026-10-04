@@ -163,7 +163,7 @@ func TestHandleOnlyBreakRetainsDurability(t *testing.T) {
 	if notification.NewState != smb.LeaseHandle || !notification.AckRequired {
 		t.Fatalf("H break = %+v", notification)
 	}
-	_, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseHandle)
+	_, _, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseHandle)
 	statusIs(t, status, smb.StatusSuccess)
 	found, status := table.Find(open.ID, binding)
 	statusIs(t, status, smb.StatusSuccess)

@@ -14,7 +14,7 @@ func heldHandleJoin(t *testing.T) (*state.Table, state.OpenRequest, state.Reserv
 	grant := leaseGrant(req, smb.LeaseRead|smb.LeaseHandle)
 	commit(t, table, req, grant)
 	startBreak(t, table, req.Object, smb.LeaseHandle)
-	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseHandle)
+	_, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseHandle)
 	statusIs(t, status, smb.StatusSuccess)
 	writer := request(1)
 	writer.ClientGUID, writer.GrantedAccess = state.GUID{9}, 2

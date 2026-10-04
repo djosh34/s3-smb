@@ -83,7 +83,7 @@ func checkExpiryWhileCleanupBlocked(t *testing.T, block string) {
 	if status != smb.StatusSuccess || found.Durable || found.DurableTimeout != 0 {
 		t.Fatalf("blocked cleanup delayed break revocation: %+v, status %#x", found, status)
 	}
-	if _, status := server.options.State.AckBreak(holder.Binding, holder.ClientGUID, holder.LeaseKey, smb.LeaseRead); status != smb.StatusUnsuccessful {
+	if _, _, status := server.options.State.AckBreak(holder.Binding, holder.ClientGUID, holder.LeaseKey, smb.LeaseRead); status != smb.StatusUnsuccessful {
 		t.Fatalf("timed-out break still pending: %#x", status)
 	}
 	waitExpiredHandle(t, storage)

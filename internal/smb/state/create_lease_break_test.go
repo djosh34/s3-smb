@@ -25,7 +25,7 @@ func TestCreateLeaseBreakQueryIncludesPendingBreaks(t *testing.T) {
 	if !table.LeasesNeedBreak(req.Object, state.GUID{9}, state.GUID{9}, 7) {
 		t.Fatal("earlier pending break was ignored")
 	}
-	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 3)
+	_, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 3)
 	statusIs(t, status, smb.StatusSuccess)
 	if table.LeasesNeedBreak(req.Object, state.GUID{9}, state.GUID{9}, 3) {
 		t.Fatal("compatible completed lease needs another break")

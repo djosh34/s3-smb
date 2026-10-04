@@ -203,6 +203,14 @@ On a sharing violation against an open with an H lease, the server breaks H, wai
 A lease acknowledgment has no epoch field.
 The table checks its identity and acknowledged subset against the current break.
 Each returned break includes its captured current state and acknowledgment requirement.
+A stronger operation queues revocation without changing the pending target, epoch or deadline, so the original acknowledgment remains valid.
+The selected MS-SMB2 3.3.4.7 Appendix A footnote 249 policy keeps the epoch for ACK-triggered continuations granting neither W nor H.
+A queued destructive operation follows RWH-to-RH, RH-to-R, then R-to-NONE; the final R-only notification needs no acknowledgment.
+Each new required-ACK stage gets its own 35-second deadline. Independent breaks advance the epoch once.
+Both conflicting CREATE waiters remain pending through the RH-to-R acknowledgment.
+ACK replies report the accepted acknowledgment state, not a later continuation's held state.
+`Lease.EffectiveState` includes queued revocation for new rights and durability promises; wire lease replies retain the captured held state, break-in-progress flag and epoch.
+Cancellation ends the caller's wait, not the captured or queued break.
 A timed-out break revokes the whole lease, even when its target retained caching rights.
 A break removing H closes fully detached members at once, without waiting for an acknowledgment.
 BreakLeases returns both notifications and cleanup actions.

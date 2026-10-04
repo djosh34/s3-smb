@@ -112,9 +112,10 @@ type Range struct {
 }
 
 // Lease tracks a V2 lease shared by opens of the same client and key on one
-// object. A break only loses rights. Epoch advances per V2 rules; pending grants
-// cannot exceed BreakTo. Timeout revokes the whole lease. H is required for a
-// durable grant. Directory and named-stream opens receive no lease or durability.
+// object. State and BreakTo describe held rights and the captured pending stage.
+// Stronger revocations queue without changing that stage's epoch or deadline.
+// EffectiveState includes all pending revocations. Timeout revokes the whole
+// lease. H is required for durability. Directories and streams receive neither.
 // A client's lease key identifies only one object; reuse on another is rejected.
 type Lease struct {
 	Deadline   time.Time
@@ -123,6 +124,7 @@ type Lease struct {
 	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
+	queuedTo   uint32
 	Epoch      uint16
 	Breaking   bool
 }

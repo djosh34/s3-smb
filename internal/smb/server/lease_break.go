@@ -21,6 +21,35 @@ func (server *Server) BreakLeases(ctx context.Context, object smb.ObjectKey, cli
 		return err
 	}
 	notifications, actions := server.options.State.BreakLeases(object, clientGUID, leaseKey, target)
+	return server.deliverAndWaitLeaseBreaks(ctx, object, clientGUID, leaseKey, notifications, actions)
+}
+
+// deliverAndWaitLeaseBreaks reuses captured work selected under the table mutex.
+func (server *Server) deliverAndWaitLeaseBreaks(ctx context.Context, object smb.ObjectKey, clientGUID, leaseKey state.GUID, notifications []state.Break, actions []state.CloseAction) error {
+	if err := server.deliverLeaseBreaks(ctx, notifications, actions); err != nil {
+		return err
+	}
+	for {
+		changed := server.options.State.BreakChanges()
+		if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreaks(object, clientGUID, leaseKey)); err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !server.options.State.LeasesBreaking(object, clientGUID, leaseKey) {
+			return nil
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+// deliverLeaseBreaks sends captured stages but never waits for their next ACK.
+func (server *Server) deliverLeaseBreaks(ctx context.Context, notifications []state.Break, actions []state.CloseAction) error {
 	if err := server.cleanup(context.WithoutCancel(ctx), actions); err != nil {
 		return err
 	}
@@ -44,23 +73,7 @@ func (server *Server) BreakLeases(ctx context.Context, object smb.ObjectKey, cli
 			server.options.Logger.Debug("send lease break", "session_id", notification.Binding.SessionID, "error", err)
 		}
 	}
-	for {
-		changed := server.options.State.BreakChanges()
-		if err := server.cleanup(context.WithoutCancel(ctx), server.options.State.CompleteDetachedBreaks(object, clientGUID, leaseKey)); err != nil {
-			return err
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if !server.options.State.LeasesBreaking(object, clientGUID, leaseKey) {
-			return nil
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return nil
 }
 
 func (server *Server) sessionConnection(id uint64) *connection {
@@ -152,12 +165,12 @@ func handleOplockBreak(ctx context.Context, request RequestContext, message wire
 	if err != nil {
 		return reply{}, err
 	}
-	actions, status := request.Opens.AckBreak(state.Binding{SessionID: request.Session.SessionID}, request.Session.ClientGUID, state.GUID(ack.Key), ack.State)
+	notifications, actions, status := request.Opens.AckBreak(state.Binding{SessionID: request.Session.SessionID}, request.Session.ClientGUID, state.GUID(ack.Key), ack.State)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	if cleanupErr := request.Cleanup(context.WithoutCancel(ctx), actions); cleanupErr != nil {
-		return reply{}, fmt.Errorf("lease acknowledgment cleanup: %w", cleanupErr)
+	if deliveryErr := request.server.deliverLeaseBreaks(ctx, notifications, actions); deliveryErr != nil {
+		return reply{}, fmt.Errorf("lease acknowledgment follow-up: %w", deliveryErr)
 	}
 	body, err := wire.EncodeLeaseBreakResponse(wire.LeaseBreakResponse{Key: ack.Key, State: ack.State})
 	return reply{body: body}, err

@@ -32,7 +32,7 @@ func TestBreakChangesBroadcast(t *testing.T) {
 				t.Fatal("requesting lease was not excluded")
 			}
 			changed = table.BreakChanges()
-			_, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseWrite)
+			_, _, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseWrite)
 			statusIs(t, status, smb.StatusRequestNotAccepted)
 			select {
 			case <-changed:
@@ -41,7 +41,7 @@ func TestBreakChangesBroadcast(t *testing.T) {
 			}
 			switch finish {
 			case "ack":
-				_, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
+				_, _, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
 				statusIs(t, status, smb.StatusSuccess)
 			case "expire":
 				*now = now.Add(state.LeaseBreakTimeout)
@@ -119,12 +119,12 @@ func TestAckBreakWithSessionBindingAfterReconnect(t *testing.T) {
 		{binding: state.Binding{SessionID: fresh.Binding.SessionID, TreeID: fresh.Binding.TreeID + 1}, client: req.ClientGUID},
 		{binding: state.Binding{SessionID: fresh.Binding.SessionID}, client: state.GUID{9}},
 	} {
-		_, status = table.AckBreak(test.binding, test.client, open.LeaseKey, smb.LeaseRead)
+		_, _, status = table.AckBreak(test.binding, test.client, open.LeaseKey, smb.LeaseRead)
 		if status == smb.StatusSuccess {
 			t.Fatal("wrong identity acknowledged break")
 		}
 	}
-	_, status = table.AckBreak(state.Binding{SessionID: fresh.Binding.SessionID}, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
+	_, _, status = table.AckBreak(state.Binding{SessionID: fresh.Binding.SessionID}, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 }
 

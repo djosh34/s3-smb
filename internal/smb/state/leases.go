@@ -10,6 +10,15 @@ import (
 // LeaseBreakTimeout bounds an unacknowledged break, as in MS-SMB2.
 const LeaseBreakTimeout = 35 * time.Second
 
+// EffectiveState reports rights left after pending revocations, without
+// changing the captured held state, notification target or epoch.
+func (lease Lease) EffectiveState() uint32 {
+	if lease.Breaking {
+		return lease.State & lease.BreakTo & lease.queuedTo
+	}
+	return lease.State
+}
+
 func validLeaseState(state uint32) bool {
 	return state == 0 || state == smb.LeaseRead || state == smb.LeaseRead|smb.LeaseHandle || state == smb.LeaseRead|smb.LeaseHandle|smb.LeaseWrite
 }
@@ -134,6 +143,11 @@ func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
 func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
+	return table.breakLeasesLocked(object, clientGUID, leaseKey, target)
+}
+
+// breakLeasesLocked is the shared selection primitive; the caller holds mu.
+func (table *Table) breakLeasesLocked(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
 	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite && target != smb.LeaseHandle {
 		return nil, nil
 	}
@@ -143,75 +157,101 @@ func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey 
 	}
 	var breaks []Break
 	var detached []leaseRef
+	queued := false
 	for index := range record.Leases {
 		lease := &record.Leases[index]
 		if lease.ClientGUID == clientGUID && lease.Key == leaseKey {
 			continue
 		}
 		newState := lease.State & target
-		if newState == lease.State || (lease.Breaking && lease.BreakTo & ^newState == 0) {
+		if lease.Breaking {
+			if stronger := lease.queuedTo & newState; stronger != lease.queuedTo {
+				lease.queuedTo = stronger
+				queued = true
+			}
 			continue
 		}
-		if lease.Breaking {
-			newState &= lease.BreakTo
+		if newState == lease.State {
+			continue
 		}
 		binding := table.leaseBinding(record, *lease)
 		if !validBinding(binding) && newState&smb.LeaseHandle == 0 {
 			detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
 			continue
 		}
-		lease.Epoch++
-		ack := lease.State&(smb.LeaseHandle|smb.LeaseWrite) != 0
-		breaks = append(breaks, Break{
-			Binding: binding, ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
-			CurrentState: lease.State, NewState: newState, Epoch: lease.Epoch, AckRequired: ack,
-		})
-		lease.BreakTo = newState
-		lease.Breaking = ack
-		if ack {
-			lease.Deadline = table.now().Add(LeaseBreakTimeout)
-		} else {
-			lease.State = newState
-			lease.Deadline = time.Time{}
-		}
+		lease.queuedTo = newState
+		breaks = append(breaks, table.startLeaseBreak(lease, binding, newState, false))
 	}
-	if len(breaks) != 0 {
+	if queued || len(breaks) != 0 {
 		table.signalBreakChanges()
 	}
 	return breaks, table.revokeLeases(detached)
+}
+
+// startLeaseBreak runs under the table mutex. ACK continuations granting no W/H
+// keep the chain epoch under MS-SMB2 3.3.4.7 Appendix A footnote 249.
+func (table *Table) startLeaseBreak(lease *Lease, binding Binding, target uint32, continuation bool) Break {
+	if !continuation || target&(smb.LeaseWrite|smb.LeaseHandle) != 0 {
+		lease.Epoch++
+	}
+	ack := lease.State&(smb.LeaseHandle|smb.LeaseWrite) != 0
+	notification := Break{
+		Binding: binding, ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
+		CurrentState: lease.State, NewState: target, Epoch: lease.Epoch, AckRequired: ack,
+	}
+	lease.BreakTo, lease.Breaking, lease.Deadline = target, ack, time.Time{}
+	if ack {
+		lease.Deadline = table.now().Add(LeaseBreakTimeout)
+	} else {
+		lease.State = target
+	}
+	return notification
 }
 
 // AckBreak accepts only a pending break's identity and a subset of its target.
 // Dropping H returns cleanup for any detached members of the lease. A zero
 // TreeID matches any attached member in the authenticated session, because lease
 // acknowledgments have no tree identity. A nonzero TreeID must match exactly.
-func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]CloseAction, smb.Status) {
+func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]Break, []CloseAction, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	identity := leaseIdentity{client: clientGUID, key: key}
 	if binding.SessionID == 0 {
-		return nil, smb.StatusInvalidParameter
+		return nil, nil, smb.StatusInvalidParameter
 	}
 	object, exists := table.leaseObjects[identity]
 	if !exists {
-		return nil, smb.StatusObjectNameNotFound
+		return nil, nil, smb.StatusObjectNameNotFound
 	}
 	lease := table.lease(object, identity)
 	if lease == nil {
-		return nil, smb.StatusObjectNameNotFound
+		return nil, nil, smb.StatusObjectNameNotFound
 	}
 	if !table.ownsLease(binding, object, identity) {
-		return nil, smb.StatusInvalidParameter
+		return nil, nil, smb.StatusInvalidParameter
 	}
 	if !lease.Breaking {
-		return nil, smb.StatusUnsuccessful
+		return nil, nil, smb.StatusUnsuccessful
 	}
 	if leaseState & ^lease.BreakTo != 0 {
-		return nil, smb.StatusRequestNotAccepted
+		return nil, nil, smb.StatusRequestNotAccepted
 	}
 	lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = leaseState, leaseState, false, time.Time{}
+	var notifications []Break
+	if target := leaseState & lease.queuedTo; target != leaseState {
+		// A queued destructive operation drops H first, then revokes R after
+		// that acknowledgment. The R-only final notification needs no ACK.
+		if leaseState&(smb.LeaseRead|smb.LeaseHandle) == smb.LeaseRead|smb.LeaseHandle && target&smb.LeaseHandle == 0 {
+			target = leaseState &^ smb.LeaseHandle
+		}
+		notifications = append(notifications, table.startLeaseBreak(lease, table.leaseBinding(table.objects[object], *lease), target, true))
+	}
+	if !lease.Breaking {
+		lease.queuedTo = 0
+	}
+	actions := table.dropDurability(object, identity, lease.State)
 	table.signalBreakChanges()
-	return table.dropDurability(object, identity, leaseState), smb.StatusSuccess
+	return notifications, actions, smb.StatusSuccess
 }
 
 func (table *Table) ownsLease(binding Binding, object smb.ObjectKey, identity leaseIdentity) bool {
@@ -257,7 +297,7 @@ func (table *Table) revokeLeases(leases []leaseRef) []CloseAction {
 		if lease == nil {
 			continue
 		}
-		lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = 0, 0, false, time.Time{}
+		lease.State, lease.BreakTo, lease.queuedTo, lease.Breaking, lease.Deadline = 0, 0, 0, false, time.Time{}
 		table.signalBreakChanges()
 		actions = append(actions, table.dropDurability(ref.object, ref.identity, 0)...)
 	}

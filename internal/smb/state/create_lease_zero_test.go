@@ -13,7 +13,7 @@ func TestCreateJoinsHeldHandleOnlyLease(t *testing.T) {
 	grant := leaseGrant(req, 3)
 	commit(t, table, req, grant)
 	startBreak(t, table, req.Object, smb.LeaseHandle)
-	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseHandle)
+	_, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseHandle)
 	statusIs(t, status, smb.StatusSuccess)
 	writer := request(1)
 	writer.ClientGUID, writer.GrantedAccess = state.GUID{9}, 2
@@ -69,7 +69,7 @@ func TestCreateJoinsSharedLeaseBreakingToNone(t *testing.T) {
 	if !exists || live.State != 7 || !live.Breaking || live.BreakTo != 0 || live.Epoch != notification.Epoch || live.ParentKey != grant.Lease.ParentKey {
 		t.Fatalf("pending lease = %+v", live)
 	}
-	_, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, 0)
+	_, _, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, 0)
 	statusIs(t, status, smb.StatusSuccess)
 	live, exists = table.LeaseFor(req.Object, req.ClientGUID, open.LeaseKey)
 	if !exists || live.State != 0 || live.Breaking {

@@ -193,7 +193,7 @@ func TestBreakTimeoutRevokesLeaseAndDurability(t *testing.T) {
 	writer := expiryRequest(2, 3)
 	writer.GrantedAccess = 2
 	writer.Sharing = 7
-	if _, status := server.options.State.AckBreak(attached.Binding, attached.ClientGUID, attached.LeaseKey, smb.LeaseRead); status != smb.StatusUnsuccessful {
+	if _, _, status := server.options.State.AckBreak(attached.Binding, attached.ClientGUID, attached.LeaseKey, smb.LeaseRead); status != smb.StatusUnsuccessful {
 		t.Fatalf("timed-out lease still breaking: %#x", status)
 	}
 	writer.ClientGUID = state.GUID{9}
