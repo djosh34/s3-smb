@@ -62,8 +62,8 @@ type Open struct {
 	User             string
 	Share            string
 	Directory        DirectoryCursor
-	ID               FileID
 	Object           smb.ObjectKey
+	ID               FileID
 	Binding          Binding
 	ClientGUID       GUID
 	CreateGUID       GUID
@@ -153,9 +153,9 @@ type Reservation uint64
 // an H lease on a regular unnamed file and a timeout in (0, MaxDurableTimeout].
 type Grant struct {
 	Handle         smb.Handle
+	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
-	DeleteName     smb.Name
 	Directory      bool
 	DeleteOnClose  bool
 }

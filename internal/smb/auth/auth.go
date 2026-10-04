@@ -39,9 +39,9 @@ type Options struct {
 // SessionKey is the exported key, never the password or NT hash. crypt derives
 // the cipher key from it. Failed steps return errors, never an authenticated result.
 type Result struct {
+	User       string
 	Token      []byte
 	SessionKey []byte
-	User       string
 	Done       bool
 }
 

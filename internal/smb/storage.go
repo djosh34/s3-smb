@@ -14,17 +14,17 @@ type Inode uint64
 // name; empty means the unnamed data stream. All SMB state uses this whole key.
 // A base file and its named streams share an inode, but not locks or deletion.
 type ObjectKey struct {
-	Inode  Inode
 	Stream string
+	Inode  Inode
 }
 
 // Name identifies a directory entry and its selected stream. Parent is never
 // zero. Base contains no separators. Stream uses the same spelling as ObjectKey.
 // Only the adapter parses SMB paths and stream syntax into this form.
 type Name struct {
-	Parent Inode
 	Base   string
 	Stream string
+	Parent Inode
 }
 
 // Resolved is Lookup's result, including a missing final object. If Exists is
