@@ -44,20 +44,22 @@ func ptr(s string) *string { return &s }
 
 func TestStrictYAML(t *testing.T) {
 	tests := map[string]string{
-		"unknown":           validYAML + "secret-marker-unknown: private-marker\n",
-		"nested unknown":    strings.Replace(validYAML, "  bucket: backups", "  private-marker: secret-marker", 1),
-		"duplicate":         validYAML + "smb: {username: backup, password: private-marker}\n",
-		"nested duplicate":  strings.Replace(validYAML, "  bucket: backups", "  bucket: backups\n  bucket: private-marker", 1),
-		"trailing document": validYAML + "---\nprivate-marker\n",
-		"missing password":  strings.Replace(validYAML, "  password: smb-password\n", "", 1),
-		"null password":     strings.Replace(validYAML, "password: smb-password", "password: null", 1),
-		"blank password":    strings.Replace(validYAML, "password: smb-password", "password: \"\"", 1),
-		"null enabled":      strings.Replace(validYAML, "enabled: false", "enabled: null", 1),
-		"alias":             "smb: &private-marker {username: backup, password: smb-password}\ns3: *private-marker\n",
-		"malformed":         "private-marker: [secret-marker\n",
-		"empty":             "",
-		"array":             "[private-marker]",
-		"bad duration":      validYAML + "backup: {interval: private-marker}\n",
+		"unknown":              validYAML + "secret-marker-unknown: private-marker\n",
+		"nested unknown":       strings.Replace(validYAML, "  bucket: backups", "  private-marker: secret-marker", 1),
+		"duplicate":            validYAML + "smb: {username: backup, password: private-marker}\n",
+		"nested duplicate":     strings.Replace(validYAML, "  bucket: backups", "  bucket: backups\n  bucket: private-marker", 1),
+		"trailing document":    validYAML + "---\nprivate-marker\n",
+		"missing password":     strings.Replace(validYAML, "  password: smb-password\n", "", 1),
+		"null password":        strings.Replace(validYAML, "password: smb-password", "password: null", 1),
+		"blank password":       strings.Replace(validYAML, "password: smb-password", "password: \"\"", 1),
+		"null enabled":         strings.Replace(validYAML, "enabled: false", "enabled: null", 1),
+		"null SMB encryption":  strings.Replace(validYAML, "  username: backup", "  encryption: null\n  username: backup", 1),
+		"typed SMB encryption": strings.Replace(validYAML, "  username: backup", "  encryption: invalid\n  username: backup", 1),
+		"alias":                "smb: &private-marker {username: backup, password: smb-password}\ns3: *private-marker\n",
+		"malformed":            "private-marker: [secret-marker\n",
+		"empty":                "",
+		"array":                "[private-marker]",
+		"bad duration":         validYAML + "backup: {interval: private-marker}\n",
 	}
 	for name, input := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -124,6 +126,28 @@ func TestDefaultsPathsAndExplicitness(t *testing.T) {
 		t.Fatal("implicit interpolation")
 	}
 }
+func TestSMBEncryptionDefaultsAndOverride(t *testing.T) {
+	for _, value := range []string{"", "true", "false"} {
+		t.Run("encryption="+value, func(t *testing.T) {
+			input := validYAML
+			if value != "" {
+				input = strings.Replace(input, "  username: backup", "  encryption: "+value+"\n  username: backup", 1)
+			}
+			c, err := loadText(t, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			r, err := c.Resolve(t.Context(), quietLogger())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if r.SMB.Encryption != (value != "false") || r.Encryption.Enabled {
+				t.Fatal("SMB encryption default, override or independence from S3 encryption changed")
+			}
+		})
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

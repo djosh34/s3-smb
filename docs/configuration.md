@@ -22,6 +22,7 @@ smb:
   username: backup
   password: "replace-with-your-SMB-password"
   read_only: false
+  encryption: true
 
 storage:
   state_dir: ./state
@@ -62,6 +63,7 @@ logging:
 | `smb.username` | Required |
 | `smb.password` | Required, nonempty |
 | `smb.read_only` | `false` |
+| `smb.encryption` | `true`; requires GCM in the `smbnext` build |
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
 | `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
 | `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
@@ -177,12 +179,23 @@ makes startup fail.
 
 ## Encryption
 
-Encryption is on by default. `encryption.enabled: false` turns it off for data
+In the `smbnext` build, `smb.encryption` requires AES-GCM encryption between
+client and server by default. Set it to `false` to allow signed plaintext.
+Session keys come from the SMB login, not the S3 passphrase. This setting does
+not affect S3 encryption and is not used by the old server.
+
+S3 encryption is on by default. `encryption.enabled: false` turns it off for data
 and metadata backups. Anyone who can read the bucket can then read your files,
 and s3-smb logs a warning at startup. In this mode s3-smb does not read the
 passphrase source. The setting is fixed when the dataset is created, and a
 different value stops startup. Encryption covers what is in S3. The local SQLite
 database, the cache and backup staging files are not encrypted.
+
+## Server selection
+
+The default build still uses the old server. Build with `go build -tags smbnext`
+to select the new server while it is being built. It does not yet support file
+operations. There is no runtime server-selection setting.
 
 ## Logging
 
