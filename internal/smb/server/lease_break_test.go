@@ -163,15 +163,11 @@ func TestLeaseBreakAcknowledgmentRejectsInvalidRequests(t *testing.T) {
 		t.Fatal("another client acknowledged or changed the lease")
 	}
 	response = acknowledgeBreak(ctx, t, otherClient, other, other.NextMessageID, open.LeaseKey, smb.LeaseRead)
-	if response.Header.Status != smb.StatusInvalidParameter {
-		t.Fatalf("another session acknowledged lease: %+v", response.Header)
-	}
-	response = acknowledgeBreak(ctx, t, client, session, session.NextMessageID+2, open.LeaseKey, smb.LeaseRead)
 	if response.Header.Status != smb.StatusSuccess {
-		t.Fatal(response.Header)
+		t.Fatalf("same-client second session ACK = %+v", response.Header)
 	}
 	finishServerBreak(ctx, t, done)
-	response = acknowledgeBreak(ctx, t, client, session, session.NextMessageID+3, open.LeaseKey, smb.LeaseRead)
+	response = acknowledgeBreak(ctx, t, client, session, session.NextMessageID+2, open.LeaseKey, smb.LeaseRead)
 	if response.Header.Status != smb.StatusUnsuccessful {
 		t.Fatalf("no pending break: %+v", response.Header)
 	}

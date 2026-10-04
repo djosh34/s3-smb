@@ -82,8 +82,6 @@ func TestAckBreakChecksIdentityAndSubset(t *testing.T) {
 		state   uint32
 		want    smb.Status
 	}{
-		{binding: state.Binding{SessionID: 2, TreeID: 1}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
-		{binding: state.Binding{SessionID: 1, TreeID: 2}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
 		{binding: binding, client: state.GUID{9}, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
 		{binding: binding, client: req.ClientGUID, key: state.GUID{9}, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
 		{binding: binding, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead | smb.LeaseHandle, want: 0xc00000d0},
@@ -463,7 +461,7 @@ func TestHandleBreakCanRetainReadAndWriteCaching(t *testing.T) {
 	}
 }
 
-func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
+func TestAckLeaseLookupDoesNotRequireReconnectedBinding(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
 	grant := durableGrant(req)
@@ -474,9 +472,10 @@ func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
 	table.Disconnect(1)
 	fresh, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusSuccess)
-	_, _, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
-	statusIs(t, status, smb.StatusInvalidParameter)
-	_, _, status = table.AckBreak(fresh.Binding, fresh.ClientGUID, fresh.LeaseKey, smb.LeaseRead)
+	_, status = table.Find(fresh.ID, binding)
+	statusIs(t, status, smb.StatusFileClosed)
+	// Session retirement is validated by the server, not open membership here.
+	_, _, status = table.AckBreak(state.Binding{SessionID: fresh.Binding.SessionID + 1}, fresh.ClientGUID, fresh.LeaseKey, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 }
 

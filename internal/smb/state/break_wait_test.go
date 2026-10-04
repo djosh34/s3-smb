@@ -115,8 +115,7 @@ func TestAckBreakWithSessionBindingAfterReconnect(t *testing.T) {
 		binding state.Binding
 		client  state.GUID
 	}{
-		{binding: state.Binding{SessionID: binding.SessionID}, client: req.ClientGUID},
-		{binding: state.Binding{SessionID: fresh.Binding.SessionID, TreeID: fresh.Binding.TreeID + 1}, client: req.ClientGUID},
+		{binding: state.Binding{}, client: req.ClientGUID},
 		{binding: state.Binding{SessionID: fresh.Binding.SessionID}, client: state.GUID{9}},
 	} {
 		_, _, status = table.AckBreak(test.binding, test.client, open.LeaseKey, smb.LeaseRead)

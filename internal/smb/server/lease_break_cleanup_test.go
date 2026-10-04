@@ -136,13 +136,15 @@ func TestLeaseAcknowledgmentAfterReattachment(t *testing.T) {
 	if status != smb.StatusSuccess || fresh.ID.Volatile == open.ID.Volatile {
 		t.Fatal("reattachment failed")
 	}
+	// Disconnecting the table binding did not retire this authenticated session.
+	// Either valid same-client login can ACK, irrespective of open membership.
 	response := acknowledgeBreak(ctx, t, client, session, session.NextMessageID, open.LeaseKey, smb.LeaseRead)
-	if response.Header.Status != smb.StatusInvalidParameter {
-		t.Fatal("old session acknowledged the reattached lease")
+	if response.Header.Status != smb.StatusSuccess {
+		t.Fatalf("valid original session ACK failed: %+v", response.Header)
 	}
 	response = acknowledgeBreak(ctx, t, otherClient, other, other.NextMessageID, open.LeaseKey, smb.LeaseRead)
-	if response.Header.Status != smb.StatusSuccess {
-		t.Fatalf("new session ack failed: %+v", response.Header)
+	if response.Header.Status != smb.StatusUnsuccessful {
+		t.Fatalf("completed break acknowledged twice: %+v", response.Header)
 	}
 }
 

@@ -165,7 +165,10 @@ func handleOplockBreak(ctx context.Context, request RequestContext, message wire
 	if err != nil {
 		return reply{}, err
 	}
-	notifications, actions, status := request.Opens.AckBreak(state.Binding{SessionID: request.Session.SessionID}, request.Session.ClientGUID, state.GUID(ack.Key), ack.State)
+	notifications, actions, status, err := acknowledgeBoundLease(ctx, request, ack)
+	if err != nil {
+		return reply{}, err
+	}
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}

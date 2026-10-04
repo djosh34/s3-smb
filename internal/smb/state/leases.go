@@ -209,9 +209,9 @@ func (table *Table) startLeaseBreak(lease *Lease, binding Binding, target uint32
 }
 
 // AckBreak accepts only a pending break's identity and a subset of its target.
-// Dropping H returns cleanup for any detached members of the lease. A zero
-// TreeID matches any attached member in the authenticated session, because lease
-// acknowledgments have no tree identity. A nonzero TreeID must match exactly.
+// Dropping H returns cleanup for any detached members of the lease. The caller
+// validates the active session and any required tree before this transaction.
+// Lease identity is ClientGUID and key, not the ACK session's open membership.
 func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]Break, []CloseAction, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
@@ -226,9 +226,6 @@ func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseSt
 	lease := table.lease(object, identity)
 	if lease == nil {
 		return nil, nil, smb.StatusObjectNameNotFound
-	}
-	if !table.ownsLease(binding, object, identity) {
-		return nil, nil, smb.StatusInvalidParameter
 	}
 	if !lease.Breaking {
 		return nil, nil, smb.StatusUnsuccessful
@@ -252,16 +249,6 @@ func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseSt
 	actions := table.dropDurability(object, identity, lease.State)
 	table.signalBreakChanges()
 	return notifications, actions, smb.StatusSuccess
-}
-
-func (table *Table) ownsLease(binding Binding, object smb.ObjectKey, identity leaseIdentity) bool {
-	for _, id := range table.objects[object].Opens {
-		open := table.opens[id]
-		if open.Binding.SessionID == binding.SessionID && (binding.TreeID == 0 || open.Binding.TreeID == binding.TreeID) && open.ClientGUID == identity.client && open.LeaseKey == identity.key {
-			return true
-		}
-	}
-	return false
 }
 
 func (table *Table) dropDurability(object smb.ObjectKey, identity leaseIdentity, state uint32) []CloseAction {
