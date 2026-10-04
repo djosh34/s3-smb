@@ -221,7 +221,7 @@ func (c *lifecycleClient) read(t *testing.T, id wire.FileID, want []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := c.exchange(t, c.message(wire.Read, body, 4))
+	response := c.exchange(t, c.message(wire.Read, body, lifecycleCharge(t, want)))
 	checkLifecycleRead(t, response, want)
 }
 
@@ -233,6 +233,16 @@ func lifecycleLength(t *testing.T, data []byte) uint32 {
 		return 0
 	}
 	return uint32(length)
+}
+
+func lifecycleCharge(t *testing.T, data []byte) uint16 {
+	t.Helper()
+	units := (uint64(lifecycleLength(t, data)) + uint64(smb.CreditUnit) - 1) / uint64(smb.CreditUnit)
+	if units > math.MaxUint16 {
+		t.Fatal("lifecycle payload exceeds the credit charge field")
+		return 0
+	}
+	return max(1, uint16(units))
 }
 
 func checkLifecycleRead(t *testing.T, response wire.Message, want []byte) {
@@ -253,7 +263,7 @@ func (c *lifecycleClient) write(t *testing.T, id wire.FileID, data []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := c.exchange(t, c.message(wire.Write, body, 4))
+	response := c.exchange(t, c.message(wire.Write, body, lifecycleCharge(t, data)))
 	checkLifecycleWrite(t, response, lifecycleLength(t, data))
 }
 
@@ -520,7 +530,7 @@ func (c *lifecycleClient) pendingRequest(t *testing.T, command wire.Command, id 
 	t.Helper()
 	var body []byte
 	var err error
-	charge := uint16(2)
+	charge := lifecycleCharge(t, data)
 	switch uint16(command) {
 	case uint16(wire.Read):
 		body, err = wire.EncodeReadRequest(wire.ReadRequest{ID: id, Offset: offset, Length: lifecycleLength(t, data)})
