@@ -19,7 +19,7 @@ func chaosRead(read chaos.ReadFunc) chaos.ReadFunc {
 		data, err := read(name)
 		var response *smbclient.ResponseError
 		if errors.As(err, &response) && response != nil &&
-			(response.Code == uint32(smb.StatusObjectNameNotFound) || response.Code == uint32(smb.StatusObjectPathNotFound)) {
+			(response.Code == uint32(smb.StatusNoSuchFile) || response.Code == uint32(smb.StatusObjectNameNotFound) || response.Code == uint32(smb.StatusObjectPathNotFound)) {
 			return data, errors.Join(err, fs.ErrNotExist)
 		}
 		return data, err
@@ -27,7 +27,7 @@ func chaosRead(read chaos.ReadFunc) chaos.ReadFunc {
 }
 
 func TestChaosRead(t *testing.T) {
-	for _, code := range []smb.Status{smb.StatusObjectNameNotFound, smb.StatusObjectPathNotFound} {
+	for _, code := range []smb.Status{smb.StatusNoSuchFile, smb.StatusObjectNameNotFound, smb.StatusObjectPathNotFound} {
 		original := &fs.PathError{Op: "open", Path: "gone", Err: &smbclient.ResponseError{Code: uint32(code)}}
 		read := chaosRead(func(string) ([]byte, error) { return nil, original })
 		_, err := read("gone")
