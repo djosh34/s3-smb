@@ -54,9 +54,9 @@ func writeIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, data []
 	}
 }
 
-func readIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, length uint32, want string) {
+func readIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, want string) {
 	t.Helper()
-	response := client.read(t, wire.ReadRequest{ID: id, Length: length}, 1)
+	response := client.read(t, wire.ReadRequest{ID: id, Length: 128}, 1)
 	requireIOStatus(t, response, smb.StatusSuccess)
 	read, err := wire.DecodeReadResponse(response)
 	if err != nil || string(read.Data) != want {
@@ -92,7 +92,7 @@ func TestTwoConnectionDeniedDestructiveCreate(t *testing.T) {
 		}
 		// Check the existing bytes before proving the rejected CREATE left
 		// the connection usable. B reads through its own CREATE-created open.
-		readIOBytes(t, b, reader.ID, 128, payload)
+		readIOBytes(t, b, reader.ID, payload)
 		echoIOClient(t, b)
 	}
 	closeIOFile(t, a, writer.ID)
@@ -129,7 +129,7 @@ func TestTwoConnectionTruncateBeforeStaleFlush(t *testing.T) {
 		t.Fatalf("stale-handle FLUSH restored length %d, want %d", info.Size(), len(payload))
 	}
 	assertCommittedFlushData(t, fixture, []byte(payload))
-	readIOBytes(t, b, replacement.ID, uint32(len(old)), payload)
+	readIOBytes(t, b, replacement.ID, payload)
 	closeIOFile(t, a, writer.ID)
 	closeIOFile(t, b, replacement.ID)
 }
@@ -158,7 +158,7 @@ func TestTwoConnectionReadAndFlush(t *testing.T) {
 			// Knowing A's FileId does not give B access to A's open.
 			requireIOStatus(t, b.read(t, wire.ReadRequest{ID: writer.ID, Length: 1}, 1), smb.StatusFileClosed)
 			echoIOClient(t, b)
-			readIOBytes(t, b, reader.ID, 128, payload)
+			readIOBytes(t, b, reader.ID, payload)
 			// READ can upload the shared writer. Complete another write so the
 			// FLUSH has work that B has not already committed by reading.
 			putsBefore := fixture.store.puts.Load()
@@ -186,7 +186,7 @@ func TestTwoConnectionReadAndFlush(t *testing.T) {
 			assertCommittedFlushData(t, fixture, []byte(payload))
 			closeIOFile(t, a, writer.ID)
 			// Closing A must not release B's separate storage reference.
-			readIOBytes(t, b, reader.ID, 128, payload)
+			readIOBytes(t, b, reader.ID, payload)
 			closeIOFile(t, b, reader.ID)
 		})
 	}
