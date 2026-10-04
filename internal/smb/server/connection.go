@@ -159,7 +159,7 @@ func makeResponse(request wire.Header, result reply, credits uint16) (wire.Messa
 		TreeID: request.TreeID, Command: request.Command, CreditCharge: request.CreditCharge, Credit: credits, Flags: wire.FlagResponse | request.Flags&wire.FlagRelated, Status: result.status,
 	}
 	body := result.body
-	if result.status != smb.StatusSuccess {
+	if errorBodyRequired(request.Command, result.status) {
 		var err error
 		body, err = wire.EncodeErrorResponse(wire.ErrorResponse{})
 		if err != nil {
@@ -167,6 +167,20 @@ func makeResponse(request wire.Header, result reply, credits uint16) (wire.Messa
 		}
 	}
 	return wire.Message{Header: header, Body: body}, nil
+}
+
+// These command statuses carry a normal response body (MS-SMB2 3.3.4.4).
+func errorBodyRequired(command wire.Command, status smb.Status) bool {
+	if status == smb.StatusSuccess {
+		return false
+	}
+	if status == smb.StatusMoreProcessingRequired && command == wire.SessionSetup {
+		return false
+	}
+	if status == smb.StatusBufferOverflow && (command == wire.QueryInfo || command == wire.IOCTL || command == wire.Read) {
+		return false
+	}
+	return true
 }
 
 func (connection *connection) dispatch(ctx context.Context, message wire.Message) (reply, error) {
