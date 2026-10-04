@@ -34,11 +34,13 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 }
 
 // JuiceFS shares Meta.Retries between reads and flushes. At 53, download
-// sleeps total 361.829s: sum((try-1)*300+1 ms, try=1..29), then 10s each.
+// sleeps for one slice reader at a time total 361.829s:
+// sum((try-1)*300+1 ms, try=1..29), then 10s each.
 // The flush deadline is max((Retries+2)^2/2 s, 300s) = 1512s, longer than
 // eight minutes because reads need the same setting. Chunk uploads sleep
 // try^2 seconds for try=0..MaxRetries; 12 gives 650s. All cover a 300s outage
-// with margin, even when requests fail immediately.
+// with margin, even when requests fail immediately. Concurrent block reads
+// share one retry counter per open file and need the adapter retries in #297.
 const (
 	filesystemRetries = 53
 	uploadRetries     = 12
