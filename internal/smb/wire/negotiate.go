@@ -116,11 +116,7 @@ func EncodeNegotiateResponse(v NegotiateResponse) ([]byte, error) {
 	b.u32(v.MaxWrite)
 	b.u64(v.SystemTime)
 	b.u64(v.ServerStartTime)
-	if len(v.Token) > 0 {
-		b.u16(128)
-	} else {
-		b.u16(0)
-	}
+	b.u16(128)
 	b.length16(len(v.Token))
 	if len(contexts) > 0 {
 		b.length32(offset + 64)
