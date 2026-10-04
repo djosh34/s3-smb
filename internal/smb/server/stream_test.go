@@ -34,16 +34,38 @@ func TestServerStreamSeeds(t *testing.T) {
 				t.Fatalf("seed replies: %d, want: %d, closed: %v", len(replies), seed.wantReplies, closed)
 			}
 			for id, message := range replies {
-				if message.Header.Status != smb.StatusSuccess || message.Header.MessageID != uint64(id) {
-					t.Fatalf("reply %d: %+v", id, message.Header)
-				}
-				if id > 0 {
-					if _, err := wire.DecodeEchoResponse(message); err != nil {
-						t.Fatal(err)
-					}
-				}
+				checkStreamSeedReply(t, uint64(id), message)
 			}
 		})
+	}
+}
+
+func checkStreamSeedReply(t *testing.T, id uint64, message wire.Message) {
+	t.Helper()
+	want := smb.StatusSuccess
+	var err error
+	switch uint16(message.Header.Command) {
+	case uint16(wire.Negotiate):
+		_, err = wire.DecodeNegotiateResponse(message)
+	case uint16(wire.Echo):
+		_, err = wire.DecodeEchoResponse(message)
+	case uint16(wire.SessionSetup):
+		want = smb.StatusMoreProcessingRequired
+		_, err = wire.DecodeSessionSetupResponse(message)
+		if message.Header.SessionID == 0 {
+			t.Fatal("session seed did not start authentication")
+		}
+	case uint16(wire.TreeConnect):
+		want = smb.StatusUserSessionDeleted
+		_, err = wire.DecodeErrorResponse(message)
+	default:
+		t.Fatal("unexpected seed command", message.Header.Command)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Header.Status != want || message.Header.MessageID != id {
+		t.Fatalf("reply %d: %+v", id, message.Header)
 	}
 }
 
