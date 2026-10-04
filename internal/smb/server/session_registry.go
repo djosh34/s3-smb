@@ -48,5 +48,8 @@ func (server *Server) replaceSession(ctx context.Context, currentID, previousID 
 	// old work. It is not LOGOFF, which would close durable opens too.
 	actions := server.options.State.Disconnect(previousID)
 	owner.stopRequests(previousID, 0, 0)
+	// A handler already using the old identity can finish a storage call and
+	// publish an open while cancellation drains. Detach those late grants too.
+	actions = append(actions, server.options.State.Disconnect(previousID)...)
 	return server.cleanup(ctx, actions)
 }
