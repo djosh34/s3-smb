@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/crypt"
@@ -41,6 +42,7 @@ type connection struct {
 	pendingMu       sync.Mutex
 	workers         sync.WaitGroup
 	closeOnce       sync.Once
+	aapl            atomic.Bool
 	nextAsyncID     uint64
 	cipher          uint16
 	signing         uint16

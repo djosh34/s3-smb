@@ -182,9 +182,15 @@ func createLocked(ctx context.Context, request RequestContext, create wire.Creat
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (result reply, resultErr error) {
-	var err error
+	contexts, validAAPLQuery, err := createAAPLContexts(create.Contexts)
+	if err != nil {
+		return reply{status: smb.StatusInvalidParameter}, nil
+	}
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
+	if status = streamOpenStatus(request.aaplNegotiated() || validAAPLQuery, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	if !resolved.Exists {
@@ -240,9 +246,13 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	}
 	committed = true
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
+	response.Contexts = contexts
 	body, err := wire.EncodeCreateResponse(response)
 	if err != nil {
 		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
+	}
+	if validAAPLQuery {
+		request.markAAPL()
 	}
 	return reply{body: body, fileID: response.ID}, nil
 }

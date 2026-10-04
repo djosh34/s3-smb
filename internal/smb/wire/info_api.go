@@ -70,6 +70,14 @@ package wire
 // Encoders calculate NextEntryOffset with eight-byte alignment and zero at the end.
 // An empty list encodes as an empty buffer. Names never alias decoder input.
 //
+//	func DecodeDirectoryEntries(data []byte) ([]DirectoryEntry, error)
+//	func EncodeDirectoryEntries(entries []DirectoryEntry) ([]byte, error)
+//	func DecodeDirectoryFullEntries(data []byte) ([]DirectoryEntry, error)
+//	func EncodeDirectoryFullEntries(entries []DirectoryEntry) ([]byte, error)
+//	func DecodeDirectoryBothEntries(data []byte) ([]DirectoryEntry, error)
+//	func EncodeDirectoryBothEntries(entries []DirectoryEntry) ([]byte, error)
+//	func DecodeDirectoryNamesEntries(data []byte) ([]DirectoryEntry, error)
+//	func EncodeDirectoryNamesEntries(entries []DirectoryEntry) ([]byte, error)
 //	func DecodeDirectoryIDBothEntries(data []byte) ([]DirectoryIDBothEntry, error)
 //	func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error)
 //	func DecodeDirectoryIDFullEntries(data []byte) ([]DirectoryIDFullEntry, error)

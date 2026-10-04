@@ -207,17 +207,17 @@ func TestFindAndDirectorySnapshots(t *testing.T) {
 	statusIs(t, status, smb.StatusFileClosed)
 	_, status = table.Find(open.ID, state.Binding{SessionID: 2, TreeID: 1})
 	statusIs(t, status, smb.StatusFileClosed)
-	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*.band", Cookie: 1}), smb.StatusSuccess)
-	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Cookie: 2}), smb.StatusSuccess)
+	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*.band", Cookie: 1, Started: true, DotEntries: 1}), smb.StatusSuccess)
+	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Cookie: 2, Started: true, DotEntries: 2}), smb.StatusSuccess)
 	found, status := table.Find(open.ID, binding)
 	statusIs(t, status, smb.StatusSuccess)
-	if found.Directory.Pattern != "*.band" || found.Directory.Cookie != 2 || open.Directory.Pattern != "" {
+	if found.Directory.Pattern != "*.band" || found.Directory.Cookie != 2 || !found.Directory.Started || found.Directory.DotEntries != 2 || open.Directory.Pattern != "" {
 		t.Fatalf("cursor snapshots: old %+v, new %+v", open.Directory, found.Directory)
 	}
 	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*"}), smb.StatusSuccess)
 	found, status = table.Find(open.ID, binding)
 	statusIs(t, status, smb.StatusSuccess)
-	if found.Directory.Cookie != 0 || found.Directory.Pattern != "*" {
+	if found.Directory.Cookie != 0 || found.Directory.Pattern != "*" || found.Directory.Started || found.Directory.DotEntries != 0 {
 		t.Fatalf("restart: %+v", found.Directory)
 	}
 }

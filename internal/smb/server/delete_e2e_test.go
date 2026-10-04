@@ -69,9 +69,9 @@ func (peer *deletionPeer) closeExpect(t *testing.T, id wire.FileID, want smb.Sta
 	}
 }
 
-func (peer *deletionPeer) disposition(t *testing.T, id wire.FileID) {
+func (peer *deletionPeer) disposition(t *testing.T, id wire.FileID, pending bool, want smb.Status) {
 	t.Helper()
-	input, err := wire.EncodeFileDispositionInformation(wire.FileDispositionInformation{DeletePending: true})
+	input, err := wire.EncodeFileDispositionInformation(wire.FileDispositionInformation{DeletePending: pending})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,8 +80,13 @@ func (peer *deletionPeer) disposition(t *testing.T, id wire.FileID) {
 		t.Fatal(err)
 	}
 	response := ioRoundTrip(peer.ctx, t, peer.client, peer.message(wire.SetInfo, body))
-	if response.Header.Status != smb.StatusSuccess {
-		t.Fatalf("SET_INFO disposition: %#x", response.Header.Status)
+	if response.Header.Status != want {
+		t.Fatalf("SET_INFO disposition: %#x, want %#x", response.Header.Status, want)
+	}
+	if want == smb.StatusSuccess {
+		if _, err := wire.DecodeSetInfoResponse(response); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -244,7 +249,7 @@ func TestDispositionDeletePendingRejectsNewOpens(t *testing.T) {
 	peer := newDeletionPeer(t, server)
 	id := peer.open(t, "data", fileDelete, fileOpen, 0, smb.StatusSuccess)
 	held := peer.open(t, "data", fileReadData, fileOpen, 0, smb.StatusSuccess)
-	peer.disposition(t, id)
+	peer.disposition(t, id, true, smb.StatusSuccess)
 	peer.open(t, "data", fileReadData, fileOpen, 0, smb.StatusDeletePending)
 	peer.open(t, "data:stream:$DATA", fileReadData, fileOpen, 0, smb.StatusDeletePending)
 	peer.close(t, id)
