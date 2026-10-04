@@ -44,7 +44,8 @@ func checkPendingCreateProgress(t *testing.T, command wire.Command, cipher uint1
 		case <-ctx.Done():
 			return reply{}, ctx.Err()
 		}
-		if err := server.sendLeaseBreak(ctx, state.Break{Binding: request.Binding(), ClientGUID: request.Session.ClientGUID, LeaseKey: state.GUID(key), CurrentState: 7, AckRequired: true, Epoch: 1}); err != nil {
+		actions, sendErr := server.sendLeaseBreak(ctx, state.Break{Binding: request.Binding(), ClientGUID: request.Session.ClientGUID, LeaseKey: state.GUID(key), CurrentState: 7, AckRequired: true, Epoch: 1})
+		if err := errors.Join(sendErr, request.Cleanup(ctx, actions)); err != nil {
 			return reply{}, err
 		}
 		select {
