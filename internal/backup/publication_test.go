@@ -26,6 +26,7 @@ func TestSnapshotReadbackFailureDoesNotOpenProtection(t *testing.T) {
 	s := corruptReadbackStore{newStore(t)}
 	state := t.TempDir()
 	mgr := newManager(t, m, s, state, time.Now, time.Minute)
+	mgr.wait = func(context.Context, time.Duration) error { return errors.New("stop after corrupt readback") }
 	if _, err := mgr.Backup(context.Background()); err == nil || !strings.Contains(err.Error(), "readback mismatch") {
 		t.Fatal("accepted corrupt readback", err)
 	}
@@ -46,6 +47,7 @@ func TestSnapshotFailureNeverUploads(t *testing.T) {
 	s := newStore(t)
 	mgr := newManager(t, m, s, t.TempDir(), time.Now, time.Minute)
 	mgr.opts.DatabasePath = filepath.Join(t.TempDir(), "missing.db")
+	mgr.wait = func(context.Context, time.Duration) error { return errors.New("stop after failed snapshot") }
 	if _, err := mgr.Backup(context.Background()); err == nil {
 		t.Fatal("accepted failed snapshot")
 	}

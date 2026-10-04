@@ -8,17 +8,22 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
+func (h *harness) download(args ...string) {
+	h.t.Helper()
+	h.must(helpers.RetryDownload(h.ctx, 2*time.Second, func() (string, error) {
+		return h.try(20*time.Minute, args...)
+	}, func(attempt int, output string, err error) {
+		h.t.Logf("download attempt %d failed: %v\n%s", attempt, err, output)
+	}))
+}
+
 func (h *harness) build() {
-	tags := ""
-	switch os.Getenv("MAC_SERVER") {
-	case "default":
-	case "smbnext":
-		tags = "smbnext"
-	default:
-		h.t.Fatal("MAC_SERVER must be default or smbnext")
-	}
+	tags, err := helpers.ServerBuildTags(os.Getenv("MAC_SERVER"), os.Getenv("MAC_PHASE"))
+	h.must(err)
 	root, err := filepath.Abs("../..")
 	h.must(err)
 	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile")) //nolint:gosec // This is the checked-out test pin.
@@ -54,17 +59,24 @@ func (h *harness) build() {
 		}
 	}()
 	application := filepath.Join(h.bin, "s3-smb")
+	h.download("go", "-C", root, "mod", "download")
 	for _, args := range [][]string{
 		{"go", "-C", root, "build", "-p", "2", "-tags", tags, "-o", application, "."},
 		{application, "help"},
 		{application, "version"},
 		{"git", "-C", source, "init"},
 		{"git", "-C", source, "remote", "add", "origin", "https://github.com/minio/minio.git"},
-		{"git", "-C", source, "fetch", "--depth", "1", "origin", commit},
-		{"git", "-C", source, "checkout", "--detach", "FETCH_HEAD"},
+	} {
+		h.run(20*time.Minute, args...)
+	}
+	h.download("git", "-C", source, "fetch", "--depth", "1", "origin", commit)
+	h.run(time.Minute, "git", "-C", source, "checkout", "--detach", "FETCH_HEAD")
+	h.download("go", "-C", source, "mod", "download")
+	for _, args := range [][]string{
 		{"go", "-C", source, "build", "-p", "2", "-o", filepath.Join(h.bin, "minio"), "."},
 		{"go", "version", "-m", filepath.Join(h.bin, "minio")},
 		{"go", "-C", root, "build", "-p", "2", "-o", filepath.Join(h.bin, "fixture"), "./test/macos/fixture"},
+		{"go", "-C", root, "build", "-o", filepath.Join(h.bin, "fullsync"), "./test/macos/fullsync"},
 	} {
 		h.run(20*time.Minute, args...)
 	}
