@@ -225,7 +225,7 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 	if status := table.validateLease(request, reservation, grant); status != smb.StatusSuccess {
 		return status
 	}
-	if grant.DurableTimeout != 0 && (grant.Lease.State&smb.LeaseHandle == 0 || request.CreateGUID == (GUID{})) {
+	if grant.DurableTimeout != 0 && (!table.durableLeaseEligible(request, grant.Lease) || request.CreateGUID == (GUID{})) {
 		return smb.StatusInvalidParameter
 	}
 	return smb.StatusSuccess

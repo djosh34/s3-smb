@@ -95,12 +95,12 @@ func openRequestForCreate(request RequestContext, create wire.CreateRequest, obj
 	return open, nil
 }
 
-func grantCreateDurable(create wire.CreateRequest, grant *state.Grant) error {
+func grantCreateDurable(request RequestContext, create wire.CreateRequest, reservation state.Reservation, grant *state.Grant) error {
 	contexts, err := decodeDurableContexts(create)
 	if err != nil {
 		return err
 	}
-	if contexts.request == nil || grant.Directory || grant.DeleteName.Stream != "" || grant.Lease.State&smb.LeaseHandle == 0 {
+	if contexts.request == nil || grant.Directory || grant.DeleteName.Stream != "" || !request.Opens.DurableEligible(reservation, grant.Lease) {
 		return nil
 	}
 	timeout := time.Duration(contexts.request.Timeout) * time.Millisecond
