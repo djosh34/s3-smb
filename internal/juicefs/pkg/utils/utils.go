@@ -14,6 +14,8 @@
  * limitations under the License.
  */
 
+// Modified for s3-smb, 2026. See docs/vendored.md.
+
 package utils
 
 import (
@@ -108,25 +110,22 @@ func FindLocalIPs(allowedInterfaces ...string) ([]net.IP, error) {
 }
 
 func WithTimeout(pCtx context.Context, f func(context.Context) error, timeout time.Duration) error {
-	var done = make(chan int, 1)
-	var t = time.NewTimer(timeout)
-	var err error
+	done := make(chan error, 1)
+	t := time.NewTimer(timeout)
 	ctx, cancel := context.WithCancel(pCtx)
+	defer cancel()
+	defer t.Stop()
 	go func() {
-		err = f(ctx)
-		done <- 1
+		done <- f(ctx)
 	}()
 	select {
 	case <-ctx.Done():
-		err = ctx.Err()
-		t.Stop()
-	case <-done:
-		t.Stop()
+		return ctx.Err()
+	case err := <-done:
+		return err
 	case <-t.C:
-		err = fmt.Errorf("timeout after %s: %w", timeout, ErrFuncTimeout)
+		return fmt.Errorf("timeout after %s: %w", timeout, ErrFuncTimeout)
 	}
-	cancel()
-	return err
 }
 
 func RemovePassword(uri string) string {
