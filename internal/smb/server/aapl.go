@@ -10,7 +10,7 @@ import (
 
 // createAAPLContexts answers each connection's query without negotiation state.
 // Unknown requested bits and unrelated create contexts receive no grant.
-func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, error) {
+func createAAPLContexts(request RequestContext, contexts []wire.CreateContext) ([]wire.CreateContext, error) {
 	var replies []wire.CreateContext
 	for _, context := range contexts {
 		if context.Name != "AAPL" {
@@ -38,6 +38,9 @@ func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, er
 			return nil, fmt.Errorf("encode AAPL reply: %w", err)
 		}
 		replies = append(replies, encoded)
+	}
+	if len(replies) != 0 {
+		request.markAAPL()
 	}
 	return replies, nil
 }
