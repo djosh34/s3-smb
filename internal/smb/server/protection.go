@@ -62,17 +62,32 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, err
 			}
 			continue
 		}
-		if session == nil || session.protector == nil {
-			continue
-		}
-		if session.identity.Encrypted && header.Command != wire.SessionSetup {
-			return messages, errAccessDenied
-		}
-		if err := session.protector.Verify(message.Raw); err != nil {
-			return messages, errAccessDenied
+		if err := verifyPlaintextRequest(message, session); err != nil {
+			return messages, err
 		}
 	}
 	return messages, nil
+}
+
+func verifyPlaintextRequest(message wire.Message, session *sessionEntry) error {
+	header := message.Header
+	if header.Command == wire.Cancel && header.Flags&wire.FlagSigned != 0 && (session == nil || !session.active || session.protector == nil) {
+		return errAccessDenied
+	}
+	if session == nil || session.protector == nil {
+		return nil
+	}
+	if session.identity.Encrypted && header.Command != wire.SessionSetup {
+		return errAccessDenied
+	}
+	// Unsigned CANCEL is exempt from signing, not encryption (MS-SMB2 3.3.5.16).
+	if header.Command == wire.Cancel && header.Flags&wire.FlagSigned == 0 {
+		return nil
+	}
+	if err := session.protector.Verify(message.Raw); err != nil {
+		return errAccessDenied
+	}
+	return nil
 }
 
 // rememberProtection runs under sessionMu, before verification can return a
