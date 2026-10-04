@@ -74,7 +74,7 @@ func TestMissingSessionCommandsReturnStatusAndKeepConnection(t *testing.T) {
 	}
 }
 
-func TestUnknownCommandAndSessionSetupAreExplicitlyUnsupported(t *testing.T) {
+func TestUnknownCommandAndEmptyLoginReturnStatus(t *testing.T) {
 	server, err := New(testOptions(t))
 	if err != nil {
 		t.Fatal(err)
@@ -85,13 +85,17 @@ func TestUnknownCommandAndSessionSetupAreExplicitlyUnsupported(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, message := range []wire.Message{
+	for index, message := range []wire.Message{
 		{Header: wire.Header{Command: 65535, MessageID: 1, CreditCharge: 1}, Body: []byte("unknown")},
 		{Header: wire.Header{Command: wire.SessionSetup, MessageID: 2, CreditCharge: 1}, Body: body},
 	} {
 		messages := exchange(ctx, t, client, message)
-		if messages[0].Header.Status != smb.StatusNotSupported {
-			t.Fatalf("unsupported: %+v", messages[0].Header)
+		want := smb.StatusNotSupported
+		if index == 1 {
+			want = smb.StatusLogonFailure
+		}
+		if messages[0].Header.Status != want {
+			t.Fatalf("status: %+v", messages[0].Header)
 		}
 	}
 	messages := exchange(ctx, t, client, echo(t, 3))
