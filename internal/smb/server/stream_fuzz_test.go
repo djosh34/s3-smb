@@ -95,6 +95,7 @@ func runServerStream(t *testing.T, server *Server, stream []byte) ([]wire.Messag
 }
 
 // feedStream preserves frame bytes and connection state between requests.
+// One deadline bounds the whole stream, not each frame.
 // A complete request must get a framed reply or a peer close. CANCEL has no
 // reply. An incomplete final frame is followed by a client close, not a read
 // deadline: the server cannot answer bytes it has not received.
