@@ -180,7 +180,7 @@ The same test runs in the Linux checks. SQLite uses full fsync only on macOS.
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
 recovers the dataset, restores the directory with `tmutil restore` and compares
-it. Five more Macs each interrupt a second backup. Four of them then restart or
+it. Six more Macs each interrupt a second backup. Five of them then restart or
 recover s3-smb and restore the first backup. In the machine-loss scenario the
 Mac exports the stopped store, and a further fresh Mac recovers it and restores
 the first backup. The scenarios kill the application or the Time Machine client.
@@ -189,6 +189,15 @@ including machine-loss, requires a nonempty change in remote chunk objects.
 The resumed backup must also complete and restore the changed tree. The test
 uses a five-minute metadata interval, or one minute for the midpoint scenario;
 the product default is one hour.
+
+The scenarios are `server-kill-restart`, `launchd-kill-restart`,
+`server-kill-cold`, `server-kill-cold-midpoint`, `client-abort-cold` and
+`machine-loss`. `launchd-kill-restart` initializes in the foreground, then
+loads [the shipped plist](com.s3-smb.plist) into the system domain with test
+paths. It kills s3-smb with SIGKILL while Time Machine is copying and requires
+a new launchd PID, a new SMB serving log entry without consent, changed S3
+chunks and a completed next backup with a matching restore. Cleanup unloads
+the job before stopping MinIO, also on failure or timeout.
 
 To run just one scenario:
 

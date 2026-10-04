@@ -121,7 +121,7 @@ func (h *harness) cold() {
 
 func (h *harness) scenario(name string) result {
 	switch name {
-	case "server-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
+	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
 	}
@@ -130,6 +130,10 @@ func (h *harness) scenario(name string) result {
 		h.interval = "1m"
 	}
 	outcome := h.baseline()
+	launchdPID := 0
+	if name == "launchd-kill-restart" {
+		launchdPID = h.startLaunchd()
+	}
 	size := int64(1 << 30)
 	if midpoint {
 		size = 4 << 30
@@ -151,7 +155,8 @@ func (h *harness) scenario(name string) result {
 		}
 	}
 	aborted := time.Now().UTC()
-	if name == "client-abort-cold" {
+	switch name {
+	case "client-abort-cold":
 		for _, args := range [][]string{{"/usr/bin/tmutil", "stopbackup"}, {"/usr/bin/pkill", "-9", "-x", "backupd"}} {
 			output, err := h.try(time.Minute, args...)
 			h.t.Log("client abort", output, err)
@@ -160,7 +165,11 @@ func (h *harness) scenario(name string) result {
 			output, err := h.try(2*time.Minute, "/sbin/umount", "-f", path)
 			h.t.Log("forced client unmount", output, err)
 		}
-	} else {
+	case "launchd-kill-restart":
+		h.run(time.Minute, "/bin/launchctl", "kill", "SIGKILL", launchdJob)
+		newPID := h.launchdReady(launchdPID, 2)
+		h.save("launchd-restart.json", map[string]any{"old_pid": launchdPID, "new_pid": newPID, "at_kill": atKill})
+	default:
 		h.stopDaemon(true)
 	}
 	h.stopClient()
@@ -175,7 +184,7 @@ func (h *harness) scenario(name string) result {
 	}
 	if name == "server-kill-restart" {
 		h.startDaemon("restart")
-	} else {
+	} else if name != "launchd-kill-restart" {
 		if name == "client-abort-cold" {
 			point = h.metadata(aborted, "after-abort")
 		}
@@ -191,27 +200,38 @@ func (h *harness) scenario(name string) result {
 	h.mount()
 	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-recovered", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
 	h.must(h.detach())
-	var latest string
+	latest := h.resumeBackup(outcome.Baseline, name == "launchd-kill-restart")
+	outcome.ResumedRestore = h.restore(latest, updated, "restore-resumed")
+	outcome.Resumed, outcome.ChunkObjectsEnd = filepath.Base(latest), len(h.objects("s3-smb/chunks/"))
+	if h.daemon != nil {
+		outcome.RecoveredFrom = h.daemon.point
+	}
+	h.must(h.detach())
+	return outcome
+}
+
+func (h *harness) resumeBackup(baseline string, requireNext bool) string {
 	for _, label := range []string{"resumed", "resumed-retry"} {
 		h.startBackup(label)
 		if _, err := h.completeBackup(label); err != nil {
+			if requireNext {
+				h.must(err)
+			}
 			h.t.Log("resumed-backup-failed", label, err)
 		}
 		h.must(h.detach())
 		h.mount()
-		latest = h.remoteBackup(label, "")
-		if filepath.Base(latest) != outcome.Baseline {
-			break
+		latest := h.remoteBackup(label, "")
+		if filepath.Base(latest) != baseline {
+			return latest
 		}
 		h.must(h.detach())
+		if requireNext {
+			h.t.Fatal("next backup did not produce a completed Time Machine backup")
+		}
 	}
-	if filepath.Base(latest) == outcome.Baseline {
-		h.t.Fatal("no backup completed after recovery")
-	}
-	outcome.ResumedRestore = h.restore(latest, updated, "restore-resumed")
-	outcome.Resumed, outcome.RecoveredFrom, outcome.ChunkObjectsEnd = filepath.Base(latest), h.daemon.point, len(h.objects("s3-smb/chunks/"))
-	h.must(h.detach())
-	return outcome
+	h.t.Fatal("no backup completed after recovery")
+	return ""
 }
 
 func (h *harness) recoverStore() result {
@@ -260,9 +280,10 @@ func (h *harness) finish() {
 		h.t.Error("owned Time Machine startbackup still active at final cleanup")
 		report(h.stopBackup(30 * time.Second))
 	}
-	if h.daemon != nil || len(h.attachments) != 0 {
+	if h.daemon != nil || h.launchdPlist != "" || len(h.attachments) != 0 {
 		report(h.detach())
 	}
+	report(h.unloadLaunchd())
 	if h.daemon != nil {
 		report(stop(h.daemon, false))
 		h.daemon = nil
