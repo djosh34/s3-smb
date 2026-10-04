@@ -8,10 +8,11 @@ import (
 	"regexp"
 )
 
-var daemonFailure = regexp.MustCompile(`(?i)(^|\s)panic:|fatal error:|warning: data race|"level"\s*:\s*"(fatal|panic)"|(^|\s)(fatal|panic)(\s|:)`)
+var daemonFailure = regexp.MustCompile(`(?i)(^|\s)panic:|fatal error:|warning: data race|"(level|logrus_level)"\s*:\s*"(fatal|panic)"|(^|\s)(level|logrus_level)="?(fatal|panic)"?(\s|$)|(^|\s)(fatal|panic)(\s|:)`)
 
 // CheckDaemonLog rejects Go panics, runtime fatal errors, fatal or panic log
-// levels, and race detector reports. Ordinary error logs are allowed.
+// levels (including the logrus bridge), and race detector reports. Ordinary
+// error logs are allowed.
 func CheckDaemonLog(log []byte) error {
 	for i, line := range bytes.Split(log, []byte{'\n'}) {
 		if daemonFailure.Match(line) {
