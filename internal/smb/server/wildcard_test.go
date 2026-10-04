@@ -13,9 +13,9 @@ func TestDirectoryMatchingTreatsLiteralCharactersAndDOSWildcardsCorrectly(t *tes
 		want        bool
 	}{
 		{"empty pattern", "", "report.txt", true},
-		{"empty pattern and name", "", "", true},
+		{"empty pattern and name", "", "", false},
 		{"star", "*", "report.txt", true},
-		{"star and empty name", "*", "", true},
+		{"star and empty name", "*", "", false},
 		{"empty name", "report", "", false},
 		{"empty name with DOS wildcard", ">", "", false},
 		{"empty name with DOS dot", "\"", "", false},
@@ -114,10 +114,10 @@ func FuzzMatchPattern(f *testing.F) {
 	f.Add("a[1](b){2}+^$|\\.", "a[1](b){2}+^$|\\.")
 	f.Add("\xff", "\xff")
 	f.Fuzz(func(t *testing.T, pattern, name string) {
-		// Every input must finish without a panic. Literal names must match
-		// themselves, including arbitrary byte strings from the fuzzer.
+		// Every input must finish without a panic. Nonempty literal names
+		// must match themselves, including arbitrary byte strings.
 		matchPattern(pattern, name)
-		if !strings.ContainsAny(name, "*?<>\"") && !matchPattern(name, name) {
+		if name != "" && !strings.ContainsAny(name, "*?<>\"") && !matchPattern(name, name) {
 			t.Fatalf("literal name %q did not match itself", name)
 		}
 	})

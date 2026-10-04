@@ -6,15 +6,12 @@ import (
 )
 
 // matchPattern follows MS-FSA 2.1.4.4 with case-sensitive comparison.
-// An empty search pattern, like "*", selects every directory entry.
+// Empty names never match. An empty pattern selects every directory entry.
 func matchPattern(pattern, name string) bool {
-	if pattern == "" || pattern == "*" {
-		return true
-	}
 	if name == "" {
 		return false
 	}
-	if pattern == "*.*" {
+	if pattern == "" || pattern == "*" || pattern == "*.*" {
 		return true
 	}
 	if !strings.ContainsAny(pattern, "*?<>\"") {
