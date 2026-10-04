@@ -152,7 +152,7 @@ func TestMechanismMICWithDropped128(t *testing.T) {
 	acceptor, initiator := testAcceptor(t, vectorAccount), testInitiator(t, vectorAccount)
 	challenge := clientChallenge(t, acceptor, initiator, offeredFlags)
 	if challenge.flags&flag128 == 0 {
-		t.Fatal("challenge must offer 128-bit keys for this regression")
+		t.Fatal("challenge must offer 128-bit keys for this test")
 	}
 	flags := challenge.flags & offeredFlags &^ flag128
 	token, key := clientAuthenticate(t, initiator, challenge, clientTargetInfo(t, challenge, true), challenge.av[avTimestamp], flags, true)
