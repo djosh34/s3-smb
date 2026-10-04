@@ -79,18 +79,42 @@ func (table *Table) CloseTree(binding Binding) []CloseAction {
 	return table.closeMatching(func(open Open) bool { return open.Binding == binding })
 }
 
+func (table *Table) reconnectCandidate(request ReconnectRequest) (*openEntry, smb.Status) {
+	open := table.opens[request.ID.Persistent]
+	if !validBinding(request.Binding) {
+		return nil, smb.StatusInvalidParameter
+	}
+	if open == nil || open.ID != request.ID || !open.Durable || open.Binding.SessionID != 0 || !open.DurableDeadline.After(table.now()) ||
+		open.Share != request.Share || open.ClientGUID != request.ClientGUID ||
+		open.CreateGUID != request.CreateGUID || open.LeaseKey != request.LeaseKey {
+		return nil, smb.StatusObjectNameNotFound
+	}
+	if open.User != request.User {
+		return nil, smb.StatusAccessDenied
+	}
+	return open, smb.StatusSuccess
+}
+
+// ReconnectCandidate validates durable identities and the detached deadline
+// without changing the open. A different durable owner receives ACCESS_DENIED.
+// The server may check the namespace before Reconnect repeats these checks.
+func (table *Table) ReconnectCandidate(request ReconnectRequest) (Open, smb.Status) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	open, status := table.reconnectCandidate(request)
+	if status != smb.StatusSuccess {
+		return Open{}, status
+	}
+	return open.Open, smb.StatusSuccess
+}
+
 // Reconnect validates all durable identities and installs a fresh volatile ID.
 func (table *Table) Reconnect(request ReconnectRequest) (Open, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	open := table.opens[request.ID.Persistent]
-	if !validBinding(request.Binding) {
-		return Open{}, smb.StatusInvalidParameter
-	}
-	if open == nil || open.ID != request.ID || !open.Durable || open.Binding.SessionID != 0 || !open.DurableDeadline.After(table.now()) ||
-		open.User != request.User || open.Share != request.Share || open.ClientGUID != request.ClientGUID ||
-		open.CreateGUID != request.CreateGUID || open.LeaseKey != request.LeaseKey {
-		return Open{}, smb.StatusObjectNameNotFound
+	open, status := table.reconnectCandidate(request)
+	if status != smb.StatusSuccess {
+		return Open{}, status
 	}
 	if !availableID(table.nextVolatile) {
 		return Open{}, smb.StatusInsufficientResources
