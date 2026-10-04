@@ -173,6 +173,43 @@ func TestClientAllowsOnlyUnsignedPlaintextInterimReplies(t *testing.T) {
 	}
 }
 
+func TestClientProtectsZeroSessionLeaseBreaks(t *testing.T) {
+	for _, cipher := range []uint16{0, smb.CipherAES128GCM, smb.CipherAES256GCM} {
+		for _, signing := range []uint16{smb.SigningCMAC, smb.SigningGMAC} {
+			client, peer := protectedClient(t, cipher, signing)
+			body, err := wire.EncodeLeaseBreakNotification(wire.LeaseBreakNotification{Key: [16]byte{1}, Epoch: 9, CurrentState: 7, NewState: 3, Flags: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			message := wire.Message{Header: wire.Header{Command: wire.OplockBreak, MessageID: ^uint64(0), Flags: wire.FlagResponse}, Body: body}
+			payload := peerPayload(t, peer, cipher != 0, message)
+			reply, err := client.decodeMessages(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := client.routeLeaseBreaks(&reply); err != nil || len(reply.Messages) != 0 || len(client.leaseBreaks) != 1 {
+				t.Fatalf("routed break = %+v, error = %v", reply, err)
+			}
+			payload[len(payload)-1] ^= 1
+			if _, err := client.decodeMessages(payload); err == nil {
+				t.Fatal("tampered notification accepted")
+			}
+			for _, change := range []func(*wire.Header){
+				func(h *wire.Header) { h.MessageID = 5 },
+				func(h *wire.Header) { h.Command = wire.Echo },
+				func(h *wire.Header) { h.Flags |= wire.FlagAsync },
+				func(h *wire.Header) { h.Status = smb.StatusPending },
+			} {
+				invalid := message
+				change(&invalid.Header)
+				if _, err := client.decodeMessages(peerPayload(t, peer, cipher != 0, invalid)); err == nil {
+					t.Fatal("zero-session reply was mistaken for a notification")
+				}
+			}
+		}
+	}
+}
+
 func TestClientRefusesTransformBeforeLogin(t *testing.T) {
 	client, peer := protectedClient(t, smb.CipherAES128GCM, smb.SigningCMAC)
 	client.protector = nil

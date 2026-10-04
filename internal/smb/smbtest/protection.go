@@ -69,7 +69,7 @@ func (client *Client) decodeMessages(payload []byte) (Reply, error) {
 		return reply, nil
 	}
 	for _, message := range messages {
-		if message.Header.Flags&wire.FlagResponse == 0 || message.Header.SessionID != client.sessionID {
+		if message.Header.Flags&wire.FlagResponse == 0 || message.Header.SessionID != client.sessionID && !isLeaseBreak(message.Header) {
 			return reply, errors.New("smbtest: protected reply identity mismatch")
 		}
 		if !encrypted {
