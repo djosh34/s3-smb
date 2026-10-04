@@ -39,6 +39,14 @@ func TestSeedValue(t *testing.T) {
 	}
 }
 
+func TestReplayCommand(t *testing.T) {
+	got := replayCommand(349, "TestChaos/s3[cut]/client's_write")
+	want := `S3_SMB_CHAOS_SEED=349 go test -race -shuffle=on -count=1 -v ./test/e2e -run '^TestChaos$/^s3\[cut\]$/^client'"'"'s_write$'`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestRandStreams(t *testing.T) {
 	a, b := Rand(349, "faults"), Rand(349, "faults")
 	c, d := Rand(349, "data"), Rand(350, "faults")
