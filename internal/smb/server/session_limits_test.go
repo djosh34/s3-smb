@@ -75,7 +75,7 @@ func TestCanceledRequestDoesNotDispatch(t *testing.T) {
 	connection := &connection{server: server}
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
-	if result := connection.execute(ctx, echo(t, 1)); result.status != smb.StatusCancelled {
+	if result := connection.execute(ctx, echo(t, 1), compoundState{}); result.status != smb.StatusCancelled {
 		t.Fatal(result)
 	}
 }
