@@ -21,8 +21,13 @@ on:
           - acceptance
           - m4
           - scenarios
+      chaos_seed:
+        description: Optional unsigned decimal seed for network-chaos
+        required: false
+        default: ''
+        type: string
       scenarios:
-        description: Failed-backup scenarios to run, as a JSON list
+        description: Scenarios to run as a JSON list, network-chaos is opt-in
         required: true
         default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage"]'
         type: string
@@ -227,7 +232,8 @@ jobs:
     env:
       MAC_PHASE: scenario
       MAC_SCENARIO: ${{ matrix.scenario }}
-      MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage') && 'smbnext' || inputs.server }}
+      S3_SMB_CHAOS_SEED: ${{ inputs.chaos_seed }}
+      MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage' || matrix.scenario == 'network-chaos') && 'smbnext' || inputs.server }}
     steps:
       - name: Set task paths
         run: |

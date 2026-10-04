@@ -16,6 +16,7 @@ import (
 )
 
 type result struct {
+	NetworkChaos    *networkChaosResult `json:"network_chaos,omitempty"`
 	NetworkDrop     *helpers.DropReport `json:"network_drop,omitempty"`
 	Baseline        string              `json:"baseline"`
 	Scenario        string              `json:"scenario,omitempty"`
@@ -129,7 +130,7 @@ func (h *harness) cold() {
 
 func (h *harness) scenario(name string) result {
 	switch name {
-	case "network-drop", "network-outage":
+	case "network-drop", "network-outage", "network-chaos":
 		return h.networkScenario(name)
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:

@@ -32,6 +32,44 @@ Command logs, build tags and the daemon's source revision are uploaded as M4
 evidence even if the job fails. Issue #205 stays open until the integration
 agent's Mac run passes.
 
+## On-demand network chaos
+
+`network-chaos` is opt-in. It is not in the default scenario list and never runs
+on pull requests. Wait until the new server can complete a backup, then ask the
+shared integration agent to dispatch it on `p3/smb-next`:
+
+```sh
+gh api --method POST repos/djosh34/s3-smb/actions/workflows/macos.yml/dispatches \
+  -f ref=p3/smb-next -f inputs[mode]=scenarios -f inputs[server]=smbnext \
+  -f 'inputs[scenarios]=["network-chaos"]' -f inputs[chaos_seed]=359
+```
+
+Leave `chaos_seed` empty for a random seed. The harness logs the seed and a Mac
+replay instruction. `S3_SMB_CHAOS_SEED` passes through the root wrapper; it uses
+an unsigned decimal integer. Replay preserves the fault plan, not Time Machine's
+traffic timing or the random file contents.
+
+The scenario makes a baseline backup, adds a four-GiB file, and waits for the
+existing band-write gate and new remote chunks. It then applies eight seconds
+of seeded latency and jitter through the Go proxy, followed by a seeded stall
+of five to ten seconds. Delay applies per forwarded buffer, not per packet.
+There are no connection cuts, drops or packet-filter commands. The measured
+stall must be shorter than 30 seconds even if the runner is delayed.
+
+The same backup must finish. Its bounded Mac log window must show exactly one
+backup start and no non-idempotent reconnect refusal. A reconnect message is
+not required for latency or stalls. The completed native backup list must
+contain the new backup, whose restored files must match the updated manifest.
+The baseline backup is restored and checked too. Missing evidence fails the
+run; this scenario has no retry or not-tested pass.
+
+Artifacts include the seed, fault plan, actual phase times, band-write status,
+Mac logs, daemon logs and both restore manifests. After shutdown, all daemon
+generation logs are checked for panics, fatal errors and race reports. Linux
+helper tests and Darwin vet are development checks, not Mac acceptance proof.
+The PR stays draft until its shared dependencies and required server handlers
+land and the shared integration run can provide real backup evidence.
+
 ## Linux checks
 
 ```sh

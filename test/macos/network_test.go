@@ -19,6 +19,12 @@ func (h *harness) networkScenario(name string) result {
 	if os.Getenv("MAC_SERVER") != "smbnext" {
 		h.t.Fatal("network scenarios require MAC_SERVER=smbnext")
 	}
+	if name == "network-chaos" {
+		h.t.Cleanup(func() {
+			h.finish()
+			h.checkChaosLogs()
+		})
+	}
 	// Keep forwarding alive for detach after a stage timeout. finish closes it.
 	proxy, err := netfault.New(context.WithoutCancel(h.ctx), "127.0.0.1:1445")
 	h.must(err)
@@ -29,6 +35,9 @@ func (h *harness) networkScenario(name string) result {
 	h.save("smb-kernel-logging.json", h.smbLogging)
 	h.must(err)
 	outcome.Scenario = name
+	if name == "network-chaos" {
+		return h.networkChaos(outcome)
+	}
 	if name == "network-outage" {
 		return h.networkOutage(outcome)
 	}
@@ -93,28 +102,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	before := h.objects("s3-smb/chunks/")
 	started := time.Now().UTC()
 	h.startBackup(label)
-	var previous, current string
-	h.must(h.waitFor("large band writes", 30*time.Minute, 2*time.Second, func() (bool, error) {
-		if h.backup.exited() {
-			return false, errors.New("backup ended before the connection cut")
-		}
-		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready := helpers.BandWriteReady(previous, current)
-		previous = current
-		if !ready {
-			return false, nil
-		}
-		// Prove this attempt uploaded chunks, then resample immediately before cutting.
-		after := h.objects("s3-smb/chunks/")
-		if err := helpers.CheckRemoteChange(before, after); err != nil {
-			h.t.Log("waiting for remote band data", err)
-			return false, nil
-		}
-		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready = helpers.BandWriteReady(previous, current)
-		previous = current
-		return ready, nil
-	}))
+	current := h.waitForBandWrites(before)
 	attempt := helpers.DropAttempt{StatusAtCut: current, CutAt: time.Now().UTC()}
 	h.must(h.proxy.SetFault(netfault.Fault{Drop: true}))
 	h.save(label+"-cut.json", attempt)
@@ -140,6 +128,32 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	attempt.Log = h.dropLog(started, time.Now().UTC())
 	h.save(label+"-result.json", attempt)
 	return attempt, updated, commandErr
+}
+
+func (h *harness) waitForBandWrites(before map[string]int64) string {
+	var previous, current string
+	h.must(h.waitFor("large band writes", 30*time.Minute, 2*time.Second, func() (bool, error) {
+		if h.backup.exited() {
+			return false, errors.New("backup ended before network faults")
+		}
+		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
+		ready := helpers.BandWriteReady(previous, current)
+		previous = current
+		if !ready {
+			return false, nil
+		}
+		// Prove uploaded chunks, then resample immediately before applying faults.
+		after := h.objects("s3-smb/chunks/")
+		if err := helpers.CheckRemoteChange(before, after); err != nil {
+			h.t.Log("waiting for remote band data", err)
+			return false, nil
+		}
+		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
+		ready = helpers.BandWriteReady(previous, current)
+		previous = current
+		return ready, nil
+	}))
+	return current
 }
 
 func (h *harness) smbLogCommand(args ...string) (string, error) {

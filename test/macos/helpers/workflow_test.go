@@ -19,7 +19,7 @@ func TestNetworkScenarioWorkflow(t *testing.T) {
 			t.Fatal("network scenario missing from the default matrix", name)
 		}
 	}
-	selection := "MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage') && 'smbnext' || inputs.server }}"
+	selection := "MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage' || matrix.scenario == 'network-chaos') && 'smbnext' || inputs.server }}"
 	if !strings.Contains(workflow, selection) {
 		t.Fatal("network scenarios must build smbnext without changing other jobs")
 	}
