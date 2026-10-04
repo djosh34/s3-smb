@@ -198,15 +198,8 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 			return reply{}, truncateErr
 		}
 	}
-	if action != 1 && create.FileAttributes != 0 {
-		attributes := create.FileAttributes
-		if action == 3 {
-			attributes |= resolved.Attr.Attributes
-		}
-		attributes = normalizeFileAttributes(attributes)
-		if attrErr := request.Storage.SetAttr(ctx, resolved.Object, smb.AttrChange{Attributes: &attributes}); attrErr != nil {
-			return reply{}, attrErr
-		}
+	if attrErr := setCreateAttributes(ctx, request.Storage, create, resolved, action); attrErr != nil {
+		return reply{}, attrErr
 	}
 	attr, err := request.Storage.GetAttr(ctx, resolved.Object)
 	if err != nil {
