@@ -20,7 +20,6 @@ func TestLateAsyncCompletionsKeepTheirOwnIdentity(t *testing.T) {
 }
 
 func testLateAsyncOrder(t *testing.T, simultaneous bool) {
-	t.Helper()
 	server, err := New(testOptions(t))
 	if err != nil {
 		t.Fatal(err)

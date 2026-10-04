@@ -67,7 +67,7 @@ func serveLateAsyncPipe(t *testing.T, server *Server, local, remote net.Conn) *l
 	}
 	ctx, stop := context.WithTimeout(t.Context(), 3*time.Second)
 	// Keep ServeConn alive independently of test cleanup cancellation.
-	serverCtx, cancel := context.WithCancel(context.Background())
+	serverCtx := context.WithoutCancel(t.Context())
 	peer := &lateAsyncPeer{client: client, ctx: ctx, done: make(chan struct{})}
 	go func() {
 		peer.err = server.ServeConn(serverCtx, local)
@@ -85,9 +85,8 @@ func serveLateAsyncPipe(t *testing.T, server *Server, local, remote net.Conn) *l
 		case <-time.After(3 * time.Second):
 			t.Error("ServeConn did not drain late work")
 		}
-		cancel()
 		stop()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(serverCtx), 3*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(serverCtx, 3*time.Second)
 		defer shutdownCancel()
 		if err := server.Shutdown(shutdownCtx); err != nil {
 			t.Error(err)
@@ -129,7 +128,6 @@ func TestLateAsyncCompletionDuringShutdown(t *testing.T) {
 }
 
 func testLateAsyncShutdown(t *testing.T, deadline bool) {
-	t.Helper()
 	options := testOptions(t)
 	logs := make(asyncReplyErrors, 4)
 	options.Logger = slog.New(logs)
@@ -154,12 +152,12 @@ func testLateAsyncShutdown(t *testing.T, deadline bool) {
 	if pending.Header.Status != smb.StatusPending {
 		t.Fatalf("request did not become pending: %+v", pending.Header)
 	}
-	bound := time.Second
+	shutdownCtx := context.WithoutCancel(peer.ctx)
 	if deadline {
-		bound = 50 * time.Millisecond
+		var stop context.CancelFunc
+		shutdownCtx, stop = context.WithTimeout(peer.ctx, 50*time.Millisecond)
+		defer stop()
 	}
-	shutdownCtx, stop := context.WithTimeout(peer.ctx, bound)
-	defer stop()
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- server.Shutdown(shutdownCtx) }()
 	waitAsyncSignal(peer.ctx, t, canceled)
@@ -173,7 +171,11 @@ func testLateAsyncShutdown(t *testing.T, deadline bool) {
 			t.Fatalf("shutdown ignored its caller's bound: %v", err)
 		}
 	} else {
-		noCompletion(t, shutdown)
+		select {
+		case err := <-shutdown:
+			t.Fatalf("shutdown returned before late work finished: %v", err)
+		default:
+		}
 	}
 	release.release()
 	waitAsyncSignal(peer.ctx, t, peer.done)
