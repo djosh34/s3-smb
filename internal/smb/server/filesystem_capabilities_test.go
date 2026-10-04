@@ -44,10 +44,11 @@ func TestFilesystemSetSparseRefused(t *testing.T) {
 
 func TestFilesystemClientSettableAttributes(t *testing.T) {
 	const unsupported = uint32(0x200 | 0x400 | 0x800 | 0x4000) // Sparse, reparse, compressed, encrypted.
-	cases := []struct {
+	type attributeCase struct {
 		attributes uint32
 		want       uint32
-	}{
+	}
+	cases := []attributeCase{
 		{0x200, 0x80},
 		{0x400, 0x80},
 		{0x800, 0x80},
@@ -56,10 +57,7 @@ func TestFilesystemClientSettableAttributes(t *testing.T) {
 		{unsupported | 0x3127, 0x3127}, // All seven client-settable bits.
 	}
 	for _, bit := range []uint32{1, 2, 4, 0x20, 0x100, 0x1000, 0x2000} {
-		cases = append(cases, struct {
-			attributes uint32
-			want       uint32
-		}{unsupported | bit, bit})
+		cases = append(cases, attributeCase{unsupported | bit, bit})
 	}
 	for _, test := range cases {
 		t.Run(fmt.Sprintf("%x", test.attributes), func(t *testing.T) {
@@ -102,6 +100,38 @@ func TestFilesystemClientSettableAttributes(t *testing.T) {
 				assertBasic(want)
 			}
 			client.close(t, created.ID)
+		})
+	}
+}
+
+func TestFilesystemOverwriteAttributes(t *testing.T) {
+	for _, disposition := range []uint32{fileOverwrite, fileOverwriteIf, fileSupersede} {
+		t.Run(fmt.Sprint(disposition), func(t *testing.T) {
+			server := newCapabilityServer(t)
+			client := capabilityConnection(t, server)
+			request := wire.CreateRequest{
+				Name: "overwrite", Disposition: fileCreateDisposition, DesiredAccess: fileAllAccess,
+				ShareAccess: 7, FileAttributes: 2, // FILE_ATTRIBUTE_HIDDEN.
+			}
+			created := client.create(t, request, smb.StatusSuccess)
+			client.close(t, created.ID)
+			request.Disposition, request.FileAttributes = disposition, 0x200
+			opened := client.create(t, request, smb.StatusSuccess)
+			want := uint32(2)
+			if disposition == fileSupersede {
+				want = 0x80
+			}
+			if opened.Attributes != want {
+				t.Fatalf("CREATE attributes = %#x, want %#x", opened.Attributes, want)
+			}
+			basic, err := wire.DecodeFileBasicInformation(client.fileInformation(t, opened.ID, wire.ClassFileBasic))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if basic.Attributes != want {
+				t.Fatalf("Basic attributes = %#x, want %#x", basic.Attributes, want)
+			}
+			client.close(t, opened.ID)
 		})
 	}
 }
