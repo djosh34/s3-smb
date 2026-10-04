@@ -134,6 +134,8 @@ func TestSMBShutdownAcceptsOnlyExpectedServeErrors(t *testing.T) {
 		fmt.Errorf("close listener: %w", net.ErrClosed), wrappedClose,
 		errors.Join(context.Canceled, net.ErrClosed),
 		errors.Join(context.Canceled, wrappedClose),
+		fmt.Errorf("shutdown: %w", errors.Join(context.Canceled, wrappedClose)),
+		fmt.Errorf("shutdown: %w", fmt.Errorf("close listener: %w", errors.Join(net.ErrClosed, wrappedClose))),
 	} {
 		done := make(chan error, 1)
 		done <- err
@@ -148,42 +150,91 @@ func TestSMBShutdownAcceptsOnlyExpectedServeErrors(t *testing.T) {
 			t.Fatal("shutdown did not finish after an expected error")
 		}
 	}
-	// A wrapped error carries context beyond the shutdown signal.
+}
+
+func TestSMBShutdownPreservesWrappedCancellation(t *testing.T) {
 	wrapped := fmt.Errorf("accept failed: %w", context.Canceled)
-	done := make(chan error, 1)
-	done <- wrapped
-	close(done)
-	if err := (&resources{serveDone: done}).close(); !errors.Is(err, wrapped) {
-		t.Fatalf("lost wrapped accept error: %v", err)
+	wrappedJoin := fmt.Errorf("accept failed: %w", errors.Join(context.Canceled))
+	for _, result := range []string{"Serve", "Shutdown"} {
+		for _, test := range []struct{ err, want error }{
+			{wrapped, wrapped},
+			{wrappedJoin, wrappedJoin},
+			{fmt.Errorf("shutdown: %w", wrapped), wrapped},
+			{errors.Join(net.ErrClosed, wrapped), wrapped},
+			{fmt.Errorf("shutdown: %w", errors.Join(net.ErrClosed, wrapped)), wrapped},
+		} {
+			t.Run(result+"/"+test.err.Error(), func(t *testing.T) {
+				s := &shutdownServer{}
+				done := make(chan error, 1)
+				if result == "Shutdown" {
+					s.err = test.err
+				} else {
+					done <- test.err
+				}
+				close(done)
+				if err := (&resources{server: s, serveDone: done}).close(); !errors.Is(err, test.want) {
+					t.Fatalf("lost wrapped cancellation: %v", err)
+				}
+			})
+		}
 	}
 }
 
 func TestSMBShutdownFailureKeepsStorageAndStateLock(t *testing.T) {
 	failure := errors.New("open close failed")
-	s := &shutdownServer{err: errors.Join(fmt.Errorf("close listener: %w", net.ErrClosed), failure)}
-	a := &shutdownAdapter{}
-	dir := t.TempDir()
-	lock, err := lockState(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := lock.Close(); err != nil {
-			t.Error(err)
+	mixed := errors.Join(net.ErrClosed, failure)
+	wrapped := fmt.Errorf("close open: %w", mixed)
+	for _, result := range []string{"Serve", "Shutdown"} {
+		for _, test := range []struct {
+			name string
+			err  error
+		}{
+			{"joined", errors.Join(fmt.Errorf("close listener: %w", net.ErrClosed), failure)},
+			{"wrapped join", wrapped},
+			{"nested wrappers", fmt.Errorf("shutdown: %w", wrapped)},
+			{"nested joins", fmt.Errorf("shutdown: %w", errors.Join(context.Canceled, wrapped))},
+			{"joined wrapper", errors.Join(context.Canceled, wrapped)},
+			{"network wrapper", &net.OpError{Op: "close", Net: "tcp", Err: mixed}},
+		} {
+			t.Run(result+"/"+test.name, func(t *testing.T) {
+				s := &shutdownServer{}
+				done := make(chan error, 1)
+				if result == "Shutdown" {
+					s.err = test.err
+				} else {
+					done <- test.err
+				}
+				close(done)
+				a := &shutdownAdapter{}
+				dir := t.TempDir()
+				lock, err := lockState(dir)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer func() {
+					if err := lock.Close(); err != nil {
+						t.Error(err)
+					}
+				}()
+				r := &resources{server: s, adapter: a, serveDone: done, lock: lock}
+				err = r.close()
+				if !errors.Is(err, failure) {
+					t.Fatalf("lost cleanup failure: %v", err)
+				}
+				if errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) {
+					t.Fatalf("kept shutdown signal: %v", err)
+				}
+				if !s.called || a.called {
+					t.Fatal("storage closed after failed SMB cleanup")
+				}
+				other, err := lockState(dir)
+				if err == nil {
+					if err := other.Close(); err != nil {
+						t.Error(err)
+					}
+					t.Fatal("state lock released after failed SMB cleanup")
+				}
+			})
 		}
-	}()
-	r := &resources{server: s, adapter: a, lock: lock}
-	if err = r.close(); !errors.Is(err, failure) {
-		t.Fatalf("shutdown error: %v", err)
-	}
-	if !s.called || a.called {
-		t.Fatal("storage closed after failed server shutdown")
-	}
-	other, err := lockState(dir)
-	if err == nil {
-		if err := other.Close(); err != nil {
-			t.Error(err)
-		}
-		t.Fatal("state lock released after failed server shutdown")
 	}
 }
