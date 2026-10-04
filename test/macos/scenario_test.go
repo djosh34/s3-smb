@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
@@ -292,7 +291,7 @@ func (h *harness) finish() {
 		}
 	}
 	if h.proxy != nil {
-		report(h.proxy.SetFault(netfault.Fault{}))
+		h.proxy.Restore()
 	}
 	// Leave two minutes of the outer budget for bootout and stopping services.
 	//nolint:contextcheck // Native commands use h.ctx, set to each callback's context before calls.

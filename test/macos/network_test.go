@@ -116,7 +116,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 		return ready, nil
 	}))
 	attempt := helpers.DropAttempt{StatusAtCut: current, CutAt: time.Now().UTC()}
-	h.must(h.proxy.SetFault(netfault.Fault{Drop: true}))
+	h.must(h.proxy.Drop())
 	h.save(label+"-cut.json", attempt)
 	if long {
 		h.pause(45 * time.Second)
@@ -130,7 +130,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, string
 	} else {
 		h.pause(5 * time.Second)
 	}
-	h.must(h.proxy.SetFault(netfault.Fault{}))
+	h.proxy.Restore()
 	attempt.RestoredAt = time.Now().UTC()
 	_, commandErr := h.completeBackup(label)
 	attempt.Completed = commandErr == nil
