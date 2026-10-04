@@ -9,7 +9,10 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
+// cleanup owns the transferred actions and must finish them despite cancellation.
+// Callers must release all namespace guards before entering cleanup.
 func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) error {
+	ctx = context.WithoutCancel(ctx)
 	var result error
 	for _, action := range actions {
 		result = errors.Join(result, server.cleanupAction(ctx, action))
