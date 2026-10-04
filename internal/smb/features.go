@@ -4,7 +4,8 @@ import "time"
 
 // Negotiation policy from decision #169. Encryption authenticates messages;
 // encrypted traffic is not separately signed. Disabling encryption does not
-// disable mandatory signing. No dialect or algorithm fallback is permitted.
+// disable mandatory signing. No dialect or cipher fallback is permitted.
+// Signing uses the MS-SMB2 AES-CMAC default when offers have no overlap.
 const (
 	DialectWildcard             uint16 = 0x02ff
 	Dialect311                  uint16 = 0x0311
