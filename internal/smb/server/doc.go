@@ -2,19 +2,21 @@
 // requests and SMB handlers. It joins wire, auth, crypt, state and smb.Storage.
 // It must not reach into JuiceFS, reparse stream names or keep a second lock table.
 //
-// M2 provides New(options Options) (*Server, error). It validates all inputs,
-// calls wire functions, constructs auth and crypt instances, and uses the
-// supplied state table and storage. The server never closes the storage runtime.
-// Tests use ServeConn over net.Pipe without a listener or main wiring.
+// New validates the supplied modules and identity. The connection core handles
+// negotiation and ECHO; session and file handlers are added in later milestones.
+// The server never closes the storage runtime. Tests use ServeConn over net.Pipe
+// without a listener or main wiring.
 package server
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/state"
+	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
 // EncryptionPolicy selects session confidentiality, not the server implementation.
@@ -44,7 +46,7 @@ type Options struct {
 }
 
 // Server serves independent connections against one shared open table.
-// M2 adds private state and these methods. Callers must use New.
+// Callers must use New.
 // Serve owns the listener and accepts until cancellation or listener failure.
 // It then drains requests, closes every open and waits for cleanup.
 // ServeConn owns one connection and its ordered sender. Each queued frame has
@@ -53,8 +55,14 @@ type Options struct {
 // Shutdown stops accepting and drains requests. It closes every attached and
 // detached open, applies pending deletion, and returns all cleanup errors.
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
-//
-//	func (server *Server) Serve(ctx context.Context, listener net.Listener) error
-//	func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error
-//	func (server *Server) Shutdown(ctx context.Context) error
-type Server struct{}
+type Server struct {
+	shutdownErr  error
+	handlers     map[wire.Command]handler
+	connections  map[*connection]struct{}
+	listeners    map[*ownedListener]struct{}
+	shutdownDone chan struct{}
+	options      Options
+	workers      sync.WaitGroup
+	mu           sync.Mutex
+	stopping     bool
+}
