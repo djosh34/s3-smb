@@ -223,6 +223,17 @@ func count32(n int) (uint32, error) {
 	return uint32(n), nil
 }
 
+func (b *builder) encoded(data []byte, err error) {
+	if b.err != nil {
+		return
+	}
+	if err != nil {
+		b.err = err
+		return
+	}
+	b.bytes(data)
+}
+
 func (b *builder) finish() ([]byte, error) {
 	if b.err != nil {
 		return nil, b.err

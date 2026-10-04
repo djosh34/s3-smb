@@ -70,25 +70,16 @@ func DecodeFileAllInformation(data []byte) (FileAllInformation, error) {
 // EncodeFileAllInformation writes each class in its declared wire order.
 func EncodeFileAllInformation(v FileAllInformation) ([]byte, error) {
 	b := builder{}
-	parts := []func() ([]byte, error){
-		func() ([]byte, error) { return EncodeFileBasicInformation(v.Basic) },
-		func() ([]byte, error) { return EncodeFileStandardInformation(v.Standard) },
-		func() ([]byte, error) { return EncodeFileInternalInformation(v.Internal) },
-		func() ([]byte, error) { return EncodeFileEAInformation(v.EA) },
-		func() ([]byte, error) { return EncodeFileAccessInformation(v.Access) },
-		func() ([]byte, error) { return EncodeFilePositionInformation(v.Position) },
-		func() ([]byte, error) { return EncodeFileModeInformation(v.Mode) },
-		func() ([]byte, error) { return EncodeFileAlignmentInformation(v.Alignment) },
-		func() ([]byte, error) { return EncodeFileNameInformation(v.Name) },
-	}
-	for _, part := range parts {
-		data, err := part()
-		if err != nil {
-			return nil, err
-		}
-		b.bytes(data)
-	}
-	return b.data, nil
+	b.encoded(EncodeFileBasicInformation(v.Basic))
+	b.encoded(EncodeFileStandardInformation(v.Standard))
+	b.encoded(EncodeFileInternalInformation(v.Internal))
+	b.encoded(EncodeFileEAInformation(v.EA))
+	b.encoded(EncodeFileAccessInformation(v.Access))
+	b.encoded(EncodeFilePositionInformation(v.Position))
+	b.encoded(EncodeFileModeInformation(v.Mode))
+	b.encoded(EncodeFileAlignmentInformation(v.Alignment))
+	b.encoded(EncodeFileNameInformation(v.Name))
+	return b.finish()
 }
 
 // DecodeFileRenameInformation preserves the destination and root identity.
