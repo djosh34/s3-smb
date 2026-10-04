@@ -286,7 +286,6 @@ func TestNamedStreamRenameChangesNothing(t *testing.T) {
 	f.write(t, other, "other")
 	namespaceStatus(t, f.rename(t, stream, "renamed", false), smb.StatusNotSupported)
 	namespaceStatus(t, f.rename(t, base, "source:new", true), smb.StatusNotSupported)
-	namespaceStatus(t, f.disposition(t, stream, true), smb.StatusNotSupported)
 	f.name(t, "source", base.Object.Inode)
 	f.name(t, "renamed", 0)
 	f.data(t, base, "base")

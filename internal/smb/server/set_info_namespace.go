@@ -100,9 +100,6 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 	if err != nil {
 		return smb.StatusInvalidParameter
 	}
-	if open.Object.Stream != "" {
-		return smb.StatusNotSupported
-	}
 	if open.GrantedAccess&0x00010000 == 0 {
 		return smb.StatusAccessDenied
 	}
@@ -135,10 +132,10 @@ func dispositionUnderGuard(ctx context.Context, request RequestContext, open sta
 	if err != nil {
 		return smb.StatusFromError(err), false
 	}
-	if resolved.Name.Parent != discovered.Name.Parent || !resolved.Exists || resolved.Object != open.Object {
+	if resolved.Name.Parent != discovered.Name.Parent || !resolved.Exists || resolved.Object.Inode != open.Object.Inode {
 		return smb.StatusSuccess, true
 	}
-	if resolved.Attr.Kind == smb.KindDirectory {
+	if open.Object.Stream == "" && resolved.Attr.Kind == smb.KindDirectory {
 		entries, err := request.Storage.ReadDir(ctx, open.Object.Inode, 0, 1)
 		if err != nil {
 			return smb.StatusFromError(err), false
@@ -147,5 +144,7 @@ func dispositionUnderGuard(ctx context.Context, request RequestContext, open sta
 			return smb.StatusDirectoryNotEmpty, false
 		}
 	}
-	return request.Opens.SetDelete(open.ID, request.Binding(), resolved.Name, true), false
+	name := resolved.Name
+	name.Stream = open.Object.Stream
+	return request.Opens.SetDelete(open.ID, request.Binding(), name, true), false
 }

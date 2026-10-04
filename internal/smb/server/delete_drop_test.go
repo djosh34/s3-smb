@@ -53,6 +53,21 @@ func newDroppingDeletionPeer(t *testing.T, server *Server) *droppingDeletionPeer
 	return dropping
 }
 
+func (dropping *droppingDeletionPeer) drop(t *testing.T) {
+	t.Helper()
+	if err := dropping.peer.client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-dropping.done:
+		if dropping.err != nil {
+			t.Fatal(dropping.err)
+		}
+	case <-dropping.peer.ctx.Done():
+		t.Fatal(dropping.peer.ctx.Err())
+	}
+}
+
 func TestDroppedStreamDeletionKeepsOtherConnectionHandles(t *testing.T) {
 	for _, other := range []string{"data", "data:stream:$DATA"} {
 		t.Run(other, func(t *testing.T) {
@@ -65,17 +80,7 @@ func TestDroppedStreamDeletionKeepsOtherConnectionHandles(t *testing.T) {
 			surviving := newDeletionPeer(t, server)
 			held := surviving.open(t, other, fileReadData, fileOpen, 0, smb.StatusSuccess)
 			dropping.peer.open(t, "data:stream:$DATA", fileDelete, fileOpen, fileDeleteOnClose, smb.StatusSuccess)
-			if err := dropping.peer.client.Close(); err != nil {
-				t.Fatal(err)
-			}
-			select {
-			case <-dropping.done:
-				if dropping.err != nil {
-					t.Fatal(dropping.err)
-				}
-			case <-dropping.peer.ctx.Done():
-				t.Fatal(dropping.peer.ctx.Err())
-			}
+			dropping.drop(t)
 			if other == "data:stream:$DATA" {
 				requireDeletionData(t, storage, other, "stream data")
 				surviving.open(t, other, fileReadData, fileOpen, 0, smb.StatusDeletePending)
