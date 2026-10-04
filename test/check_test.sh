@@ -187,7 +187,9 @@ for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
   'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
   'go test -list ^Fuzz example/one' \
-  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'; do
+  'go test -list ^Fuzz example/two' \
+  'go test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one' \
+  'go test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 2 example/two'; do
   export CHECK_TEST_FAIL=$command
   run_check --gate
   fails
@@ -324,4 +326,7 @@ for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
     fail "internal step accepted missing $variable"
   fi
 done
+# Only dispatched gates receive the longer job timeout.
+grep -Fx "    timeout-minutes: \${{ inputs.gate && 180 || 60 }}" \
+  "$root/.github/workflows/check.yml" >/dev/null || fail 'wrong workflow timeout'
 echo 'check.sh tests passed'
