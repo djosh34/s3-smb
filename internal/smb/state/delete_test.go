@@ -50,6 +50,9 @@ func TestDeletePendingAndClearingIndependentIntent(t *testing.T) {
 	if !action.Remove || action.Object != second.Object || action.Name != name {
 		t.Fatalf("last close cleanup = %+v", action)
 	}
+	_, status = table.Reserve(request(1))
+	statusIs(t, status, smb.StatusDeletePending)
+	table.CompleteDelete(action.Object)
 	commit(t, table, request(1), state.Grant{})
 }
 
