@@ -92,8 +92,7 @@ func requestSize(message wire.Message) (uint64, error) {
 		_, err := wire.DecodeSetInfoRequest(message)
 		return 0, err
 	case wire.OplockBreak:
-		_, err := wire.DecodeLeaseBreakRequest(message)
-		return 0, err
+		return 0, validateOplockBreak(message)
 	default:
 		return 0, nil
 	}
