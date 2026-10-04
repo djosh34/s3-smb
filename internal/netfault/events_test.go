@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package netfault
 
 import (
@@ -204,48 +205,55 @@ type signaledConn struct {
 }
 
 func (c signaledConn) Write(data []byte) (int, error) {
-	close(c.started)
+	select {
+	case c.started <- struct{}{}:
+	default:
+	}
 	return c.Conn.Write(data)
 }
 
 func TestFaultReplacementDuringWrite(t *testing.T) {
-	left, right := net.Pipe()
-	t.Cleanup(func() { closeSocket(t, left); closeSocket(t, right) })
-	for _, conn := range []net.Conn{left, right} {
-		if err := conn.SetDeadline(time.Now().Add(testTimeout)); err != nil {
-			t.Fatal(err)
-		}
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	t.Cleanup(cancel)
-	connection := &link{ctx: ctx, cancel: cancel, client: left, id: 1}
-	proxy := &Proxy{links: map[*link]struct{}{connection: {}}, changed: make(chan struct{}), events: make(chan Event, 4)}
-	setFault(t, proxy, Fault{CutAfter: 8, CutDirection: ClientToServer})
-	started := make(chan struct{})
-	done := make(chan error, 1)
-	go func() {
-		done <- proxy.forwardBytes(connection, ClientToServer, signaledConn{left, started}, []byte("12345678extra"))
-	}()
-	select {
-	case <-started:
-	case <-time.After(testTimeout):
-		t.Fatal("write did not start")
-	}
-	// Replacement must neither block on the old write nor inherit its count.
-	setFault(t, proxy, Fault{CutAfter: 4, CutDirection: ClientToServer})
-	readBytes(t, right, []byte("12345678"))
-	if err := <-done; err != nil {
-		t.Fatalf("stale cut fired: %v", err)
-	}
-	if event := <-proxy.Events(); event.Bytes != 8 || event.Cut {
-		t.Fatalf("old write event %+v", event)
-	}
-	go func() { done <- proxy.forwardBytes(connection, ClientToServer, left, []byte("abcdef")) }()
-	readBytes(t, right, []byte("abcd"))
-	if err := <-done; !errors.Is(err, net.ErrClosed) {
-		t.Fatalf("new cut returned %v", err)
-	}
-	if event := <-proxy.Events(); event.Bytes != 4 || !event.Cut {
-		t.Fatalf("replacement cut event %+v", event)
+	for _, cutAfter := range []int64{0, 4} {
+		t.Run(fmt.Sprint(cutAfter), func(t *testing.T) {
+			left, right := net.Pipe()
+			t.Cleanup(func() { closeSocket(t, left); closeSocket(t, right) })
+			for _, conn := range []net.Conn{left, right} {
+				if err := conn.SetDeadline(time.Now().Add(testTimeout)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			connection := &link{ctx: ctx, cancel: cancel, client: left, id: 1}
+			proxy := &Proxy{links: map[*link]struct{}{connection: {}}, changed: make(chan struct{}), events: make(chan Event, 4)}
+			setFault(t, proxy, Fault{CutAfter: 8, CutDirection: ClientToServer})
+			started := make(chan struct{}, 1)
+			done := make(chan error, 1)
+			go func() {
+				done <- proxy.forwardBytes(connection, ClientToServer, signaledConn{left, started}, []byte("12345678extra"))
+			}()
+			select {
+			case <-started:
+			case <-time.After(testTimeout):
+				t.Fatal("write did not start")
+			}
+			// The replacement preserves the suffix and starts a fresh byte budget.
+			setFault(t, proxy, Fault{CutAfter: cutAfter, CutDirection: ClientToServer})
+			want, suffixBytes := "12345678extra", int64(5)
+			if cutAfter > 0 {
+				want, suffixBytes = "12345678extr", cutAfter
+			}
+			readBytes(t, right, []byte(want))
+			err := <-done
+			if (cutAfter == 0 && err != nil) || (cutAfter > 0 && !errors.Is(err, net.ErrClosed)) {
+				t.Fatalf("replacement write returned %v", err)
+			}
+			if event := <-proxy.Events(); event.Bytes != 8 || event.Cut {
+				t.Fatalf("old write event %+v", event)
+			}
+			if event := <-proxy.Events(); event.Bytes != suffixBytes || event.Cut != (cutAfter > 0) {
+				t.Fatalf("buffered suffix event %+v", event)
+			}
+		})
 	}
 }
