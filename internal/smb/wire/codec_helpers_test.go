@@ -37,6 +37,16 @@ func checkRoundTrip[T any](t *testing.T, value T, encode func(T) ([]byte, error)
 	if !bytes.Equal(saved, afterMutation) {
 		t.Fatal("decoded value aliases input")
 	}
+	var zero T
+	if empty, encodeErr := encode(zero); encodeErr == nil {
+		decoded, decodeErr := decode(empty)
+		if decodeErr != nil {
+			t.Fatalf("zero value failed to decode: %v", decodeErr)
+		}
+		if !reflect.DeepEqual(decoded, zero) {
+			t.Fatalf("zero value changed: %+v", decoded)
+		}
+	}
 }
 
 func checkMessageEnvelope[T any](t *testing.T, value T, encode func(T) ([]byte, error), decode func(Message) (T, error), command Command, response bool) {
@@ -84,6 +94,7 @@ func fuzzCodec[T any](f *testing.F, value T, encode func(T) ([]byte, error), dec
 		f.Fatal(err)
 	}
 	f.Add(seed)
+	f.Add(seed[:len(seed)/2])
 	f.Add([]byte{})
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff})
 	f.Fuzz(func(t *testing.T, data []byte) {

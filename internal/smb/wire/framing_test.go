@@ -78,7 +78,7 @@ func TestSMB1OpeningNegotiate(t *testing.T) {
 	b.zero(27)
 	b.u8(0)
 	dialects := []byte("\x02NT LM 0.12\x00\x02SMB 2.???\x00")
-	b.u16(uint16(len(dialects)))
+	b.length16(len(dialects))
 	b.bytes(dialects)
 	if err := DecodeSMB1Negotiate(b.data); err != nil {
 		t.Fatal(err)

@@ -15,6 +15,9 @@ func DecodeFiletime(value Filetime) (time.Time, error) {
 	ticks := uint64(value)
 	seconds := ticks / filetimeTicksPerSecond
 	nanos := ticks % filetimeTicksPerSecond * 100
+	if seconds > 9223372036854775807 || nanos > 9223372036854775807 {
+		return time.Time{}, errMalformed
+	}
 	return time.Unix(int64(seconds)-filetimeUnixOffset, int64(nanos)).UTC(), nil
 }
 
@@ -26,7 +29,11 @@ func EncodeFiletime(value time.Time) (Filetime, error) {
 	}
 	seconds += filetimeUnixOffset
 	ticks := uint64(seconds) * filetimeTicksPerSecond
-	fraction := uint64(value.Nanosecond() / 100)
+	nanoseconds := value.Nanosecond()
+	if nanoseconds < 0 {
+		return 0, errMalformed
+	}
+	fraction := uint64(nanoseconds / 100)
 	if fraction > ^uint64(0)-ticks {
 		return 0, errMalformed
 	}

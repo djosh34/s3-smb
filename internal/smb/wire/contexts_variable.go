@@ -1,7 +1,7 @@
 package wire
 
 func decodeAlgorithms(c NegotiateContext, typ uint16) ([]uint16, error) {
-	if c.Type != typ {
+	if c.Type != typ || len(c.Data) > 65535 {
 		return nil, errMalformed
 	}
 	r := reader{data: c.Data}
@@ -15,6 +15,7 @@ func decodeAlgorithms(c NegotiateContext, typ uint16) ([]uint16, error) {
 	}
 	return values, r.exact()
 }
+
 func encodeAlgorithms(values []uint16, typ uint16) (NegotiateContext, error) {
 	if len(values) == 0 || !size16(len(values)) || len(values) > 32766 {
 		return NegotiateContext{}, errMalformed
@@ -34,7 +35,7 @@ func encodeAlgorithms(values []uint16, typ uint16) (NegotiateContext, error) {
 // DecodePreauthContext reads the hash list and salt.
 func DecodePreauthContext(c NegotiateContext) (PreauthContext, error) {
 	var v PreauthContext
-	if c.Type != ContextPreauth {
+	if c.Type != ContextPreauth || len(c.Data) > 65535 {
 		return v, errMalformed
 	}
 	r := reader{data: c.Data}

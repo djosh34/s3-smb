@@ -682,11 +682,20 @@ func DecodeErrorResponse(m Message) (ErrorResponse, error) {
 	r.skip(1)
 	length := r.u32()
 	v.Data = clone(r.region(8, uint64(length), 8, 1))
-	return v, r.err
+	if r.err != nil {
+		return ErrorResponse{}, r.err
+	}
+	if err := validateErrorContexts(v); err != nil {
+		return ErrorResponse{}, err
+	}
+	return v, nil
 }
 
 // EncodeErrorResponse writes the command body without an SMB header.
 func EncodeErrorResponse(v ErrorResponse) ([]byte, error) {
+	if err := validateErrorContexts(v); err != nil {
+		return nil, err
+	}
 	if !size32(len(v.Data)) {
 		return nil, errMalformed
 	}
@@ -701,4 +710,20 @@ func EncodeErrorResponse(v ErrorResponse) ([]byte, error) {
 	}
 
 	return b.finish()
+}
+
+func validateErrorContexts(v ErrorResponse) error {
+	if v.ContextCount == 0 {
+		return nil
+	}
+	r := reader{data: v.Data}
+	for i := uint8(0); i < v.ContextCount; i++ {
+		n := r.u32()
+		r.skip(4)
+		if uint64(n) > uint64(len(v.Data)) {
+			return errMalformed
+		}
+		r.skip(int(n))
+	}
+	return r.exact()
 }

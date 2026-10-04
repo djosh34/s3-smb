@@ -120,6 +120,7 @@ func (r *reader) descriptorSID(offset uint32) (*SID, error) {
 	}
 	return &v, nil
 }
+
 func (r *reader) descriptorACL(offset uint32) (*ACL, error) {
 	probe := reader{data: r.data}
 	header := probe.region(uint64(offset), 8, 20, 4)

@@ -21,9 +21,9 @@ func EncodeFileNameInformation(v FileNameInformation) ([]byte, error) {
 		return nil, errMalformed
 	}
 	b := builder{}
-	b.u32(uint32(len(name)))
+	b.length32(len(name))
 	b.bytes(name)
-	return b.data, nil
+	return b.finish()
 }
 
 // DecodeFileAllInformation reads the classes in MS-FSCC order.
@@ -119,9 +119,9 @@ func EncodeFileRenameInformation(v FileRenameInformation) ([]byte, error) {
 	b.boolean(v.ReplaceIfExists)
 	b.zero(7)
 	b.u64(v.RootDirectory)
-	b.u32(uint32(len(name)))
+	b.length32(len(name))
 	b.bytes(name)
-	return b.data, nil
+	return b.finish()
 }
 
 // DecodeFilesystemVolumeInformation reads the volume label and fixed fields.
@@ -152,11 +152,11 @@ func EncodeFilesystemVolumeInformation(v FilesystemVolumeInformation) ([]byte, e
 	b := builder{}
 	b.u64(uint64(v.Created))
 	b.u32(v.Serial)
-	b.u32(uint32(len(name)))
+	b.length32(len(name))
 	b.boolean(v.SupportsObjects)
 	b.u8(0)
 	b.bytes(name)
-	return b.data, nil
+	return b.finish()
 }
 
 // DecodeFilesystemAttributeInformation reads the filesystem name and mask.
@@ -164,7 +164,7 @@ func DecodeFilesystemAttributeInformation(data []byte) (FilesystemAttributeInfor
 	r := reader{data: data}
 	var v FilesystemAttributeInformation
 	v.Attributes = r.u32()
-	v.MaxComponentLength = int32(r.u32())
+	v.MaxComponentLength = r.i32()
 	n := r.u32()
 	v.Name = r.text(r.region(12, uint64(n), 12, 2))
 	if uint64(n)+12 != uint64(len(data)) {
@@ -184,17 +184,17 @@ func EncodeFilesystemAttributeInformation(v FilesystemAttributeInformation) ([]b
 	}
 	b := builder{}
 	b.u32(v.Attributes)
-	b.u32(uint32(v.MaxComponentLength))
-	b.u32(uint32(len(name)))
+	b.i32(v.MaxComponentLength)
+	b.length32(len(name))
 	b.bytes(name)
-	return b.data, nil
+	return b.finish()
 }
 
 // linkedMember bounds one entry and validates the next link before decoding it.
-func linkedMember(data []byte, minimum int) (*reader, uint32, error) {
+func linkedMember(data []byte, minimum uint32) (*reader, uint32, error) {
 	r := &reader{data: data}
 	next := r.u32()
-	if r.err != nil || len(data) < minimum {
+	if r.err != nil || uint64(len(data)) < uint64(minimum) {
 		return r, 0, errMalformed
 	}
 	if next != 0 {
@@ -244,18 +244,22 @@ func EncodeFileStreamInformation(v FileStreamInformation) ([]byte, error) {
 		n := 24 + len(name)
 		if i < len(v.Entries)-1 {
 			n += (8 - n%8) % 8
-			member.u32(uint32(n))
+			member.length32(n)
 		} else {
 			member.u32(0)
 		}
-		member.u32(uint32(len(name)))
+		member.length32(len(name))
 		member.u64(e.Size)
 		member.u64(e.AllocationSize)
 		member.bytes(name)
 		if i < len(v.Entries)-1 {
 			member.align(8)
 		}
-		b.bytes(member.data)
+		data, err := member.finish()
+		if err != nil {
+			return nil, err
+		}
+		b.bytes(data)
 	}
-	return b.data, nil
+	return b.finish()
 }

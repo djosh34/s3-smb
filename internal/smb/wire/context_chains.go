@@ -62,10 +62,11 @@ func encodeCreateContexts(contexts []CreateContext) ([]byte, error) {
 		member.bytes(c.Data)
 		if i < len(contexts)-1 {
 			member.align(8)
-			if len(member.data) > 4294967295 {
-				return nil, errMalformed
+			length, err := count32(len(member.data))
+			if err != nil {
+				return nil, err
 			}
-			binary.LittleEndian.PutUint32(member.data, uint32(len(member.data)))
+			binary.LittleEndian.PutUint32(member.data, length)
 		}
 		data, err := member.finish()
 		if err != nil {

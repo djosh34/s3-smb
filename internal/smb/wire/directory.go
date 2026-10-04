@@ -14,7 +14,8 @@ func readDirectoryMetadata(r *reader) (DirectoryMetadata, uint32) {
 	v.EASize = r.u32()
 	return v, nameLength
 }
-func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength uint32) {
+
+func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength int) {
 	b.u32(v.FileIndex)
 	b.u64(uint64(v.Basic.Created))
 	b.u64(uint64(v.Basic.Accessed))
@@ -23,7 +24,7 @@ func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength uint32) 
 	b.u64(v.EndOfFile)
 	b.u64(v.AllocationSize)
 	b.u32(v.Basic.Attributes)
-	b.u32(nameLength)
+	b.length32(nameLength)
 	b.u32(v.EASize)
 }
 
@@ -77,12 +78,12 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		n := 104 + len(name)
 		if i < len(entries)-1 {
 			n += (8 - n%8) % 8
-			member.u32(uint32(n))
+			member.length32(n)
 		} else {
 			member.u32(0)
 		}
-		writeDirectoryMetadata(&member, e.Metadata, uint32(len(name)))
-		member.u8(uint8(len(short)))
+		writeDirectoryMetadata(&member, e.Metadata, len(name))
+		member.length8(len(short))
 		member.u8(0)
 		member.bytes(short)
 		member.zero(24 - len(short))
@@ -92,9 +93,13 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		if i < len(entries)-1 {
 			member.align(8)
 		}
-		b.bytes(member.data)
+		data, err := member.finish()
+		if err != nil {
+			return nil, err
+		}
+		b.bytes(data)
 	}
-	return b.data, nil
+	return b.finish()
 }
 
 // DecodeDirectoryIDFullEntries validates names and every class 38 link.
@@ -136,18 +141,22 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		n := 80 + len(name)
 		if i < len(entries)-1 {
 			n += (8 - n%8) % 8
-			member.u32(uint32(n))
+			member.length32(n)
 		} else {
 			member.u32(0)
 		}
-		writeDirectoryMetadata(&member, e.Metadata, uint32(len(name)))
+		writeDirectoryMetadata(&member, e.Metadata, len(name))
 		member.u32(0)
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
 			member.align(8)
 		}
-		b.bytes(member.data)
+		data, err := member.finish()
+		if err != nil {
+			return nil, err
+		}
+		b.bytes(data)
 	}
-	return b.data, nil
+	return b.finish()
 }

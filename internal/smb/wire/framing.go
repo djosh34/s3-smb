@@ -109,10 +109,11 @@ func Join(messages []Message) ([]byte, error) {
 		padding := 0
 		if i < len(messages)-1 {
 			padding = (8 - len(m.Body)%8) % 8
-			if !size32(len(m.Body) + 64 + padding) {
-				return nil, errMalformed
+			var err error
+			h.NextCommand, err = count32(len(m.Body) + 64 + padding)
+			if err != nil {
+				return nil, err
 			}
-			h.NextCommand = uint32(len(m.Body) + 64 + padding)
 		}
 		header, err := EncodeHeader(h)
 		if err != nil {
