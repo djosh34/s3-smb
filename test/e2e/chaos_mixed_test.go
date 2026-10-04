@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,11 +116,12 @@ func TestChaosMixedFaults(t *testing.T) {
 	})
 	f.clientAddr = network.Address()
 	ledger := chaos.NewLedger()
-	data := chaos.Rand(seed, "mixed-data")
+	data := chaos.Rand(seed, "mixed-initial-data")
 	names := []string{"mixed-band-000", "mixed-band-文件", "mixed-earlier-backup"}
 	d := chaosKillStart(t, f)
 	chaosKillCheckpoint(t, f, ledger, names, data)
 	for _, event := range plan {
+		data := chaos.Rand(seed, "mixed-data/"+event.name)
 		t.Logf("begin %s", event.name)
 		if event.killDelay > 0 {
 			if err := event.schedule.Run(ctx, network, proxy); err != nil {
@@ -167,6 +169,7 @@ func mixedChaosWork(t *testing.T, ctx context.Context, network *netfault.Proxy, 
 		<-proxy.Events()
 	}
 	dropped := proxy.DroppedEvents()
+	started := time.Now()
 	if err := event.schedule[:1].Run(ctx, network, proxy); err != nil {
 		t.Fatal(err)
 	}
@@ -191,6 +194,9 @@ func mixedChaosWork(t *testing.T, ctx context.Context, network *netfault.Proxy, 
 	for round := 0; ; round++ {
 		for _, name := range names {
 			mixedChaosBand(t, share, ledger, name, data)
+		}
+		if round == 0 && event.schedule[0].Net.Stall && time.Since(started) < event.schedule[len(event.schedule)-1].At {
+			t.Fatalf("%s work finished before the stalled link resumed", event.name)
 		}
 		select {
 		case err := <-done:
@@ -323,17 +329,33 @@ func TestMixedChaosPlan(t *testing.T) {
 		if reflect.DeepEqual(plan, mixedChaosPlan(359, gate)) {
 			t.Fatal("different seeds did not change the mixed schedule")
 		}
+		rounds := 1
+		if gate {
+			rounds = 3
+		}
+		if len(plan) != 12*rounds {
+			t.Fatalf("gate=%t event count=%d want=%d", gate, len(plan), 12*rounds)
+		}
 		kinds := make(map[string]int)
 		for _, event := range plan {
+			_, kind, ok := strings.Cut(event.name, "/")
+			if !ok {
+				t.Fatalf("event has no round: %s", event.name)
+			}
+			kinds[kind]++
 			if len(event.schedule) == 0 || event.schedule[0].At != 0 {
 				t.Fatalf("%s has no initial fault", event.name)
 			}
-			if event.killDelay > 0 {
-				kinds["kill"]++
+			if kind == "kill" {
+				if event.killDelay <= 0 || event.schedule[0].Net.Delay <= 0 || event.schedule[0].S3.HeaderDelay <= 0 {
+					t.Fatalf("kill has no mixed faults: %+v", event)
+				}
 			} else if event.direction != 0 {
-				kinds[fmt.Sprintf("cut-%d", event.direction)]++
+				fault := event.schedule[0].Net
+				if fault.CutDirection != event.direction || fault.CutAfter < 4096 || fault.CutAfter >= 64<<10 {
+					t.Fatalf("invalid cut: %+v", event)
+				}
 			} else if event.schedule[0].S3Outage > 0 {
-				kinds["outage"]++
 				want := 2 * time.Second
 				if gate {
 					want = 5 * time.Minute
@@ -341,8 +363,14 @@ func TestMixedChaosPlan(t *testing.T) {
 				if event.schedule[0].S3Outage != want || event.schedule[len(event.schedule)-1].At != want {
 					t.Fatalf("gate=%t outage length: %s", gate, event.schedule)
 				}
-			} else {
-				kinds[event.burst.kind]++
+			} else if event.burst.kind == "" {
+				t.Fatalf("%s has no observable S3 fault", event.name)
+			}
+			if len(event.schedule) > 1 {
+				last := event.schedule[len(event.schedule)-1]
+				if last.Net == nil || *last.Net != (netfault.Fault{}) || last.S3Outage != 0 {
+					t.Fatalf("%s does not restore the network: %s", event.name, event.schedule)
+				}
 			}
 			var previous time.Duration
 			for _, step := range event.schedule {
@@ -352,11 +380,7 @@ func TestMixedChaosPlan(t *testing.T) {
 				previous = step.At
 			}
 		}
-		rounds := 1
-		if gate {
-			rounds = 3
-		}
-		for _, kind := range []string{"kill", "cut-1", "cut-2", "outage", "status", "throttle", "request-cut"} {
+		for _, kind := range []string{"latency", "jitter", "bandwidth", "stall", "kill", "cut-1", "cut-2", "outage", "status", "throttle", "request-cut", "header-delay"} {
 			if kinds[kind] != rounds {
 				t.Fatalf("gate=%t %s count=%d want=%d", gate, kind, kinds[kind], rounds)
 			}
