@@ -35,9 +35,9 @@ type Reply struct {
 type Client struct {
 	conn      net.Conn
 	pending   map[uint64]uint64
+	closeErr  error
 	sendMu    sync.Mutex
 	closeOnce sync.Once
-	closeErr  error
 }
 
 // Fixture owns the listener, server and test clients, not JuiceFS. M2 provides

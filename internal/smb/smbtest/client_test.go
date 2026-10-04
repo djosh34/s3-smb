@@ -17,8 +17,13 @@ import (
 
 func fakePeer(t *testing.T, serve func(net.Conn) error) *smbtest.Client {
 	t.Helper()
+	return fakePeerConn(t, func(conn net.Conn) net.Conn { return conn }, serve)
+}
+
+func fakePeerConn(t *testing.T, wrap func(net.Conn) net.Conn, serve func(net.Conn) error) *smbtest.Client {
+	t.Helper()
 	conn, peer := net.Pipe()
-	client, err := smbtest.NewClient(conn)
+	client, err := smbtest.NewClient(wrap(conn))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,8 +64,8 @@ func writePayload(conn net.Conn, payload []byte) error {
 	if len(payload) > 0xffffff {
 		return errors.New("test payload too long")
 	}
-	length := uint32(len(payload))
-	frame := []byte{0, byte(length >> 16), byte(length >> 8 & 0xff), byte(length & 0xff)}
+	length := uint32(len(payload) & 0xffffff)
+	frame := []byte{0, byte(length >> 16 & 0xff), byte(length >> 8 & 0xff), byte(length & 0xff)}
 	frame = append(frame, payload...)
 	for len(frame) > 0 {
 		n, err := conn.Write(frame)

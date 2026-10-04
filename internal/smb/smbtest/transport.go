@@ -30,9 +30,9 @@ func (client *Client) Send(ctx context.Context, messages []wire.Message) error {
 	if len(payload) > 0xffffff {
 		return errors.New("smbtest: frame exceeds 24-bit length")
 	}
-	length := uint32(len(payload))
+	length := uint32(len(payload) & 0xffffff)
 	frame := make([]byte, 4, 4+len(payload))
-	frame[1] = byte(length >> 16)
+	frame[1] = byte(length >> 16 & 0xff)
 	frame[2] = byte(length >> 8 & 0xff)
 	frame[3] = byte(length & 0xff)
 	return client.SendRaw(ctx, append(frame, payload...))
@@ -147,6 +147,9 @@ func (client *Client) transfer(ctx context.Context, deadline func(time.Time) err
 	}
 	if ctx.Err() != nil {
 		err = errors.Join(err, ctx.Err())
+	} else if err != nil && !limit.IsZero() && !time.Now().Before(limit) {
+		// The connection deadline can fire just before the context's timer.
+		err = errors.Join(err, context.DeadlineExceeded)
 	}
 	err = errors.Join(err, deadline(time.Time{}))
 	if err != nil {
