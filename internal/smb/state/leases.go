@@ -134,7 +134,7 @@ func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
 func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite {
+	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite && target != smb.LeaseHandle {
 		return nil, nil
 	}
 	record := table.objects[object]

@@ -111,6 +111,7 @@ type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
 	Key        GUID
+	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
 	Epoch      uint16
