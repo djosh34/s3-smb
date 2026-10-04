@@ -39,7 +39,7 @@ Read-only mode skips the backups and never deletes data.
 
 ## Shutdown
 
-On SIGINT or SIGTERM, or when a scheduled backup fails:
+On SIGINT or SIGTERM, or when metadata backup protection expires:
 
 1. Close delete protection and cancel the backup schedule.
 2. Close the listener and drain SMB requests.
@@ -58,7 +58,10 @@ have been in the trash for `backup.trash_days`. Separately, s3-smb removes old
 metadata backup objects by the rotation in [recovery](recovery.md); that never
 deletes data blocks. Both run only while the newest successful metadata backup
 started less than two backup intervals ago. Every delete transaction and every
-S3 delete checks this, so a stopped backup schedule stops all deletes.
+S3 delete checks this, so a stopped backup schedule stops all deletes. Failed
+metadata backups retry with exponential backoff capped at 30 seconds. They do
+not close protection early. A successful retry renews protection; expiry stops
+the writer.
 
 ## Tests
 
