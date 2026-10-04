@@ -261,6 +261,9 @@ func TestReadWriteStorageFailures(t *testing.T) {
 		{name: "invalid read count", command: wire.Read, readCount: 5, want: smb.StatusIODeviceError},
 		{name: "write error", command: wire.Write, writeErr: smb.ErrDiskFull, want: smb.StatusDiskFull},
 		{name: "short write", command: wire.Write, writeCount: 2, want: smb.StatusIODeviceError},
+		{name: "negative write count", command: wire.Write, writeCount: -1, want: smb.StatusIODeviceError},
+		{name: "oversized write count", command: wire.Write, writeCount: 5, want: smb.StatusIODeviceError},
+		{name: "overflowing write count", command: wire.Write, writeCount: math.MaxInt, want: smb.StatusIODeviceError},
 		{name: "flush error", command: wire.Write, writeCount: 4, flushErr: smb.ErrIO, want: smb.StatusIODeviceError, flushes: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
