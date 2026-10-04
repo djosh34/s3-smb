@@ -5,6 +5,7 @@ import "time"
 // InfoType selects the QUERY_INFO or SET_INFO namespace. Quota is not supported.
 type InfoType uint8
 
+// Information namespaces from MS-SMB2.
 const (
 	InfoFile       InfoType = 1
 	InfoFilesystem InfoType = 2
@@ -15,6 +16,7 @@ const (
 // Supporting a codec does not advertise that a server handler is ready.
 type FileInfoClass uint8
 
+// File class numbers from MS-FSCC.
 const (
 	ClassFileBasic        FileInfoClass = 4
 	ClassFileStandard     FileInfoClass = 5
@@ -39,6 +41,7 @@ const (
 // FilesystemInfoClass identifies supported filesystem class codecs.
 type FilesystemInfoClass uint8
 
+// Filesystem class numbers from MS-FSCC.
 const (
 	ClassFilesystemVolume    FilesystemInfoClass = 1
 	ClassFilesystemSize      FilesystemInfoClass = 3
@@ -50,6 +53,7 @@ const (
 // DirectoryInfoClass identifies supported directory entry layouts.
 type DirectoryInfoClass uint8
 
+// Directory class numbers from MS-FSCC.
 const (
 	ClassDirectoryIDBoth DirectoryInfoClass = 37
 	ClassDirectoryIDFull DirectoryInfoClass = 38
@@ -71,6 +75,7 @@ const (
 // TimeUpdateAction separates an explicit time, including Unix epoch, from a sentinel.
 type TimeUpdateAction uint8
 
+// Timestamp actions decoded before any FILETIME conversion.
 const (
 	TimeKeep TimeUpdateAction = iota
 	TimeSet
@@ -267,6 +272,7 @@ type SID struct {
 // ACEType identifies the simple ACE layouts decoded by this server.
 type ACEType uint8
 
+// Simple ACE type values from MS-DTYP.
 const (
 	ACEAllowed ACEType = 0
 	ACEDenied  ACEType = 1
