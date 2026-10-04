@@ -156,9 +156,7 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if time.Now().UnixNano() < p.outageUntil.Load() {
 			p.observe(r, "outage", http.StatusServiceUnavailable)
-			if strings.Contains(r.URL.Path, "/chunks/") {
-				notify(p.outageSeen, r, http.StatusServiceUnavailable)
-			}
+			p.observeOutage(r)
 			p.writeError(w, http.StatusServiceUnavailable, "ServiceUnavailable")
 			return
 		}
@@ -192,6 +190,15 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 		}
 		p.forward(w, r, proxy, fault)
 	})
+}
+
+func (p *Proxy) observeOutage(r *http.Request) {
+	if strings.Contains(r.URL.Path, "/chunks/") {
+		notify(p.outageSeen, r, http.StatusServiceUnavailable)
+	}
+	if strings.Contains(r.URL.Path, "/meta/") {
+		notify(p.metadataSeen, r, http.StatusServiceUnavailable)
+	}
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, fault Fault) {
@@ -357,7 +364,8 @@ func (p *Proxy) OutageSeen() <-chan Event { return p.outageSeen }
 // SetMetadataFailure rejects metadata GETs and PUTs while enabled.
 func (p *Proxy) SetMetadataFailure(enabled bool) { p.metadataFail.Store(enabled) }
 
-// MetadataFailureSeen reports rejected metadata requests, with bounded buffering.
+// MetadataFailureSeen reports metadata requests rejected by a metadata failure
+// or a timed S3 outage, with bounded buffering.
 func (p *Proxy) MetadataFailureSeen() <-chan Event { return p.metadataSeen }
 
 // ChunkPuts returns the number of successful real chunk PUT responses.

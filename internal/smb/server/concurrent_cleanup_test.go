@@ -10,22 +10,40 @@ import (
 )
 
 func TestStopRequestsCancelsButDoesNotWaitForOtherCleanups(t *testing.T) {
-	connection := &connection{pending: make(map[uint64]*pendingRequest)}
+	for _, pending := range []bool{true, false} {
+		name := "identity_holders"
+		if pending {
+			name = "pending"
+		}
+		t.Run(name, func(t *testing.T) { checkCleanupWaits(t, pending) })
+	}
+}
+
+func checkCleanupWaits(t *testing.T, pending bool) {
+	t.Helper()
+	connection := &connection{pending: make(map[uint64]*pendingRequest), inflight: make(map[*sessionRequest]struct{})}
 	contexts := make([]context.Context, 0, 3)
 	cleanupDone := make([]chan struct{}, 0, 2)
+	var fileDone chan struct{}
 	for index, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect, wire.Read} {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		contexts = append(contexts, ctx)
 		done := make(chan struct{})
 		if command == wire.Read {
+			fileDone = done
 			go func() { <-ctx.Done(); close(done) }()
 		} else {
 			cleanupDone = append(cleanupDone, done)
 			defer close(done)
 		}
 		id := uint64(index + 1)
-		connection.pending[id] = &pendingRequest{header: wire.Header{Command: command, MessageID: id, SessionID: 1, TreeID: 1}, work: &work{done: done, cancel: cancel}}
+		header := wire.Header{Command: command, MessageID: id, SessionID: 1, TreeID: 1}
+		if pending {
+			connection.pending[id] = &pendingRequest{header: header, work: &work{done: done, cancel: cancel}}
+		} else {
+			connection.inflight[&sessionRequest{header: header, cancel: cancel, done: done}] = struct{}{}
+		}
 	}
 	finished := make(chan struct{}, 2)
 	go func() { connection.stopRequests(1, 0, 1); finished <- struct{}{} }()
@@ -45,7 +63,7 @@ func TestStopRequestsCancelsButDoesNotWaitForOtherCleanups(t *testing.T) {
 		}
 	}
 	select {
-	case <-connection.pending[3].work.done:
+	case <-fileDone:
 	default:
 		t.Fatal("file work was not drained")
 	}
