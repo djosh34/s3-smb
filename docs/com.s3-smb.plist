@@ -11,6 +11,11 @@
         <string>/Users/YOUR_USER/.config/s3-smb/config.yaml</string>
         <string>serve</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/Users/YOUR_USER</string>
+    </dict>
     <key>WorkingDirectory</key>
     <string>/Users/YOUR_USER</string>
     <key>RunAtLoad</key>

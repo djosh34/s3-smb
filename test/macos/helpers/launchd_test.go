@@ -19,16 +19,21 @@ func TestLaunchdPlist(t *testing.T) {
 	if original["KeepAlive"] != true || original["RunAtLoad"] != true || original["Label"] != "com.s3-smb" {
 		t.Fatal("shipped job must start at load and restart after exit", original)
 	}
+	environment, ok := original["EnvironmentVariables"].(map[string]any)
+	if !ok || environment["HOME"] != "/Users/YOUR_USER" {
+		t.Fatal("shipped job must set HOME explicitly", environment)
+	}
 	filled, err := LaunchdPlist(data, "/test/bin & name", "/test/config", "/test/work", "/test/evidence")
 	must(t, err)
 	var job map[string]any
 	_, err = plist.Unmarshal(filled, &job)
 	must(t, err)
 	for key, value := range map[string]any{
-		"ProgramArguments":  []any{"/test/bin & name", "-c", "/test/config", "serve"},
-		"WorkingDirectory":  "/test/work",
-		"StandardOutPath":   "/test/evidence/launchd-out.log",
-		"StandardErrorPath": "/test/evidence/launchd-err.log",
+		"ProgramArguments":     []any{"/test/bin & name", "-c", "/test/config", "serve"},
+		"WorkingDirectory":     "/test/work",
+		"StandardOutPath":      "/test/evidence/launchd-out.log",
+		"StandardErrorPath":    "/test/evidence/launchd-err.log",
+		"EnvironmentVariables": map[string]any{"HOME": "/test/work"},
 	} {
 		if !reflect.DeepEqual(job[key], value) {
 			t.Fatalf("%s: got %v, want %v", key, job[key], value)
@@ -39,16 +44,22 @@ func TestLaunchdPlist(t *testing.T) {
 	if !reflect.DeepEqual(job, original) || strings.Contains(string(filled), "YOUR_USER") {
 		t.Fatal("path filling changed other settings or left sample paths")
 	}
-	if _, err := LaunchdPlist([]byte("broken"), "", "", "", ""); err == nil {
+	if _, err = LaunchdPlist([]byte("broken"), "", "", "", ""); err == nil {
 		t.Fatal("accepted malformed plist")
 	}
 	for _, args := range []any{nil, "serve", []string{"binary"}, []string{"binary", "--other", "config", "serve"}, []string{"binary", "-c", "config", "help"}} {
 		original["ProgramArguments"] = args
 		broken, marshalErr := plist.Marshal(original, plist.XMLFormat)
 		must(t, marshalErr)
-		if _, err := LaunchdPlist(broken, "", "", "", ""); err == nil {
+		if _, err = LaunchdPlist(broken, "", "", "", ""); err == nil {
 			t.Fatal("accepted unexpected program arguments", args)
 		}
+	}
+	original["ProgramArguments"] = []string{"binary", "-c", "config", "serve"}
+	broken, err := plist.Marshal(original, plist.XMLFormat)
+	must(t, err)
+	if _, err = LaunchdPlist(broken, "", "", "", ""); err == nil {
+		t.Fatal("accepted missing launchd environment")
 	}
 }
 

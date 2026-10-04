@@ -95,8 +95,8 @@ after a crash.
 
 Stop the foreground process with Ctrl-C before loading the job. Copy
 `docs/com.s3-smb.plist` to `~/Library/LaunchAgents/com.s3-smb.plist`, creating
-that directory if needed. Edit the binary, config, working directory and log
-paths to absolute paths for your account. launchd does not expand `~` or shell
+that directory if needed. Edit the binary, config, `HOME`, working directory
+and log paths to absolute paths for your account. launchd does not expand `~` or shell
 variables. Keep the same config and state directory you initialized. Create
 `~/Library/Logs` if it does not exist, then load the job:
 

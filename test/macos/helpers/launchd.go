@@ -22,6 +22,11 @@ func LaunchdPlist(data []byte, binary, config, work, evidence string) ([]byte, e
 	}
 	args[0], args[2] = binary, config
 	job["ProgramArguments"] = args
+	environment, ok := job["EnvironmentVariables"].(map[string]any)
+	if !ok {
+		return nil, errors.New("launchd environment is missing")
+	}
+	environment["HOME"] = work
 	job["WorkingDirectory"] = work
 	job["StandardOutPath"] = filepath.Join(evidence, "launchd-out.log")
 	job["StandardErrorPath"] = filepath.Join(evidence, "launchd-err.log")
