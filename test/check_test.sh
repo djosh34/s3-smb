@@ -49,6 +49,8 @@ if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFI
 case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
+  "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
+    [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
@@ -280,7 +282,7 @@ if grep -E 'GOMAXPROCS|(^|[[:space:]"=])-p([=[:space:]]|$)' "$root/test/Dockerfi
   fail 'Docker image caps Go parallelism'
 fi
 
-# The internal Docker step builds a normal daemon and race-tests every package.
+# The Docker step keeps the old integration run and adds Samba against smbnext.
 : > "$CHECK_TEST_COMMANDS"
 export S3_SMB_CHECK_MODE=gate S3_SMB_E2E_ENDPOINT=http://minio:9000
 export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
@@ -294,9 +296,17 @@ run_internal() {
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
+contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
-export CHECK_TEST_FAIL='go build -buildvcs=false -o /tmp/s3-smb .'
-if run_internal; then fail 'internal build failure ignored'; fi
+for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
+  'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
+  'go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .' \
+  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'; do
+  export CHECK_TEST_FAIL=$command
+  if run_internal; then fail "internal failure ignored: $command"; fi
+  [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'failure logs not made readable'
+done
 unset CHECK_TEST_FAIL
 export S3_SMB_TEST_ARTIFACTS="$fixture/missing-logs"
 if run_internal; then fail 'log permission failure ignored'; fi
