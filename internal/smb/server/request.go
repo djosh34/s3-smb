@@ -55,7 +55,7 @@ func (request RequestContext) FileID(id wire.FileID) (wire.FileID, smb.Status) {
 }
 
 // Cleanup runs CloseActions from the open table through the one cleanup path.
-// CLOSE and lease acknowledgment handlers use it to drain active references.
+// CLOSE and lease acknowledgment handlers call it after draining active references.
 func (request RequestContext) Cleanup(ctx context.Context, actions []state.CloseAction) error {
 	return request.server.cleanup(ctx, actions)
 }

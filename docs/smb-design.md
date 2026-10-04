@@ -108,6 +108,11 @@ Each dependent request gets its own pending reply and async ID.
 The server waits for the prerequisite before executing a dependent request, including CLOSE.
 The server saves inherited session, tree and FileId from the preceding operation.
 This inheritance also applies when the preceding operation uses an existing handle.
+Handlers report the FileId they used or created even when returning an error.
+Members that report no FileId leave the saved ID unchanged.
+An error-severity predecessor blocks a following related FileId command with the
+same status, even when the predecessor used or generated no FileId. This is the
+server's simple dispatch policy. Warning statuses do not block the next member.
 The server sends completed prefix replies only once.
 Final responses use fresh buffers and may be compounded or sent separately.
 Unrelated members need not wait on S3.
