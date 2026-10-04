@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -100,6 +101,90 @@ func waitAsyncSignal(ctx context.Context, t *testing.T, signal <-chan struct{}) 
 	case <-signal:
 	case <-ctx.Done():
 		t.Fatal(ctx.Err())
+	}
+}
+
+func waitAsyncResult(ctx context.Context, t *testing.T, result <-chan error) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+		return ctx.Err()
+	}
+}
+
+func TestLateAsyncCompletionDuringShutdown(t *testing.T) {
+	for _, deadline := range []bool{false, true} {
+		name := "waits for late work"
+		if deadline {
+			name = "caller deadline"
+		}
+		t.Run(name, func(t *testing.T) {
+			testLateAsyncShutdown(t, deadline)
+		})
+	}
+}
+
+func testLateAsyncShutdown(t *testing.T, deadline bool) {
+	t.Helper()
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	release := newAsyncGate()
+	canceled := make(chan struct{})
+	server.handlers[wire.Read] = func(ctx context.Context, _ wire.Message) (reply, error) {
+		<-ctx.Done()
+		close(canceled)
+		<-release.done
+		return reply{status: smb.StatusFileLockConflict}, nil
+	}
+	local, remote := net.Pipe()
+	conn := &observedAsyncConn{Conn: local, closed: make(chan struct{})}
+	peer := serveLateAsyncPipe(t, server, conn, remote)
+	t.Cleanup(release.release)
+	exchange(peer.ctx, t, peer.client, negotiateMessage(t, 1))
+	pending := exchange(peer.ctx, t, peer.client, asyncMessage(t, wire.Read, 1))[0]
+	if pending.Header.Status != smb.StatusPending {
+		t.Fatalf("request did not become pending: %+v", pending.Header)
+	}
+	bound := time.Second
+	if deadline {
+		bound = 50 * time.Millisecond
+	}
+	shutdownCtx, stop := context.WithTimeout(peer.ctx, bound)
+	defer stop()
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- server.Shutdown(shutdownCtx) }()
+	waitAsyncSignal(peer.ctx, t, canceled)
+	waitAsyncSignal(peer.ctx, t, conn.closed)
+	if _, err := peer.client.Receive(peer.ctx); !errors.Is(err, io.EOF) {
+		t.Fatalf("shutdown leaked a reply: %v", err)
+	}
+	writes := conn.writes.Load()
+	if deadline {
+		if err := waitAsyncResult(peer.ctx, t, shutdown); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("shutdown ignored its caller's bound: %v", err)
+		}
+	} else {
+		noCompletion(t, shutdown)
+	}
+	release.release()
+	waitAsyncSignal(peer.ctx, t, peer.done)
+	if !errors.Is(peer.err, context.Canceled) {
+		t.Fatalf("shutdown did not cancel the connection: %v", peer.err)
+	}
+	if deadline {
+		if err := server.Shutdown(peer.ctx); err != nil {
+			t.Fatalf("shutdown did not finish after its caller expired: %v", err)
+		}
+	} else if err := waitAsyncResult(peer.ctx, t, shutdown); err != nil {
+		t.Fatal(err)
+	}
+	if conn.writes.Load() != writes || conn.lateWrites.Load() != 0 {
+		t.Fatal("late work wrote a reply after shutdown closed the transport")
 	}
 }
 
