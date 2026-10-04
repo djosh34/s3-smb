@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -73,8 +74,16 @@ func readNativeFile(t *testing.T, m meta.Meta, store chunk.ChunkStore, ino meta.
 // Regression for #92: the last allocated inode is absent from the tree but
 // still has pending data deletion. Restoring only the tree would reuse it.
 func TestPendingDeletionCannotDeleteNewFileAfterRecovery(t *testing.T) {
-	// Pause native retirement at the same maintenance guard used in production.
-	m, f := newMetadata(t, func() error { return ErrUnprotected })
+	// Allow unlink's initial and final transaction checks, then pause the
+	// asynchronous data retirement at the production maintenance guard.
+	var unlinking atomic.Bool
+	var checks atomic.Int32
+	m, f := newMetadata(t, func() error {
+		if unlinking.Load() && checks.Add(1) > 2 {
+			return ErrUnprotected
+		}
+		return nil
+	})
 	s := newStore(t)
 	runtime := nativeRuntime(t, m, s, f, t.TempDir(), 0)
 	createInode(t, m, "kept")
@@ -83,6 +92,7 @@ func TestPendingDeletionCannotDeleteNewFileAfterRecovery(t *testing.T) {
 	if st := m.Close(meta.Background(), old); st != 0 {
 		t.Fatal(st)
 	}
+	unlinking.Store(true)
 	if st := m.Unlink(meta.Background(), meta.RootInode, "deleted", true); st != 0 {
 		t.Fatal(st)
 	}
