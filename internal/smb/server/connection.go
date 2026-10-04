@@ -122,7 +122,7 @@ func (connection *connection) receive(ctx context.Context) error {
 			continue
 		}
 		connection.opened = true
-		messages, encrypted, err := connection.decodePayload(payload)
+		messages, err := connection.decodePayload(payload)
 		if err != nil && !errors.Is(err, errAccessDenied) {
 			return err
 		}
@@ -130,7 +130,6 @@ func (connection *connection) receive(ctx context.Context) error {
 		if err := connection.checkNegotiationState(messages); err != nil {
 			return err
 		}
-		connection.rememberProtection(messages, encrypted)
 		if err := connection.process(ctx, messages, denied); err != nil {
 			return err
 		}
