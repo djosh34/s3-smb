@@ -286,11 +286,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
 	}
-	// Read-only sessions take file locks under session id 0. This process holds
-	// the state lock, so the earlier process is gone. Clear its lock rows before
-	// any session or SMB work starts.
-	if err = meta.ClearOrphanLocks(r.metadata); err != nil {
-		return fmt.Errorf("clear file locks left by an earlier process: %w", err)
+	if err = r.prepareSMBMetadata(); err != nil {
+		return err
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {

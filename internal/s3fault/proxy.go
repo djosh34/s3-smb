@@ -25,6 +25,7 @@ import (
 type Event struct {
 	Method string
 	Path   string
+	Kind   string // Empty for the older, dedicated observation channels.
 	Status int
 }
 
@@ -36,16 +37,22 @@ type Event struct {
 // ServiceUnavailable. For throttling, use status 503 and code SlowDown. CutBody
 // sends at most CutAfter bytes and aborts a shortened response, including chunked
 // responses. It leaves the original Content-Length intact.
+// CutRequest cuts after RequestCutAfter client-body bytes, plus one probe byte
+// that is never forwarded. It resets the client connection instead of sending
+// an HTTP error. RequestCutAfter is not an upstream delivery count: transport
+// buffering can forward fewer bytes, or no request, for small fixed-length cuts.
 // A request snapshots its fault, so replacement affects only later requests.
 type Fault struct {
-	Method       string
-	PathContains string
-	Code         string
-	HeaderDelay  time.Duration
-	BodyDelay    time.Duration
-	Status       int
-	CutAfter     int64
-	CutBody      bool
+	Method          string
+	PathContains    string
+	Code            string
+	HeaderDelay     time.Duration
+	BodyDelay       time.Duration
+	Status          int
+	CutAfter        int64
+	RequestCutAfter int64
+	CutBody         bool
+	CutRequest      bool
 }
 
 type heldResponse struct {
@@ -64,11 +71,13 @@ type Proxy struct {
 	active       *heldResponse
 	metadataSeen chan Event
 	outageSeen   chan Event
+	events       chan Event
 	done         chan struct{}
 	served       chan error
 	closeErr     error
 	address      string
 	fault        Fault
+	dropped      atomic.Uint64
 	chunkPuts    atomic.Int64
 	outageUntil  atomic.Int64
 	mu           sync.Mutex
@@ -94,7 +103,8 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	p := &Proxy{
 		transport:    &http.Transport{Proxy: nil},
 		metadataSeen: make(chan Event, 32), outageSeen: make(chan Event, 32),
-		done: make(chan struct{}), served: make(chan error, 1),
+		events: make(chan Event, 256),
+		done:   make(chan struct{}), served: make(chan error, 1),
 		address: "http://" + listener.Addr().String(),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -133,7 +143,7 @@ func (p *Proxy) Close() error {
 // SetFault replaces the current fault. A zero Fault restores normal responses.
 // Invalid values leave the previous fault unchanged.
 func (p *Proxy) SetFault(fault Fault) error {
-	if fault.HeaderDelay < 0 || fault.BodyDelay < 0 || fault.CutAfter < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
+	if fault.HeaderDelay < 0 || fault.BodyDelay < 0 || fault.CutAfter < 0 || fault.RequestCutAfter < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
 		return errors.New("invalid S3 fault delay, cut point or error status")
 	}
 	p.mu.Lock()
@@ -145,11 +155,13 @@ func (p *Proxy) SetFault(fault Fault) error {
 func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if time.Now().UnixNano() < p.outageUntil.Load() {
+			p.observe(r, "outage", http.StatusServiceUnavailable)
 			p.observeOutage(r)
 			p.writeError(w, http.StatusServiceUnavailable, "ServiceUnavailable")
 			return
 		}
 		if p.metadataFail.Load() && strings.Contains(r.URL.Path, "/meta/") && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
+			p.observe(r, "metadata-failure", http.StatusServiceUnavailable)
 			notify(p.metadataSeen, r, http.StatusServiceUnavailable)
 			p.writeError(w, http.StatusServiceUnavailable, "ServiceUnavailable")
 			return
@@ -161,29 +173,22 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			fault = Fault{}
 		}
 		if fault.Status != 0 {
+			kind := "status"
+			if fault.Code == "SlowDown" {
+				kind = "throttle"
+			}
+			if fault.HeaderDelay != 0 {
+				p.observe(r, "header-delay", 0)
+			}
 			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
 				p.writeError(w, http.StatusBadGateway, "ServiceUnavailable")
 				return
 			}
+			p.observe(r, kind, fault.Status)
 			p.writeError(w, fault.Status, fault.Code)
 			return
 		}
-		// A per-request copy avoids sharing ModifyResponse state across requests.
-		requestProxy := *proxy
-		ctx := r.Context()
-		requestProxy.ModifyResponse = func(res *http.Response) error {
-			if err := p.holdChunkResponse(ctx, res); err != nil {
-				return err
-			}
-			if err := p.wait(ctx, fault.HeaderDelay); err != nil {
-				return err
-			}
-			if fault.BodyDelay != 0 || fault.CutBody {
-				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: ctx, delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
-			}
-			return nil
-		}
-		requestProxy.ServeHTTP(w, r)
+		p.forward(w, r, proxy, fault)
 	})
 }
 
@@ -194,6 +199,39 @@ func (p *Proxy) observeOutage(r *http.Request) {
 	if strings.Contains(r.URL.Path, "/meta/") {
 		notify(p.metadataSeen, r, http.StatusServiceUnavailable)
 	}
+}
+
+func (p *Proxy) forward(w http.ResponseWriter, r *http.Request, proxy *httputil.ReverseProxy, fault Fault) {
+	// A per-request copy avoids sharing ModifyResponse state across requests.
+	requestProxy := *proxy
+	ctx := r.Context()
+	if fault.CutRequest && r.Body != nil {
+		body := &cutRequestBody{ReadCloser: r.Body, remaining: fault.RequestCutAfter, proxy: p, request: r}
+		r.Body = body
+		requestProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			if body.cut.Load() {
+				resetConnection(w)
+				return
+			}
+			proxy.ErrorHandler(w, r, err)
+		}
+	}
+	requestProxy.ModifyResponse = func(res *http.Response) error {
+		if err := p.holdChunkResponse(ctx, res); err != nil {
+			return err
+		}
+		if fault.HeaderDelay != 0 {
+			p.observe(r, "header-delay", res.StatusCode)
+		}
+		if err := p.wait(ctx, fault.HeaderDelay); err != nil {
+			return err
+		}
+		if fault.BodyDelay != 0 || fault.CutBody {
+			res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: ctx, request: r, status: res.StatusCode, delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
+		}
+		return nil
+	}
+	requestProxy.ServeHTTP(w, r)
 }
 
 func (p *Proxy) writeError(w http.ResponseWriter, status int, code string) {
@@ -217,6 +255,26 @@ func notify(events chan Event, r *http.Request, status int) {
 	select {
 	case events <- Event{Method: r.Method, Path: r.URL.Path, Status: status}:
 	default:
+	}
+}
+
+// Events reports one event per applied fault kind per request. Kinds are status,
+// throttle, header-delay, body-delay, request-cut, response-cut, outage,
+// metadata-failure and hold. Cuts are reported only when data is actually cut.
+// Status is zero for request-cut and for delays before an injected error, since
+// no response exists yet. Status and throttle events follow a successful delay.
+// Events contain no
+// headers, query strings or bodies. The channel stays open after Close.
+func (p *Proxy) Events() <-chan Event { return p.events }
+
+// DroppedEvents counts events lost when the bounded Events buffer is full.
+func (p *Proxy) DroppedEvents() uint64 { return p.dropped.Load() }
+
+func (p *Proxy) observe(r *http.Request, kind string, status int) {
+	select {
+	case p.events <- Event{Method: r.Method, Path: r.URL.Path, Kind: kind, Status: status}:
+	default:
+		p.dropped.Add(1)
 	}
 }
 
@@ -248,6 +306,7 @@ func (p *Proxy) holdChunkResponse(ctx context.Context, res *http.Response) error
 	if hold == nil {
 		return nil
 	}
+	p.observe(res.Request, "hold", res.StatusCode)
 	hold.seen <- Event{Method: res.Request.Method, Path: res.Request.URL.Path, Status: res.StatusCode}
 	select {
 	case <-hold.release:
@@ -316,14 +375,21 @@ type faultBody struct {
 	io.ReadCloser
 	proxy     *Proxy
 	ctx       context.Context
+	request   *http.Request
 	delay     time.Duration
 	remaining int64
+	status    int
 	cut       bool
+	delayed   bool
 }
 
 func (body *faultBody) Read(dst []byte) (int, error) {
 	if len(dst) == 0 {
 		return 0, nil
+	}
+	if body.delay != 0 && !body.delayed {
+		body.delayed = true
+		body.proxy.observe(body.request, "body-delay", body.status)
 	}
 	if err := body.proxy.wait(body.ctx, body.delay); err != nil {
 		return 0, err
@@ -336,6 +402,7 @@ func (body *faultBody) Read(dst []byte) (int, error) {
 			var probe [1]byte
 			n, err := body.ReadCloser.Read(probe[:])
 			if n != 0 {
+				body.proxy.observe(body.request, "response-cut", body.status)
 				return 0, io.ErrUnexpectedEOF
 			}
 			return 0, err

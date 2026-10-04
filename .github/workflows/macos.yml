@@ -1,5 +1,5 @@
 name: Time Machine end-to-end
-# Backup and restore on two Macs, six failed-backup scenarios, or exclusion discovery.
+# Build the dispatch ref, then run backup and restore, M4, interruption scenarios or discovery.
 on:
   workflow_dispatch:
     inputs:
@@ -19,11 +19,12 @@ on:
         options:
           - discover
           - acceptance
+          - m4
           - scenarios
       scenarios:
         description: Failed-backup scenarios to run, as a JSON list
         required: true
-        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss"]'
+        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage"]'
         type: string
 permissions:
   contents: read
@@ -129,6 +130,45 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
+  m4:
+    name: M4 Mac features and backup
+    if: inputs.mode == 'm4'
+    runs-on: macos-15-intel
+    timeout-minutes: 150
+    env:
+      MAC_PHASE: m4
+      MAC_SERVER: smbnext
+    steps:
+      - name: Set task paths
+        run: |
+          {
+            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
+            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
+            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - name: Mac share features and Time Machine backup
+        run: bash test/macos/run.sh
+      - name: Make evidence readable by the uploader
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
+      - name: Upload M4 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-m4-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true
   recover:
     name: recovery on a fresh Mac
     needs: backup
@@ -187,6 +227,7 @@ jobs:
     env:
       MAC_PHASE: scenario
       MAC_SCENARIO: ${{ matrix.scenario }}
+      MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage') && 'smbnext' || inputs.server }}
     steps:
       - name: Set task paths
         run: |
@@ -245,7 +286,7 @@ jobs:
     name: machine-loss on a fresh Mac
     # The matrix has other scenarios that may fail. Only the store upload matters here.
     needs: scenario
-    if: ${{ !cancelled() && inputs.mode != 'discover' && contains(inputs.scenarios, 'machine-loss') }}
+    if: ${{ !cancelled() && (inputs.mode == 'acceptance' || inputs.mode == 'scenarios') && contains(inputs.scenarios, 'machine-loss') }}
     runs-on: macos-15-intel
     timeout-minutes: 90
     env:
