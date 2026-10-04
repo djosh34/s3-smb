@@ -157,8 +157,8 @@ type RenameRequest struct {
 // Coherence is per inode across every handle. Reads see acknowledged writes;
 // Flush, Truncate and SetAttr coordinate with the shared writer. Lookup, GetAttr
 // and ReadDir include buffered size without uploading data. A later flush cannot
-// undo an acknowledged truncate or explicit timestamp change (#84, #89, #96,
-// #113). No storage or network I/O runs under a global share lock (#59).
+// undo an acknowledged truncate or explicit timestamp change. No storage or
+// network I/O runs under a global share lock.
 // Namespace mutations may serialize by parent; unrelated inodes must progress.
 //
 // The server owns SMB opens and guards namespace lookup, checks and mutations
