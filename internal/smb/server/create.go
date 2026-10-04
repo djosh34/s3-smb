@@ -98,13 +98,9 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 }
 
 func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status, error) {
-	open := state.OpenRequest{
-		Object: resolved.Object, Binding: request.Binding(), User: request.Session.User,
-		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
-		GrantedAccess: granted, Sharing: state.ShareMode(create.ShareAccess & 7),
-	}
-	if create.Disposition == fileSupersede || create.Options&fileDeleteOnClose != 0 {
-		open.SharingIntent |= state.RightDelete
+	open, err := openRequestForCreate(request, create, resolved.Object, granted)
+	if err != nil {
+		return 0, smb.StatusInvalidParameter, errors.Join(smb.ErrInvalidParameter, err)
 	}
 	return reserveCreateLease(request, create, resolved, open)
 }
@@ -131,6 +127,9 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	create, status := decodeCreate(message)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
+	}
+	if result, handled, err := replayCreate(ctx, request, message, create); handled {
+		return result, err
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
 	return runCreateWithLeases(ctx, request, create, granted)
@@ -210,16 +209,17 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if leaseStatus := grantCreateLease(request, create, resolved, reservation, &grant); leaseStatus != smb.StatusSuccess {
 		return reply{status: leaseStatus}, nil
 	}
+	grant.CreateAction = action
+	if durableErr := grantCreateDurable(create, &grant); durableErr != nil {
+		return reply{}, errors.Join(smb.ErrInvalidParameter, durableErr)
+	}
 	open, status := request.Opens.Commit(reservation, grant)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	committed = true
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
-	if leaseErr := createLeaseResponse(request, create, resolved, open, &response); leaseErr != nil {
-		return reply{}, errors.Join(leaseErr, closeFailedCreate(context.WithoutCancel(ctx), request, open))
-	}
-	body, err := wire.EncodeCreateResponse(response)
+	body, err := encodeGrantedCreate(request, create, resolved, open, response)
 	if err != nil {
 		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
 	}
