@@ -82,9 +82,13 @@ func TestSambaM3Interop(t *testing.T) {
 	}
 	for _, name := range names {
 		t.Run(name, func(t *testing.T) {
-			testSambaInterop(t, name)
+			testSambaInterop(t, name, "quit")
 		})
 	}
+}
+
+func TestSambaM3EmptyRootListing(t *testing.T) {
+	testSambaInterop(t, "", "ls")
 }
 
 func TestM3SambaCandidatesStayDisabled(t *testing.T) {

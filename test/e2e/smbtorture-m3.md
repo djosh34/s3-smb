@@ -75,11 +75,31 @@ have landed or that their tests pass on this branch.
 
 No candidates have been activated. Handler/runtime dependency unions require
 approval from files-io, files-meta and connection owners. Production edits do not
-belong to this issue. Staged probes must use a daemon built with
-`go build -race -tags smbnext` and the shared runner from #333/#348.
+belong to this issue. `TestSambaM3Interop` calls the sole
+`testSambaInterop(t, allowlist, clientCommand)` helper, with a fresh daemon for
+each exact candidate. The original extraction came from #348/#433 at
+`034617a7351d8c6bda8ff14f28b3041e6c434b02`; no M5 production code was imported.
+The test-tools lead approved the explicit client command. M2, M4, M5 and M3
+candidate calls use `quit`; the separate `TestSambaM3EmptyRootListing` uses `ls`
+with no torture names. A zero command exit does not hide a listing status error.
+The explicit invocation is:
 
-The smbclient directory probe must list a fresh empty root before smbtorture
-creates any files, then list a populated directory. An NT_STATUS_NO_SUCH_FILE
+```sh
+S3_SMB_E2E_ENDPOINT=http://127.0.0.1:PORT \
+S3_SMB_E2E_BINARY=/absolute/path/s3-smb-next \
+S3_SMB_SAMBA_BINARY=/absolute/path/s3-smb-next \
+GORACE=halt_on_error=1 \
+go test -race -shuffle=on -v -count=1 -timeout=90m \
+  -run '^TestSambaM3Interop$' ./test/e2e
+```
+
+Build that executable with `go build -race -tags smbnext`. Samba tools must be
+available at the pinned version. This selected test is not part of the default
+M2 invocation.
+
+`TestSambaM3EmptyRootListing` lists a fresh empty root before any smbtorture
+requests. The external proof also lists a populated directory. Run the empty-root
+test separately, so its failure does not hide individual candidate outcomes. An NT_STATUS_NO_SUCH_FILE
 result is a reproducible interoperability failure to send to the metadata owner
 (51e0018), not a reason to change root/dot-entry policy here. Authentication with
 `quit` remains the M2 check and is not directory-listing evidence.
@@ -87,3 +107,7 @@ result is a reproducible interoperability failure to send to the metadata owner
 After passing probes and dependency readiness, copy only verified exact IDs to
 the central default list and record the checked daemon head, command, shuffle
 seed and output. M2's 256-credit decision and M4/M5 staged selections stay intact.
+
+The [combined-PR amendment](https://github.com/djosh34/s3-smb/issues/176#issuecomment-5980023245)
+now places this work in area F. Draft #451 predates that amendment and must be
+folded into the combined test-tools PR, not merged separately.
