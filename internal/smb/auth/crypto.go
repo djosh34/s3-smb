@@ -1,4 +1,4 @@
-// NTLMv2 formulas reviewed from macos-fuse-t/go-smb2,
+// NTLMv2 formulas ported from macos-fuse-t/go-smb2,
 // commit 277a9300411249a881a05f7a910f5a83ae3395f2, originally Hiroshi Ioka's go-smb2.
 // Modified for s3-smb, 2026. See docs/vendored.md.
 // See LICENSE and Attributions.txt in this directory for the upstream notices.
