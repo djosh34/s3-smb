@@ -242,16 +242,18 @@ func runShutdownChild(t *testing.T, dir string, failure, deleteOnClose bool) ([]
 	}
 	stdout := bufio.NewReader(out)
 	if line, e := stdout.ReadString('\n'); e != nil || line != "ready\n" {
-		t.Fatalf("child startup: %q, %v, %v\n%s", line, e, cmd.Wait(), stderr.String())
+		waitErr := cmd.Wait()
+		t.Fatalf("child startup: %q, %v, %v\n%s", line, e, waitErr, stderr.String())
 	}
 	if err = cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(errors.Join(err, cmd.Wait()))
 	}
 	rest, err := io.ReadAll(stdout)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal(errors.Join(err, cmd.Wait()))
 	}
-	return append(rest, stderr.Bytes()...), cmd.Wait()
+	err = cmd.Wait()
+	return append(rest, stderr.Bytes()...), err
 }
 
 // A SIGTERM during open deletions finishes them before exit, so a restart
