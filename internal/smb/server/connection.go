@@ -148,6 +148,11 @@ func (connection *connection) frameLimit() uint32 {
 }
 
 func (connection *connection) checkNegotiationState(messages []wire.Message) error {
+	for _, message := range messages {
+		if message.Header.Command > wire.OplockBreak {
+			return errors.New("unknown SMB2 command")
+		}
+	}
 	if !connection.negotiated && (len(messages) != 1 || messages[0].Header.Command != wire.Negotiate) {
 		return errors.New("request before NEGOTIATE")
 	}
@@ -228,9 +233,6 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 	}
 	if message.Header.Command == wire.SessionSetup {
 		return connection.sessionSetup(ctx, message)
-	}
-	if message.Header.Command > wire.OplockBreak {
-		return reply{status: smb.StatusNotSupported}, nil
 	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()

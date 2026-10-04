@@ -50,41 +50,43 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 	var preceding wire.Header
 	var prerequisite *work
 	var previous compoundState
-	for _, message := range messages {
+	chainRejection := rejection
+	for index, message := range messages {
 		dependency := (*work)(nil)
-		if message.Header.Flags&wire.FlagRelated != 0 {
+		if index > 0 && message.Header.Flags&wire.FlagRelated != 0 {
 			message.Header.SessionID, message.Header.TreeID = preceding.SessionID, preceding.TreeID
 			dependency = prerequisite
 		} else {
 			previous = compoundState{}
+			chainRejection = rejection
+		}
+		if index == 0 && message.Header.Flags&wire.FlagRelated != 0 && rejection == smb.StatusSuccess {
+			chainRejection = smb.StatusInvalidParameter
 		}
 		preceding = message.Header
 		if message.Header.Command == wire.Cancel {
-			if rejection == smb.StatusSuccess {
+			if chainRejection == smb.StatusSuccess {
 				connection.cancelPending(message.Header)
 			}
 			continue
 		}
-		result := reply{status: rejection}
 		prerequisite = nil
-		if rejection == smb.StatusSuccess {
-			operation, completed, err := connection.runMember(ctx, message, dependency, previous)
-			if err != nil {
-				return err
-			}
-			if !completed {
-				if err := connection.send(responses); err != nil {
-					return err
-				}
-				responses = nil
-				if err := connection.sendPending(message.Header, operation); err != nil {
-					return err
-				}
-				prerequisite = operation
-				continue
-			}
-			result = operation.result
+		operation, completed, err := connection.runMember(ctx, message, chainRejection, dependency, previous)
+		if err != nil {
+			return err
 		}
+		if !completed {
+			if sendErr := connection.send(responses); sendErr != nil {
+				return sendErr
+			}
+			responses = nil
+			if sendErr := connection.sendPending(message.Header, operation); sendErr != nil {
+				return sendErr
+			}
+			prerequisite = operation
+			continue
+		}
+		result := operation.result
 		previous = previous.after(result)
 		response, err := makeResponse(message.Header, result, connection.credits.grant(message.Header))
 		if err != nil {
@@ -96,7 +98,10 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 	return connection.send(responses)
 }
 
-func (connection *connection) runMember(ctx context.Context, message wire.Message, dependency *work, previous compoundState) (*work, bool, error) {
+func (connection *connection) runMember(ctx context.Context, message wire.Message, rejection smb.Status, dependency *work, previous compoundState) (*work, bool, error) {
+	if rejection != smb.StatusSuccess {
+		return &work{result: reply{status: rejection}}, true, nil
+	}
 	if dependency != nil {
 		// A related suffix owns its own pending identity and starts only after
 		// its predecessor completes. Even a quick dependent reply stays async.

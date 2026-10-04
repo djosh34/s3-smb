@@ -48,18 +48,12 @@ type resources struct {
 }
 
 func (r *resources) close() error {
-	if r.protection != nil {
-		r.protection.Close()
-	}
 	timer := time.AfterFunc(shutdownTimeout, hardExit)
 	defer timer.Stop()
-	if r.cancelBackup != nil {
-		r.cancelBackup()
-	}
 	if r.server != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
-		defer cancel()
-		if err := unexpectedServeError(r.server.Shutdown(ctx)); err != nil {
+		// A caller deadline can return before the server finishes cleanup.
+		// Wait for completion; the process deadline retains the state lock.
+		if err := unexpectedServeError(r.server.Shutdown(context.Background())); err != nil {
 			return fmt.Errorf("SMB shutdown failed; state lock retained: %w", err)
 		}
 	}
@@ -80,11 +74,19 @@ func (r *resources) close() error {
 			return fmt.Errorf("handle shutdown failed; state lock retained: %w", err)
 		}
 	}
+	if r.cancelBackup != nil {
+		r.cancelBackup()
+	}
 	if r.backupDone != nil {
-		<-r.backupDone
+		if err := <-r.backupDone; err != nil && err != context.Canceled {
+			return fmt.Errorf("metadata backup shutdown failed; state lock retained: %w", err)
+		}
 	}
 	if r.manager != nil {
 		r.manager.Wait()
+	}
+	if r.protection != nil {
+		r.protection.Close()
 	}
 	if r.runtime != nil {
 		if err := r.runtime.Close(); err != nil {
@@ -333,12 +335,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	var backupFailure <-chan error
 	if !c.SMB.ReadOnly {
-		backupCtx, cancel := context.WithCancel(ctx)
-		r.cancelBackup = cancel
-		done := make(chan error, 1)
-		r.backupDone = done
-		backupFailure = done
-		go func() { done <- manager.Run(backupCtx); close(done) }()
+		backupFailure = r.startBackup(ctx)
 	}
 	slog.Info("SMB serving", "address", r.listener.Addr().String(), "read_only", c.SMB.ReadOnly)
 	select {
@@ -362,6 +359,20 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		return fmt.Errorf("SMB serving failed: %w", err)
 	}
+}
+
+func (r *resources) startBackup(ctx context.Context) <-chan error {
+	// Manager.Run closes protection on cancellation. Keep it running until
+	// accepted SMB deletion work and adapter cleanup have finished.
+	backupCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	r.cancelBackup = cancel
+	done := make(chan error, 1)
+	r.backupDone = done
+	go func() {
+		done <- r.manager.Run(backupCtx)
+		close(done)
+	}()
+	return done
 }
 
 // unexpectedServeError removes shutdown signals without hiding joined failures.
