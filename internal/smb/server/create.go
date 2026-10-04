@@ -136,6 +136,10 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
+	contexts, err := createAAPLContexts(request, create.Contexts)
+	if err != nil {
+		return reply{status: smb.StatusInvalidParameter}, nil
+	}
 	granted := expandCreateAccess(create.DesiredAccess)
 	resolved, err := request.Storage.Lookup(ctx, create.Name)
 	if err != nil {
@@ -207,6 +211,7 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	}
 	committed = true
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
+	response.Contexts = contexts
 	body, err := wire.EncodeCreateResponse(response)
 	return reply{body: body, fileID: response.ID}, err
 }

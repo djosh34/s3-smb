@@ -38,7 +38,7 @@ func TestAAPLRequestedFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			contexts, err := createAAPLContexts([]wire.CreateContext{{Name: "unknown"}, query})
+			contexts, err := createAAPLContexts(RequestContext{}, []wire.CreateContext{{Name: "unknown"}, query})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -74,11 +74,11 @@ func TestAAPLInvalidContexts(t *testing.T) {
 		{{Name: "AAPL", Data: append([]byte{2}, query.Data[1:]...)}},
 		{query, query},
 	} {
-		if _, err := createAAPLContexts(contexts); err == nil {
+		if _, err := createAAPLContexts(RequestContext{}, contexts); err == nil {
 			t.Fatalf("accepted invalid contexts: %v", contexts)
 		}
 	}
-	if contexts, err := createAAPLContexts([]wire.CreateContext{{Name: "unknown"}}); err != nil || len(contexts) != 0 {
+	if contexts, err := createAAPLContexts(RequestContext{}, []wire.CreateContext{{Name: "unknown"}}); err != nil || len(contexts) != 0 {
 		t.Fatalf("unknown context: %v, %v", contexts, err)
 	}
 }
