@@ -431,7 +431,7 @@ func TestUnsupportedQueryInfoAndObjectIDKeepConnection(t *testing.T) {
 		class    uint8
 		status   smb.Status
 	}{
-		{wire.InfoFilesystem, 8, smb.StatusInvalidInfoClass},   // FileFsObjectIdInformation (#87).
+		{wire.InfoFilesystem, 8, smb.StatusNotSupported},       // FileFsObjectIdInformation (#87).
 		{wire.InfoFilesystem, 100, smb.StatusInvalidInfoClass}, // FileFsPosixInformation.
 		{wire.InfoSecurity, 0, smb.StatusNotSupported},
 		{4, 0, smb.StatusNotSupported}, // Quota.
