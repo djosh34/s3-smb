@@ -4,3 +4,8 @@
 smb2.sharemode.sharemode-access.sharemode-access
 smb2.sharemode.access-sharemode.access-sharemode
 smb2.create.multi.multi
+# Real race-daemon probes on checked PR #389 a2e42e77; see testdata/smbtorture-m4-lock.proof.
+smb2.lock.rw-shared.rw-shared
+smb2.lock.rw-exclusive.rw-exclusive
+smb2.lock.auto-unlock.auto-unlock
+smb2.lock.lock.lock

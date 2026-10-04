@@ -1,12 +1,12 @@
 # Exact ID<TAB>state<TAB>pinned source and requirement
-# selected = prior passing evidence; probe = unproven, not an exclusion.
+# selected = recorded passing evidence; probe = unproven, not an exclusion.
 # excluded = unsupported expectation, not a supported failure.
 smb2.lock.valid-request.valid-request	probe	lock.c:71-344 validates flags, stacking and vectors.
 smb2.lock.rw-none.rw-none	excluded	lock.c:480-500 skips unless target is Windows 2008 with the NONE-lock bug.
-smb2.lock.rw-shared.rw-shared	probe	lock.c:354-515 checks shared-lock I/O through two opens; uncontended locks omit FAIL_IMMEDIATELY.
-smb2.lock.rw-exclusive.rw-exclusive	probe	lock.c:354-478,517-530 checks exclusive-lock owner and other-open I/O.
-smb2.lock.auto-unlock.auto-unlock	probe	lock.c:532-580 checks repeated immediate conflicts do not remove the lock.
-smb2.lock.lock.lock	probe	lock.c:585-793 checks zero lengths, large ranges, immediate conflict and exact-owner unlock.
+smb2.lock.rw-shared.rw-shared	selected	lock.c:354-515 checks shared-lock I/O through two opens without FAIL_IMMEDIATELY; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
+smb2.lock.rw-exclusive.rw-exclusive	selected	lock.c:354-478,517-530 checks exclusive-lock owner and other-open I/O; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
+smb2.lock.auto-unlock.auto-unlock	selected	lock.c:532-580 checks repeated immediate conflicts preserve the lock; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
+smb2.lock.lock.lock	selected	lock.c:585-793 checks zero lengths, large ranges, immediate conflict and exact-owner unlock; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
 smb2.lock.async.async	excluded	lock.c:798-865 requires a conflicting lock to pend and then succeed after unlock; locks never wait (#169).
 smb2.lock.cancel.cancel	excluded	lock.c:867-994 requires pending conflicting locks before CANCEL; locks never wait (#169).
 smb2.lock.cancel-tdis.cancel-tdis	excluded	lock.c:996-1089 requires a pending lock before TREE_DISCONNECT; locks never wait (#169).

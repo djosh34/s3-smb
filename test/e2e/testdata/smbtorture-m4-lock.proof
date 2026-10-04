@@ -1,0 +1,65 @@
+Source: PR #389 a2e42e77a5c529a3853298c3a3d17fed289d97d3, clean detached worktree.
+Host: Linux arm64. This is a probe of the Mac area's checked stack, not a native Mac gate.
+Build: go1.26.3; go build -race -tags smbnext -o /tmp/449-lock-daemon .
+Executable SHA-256: 7eec87f636237b29a1de966404e4c56ff026b4b51ba044efc3fdcccecd69ffe8
+Runtime: GORACE=halt_on_error=1 /tmp/449-lock-daemon serve -c /tmp/449-evidence/lock-a2e42e77/config.yaml
+Storage: real adapter, isolated MinIO bucket samba-449-lock, zero cache, no S3 faults.
+Samba image: s3-smb-test:2e9c43ba8ee0436c3f9b0fc99707bf061bb898f6ddd72936b4ae5f54db95d7bb
+smbclient --version: Version 4.17.12-Debian
+smbtorture --version: smbtorture 4.17.12-Debian / Version 4.17.12-Debian
+smbtorture --list SHA-256: aa8d4eea6445152b6d0f127cec75999ee53da6b5915cd962b6783314251e6a1f
+Each ID was present in that listing before it ran.
+Client: //127.0.0.1/TimeMachine -p 50445 -A /probe.auth --use-kerberos=off --client-protection=encrypt --option=client min protocol=SMB3_11 --option=client max protocol=SMB3_11
+smbclient -c quit: exit 0.
+smbtorture: same client options plus --fullname --format=subunit <exact ID>.
+Each tool ran in a separate Docker process with --network=host and an isolated read-only authentication file.
+
+Raw combined smbtorture output follows. Every command exited 0.
+
+smbtorture 4.17.12-Debian
+Using seed 1791117712
+time: 2026-10-04 12:41:52.373596
+test: smb2.lock.rw-shared.rw-shared
+time: 2026-10-04 12:41:52.374193
+time: 2026-10-04 12:41:52.421633
+success: smb2.lock.rw-shared.rw-shared
+
+smbtorture 4.17.12-Debian
+Using seed 1791117712
+time: 2026-10-04 12:41:52.636599
+test: smb2.lock.rw-exclusive.rw-exclusive
+time: 2026-10-04 12:41:52.636839
+time: 2026-10-04 12:41:52.668349
+success: smb2.lock.rw-exclusive.rw-exclusive
+
+smbtorture 4.17.12-Debian
+Using seed 1791117713
+time: 2026-10-04 12:41:53.046628
+test: smb2.lock.auto-unlock.auto-unlock
+time: 2026-10-04 12:41:53.046800
+time: 2026-10-04 12:41:53.061519
+success: smb2.lock.auto-unlock.auto-unlock
+
+smbtorture 4.17.12-Debian
+Using seed 1791117713
+time: 2026-10-04 12:41:53.313737
+test: smb2.lock.lock.lock
+time: 2026-10-04 12:41:53.313939
+time: 2026-10-04 12:41:53.398918
+success: smb2.lock.lock.lock
+Trying 0/0 lock
+Trying 0/1 lock
+Trying 0xEEFFFFF lock
+Trying 0xEF00000 lock
+Trying (2^63 - 1)/1
+Trying 2^63/1
+Trying max/0 lock
+Trying max/1 lock
+Trying max/2 lock
+Trying wrong handle unlock
+
+Daemon shutdown: SIGTERM, exit 0. No WARNING: DATA RACE, panic or fatal output.
+Raw daemon stderr SHA-256: 32c7b8fa848eed5c40882916bdd1401bdc947ef64d4e0f11e7705493ab27dcea
+Raw daemon stdout was empty.
+Local raw artifact directory: /tmp/449-evidence/lock-a2e42e77
+External driver: /tmp/449-probe.py (not a committed runner or server change).

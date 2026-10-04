@@ -56,18 +56,34 @@ SMB. The race-enabled wrapper passed on its second run. The first run reported
 a JuiceFS root GetAttr timeout race even though Samba reported success. It was
 reported to the Mac lead, not dismissed as a Samba exclusion. Sharing delta
 `92097d1c6bf55021ed341d9db0a0fd8afcb00c2b` preserves this earlier evidence;
-it is not a new probe. The staged list currently contains only these three IDs.
+it is not a new probe.
 
-## Probe blockers
-
-The four assigned lock names are still unproven here:
+Four new real daemon probes passed on the assigned checked Mac-area LOCK stack,
+[PR #389](https://github.com/djosh34/s3-smb/pull/389) at
+`a2e42e77a5c529a3853298c3a3d17fed289d97d3`:
 
 - `smb2.lock.rw-shared.rw-shared`
 - `smb2.lock.rw-exclusive.rw-exclusive`
 - `smb2.lock.auto-unlock.auto-unlock`
 - `smb2.lock.lock.lock`
 
-All other `probe` entries also remain pending. In particular, the non-AAPL
+The detached checkout was clean. It already registered CREATE, CLOSE, READ,
+WRITE and LOCK; no handler or dispatch edits were made. The Linux arm64
+executable was built with Go 1.26.3, `-race -tags smbnext`, and run with
+`GORACE=halt_on_error=1` against an isolated real-adapter MinIO bucket.
+Build metadata was checked before the probes. Samba authenticated with
+encryption and SMB 3.1.1. Each exact ID reported subunit success and exit 0.
+The daemon then exited 0 after SIGTERM with no race output.
+
+`testdata/smbtorture-m4-lock.proof` retains raw output, Samba seeds,
+source and executable hashes, commands and the local artifact path. This
+probes the Mac area's checked stack, not a native macOS gate. It does not
+establish a pass on a future dependency union. The staged list now contains
+seven proven IDs.
+
+## Probe blockers
+
+All `probe` entries remain pending. In particular, the non-AAPL
 zero-byte enumeration test is not proof of AAPL zero-byte-open behavior.
 The base-rename-with-open-stream test expects ACCESS_DENIED even though the
 stream shares deletion; the Mac owner must compare that expectation with the
@@ -88,4 +104,6 @@ M5 [#348](https://github.com/djosh34/s3-smb/issues/348) remains a separate
 selection and explicit activation.
 
 The staged files are owned by #449. The M3 owner edits only the default list.
-Keep this PR draft until checked handlers and list activation are agreed.
+The combined-PR amendment on #176 puts the final selection in area F;
+this staged branch is input to that combined PR. Keep it draft until
+checked handlers and list activation are agreed.
