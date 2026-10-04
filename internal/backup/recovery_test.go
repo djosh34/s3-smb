@@ -129,7 +129,7 @@ func TestRecoveryRejectsSHA256AndIntegrityFailure(t *testing.T) {
 				t.Fatalf("failed recovery left database or staging: %v %v", entries, err)
 			}
 			if failure != "identity" {
-				if _, err = Inspect(context.Background(), s, r.Key); err == nil || !strings.Contains(err.Error(), failure) {
+				if _, err = Inspect(context.Background(), s, r.Key, t.TempDir()); err == nil || !strings.Contains(err.Error(), failure) {
 					t.Fatalf("inspection did not validate %s: %v", failure, err)
 				}
 			}

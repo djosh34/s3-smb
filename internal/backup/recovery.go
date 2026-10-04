@@ -57,12 +57,16 @@ func List(ctx context.Context, blob object.ObjectStorage) ([]Point, error) {
 }
 
 // Inspect reads the identity from a validated snapshot without creating a local
-// metadata database or opening the snapshot writable.
-func Inspect(ctx context.Context, blob object.ObjectStorage, key string) (format *meta.Format, err error) {
+// metadata database or opening the snapshot writable. The caller holds the state
+// lock; interrupted inspection files are covered by CleanupRecoveryStaging.
+func Inspect(ctx context.Context, blob object.ObjectStorage, key, stateDir string) (format *meta.Format, err error) {
+	if !filepath.IsAbs(stateDir) {
+		return nil, errors.New("absolute state directory required for snapshot inspection")
+	}
 	if _, err = parsePoint(key); err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", ".s3-smb-inspect-")
+	dir, err := os.MkdirTemp(stateDir, ".s3-smb-recovery-")
 	if err != nil {
 		return nil, err
 	}

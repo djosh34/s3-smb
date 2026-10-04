@@ -158,7 +158,7 @@ func TestNativeBackupRecoveryAndCurrentConnection(t *testing.T) {
 			if encrypted && bytes.HasPrefix(rawData, []byte{0x1f, 0x8b}) {
 				t.Fatal("encrypted snapshot is plaintext gzip")
 			}
-			f2, err := Inspect(context.Background(), s, r.Key)
+			f2, err := Inspect(context.Background(), s, r.Key, t.TempDir())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -272,7 +272,7 @@ func TestBackupCollisionBackwardClockAndAmbiguousUpload(t *testing.T) {
 		t.Fatal("failure replaced previous success receipt")
 	}
 	// Fresh recovery still restores the previous successful point.
-	f, err := Inspect(context.Background(), s, r.Key)
+	f, err := Inspect(context.Background(), s, r.Key, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -313,7 +313,7 @@ func TestBackupRetriesAreBoundedAndPreserveReceipt(t *testing.T) {
 	if mgr.opts.Protection.Check() == nil {
 		t.Fatal("failed retries left gate open")
 	}
-	if _, err = Inspect(context.Background(), s, r.Key); err != nil {
+	if _, err = Inspect(context.Background(), s, r.Key, t.TempDir()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -343,7 +343,7 @@ func TestBackupScheduledFailureAndSuspension(t *testing.T) {
 			if mgr.opts.Protection.Check() == nil {
 				t.Fatal("failure reopened gate")
 			}
-			if _, err = Inspect(context.Background(), s, r.Key); err != nil {
+			if _, err = Inspect(context.Background(), s, r.Key, t.TempDir()); err != nil {
 				t.Fatal("previous backup lost", err)
 			}
 			if overdue && s.puts.Load() != 1 {
@@ -419,10 +419,10 @@ func TestInspectCorruptionDoesNotFallback(t *testing.T) {
 	if points[0].Key != second.Key {
 		t.Fatal("latest point not selected")
 	}
-	if _, err = Inspect(context.Background(), s, points[0].Key); err == nil {
+	if _, err = Inspect(context.Background(), s, points[0].Key, t.TempDir()); err == nil {
 		t.Fatal("corrupt trailer accepted")
 	}
-	if _, err = Inspect(context.Background(), s, first.Key); err != nil {
+	if _, err = Inspect(context.Background(), s, first.Key, t.TempDir()); err != nil {
 		t.Fatal("prior point lost")
 	}
 }

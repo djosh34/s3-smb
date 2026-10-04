@@ -37,6 +37,7 @@ func (s startupStore) PutIfAbsent(_ context.Context, key string, r io.Reader) er
 
 func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	ctx := context.Background()
+	state := t.TempDir()
 	remote := t.TempDir() + string(os.PathSeparator)
 	raw, err := object.CreateStorage("file", remote, "", "", "")
 	blob := startupStore{raw, remote}
@@ -47,10 +48,9 @@ func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = verifyRemoteMarker(ctx, blob, format, false); err == nil {
+	if err = verifyRemoteMarker(ctx, blob, format, false, state); err == nil {
 		t.Fatal("accepted markerless state without a backup")
 	}
-	state := t.TempDir()
 	path := filepath.Join(state, "metadata.db")
 	m, err := storage.OpenMetadata(path, meta.DefaultConf())
 	if err != nil {
@@ -72,20 +72,20 @@ func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = verifyRemoteMarker(ctx, blob, format, false); err != nil {
+	if err = verifyRemoteMarker(ctx, blob, format, false, state); err != nil {
 		t.Fatalf("valid snapshot must supply missing marker identity: %v", err)
 	}
 	key := "meta/snapshot-" + r.Snapshot.Add(time.Second).UTC().Format("2006-01-02-150405") + ".db.gz"
 	if err = blob.Put(ctx, key, strings.NewReader("corrupt newest point")); err != nil {
 		t.Fatal(err)
 	}
-	if err = verifyRemoteMarker(ctx, blob, format, false); err == nil {
+	if err = verifyRemoteMarker(ctx, blob, format, false, state); err == nil {
 		t.Fatal("silently fell back from corrupt newest backup")
 	}
 	if err = blob.Put(ctx, "juicefs_uuid", strings.NewReader("different-volume")); err != nil {
 		t.Fatal(err)
 	}
-	if err = verifyRemoteMarker(ctx, blob, format, true); err == nil {
+	if err = verifyRemoteMarker(ctx, blob, format, true, state); err == nil {
 		t.Fatal("validated backup bypassed a contradictory marker")
 	}
 }
