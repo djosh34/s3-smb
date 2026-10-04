@@ -18,14 +18,17 @@ type savedProtection struct {
 	encrypted bool
 }
 
-func (connection *connection) decodePayload(payload []byte) ([]wire.Message, *sessionEntry, error) {
+func (connection *connection) decodePayload(payload []byte) ([]wire.Message, error) {
+	// Verification and reply-key retention share one session-table snapshot.
+	// Removal cannot invalidate it between decrypting, decoding and saving keys.
+	connection.sessionMu.Lock()
+	defer connection.sessionMu.Unlock()
 	var encrypted *sessionEntry
 	if bytes.HasPrefix(payload, []byte{0xfd, 'S', 'M', 'B'}) {
 		if len(payload) < 52 {
-			return nil, nil, errors.New("short encryption transform")
+			return nil, errors.New("short encryption transform")
 		}
 		id := binary.LittleEndian.Uint64(payload[44:52])
-		connection.sessionMu.RLock()
 		encrypted = connection.sessions[id]
 		var err error
 		if encrypted == nil || encrypted.protector == nil {
@@ -33,19 +36,17 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, *se
 		} else {
 			payload, err = encrypted.protector.Open(payload)
 		}
-		connection.sessionMu.RUnlock()
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 	messages, err := wire.Split(payload)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	// Verify the entire chain before dispatch or credit consumption. Related
 	// placeholders affect identity lookup, not the bytes covered by signatures.
-	connection.sessionMu.RLock()
-	defer connection.sessionMu.RUnlock()
+	connection.rememberProtection(messages, encrypted)
 	var preceding uint64
 	for _, message := range messages {
 		header := message.Header
@@ -57,7 +58,7 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, *se
 		session := connection.sessions[id]
 		if encrypted != nil {
 			if id != encrypted.identity.SessionID || header.Command == wire.Negotiate || header.Command == wire.SessionSetup {
-				return nil, nil, errors.New("encrypted compound has an invalid session or command")
+				return nil, errors.New("encrypted compound has an invalid session or command")
 			}
 			continue
 		}
@@ -65,18 +66,18 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, *se
 			continue
 		}
 		if session.identity.Encrypted && header.Command != wire.SessionSetup {
-			return messages, nil, errAccessDenied
+			return messages, errAccessDenied
 		}
 		if err := session.protector.Verify(message.Raw); err != nil {
-			return messages, nil, errAccessDenied
+			return messages, errAccessDenied
 		}
 	}
-	return messages, encrypted, nil
+	return messages, nil
 }
 
+// rememberProtection runs under sessionMu, before verification can return a
+// policy denial. Every member's reply uses this snapshot, never a later lookup.
 func (connection *connection) rememberProtection(messages []wire.Message, encrypted *sessionEntry) {
-	connection.sessionMu.Lock()
-	defer connection.sessionMu.Unlock()
 	var preceding uint64
 	for _, message := range messages {
 		id := message.Header.SessionID
@@ -85,6 +86,9 @@ func (connection *connection) rememberProtection(messages []wire.Message, encryp
 		}
 		preceding = id
 		session := connection.sessions[id]
+		if encrypted != nil {
+			session = encrypted
+		}
 		if session != nil && message.Header.Command != wire.Cancel {
 			connection.replyProtection[message.Header.MessageID] = savedProtection{session: session, encrypted: encrypted != nil}
 		}
@@ -99,9 +103,6 @@ func (connection *connection) mixedEncryption(messages []wire.Message) bool {
 		mixed = mixed || message.Header.SessionID != messages[0].Header.SessionID
 		saved := connection.replyProtection[message.Header.MessageID]
 		session := saved.session
-		if session == nil {
-			session = connection.sessions[message.Header.SessionID]
-		}
 		encrypted = encrypted || session != nil && (saved.encrypted || session.identity.Encrypted && message.Header.Command != wire.SessionSetup)
 	}
 	return mixed && encrypted
@@ -151,9 +152,6 @@ func (connection *connection) responseProtection(messages []wire.Message) (*sess
 		message := &messages[index]
 		saved := connection.replyProtection[message.Header.MessageID]
 		session := saved.session
-		if session == nil {
-			session = connection.sessions[message.Header.SessionID]
-		}
 		var chosen *sessionEntry
 		if session != nil && (saved.encrypted || session.identity.Encrypted && message.Header.Command != wire.SessionSetup) {
 			chosen = session
@@ -190,9 +188,6 @@ func (connection *connection) signPayload(payload []byte) error {
 	for _, member := range members {
 		if member.Header.Flags&wire.FlagSigned != 0 {
 			session := connection.replyProtection[member.Header.MessageID].session
-			if session == nil {
-				session = connection.sessions[member.Header.SessionID]
-			}
 			if session == nil || session.protector == nil {
 				return errors.New("signed reply has no session key")
 			}
