@@ -12,13 +12,12 @@ import (
 func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) error {
 	var result error
 	for _, action := range actions {
-		result = errors.Join(result, server.cleanupAction(ctx, action, nil))
+		result = errors.Join(result, server.cleanupAction(ctx, action))
 	}
 	return result
 }
 
-// selected is non-nil only when the caller already holds its parent guard.
-func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction, selected *smb.Resolved) error {
+func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction) error {
 	if action.Remove {
 		defer server.options.State.CompleteDelete(action.Object)
 	}
@@ -30,11 +29,7 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 		}
 	}
 	if action.Remove {
-		if selected == nil {
-			result = errors.Join(result, server.removeClosed(ctx, action))
-		} else {
-			result = errors.Join(result, server.removeSelected(ctx, action, *selected))
-		}
+		result = errors.Join(result, server.removeClosed(ctx, action))
 	}
 	return result
 }
