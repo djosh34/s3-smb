@@ -17,7 +17,8 @@ func (protector *Protector) Seal(plaintext []byte) ([]byte, error) {
 	if protector.send == nil {
 		return nil, fmt.Errorf("SMB session does not support encryption")
 	}
-	if len(plaintext) < smbHeaderSize || uint64(len(plaintext)) > math.MaxUint32 {
+	size := uint64(len(plaintext))
+	if size < smbHeaderSize || size > math.MaxUint32 {
 		return nil, fmt.Errorf("invalid SMB plaintext size %d", len(plaintext))
 	}
 	nonce, err := protector.nextNonce()
@@ -27,7 +28,7 @@ func (protector *Protector) Seal(plaintext []byte) ([]byte, error) {
 	header := make([]byte, transformHeaderSize)
 	copy(header[:4], []byte{0xfd, 'S', 'M', 'B'})
 	copy(header[20:32], nonce[:])
-	binary.LittleEndian.PutUint32(header[36:40], uint32(len(plaintext)))
+	binary.LittleEndian.PutUint32(header[36:40], uint32(size))
 	binary.LittleEndian.PutUint16(header[42:44], 1)
 	binary.LittleEndian.PutUint64(header[44:52], protector.sessionID)
 	sealed := protector.send.Seal(nil, nonce[:], plaintext, header[20:52])
@@ -80,7 +81,7 @@ func validateTransform(transform []byte, sessionID uint64) error {
 	if binary.LittleEndian.Uint64(transform[44:52]) != sessionID {
 		return fmt.Errorf("SMB transform belongs to another session")
 	}
-	if uint64(binary.LittleEndian.Uint32(transform[36:40])) != uint64(len(transform)-transformHeaderSize) {
+	if uint64(binary.LittleEndian.Uint32(transform[36:40])) != uint64(len(transform))-transformHeaderSize {
 		return fmt.Errorf("SMB transform size mismatch")
 	}
 	if binary.LittleEndian.Uint16(transform[40:42]) != 0 || binary.LittleEndian.Uint16(transform[42:44]) != 1 {

@@ -122,31 +122,36 @@ func TestSigningValidation(t *testing.T) {
 			if _, err := protector.Sign(member); err == nil {
 				t.Fatal("signed a nonzero signature field")
 			}
-			for i := range member {
-				changed := bytes.Clone(member)
-				changed[i] ^= 1
-				if err := protector.Verify(changed); err == nil {
-					t.Errorf("accepted change at byte %d, including padding", i)
-				}
-			}
-			for size := 0; size < smbHeaderSize; size++ {
-				if _, err := protector.Sign(member[:size]); err == nil {
-					t.Errorf("signed short member of size %d", size)
-				}
-				if err := protector.Verify(member[:size]); err == nil {
-					t.Errorf("verified short member of size %d", size)
-				}
-			}
-			malformed := [][]byte{testMember(true, false), testMember(true, false), testMember(true, false)}
-			malformed[0][0] = 0xfd
-			malformed[1][4] = 63
-			malformed[2][16] &^= flagSigned
-			for _, bad := range malformed {
-				if _, err := protector.Sign(bad); err == nil {
-					t.Fatal("signed a malformed header")
-				}
-			}
+			checkSigningCorruption(t, protector, member)
 		})
+	}
+}
+
+func checkSigningCorruption(t *testing.T, protector *Protector, member []byte) {
+	t.Helper()
+	for i := range member {
+		changed := bytes.Clone(member)
+		changed[i] ^= 1
+		if err := protector.Verify(changed); err == nil {
+			t.Errorf("accepted change at byte %d, including padding", i)
+		}
+	}
+	for size := 0; size < smbHeaderSize; size++ {
+		if _, err := protector.Sign(member[:size]); err == nil {
+			t.Errorf("signed short member of size %d", size)
+		}
+		if err := protector.Verify(member[:size]); err == nil {
+			t.Errorf("verified short member of size %d", size)
+		}
+	}
+	malformed := [][]byte{testMember(true, false), testMember(true, false), testMember(true, false)}
+	malformed[0][0] = 0xfd
+	malformed[1][4] = 63
+	malformed[2][16] &^= flagSigned
+	for _, bad := range malformed {
+		if _, err := protector.Sign(bad); err == nil {
+			t.Fatal("signed a malformed header")
+		}
 	}
 }
 
@@ -173,8 +178,8 @@ func TestSignedOnly(t *testing.T) {
 
 func TestOptionsValidation(t *testing.T) {
 	tests := []struct {
-		name   string
 		change func(*Options)
+		name   string
 	}{
 		{name: "empty key", change: func(o *Options) { o.SessionKey = nil }},
 		{name: "short key", change: func(o *Options) { o.SessionKey = make([]byte, 15) }},

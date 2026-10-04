@@ -87,46 +87,8 @@ func TestGCMProtection(t *testing.T) {
 			server := newTestProtector(t, smb.SigningCMAC, cipherID, RoleServer)
 			client := newTestProtector(t, smb.SigningCMAC, cipherID, RoleClient)
 			for _, pair := range [][2]*Protector{{server, client}, {client, server}} {
-				plain := testMember(false, false)
-				plain[16] &^= flagSigned
-				original := bytes.Clone(plain)
-				transform, err := pair[0].Seal(plain)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(plain, original) {
-					t.Fatal("Seal changed or separately signed plaintext")
-				}
-				saved := bytes.Clone(transform)
-				opened, err := pair[1].Open(transform)
-				if err != nil || !bytes.Equal(opened, original) {
-					t.Fatalf("round trip: %x, %v", opened, err)
-				}
-				if !bytes.Equal(transform, saved) {
-					t.Fatal("Open changed the input")
-				}
-				opened[0] ^= 1
-				if !bytes.Equal(transform, saved) {
-					t.Fatal("Open returned an alias of the input")
-				}
-				if opened, err := pair[0].Open(transform); err == nil || opened != nil {
-					t.Fatal("wrong-direction key accepted encrypted input")
-				}
-				for i := range transform {
-					changed := bytes.Clone(transform)
-					changed[i] ^= 1
-					if opened, err := pair[1].Open(changed); err == nil || opened != nil {
-						t.Errorf("exposed plaintext after transform byte %d changed", i)
-					}
-				}
-				for size := 0; size < len(transform); size++ {
-					if opened, err := pair[1].Open(transform[:size]); err == nil || opened != nil {
-						t.Errorf("accepted truncated transform of size %d", size)
-					}
-				}
-				if opened, err := pair[1].Open(append(bytes.Clone(transform), 0)); err == nil || opened != nil {
-					t.Fatal("accepted trailing bytes")
-				}
+				transform := checkGCMRoundTrip(t, pair[0], pair[1])
+				checkGCMCorruption(t, pair[1], transform)
 			}
 			for size := 0; size < smbHeaderSize; size++ {
 				if data, err := server.Seal(make([]byte, size)); err == nil || data != nil {
@@ -134,6 +96,55 @@ func TestGCMProtection(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func checkGCMRoundTrip(t *testing.T, sender, receiver *Protector) []byte {
+	t.Helper()
+	plain := testMember(false, false)
+	plain[16] &^= flagSigned
+	original := bytes.Clone(plain)
+	transform, err := sender.Seal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(plain, original) {
+		t.Fatal("Seal changed or separately signed plaintext")
+	}
+	saved := bytes.Clone(transform)
+	opened, err := receiver.Open(transform)
+	if err != nil || !bytes.Equal(opened, original) {
+		t.Fatalf("round trip: %x, %v", opened, err)
+	}
+	if !bytes.Equal(transform, saved) {
+		t.Fatal("Open changed the input")
+	}
+	opened[0] ^= 1
+	if !bytes.Equal(transform, saved) {
+		t.Fatal("Open returned an alias of the input")
+	}
+	if wrongDirection, openErr := sender.Open(transform); openErr == nil || wrongDirection != nil {
+		t.Fatal("wrong-direction key accepted encrypted input")
+	}
+	return transform
+}
+
+func checkGCMCorruption(t *testing.T, receiver *Protector, transform []byte) {
+	t.Helper()
+	for i := range transform {
+		changed := bytes.Clone(transform)
+		changed[i] ^= 1
+		if opened, err := receiver.Open(changed); err == nil || opened != nil {
+			t.Errorf("exposed plaintext after transform byte %d changed", i)
+		}
+	}
+	for size := 0; size < len(transform); size++ {
+		if opened, err := receiver.Open(transform[:size]); err == nil || opened != nil {
+			t.Errorf("accepted truncated transform of size %d", size)
+		}
+	}
+	if opened, err := receiver.Open(append(bytes.Clone(transform), 0)); err == nil || opened != nil {
+		t.Fatal("accepted trailing bytes")
 	}
 }
 
@@ -190,7 +201,7 @@ func TestReconnectKeys(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opened, err := reconnected.Open(sealed); err == nil || opened != nil {
+	if opened, openErr := reconnected.Open(sealed); openErr == nil || opened != nil {
 		t.Fatal("fresh reconnect keys accepted old encrypted traffic")
 	}
 	member := testMember(true, false)
