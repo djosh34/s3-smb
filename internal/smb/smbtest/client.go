@@ -5,7 +5,9 @@
 // NewClient rejects a nil connection and owns it on success. Login uses auth
 // and crypt against a running server. Raw I/O bypasses encoding and protection.
 // Each test closes its fixture before closing the JuiceFS runtime it owns.
-// Constructors do not hide testing.T; they return every I/O and cleanup error.
+// Client constructors return every I/O and cleanup error. NewStorage reports
+// setup and cleanup errors through testing.TB. The fixture subpackage owns the
+// listener and server, without creating an import cycle in server tests.
 package smbtest
 
 import (
@@ -55,13 +57,3 @@ type pendingReply struct {
 	asyncID   uint64
 	sessionID uint64
 }
-
-// Fixture owns the listener, server and test clients, not JuiceFS. M2 provides
-// Start(ctx context.Context, options server.Options) (*Fixture, error), listening
-// on 127.0.0.1:0 with the supplied real adapter, and these methods.
-// Address returns the loopback host:port. Close drains the server and returns
-// shutdown errors. Callers must use Start.
-//
-//	func (fixture *Fixture) Address() string
-//	func (fixture *Fixture) Close(ctx context.Context) error
-type Fixture struct{}

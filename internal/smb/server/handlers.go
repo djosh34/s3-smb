@@ -7,8 +7,10 @@ func commandHandlers() map[wire.Command]handler {
 	return map[wire.Command]handler{
 		wire.Create:      handleCreate,
 		wire.Close:       handleClose,
+		wire.Flush:       handleFlush,
 		wire.Read:        handleRead,
 		wire.Write:       handleWrite,
+		wire.Lock:        handleLock,
 		wire.Echo:        handleEcho,
 		wire.OplockBreak: handleOplockBreak,
 	}

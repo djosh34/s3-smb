@@ -1,4 +1,4 @@
-package server
+package smbtest
 
 import (
 	"path/filepath"
@@ -13,9 +13,11 @@ import (
 	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
-// Each fuzz input owns a fresh runtime and scratch directory. CREATE and I/O
-// mutations must not affect the next input.
-func fuzzStorage(t testing.TB) *smbfs.FS {
+// NewStorage builds a fresh real JuiceFS adapter with SQLite metadata and a file
+// object store in t.TempDir. Cleanup shuts down the adapter, filesystem and
+// metadata in that order. Close any server fixtures before this cleanup runs.
+// Setup and cleanup errors are reported through t.
+func NewStorage(t testing.TB) *smbfs.FS {
 	t.Helper()
 	dir := t.TempDir()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
@@ -36,7 +38,7 @@ func fuzzStorage(t testing.TB) *smbfs.FS {
 			t.Error(shutdownErr)
 		}
 	})
-	format := meta.Format{Name: "server-fuzz", UUID: "server-fuzz", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true}
+	format := meta.Format{Name: "smb-test", UUID: "smb-test", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true}
 	if initErr := metadata.Init(&format, true); initErr != nil {
 		t.Fatal(initErr)
 	}
