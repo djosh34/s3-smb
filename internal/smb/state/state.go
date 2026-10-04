@@ -45,10 +45,12 @@ const (
 	RightDelete
 )
 
-// ShareMode uses the same bits as Rights. New rights must be allowed by every
-// existing share mode, and existing rights must be allowed by the new share mode.
+// ShareMode uses the same bits as Rights. When both same-stream opens have
+// sharing intent, new rights must be allowed by the existing share mode and
+// existing rights by the new share mode. Metadata-only opens do not participate,
+// including in base-file delete checks against named streams.
 // Check and reservation occur before any create disposition can destroy bytes.
-// Base-file delete access also checks deny-delete opens on every named stream.
+// Base-file delete access also checks every named stream with sharing intent.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;

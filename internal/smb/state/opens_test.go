@@ -70,6 +70,7 @@ func TestShareChecksBothDirections(t *testing.T) {
 					table := newTable(t)
 					deny, need := request(1), request(1)
 					deny.Sharing = state.ShareMode(state.Rights(shareAll) & ^rights)
+					deny.SharingIntent = rights
 					need.SharingIntent = rights
 					first, second := deny, need
 					if reverse {
@@ -168,6 +169,7 @@ func TestSharingIntentComesFromGrantedAccess(t *testing.T) {
 			table := newTable(t)
 			deny := request(1)
 			deny.Sharing = state.ShareMode(state.Rights(shareAll) & ^test.deny)
+			deny.SharingIntent = test.deny
 			commit(t, table, deny, state.Grant{})
 			req := request(1)
 			req.GrantedAccess = test.mask
