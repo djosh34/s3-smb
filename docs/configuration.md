@@ -79,6 +79,11 @@ logging:
 | `logging.format` | `text`, or `json` |
 | `logging.level` | `info`, or `debug`, `warn`, `error` |
 
+`storage.cache_dir` is one directory, not a list or glob pattern. Its path must
+not contain `:`, `,`, `*`, `?`, `[` or a backslash. This also applies to paths
+inherited from `XDG_CACHE_HOME` or the config file's directory. Recovery deletes
+only the volume UUID directory under this root.
+
 ## Sizes
 
 Sizes use decimal units B, KB, MB, GB and TB. 1 MB is 1,000,000 bytes. A number
