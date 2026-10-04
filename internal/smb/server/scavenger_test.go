@@ -116,6 +116,7 @@ func TestExpiryClosesHandlesAndAppliesPendingDeletion(t *testing.T) {
 			clock.advance(time.Nanosecond)
 			server.expire(t.Context())
 			server.expire(t.Context())
+			server.scavengerCleanup.Wait()
 			if storage.closed.Load() != 1 || storage.removed.Load() != 1 {
 				t.Fatalf("expiry cleanup: close %d remove %d", storage.closed.Load(), storage.removed.Load())
 			}
@@ -180,6 +181,7 @@ func TestBreakTimeoutRevokesLeaseAndDurability(t *testing.T) {
 	clock.advance(time.Nanosecond)
 	server.expire(t.Context())
 	server.expire(t.Context())
+	server.scavengerCleanup.Wait()
 	if storage.closed.Load() != 1 {
 		t.Fatalf("detached member close count: %d", storage.closed.Load())
 	}
@@ -222,6 +224,7 @@ func TestExpiryLogsCleanupErrorsAndKeepsSweeping(t *testing.T) {
 	detachExpiryOpen(t, server, third)
 	clock.advance(third.DurableTimeout)
 	server.expire(t.Context())
+	server.scavengerCleanup.Wait()
 	if storage.closed.Load() != 3 || storage.removed.Load() != 1 {
 		t.Fatalf("cleanup stopped on an error: close %d remove %d", storage.closed.Load(), storage.removed.Load())
 	}
