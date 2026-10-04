@@ -12,14 +12,14 @@ import (
 	smbclient "github.com/hirochachacha/go-smb2"
 )
 
-// chaosRead adapts the SMB client's missing-file statuses to the ledger contract.
+// chaosRead adapts STATUS_NO_SUCH_FILE to the ledger contract. The client
+// already maps missing-name and missing-path statuses to fs.ErrNotExist.
 // Other failures, including timeouts and access errors, must still fail a check.
 func chaosRead(read chaos.ReadFunc) chaos.ReadFunc {
 	return func(name string) ([]byte, error) {
 		data, err := read(name)
 		var response *smbclient.ResponseError
-		if errors.As(err, &response) && response != nil &&
-			(response.Code == uint32(smb.StatusNoSuchFile) || response.Code == uint32(smb.StatusObjectNameNotFound) || response.Code == uint32(smb.StatusObjectPathNotFound)) {
+		if errors.As(err, &response) && response != nil && response.Code == uint32(smb.StatusNoSuchFile) {
 			return data, errors.Join(err, fs.ErrNotExist)
 		}
 		return data, err
@@ -27,16 +27,14 @@ func chaosRead(read chaos.ReadFunc) chaos.ReadFunc {
 }
 
 func TestChaosRead(t *testing.T) {
-	for _, code := range []smb.Status{smb.StatusNoSuchFile, smb.StatusObjectNameNotFound, smb.StatusObjectPathNotFound} {
-		original := &fs.PathError{Op: "open", Path: "gone", Err: &smbclient.ResponseError{Code: uint32(code)}}
-		read := chaosRead(func(string) ([]byte, error) { return nil, original })
-		_, err := read("gone")
-		if !errors.Is(err, fs.ErrNotExist) || !errors.Is(err, original) {
-			t.Fatalf("missing status %x: %v", code, err)
-		}
+	missing := &fs.PathError{Op: "open", Path: "gone", Err: &smbclient.ResponseError{Code: uint32(smb.StatusNoSuchFile)}}
+	missingRead := chaosRead(func(string) ([]byte, error) { return nil, missing })
+	_, readErr := missingRead("gone")
+	if !errors.Is(readErr, fs.ErrNotExist) || !errors.Is(readErr, missing) {
+		t.Fatalf("missing-file status: %v", readErr)
 	}
 	failure := errors.New("transport failed")
-	for _, original := range []error{nil, failure, fs.ErrNotExist, &smbclient.ResponseError{Code: uint32(smb.StatusAccessDenied)}} {
+	for _, original := range []error{nil, failure, fs.ErrNotExist, &fs.PathError{Op: "open", Path: "gone", Err: fs.ErrNotExist}, &smbclient.ResponseError{Code: uint32(smb.StatusAccessDenied)}} {
 		read := chaosRead(func(string) ([]byte, error) { return []byte("data"), original })
 		data, err := read("band")
 		if string(data) != "data" || err != original {
