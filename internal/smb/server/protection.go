@@ -61,17 +61,33 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, *se
 			}
 			continue
 		}
-		if session == nil || session.protector == nil {
-			continue
-		}
-		if session.identity.Encrypted && header.Command != wire.SessionSetup {
-			return messages, nil, errAccessDenied
-		}
-		if err := session.protector.Verify(message.Raw); err != nil {
-			return messages, nil, errAccessDenied
+		if err := verifyPlaintextRequest(message, session); err != nil {
+			return messages, nil, err
 		}
 	}
 	return messages, encrypted, nil
+}
+
+func verifyPlaintextRequest(message wire.Message, session *sessionEntry) error {
+	header := message.Header
+	if header.Command == wire.Cancel && header.Flags&wire.FlagSigned != 0 && (session == nil || !session.active || session.protector == nil) {
+		return errAccessDenied
+	}
+	if session == nil || session.protector == nil {
+		return nil
+	}
+	if session.identity.Encrypted && header.Command != wire.SessionSetup {
+		return errAccessDenied
+	}
+	// CANCEL does not require a signature (MS-SMB2 3.3.5.16). A signed
+	// CANCEL still needs a valid session and signature; refusal sends no reply.
+	if header.Command == wire.Cancel && header.Flags&wire.FlagSigned == 0 {
+		return nil
+	}
+	if err := session.protector.Verify(message.Raw); err != nil {
+		return errAccessDenied
+	}
+	return nil
 }
 
 func (connection *connection) rememberProtection(messages []wire.Message, encrypted *sessionEntry) {
