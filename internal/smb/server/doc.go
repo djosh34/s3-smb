@@ -2,8 +2,9 @@
 // requests and SMB handlers. It joins wire, auth, crypt, state and smb.Storage.
 // It must not reach into JuiceFS, reparse stream names or keep a second lock table.
 //
-// New validates the supplied modules and identity. The connection core handles
-// negotiation and ECHO; session and file handlers are added in later milestones.
+// New validates the supplied modules and identity. The server handles negotiation,
+// NTLMv2 sessions, disk-share trees, ECHO, signing and GCM encryption. File
+// handlers are added in M3 through the documented RequestContext.
 // The server never closes the storage runtime. Tests use ServeConn over net.Pipe
 // without a listener or main wiring.
 package server

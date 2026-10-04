@@ -31,7 +31,7 @@ type sessionEntry struct {
 func (server *Server) allocateSessionID() (uint64, error) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if server.nextSessionID == math.MaxUint64 {
+	if server.nextSessionID >= math.MaxUint64-1 {
 		return 0, errors.New("session ID space exhausted")
 	}
 	server.nextSessionID++
@@ -41,7 +41,7 @@ func (server *Server) allocateSessionID() (uint64, error) {
 func (server *Server) allocateTreeID() (uint32, error) {
 	server.mu.Lock()
 	defer server.mu.Unlock()
-	if server.nextTreeID == math.MaxUint32 {
+	if server.nextTreeID >= math.MaxUint32-1 {
 		return 0, errors.New("tree ID space exhausted")
 	}
 	server.nextTreeID++
@@ -160,7 +160,12 @@ func (connection *connection) treeConnect(message wire.Message) (reply, error) {
 		return reply{}, err
 	}
 	connection.sessionMu.Lock()
-	connection.sessions[message.Header.SessionID].trees[id] = Tree{TreeID: id, Share: connection.server.options.ShareName}
+	session := connection.sessions[message.Header.SessionID]
+	if session == nil || !session.active {
+		connection.sessionMu.Unlock()
+		return reply{status: smb.StatusUserSessionDeleted}, nil
+	}
+	session.trees[id] = Tree{TreeID: id, Share: connection.server.options.ShareName}
 	connection.sessionMu.Unlock()
 	body, err := wire.EncodeTreeConnectResponse(wire.TreeConnectResponse{ShareType: 1, MaximalAccess: 0x001f01ff})
 	return reply{body: body, treeID: id}, err
@@ -168,11 +173,13 @@ func (connection *connection) treeConnect(message wire.Message) (reply, error) {
 
 // stopRequests cancels and drains work, not sender completions. A completion
 // can wait for the client to read while the client is awaiting LOGOFF's reply.
-func (connection *connection) stopRequests(sessionID uint64, treeID uint32) {
+// The cleanup request itself may be an async related member; it must not wait
+// for its own completion. Canceling dependent suffixes releases their waits.
+func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exceptMessageID uint64) {
 	connection.pendingMu.Lock()
 	var work []*work
 	for _, pending := range connection.pending {
-		if pending.header.SessionID == sessionID && (treeID == 0 || pending.header.TreeID == treeID) {
+		if pending.header.MessageID != exceptMessageID && pending.header.SessionID == sessionID && (treeID == 0 || pending.header.TreeID == treeID) {
 			pending.work.cancel()
 			work = append(work, pending.work)
 		}
@@ -189,8 +196,8 @@ func (connection *connection) logoff(ctx context.Context, message wire.Message) 
 	connection.sessions[id].active = false
 	connection.sessions[id].trees = make(map[uint32]Tree)
 	connection.sessionMu.Unlock()
-	connection.stopRequests(id, 0)
-	if err := connection.server.cleanup(ctx, connection.server.options.State.CloseSession(id)); err != nil {
+	connection.stopRequests(id, 0, message.Header.MessageID)
+	if err := connection.server.cleanup(context.WithoutCancel(ctx), connection.server.options.State.CloseSession(id)); err != nil {
 		return reply{}, fmt.Errorf("logoff cleanup: %w", err)
 	}
 	body, err := wire.EncodeLogoffResponse(wire.EmptyResponse{})
@@ -202,8 +209,8 @@ func (connection *connection) treeDisconnect(ctx context.Context, message wire.M
 	connection.sessionMu.Lock()
 	delete(connection.sessions[id].trees, treeID)
 	connection.sessionMu.Unlock()
-	connection.stopRequests(id, treeID)
-	if err := connection.server.cleanup(ctx, connection.server.options.State.CloseTree(state.Binding{SessionID: id, TreeID: treeID})); err != nil {
+	connection.stopRequests(id, treeID, message.Header.MessageID)
+	if err := connection.server.cleanup(context.WithoutCancel(ctx), connection.server.options.State.CloseTree(state.Binding{SessionID: id, TreeID: treeID})); err != nil {
 		return reply{}, fmt.Errorf("tree disconnect cleanup: %w", err)
 	}
 	body, err := wire.EncodeTreeDisconnectResponse(wire.EmptyResponse{})

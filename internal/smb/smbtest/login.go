@@ -165,6 +165,7 @@ func (client *Client) loginSetup(ctx context.Context, session *Session, options 
 		}
 		client.protectionMu.Lock()
 		client.protector = protector
+		client.sessionID = session.SessionID
 		client.protectionMu.Unlock()
 	}
 	reply, err := client.Receive(ctx)
