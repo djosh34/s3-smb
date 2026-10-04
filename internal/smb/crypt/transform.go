@@ -49,7 +49,8 @@ func (protector *Protector) nextNonce() ([12]byte, error) {
 	return nonce, nil
 }
 
-// Open validates the session, size, reserved fields, nonce padding and tag.
+// Open validates the session, size, flags, nonce padding and tag. The header's
+// two reserved bytes are authenticated but ignored, as MS-SMB2 2.2.41 requires.
 // It rejects wrong-direction keys. Authentication happens before any plaintext
 // is returned to wire decoding or server dispatch. Input is never changed.
 func (protector *Protector) Open(transform []byte) ([]byte, error) {
@@ -84,8 +85,8 @@ func validateTransform(transform []byte, sessionID uint64) error {
 	if uint64(binary.LittleEndian.Uint32(transform[36:40])) != uint64(len(transform))-transformHeaderSize {
 		return fmt.Errorf("SMB transform size mismatch")
 	}
-	if binary.LittleEndian.Uint16(transform[40:42]) != 0 || binary.LittleEndian.Uint16(transform[42:44]) != 1 {
-		return fmt.Errorf("invalid SMB transform reserved field or flags")
+	if binary.LittleEndian.Uint16(transform[42:44]) != 1 {
+		return fmt.Errorf("invalid SMB transform flags")
 	}
 	var zero [4]byte
 	if !bytes.Equal(transform[32:36], zero[:]) {

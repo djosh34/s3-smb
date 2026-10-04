@@ -218,6 +218,30 @@ func TestReconnectKeys(t *testing.T) {
 	}
 }
 
+func TestTransformReservedBytes(t *testing.T) {
+	for _, cipherID := range []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM} {
+		server := newTestProtector(t, smb.SigningGMAC, cipherID, RoleServer)
+		client := newTestProtector(t, smb.SigningGMAC, cipherID, RoleClient)
+		for _, pair := range [][2]*Protector{{server, client}, {client, server}} {
+			plain := testMember(false, false)
+			transform, err := pair[0].Seal(plain)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// A peer can send nonzero Reserved bytes. They remain part of the
+			// authenticated header but do not change the transform's meaning.
+			transform[40], transform[41] = 0x12, 0x34
+			sealed := pair[0].send.Seal(nil, transform[20:32], plain, transform[20:52])
+			copy(transform[4:20], sealed[len(plain):])
+			copy(transform[52:], sealed[:len(plain)])
+			opened, err := pair[1].Open(transform)
+			if err != nil || !bytes.Equal(opened, plain) {
+				t.Fatalf("authenticated reserved bytes were rejected: %v", err)
+			}
+		}
+	}
+}
+
 func TestTransformSizeValidation(t *testing.T) {
 	server := newTestProtector(t, smb.SigningGMAC, smb.CipherAES128GCM, RoleServer)
 	client := newTestProtector(t, smb.SigningGMAC, smb.CipherAES128GCM, RoleClient)
