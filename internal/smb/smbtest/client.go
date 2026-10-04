@@ -2,9 +2,8 @@
 // It must not emulate storage semantics or use fake filesystems to prove data
 // coherence. It can send exact invalid bytes without weakening production codecs.
 //
-// M1 provides NewClient(conn net.Conn) (*Client, error) after the wire PR (#200)
-// merges. It rejects a nil connection and owns it on success. M1 has no login,
-// signing or encryption in the client. M2 adds those behaviours and the fixture.
+// NewClient rejects a nil connection and owns it on success. Login uses auth
+// and crypt against a running server. Raw I/O bypasses encoding and protection.
 // Each test closes its fixture before closing the JuiceFS runtime it owns.
 // Constructors do not hide testing.T; they return every I/O and cleanup error.
 package smbtest
@@ -13,10 +12,12 @@ import (
 	"net"
 	"sync"
 
+	"github.com/djosh34/s3-smb/internal/smb/crypt"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// Reply carries the members from one received frame. The client identifies
+// Reply carries the plaintext members from one received frame. Raw contains the
+// exact framed payload, including the transform when encrypted. The client identifies
 // pending replies by STATUS_PENDING and FlagAsync. It correlates both MessageID
 // and AsyncID, checks SessionID, and returns interim replies separately.
 type Reply struct {
@@ -31,13 +32,18 @@ type Reply struct {
 // Send and Receive may run concurrently, with only one receiver. Context
 // cancellation interrupts I/O. An I/O error closes the connection; requests are
 // never retried. Callers must use NewClient and close the client when done.
-// M2 adds protection after Login without repairing headers.
+// Login enables protection. Send changes signing flags and signatures, but
+// preserves supplied identities and credits. Raw I/O remains unchanged.
 type Client struct {
-	conn      net.Conn
-	pending   map[uint64]pendingReply
-	sendSlot  chan struct{}
-	closeErr  error
-	closeOnce sync.Once
+	conn         net.Conn
+	protector    *crypt.Protector
+	pending      map[uint64]pendingReply
+	sendSlot     chan struct{}
+	closeErr     error
+	protectionMu sync.RWMutex
+	sessionID    uint64
+	closeOnce    sync.Once
+	encrypted    bool
 }
 
 type pendingReply struct {
