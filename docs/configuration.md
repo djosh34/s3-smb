@@ -105,8 +105,8 @@ need more space fail with a no-space error until usage falls below the limit.
 JuiceFS counts allocated file space, including files kept in trash, not the size
 of encrypted objects or metadata backups in S3. This is not a bucket quota.
 
-The current SMB adapter still caps reported free space at 1 TiB. This setting
-limits storage use; it does not change that adapter's size reporting.
+The current SMB adapter reports at most 1 TiB of free space. When the capacity
+leaves less free space than that, the share reports the capacity as its size.
 
 ## Compression
 
