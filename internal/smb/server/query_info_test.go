@@ -243,6 +243,9 @@ func TestQueryInfoShortOutputBuffers(t *testing.T) {
 	f := newQueryInfoFixture(t)
 	_, open := f.create(t, "long-file-name", smb.KindFile)
 	for _, class := range queryFileClasses {
+		if class == wire.ClassFileStream {
+			continue // Stream entries have separate boundary tests below.
+		}
 		t.Run(fmt.Sprintf("class_%d", class), func(t *testing.T) {
 			full := queryData(t, f.query(t, open, wire.InfoFile, uint8(class), 4096), smb.StatusSuccess)
 			length := len(full)
@@ -271,6 +274,59 @@ func TestQueryInfoShortOutputBuffers(t *testing.T) {
 					t.Fatal("variable prefix changed")
 				}
 			}
+		})
+	}
+}
+
+func TestQueryInfoStreamBufferBoundaries(t *testing.T) {
+	f := newQueryInfoFixture(t)
+	_, open := f.create(t, "stream-buffers", smb.KindFile)
+	f.create(t, "stream-buffers:fork", smb.KindFile)
+	// The entries occupy 38 and 46 bytes; the first aligns to 40 when linked.
+	entries := []wire.FileStreamEntry{{Name: "::$DATA"}, {Name: ":fork:$DATA"}}
+	for _, test := range []struct {
+		count  int
+		length uint32
+		status smb.Status
+	}{
+		{0, 0, smb.StatusInfoLengthMismatch},
+		{0, 23, smb.StatusInfoLengthMismatch},
+		{0, 24, smb.StatusBufferOverflow},
+		{0, 37, smb.StatusBufferOverflow},
+		{1, 38, smb.StatusBufferOverflow},
+		{1, 39, smb.StatusBufferOverflow},
+		{1, 40, smb.StatusBufferOverflow},
+		{1, 85, smb.StatusBufferOverflow},
+		{2, 86, smb.StatusSuccess},
+		{2, 87, smb.StatusSuccess},
+	} {
+		t.Run(fmt.Sprintf("length_%d", test.length), func(t *testing.T) {
+			message := f.query(t, open, wire.InfoFile, uint8(wire.ClassFileStream), test.length)
+			if message.Header.Status != test.status {
+				t.Fatalf("status = %#x, want %#x", message.Header.Status, test.status)
+			}
+			if test.status == smb.StatusInfoLengthMismatch {
+				if _, err := wire.DecodeErrorResponse(message); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				data := queryData(t, message, test.status)
+				want := wire.FileStreamInformation{}
+				if test.count > 0 {
+					want.Entries = entries[:test.count]
+				}
+				decodeQueryClass(t, data, wire.DecodeFileStreamInformation, want)
+				if uint64(len(data)) > uint64(test.length) {
+					t.Fatalf("output length = %d, buffer = %d", len(data), test.length)
+				}
+				if test.count > 0 {
+					last := []int{0, 40}[test.count-1]
+					if next := binary.LittleEndian.Uint32(data[last : last+4]); next != 0 {
+						t.Fatalf("final NextEntryOffset = %d", next)
+					}
+				}
+			}
+			f.echo(t)
 		})
 	}
 }
@@ -304,25 +360,34 @@ func TestUnsupportedQueryInfoAndObjectIDKeepConnection(t *testing.T) {
 			continue
 		}
 		message := f.query(t, open, wire.InfoFile, uint8(class), 4096)
-		if message.Header.Status != smb.StatusInvalidInfoClass && message.Header.Status != smb.StatusNotSupported {
-			t.Fatalf("unsupported file class %d: %#x", class, message.Header.Status)
+		want := smb.StatusInvalidInfoClass
+		if class == 48 { // FileNormalizedNameInformation.
+			want = smb.StatusNotSupported
+		}
+		if message.Header.Status != want {
+			t.Fatalf("unsupported file class %d: status = %#x, want %#x", class, message.Header.Status, want)
+		}
+		if _, err := wire.DecodeErrorResponse(message); err != nil {
+			t.Fatal(err)
 		}
 		f.echo(t)
 	}
 	for _, test := range []struct {
 		infoType wire.InfoType
 		class    uint8
+		status   smb.Status
 	}{
-		{wire.InfoFilesystem, 8},   // FileFsObjectIdInformation (#87).
-		{wire.InfoFilesystem, 100}, // FileFsPosixInformation.
-		{wire.InfoSecurity, 0},
-		{4, 0}, // Quota.
-		{0, 0},
-		{255, 0},
+		{wire.InfoFilesystem, 8, smb.StatusInvalidInfoClass},   // FileFsObjectIdInformation (#87).
+		{wire.InfoFilesystem, 100, smb.StatusInvalidInfoClass}, // FileFsPosixInformation.
+		{wire.InfoSecurity, 0, smb.StatusNotSupported},
+		{4, 0, smb.StatusNotSupported}, // Quota.
+		{0, 0, smb.StatusInvalidParameter},
+		{5, 0, smb.StatusInvalidParameter},
+		{255, 0, smb.StatusInvalidParameter},
 	} {
 		message := f.query(t, open, test.infoType, test.class, 4096)
-		if message.Header.Status != smb.StatusInvalidInfoClass && message.Header.Status != smb.StatusNotSupported {
-			t.Fatalf("unsupported type %d class %d: %#x", test.infoType, test.class, message.Header.Status)
+		if message.Header.Status != test.status {
+			t.Fatalf("unsupported type %d class %d: status = %#x, want %#x", test.infoType, test.class, message.Header.Status, test.status)
 		}
 		if _, err := wire.DecodeErrorResponse(message); err != nil {
 			t.Fatal(err)
