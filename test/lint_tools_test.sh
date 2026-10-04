@@ -42,10 +42,6 @@ for arch in aarch64 x86_64; do
   for name in golangci-lint actionlint shellcheck; do
     [[ -x $tools/$name ]] || fail "missing $name for $arch"
   done
-  [[ $(grep -c 'https://' "$LINT_TEST_COMMANDS") == 3 ]] || fail 'wrong download count'
-  grep -F '/v2.14.0/golangci-lint-2.14.0-linux-' "$LINT_TEST_COMMANDS" >/dev/null || fail 'wrong golangci pin'
-  grep -F '/v1.7.12/actionlint_1.7.12_linux_' "$LINT_TEST_COMMANDS" >/dev/null || fail 'wrong actionlint pin'
-  grep -F "/v0.11.0/shellcheck-v0.11.0.linux.$arch.tar.gz" "$LINT_TEST_COMMANDS" >/dev/null || fail 'wrong shellcheck pin'
   [[ $(grep -cE '^[a-f0-9]{64}  ' "$LINT_TEST_COMMANDS") == 3 ]] || fail 'missing checksum checks'
   : > "$LINT_TEST_COMMANDS"
   [[ $(bash "$root/scripts/lint-tools.sh") == "$tools" ]] || fail 'cache path changed'

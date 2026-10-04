@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The local and CI check entry point. Use --gate for phase and release gates.
+# The local and CI check entry point. Use --gate for the release gate.
 set -Eeuo pipefail
 
 export S3_SMB_CHECK_MODE=pr

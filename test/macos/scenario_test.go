@@ -1,6 +1,7 @@
 //go:build macos
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package macos
 
 import (

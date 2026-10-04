@@ -1,6 +1,7 @@
 //go:build darwin
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 // Command fullsync creates the file full-sync in a directory on the mounted
 // share, writes to it and requires fcntl(F_FULLFSYNC) on it to succeed.
 package main

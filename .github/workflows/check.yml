@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       gate:
-        description: Run phase and release gate tests
+        description: Run the release gate tests
         type: boolean
         default: false
 permissions:
