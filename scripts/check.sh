@@ -54,6 +54,7 @@ tools=$(bash scripts/lint-tools.sh)
 "$tools/golangci-lint" config verify
 "$tools/golangci-lint" run ./...
 "$tools/golangci-lint" run --build-tags smbnext ./...
+GOOS=darwin "$tools/golangci-lint" run --build-tags macos ./test/macos/...
 find . -type d \( -path './.git' -o -path './internal/juicefs' \
   -o -path './internal/thirdparty' -o -path './internal/smb-old' \) -prune \
   -o -type f -name '*.sh' -print0 > "$work/shell-files"
@@ -64,6 +65,7 @@ xargs -0 -r "$tools/actionlint" -shellcheck "$tools/shellcheck" -pyflakes '' < "
 go mod tidy -diff
 go vet ./...
 go vet -tags smbnext ./...
+GOOS=darwin go vet -tags macos ./test/macos/...
 # Vendored code and the frozen SMB server are not ours to format.
 find . -type d \( -path './.git' -o -path './internal/juicefs' \
   -o -path './internal/thirdparty' -o -path './internal/smb-old' \) -prune \
@@ -80,7 +82,6 @@ bash test/lint_config_test.sh "$tools"
 bash test/minio/publish_test.sh
 
 echo '== Unit tests and fuzz seed replay =='
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s test/macos -p 'test_*.py'
 if ! go test -count=1 ./...; then
   fuzz_failure
   exit 1

@@ -12,6 +12,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.99.0
 	github.com/aws/smithy-go v1.24.2
 	github.com/charlievieth/fastwalk v1.0.14
+	github.com/creack/pty v1.1.24
 	github.com/davies/groupcache v0.0.0-20230821031435-e4e8362f58e1
 	github.com/dustin/go-humanize v1.0.1
 	github.com/emmansun/gmsm v0.41.1
@@ -41,6 +42,7 @@ require (
 	golang.org/x/sys v0.42.0
 	google.golang.org/protobuf v1.36.11
 	gopkg.in/yaml.v3 v3.0.1
+	howett.net/plist v1.0.1
 	xorm.io/builder v0.3.7
 )
 
