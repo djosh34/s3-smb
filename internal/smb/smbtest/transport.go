@@ -64,18 +64,41 @@ func (client *Client) SendRaw(ctx context.Context, framed []byte) error {
 	})
 }
 
-// Receive returns the next frame. An interim reply is returned on its own, and
+// Receive returns the next frame's normal replies, queuing lease breaks for
+// WaitLeaseBreak. Raw still contains the whole frame, including notifications.
+// An interim reply is returned on its own, and
 // its final reply comes from a later call. An async final must keep the pending
 // reply's MessageID, AsyncID and SessionID.
 // A correlation error returns the decoded reply as well, for test assertions.
 // Callers must use only one receiver, including ReceiveRaw.
 func (client *Client) Receive(ctx context.Context) (Reply, error) {
+	if err := ctx.Err(); err != nil {
+		return Reply{}, err
+	}
+	if len(client.replies) != 0 {
+		reply := client.replies[0]
+		client.replies[0] = Reply{}
+		client.replies = client.replies[1:]
+		return reply, nil
+	}
+	for {
+		reply, err := client.receiveRouted(ctx)
+		if err != nil || len(reply.Messages) != 0 {
+			return reply, err
+		}
+	}
+}
+
+func (client *Client) receiveRouted(ctx context.Context) (Reply, error) {
 	payload, err := client.ReceiveRaw(ctx)
 	if err != nil {
 		return Reply{}, err
 	}
 	reply, err := client.decodeMessages(payload)
 	if err != nil {
+		return reply, err
+	}
+	if err := client.routeLeaseBreaks(&reply); err != nil {
 		return reply, err
 	}
 	for _, message := range reply.Messages {
