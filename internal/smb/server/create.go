@@ -25,11 +25,6 @@ const (
 	fileNonDirectoryFile uint32 = 0x00000040
 	fileDeleteOnClose    uint32 = 0x00001000
 	fileOpenByFileID     uint32 = 0x00002000
-	fileReadData         uint32 = 0x00000001
-	fileWriteData        uint32 = 0x00000002
-	fileAppendData       uint32 = 0x00000004
-	fileDelete           uint32 = 0x00010000
-	fileAllAccess        uint32 = 0x001f01ff
 )
 
 func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
