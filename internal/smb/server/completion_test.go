@@ -43,7 +43,7 @@ func TestCancelAffectsOnlyItsPendingRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cancel := wire.Message{Header: wire.Header{Command: wire.Cancel, MessageID: 1, SessionID: 77, Flags: wire.FlagAsync, AsyncID: pending.Header.AsyncID}, Body: body}
+	cancel := wire.Message{Header: wire.Header{Command: wire.Cancel, MessageID: 0, SessionID: 77, Flags: wire.FlagAsync, AsyncID: pending.Header.AsyncID}, Body: body}
 	if sendErr := client.Send(ctx, []wire.Message{cancel}); sendErr != nil {
 		t.Fatal(sendErr)
 	}

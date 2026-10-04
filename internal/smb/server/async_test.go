@@ -58,7 +58,7 @@ func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
 			exchange(ctx, t, client, negotiateMessage(t, 2))
 			request := asyncMessage(t, command, 1)
 			pending := exchange(ctx, t, client, request)[0]
-			if pending.Header.Status != smb.StatusPending || pending.Header.Flags&wire.FlagAsync == 0 || pending.Header.AsyncID == 0 {
+			if pending.Header.Status != smb.StatusPending || pending.Header.Flags&wire.FlagAsync == 0 || pending.Header.AsyncID == 0 || pending.Header.CreditCharge != request.Header.CreditCharge {
 				t.Fatalf("pending: %+v", pending.Header)
 			}
 			// A blocked operation must not stop independent ECHO traffic.
@@ -72,7 +72,7 @@ func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
 				t.Fatal(err)
 			}
 			header := final.Messages[0].Header
-			if header.MessageID != 1 || header.SessionID != 77 || header.AsyncID != pending.Header.AsyncID || header.Flags&wire.FlagAsync == 0 || header.Status != smb.StatusFileLockConflict || header.TreeID != 0 {
+			if header.MessageID != 1 || header.SessionID != 77 || header.AsyncID != pending.Header.AsyncID || header.Flags&wire.FlagAsync == 0 || header.Status != smb.StatusFileLockConflict || header.TreeID != 0 || header.CreditCharge != request.Header.CreditCharge {
 				t.Fatalf("async final lost identity: %+v", header)
 			}
 		})

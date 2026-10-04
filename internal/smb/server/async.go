@@ -84,7 +84,7 @@ func asyncResponse(request wire.Header, result reply, asyncID uint64, credits ui
 	}
 	message.Header.Flags = wire.FlagResponse | wire.FlagAsync
 	message.Header.AsyncID = asyncID
-	message.Header.ProcessID, message.Header.TreeID, message.Header.CreditCharge = 0, 0, 0
+	message.Header.ProcessID, message.Header.TreeID = 0, 0
 	return message, nil
 }
 
@@ -135,12 +135,18 @@ func (connection *connection) complete(pending *pendingRequest) {
 func (connection *connection) cancelPending(header wire.Header) {
 	connection.pendingMu.Lock()
 	defer connection.pendingMu.Unlock()
-	pending := connection.pending[header.MessageID]
-	if pending == nil || pending.header.SessionID != header.SessionID {
-		return
+	var pending *pendingRequest
+	if header.Flags&wire.FlagAsync != 0 {
+		for _, candidate := range connection.pending {
+			if candidate.asyncID == header.AsyncID {
+				pending = candidate
+				break
+			}
+		}
+	} else {
+		pending = connection.pending[header.MessageID]
 	}
-	if header.Flags&wire.FlagAsync != 0 && pending.asyncID != header.AsyncID {
-		return
+	if pending != nil && pending.header.SessionID == header.SessionID {
+		pending.work.cancel()
 	}
-	pending.work.cancel()
 }
