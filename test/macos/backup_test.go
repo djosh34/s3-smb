@@ -332,24 +332,9 @@ func (h *harness) remoteBackup(label, identifier string) string {
 }
 
 func (h *harness) backupTree(selected string) string {
-	volumes, err := os.ReadDir(selected)
+	path, err := helpers.BackupTree(selected, strings.TrimPrefix(h.proof, "/"))
 	h.must(err)
-	var found []string
-	for _, volume := range volumes {
-		path := filepath.Join(selected, volume.Name(), strings.TrimPrefix(h.proof, "/"))
-		info, err := os.Lstat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		h.must(err)
-		if info.IsDir() {
-			found = append(found, path)
-		}
-	}
-	if len(found) != 1 {
-		h.t.Fatal("created tree is not in exactly one backup volume", found)
-	}
-	return found[0]
+	return path
 }
 
 func (h *harness) restore(selected, reference, name string) helpers.Counts {
