@@ -26,7 +26,9 @@
    metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
    must match the volume identity in the bucket.
 4. Recover the chosen backup into a new SQLite file, or open the existing one.
-5. Clear file locks left in SQLite by an earlier process.
+5. The old server clears only native lock rows with session ID zero, left by
+   an earlier read-only process. The `smbnext` server keeps byte-range locks in
+   memory and neither reads nor clears JuiceFS locks. Its locks vanish on restart.
 6. Take a metadata backup, or reuse the last one if it is younger than
    `backup.interval` and its object in S3 still matches. If this fails, SMB does
    not start.
@@ -37,7 +39,7 @@ Read-only mode skips the backups and never deletes data.
 
 ## Shutdown
 
-On SIGINT or SIGTERM, or when a scheduled backup fails:
+On SIGINT or SIGTERM, or when metadata backup protection expires:
 
 1. Close delete protection and cancel the backup schedule.
 2. Close the listener and drain SMB requests.
@@ -56,7 +58,10 @@ have been in the trash for `backup.trash_days`. Separately, s3-smb removes old
 metadata backup objects by the rotation in [recovery](recovery.md); that never
 deletes data blocks. Both run only while the newest successful metadata backup
 started less than two backup intervals ago. Every delete transaction and every
-S3 delete checks this, so a stopped backup schedule stops all deletes.
+S3 delete checks this, so a stopped backup schedule stops all deletes. Failed
+metadata backups retry with exponential backoff capped at 30 seconds. They do
+not close protection early. A successful retry renews protection; expiry stops
+the writer.
 
 ## Tests
 
@@ -73,6 +78,8 @@ then check `go mod tidy -diff` and gofmt. `go test -count=1 ./...` runs the Go
 unit tests, including the untagged helpers in `test/macos/helpers`. It does not
 run Time Machine. The Docker step runs `go test -race -shuffle=on` over the
 untagged packages with MinIO available, including the Linux integration tests.
+It also runs `go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...`
+to check the new server's startup, shutdown and app wiring.
 The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
 and the frozen SMB server (`internal/smb-old`).
 `scripts/lint-tools.sh` downloads golangci-lint 2.14.0, shellcheck 0.11.0 and
@@ -123,7 +130,7 @@ data goes away with the containers.
 
 `test/Dockerfile` holds the MinIO release and source commit as ARGs, and copies
 MinIO from `ghcr.io/djosh34/minio` by release tag and image digest. It also
-installs `samba-testsuite` and `smbclient`. The local test image is tagged with
+pins `samba-testsuite` and `smbclient` to Samba 4.17.12-Debian. The local test image is tagged with
 the SHA-256 hash of `test/Dockerfile` and reused while that file is unchanged.
 It is not published.
 
@@ -141,12 +148,23 @@ failed scheduled backup, a kill during an S3 upload, and recovery after deleting
 all local state, including from a metadata backup taken while files were being
 written.
 
+The Docker step also builds a race-enabled `smbnext` daemon and runs
+`TestSambaInterop` with `GORACE=halt_on_error=1`. The test checks the daemon's
+build information for `-race` and the `smbnext` tag before starting it.
+smbclient authenticates and connects to `TimeMachine` with
+SMB 3.1.1 and encryption, then quits without listing files. The smbtorture runner
+checks tool versions, validates `test/e2e/smbtorture.allowlist` against `--list`,
+and runs each exact test ID separately. A failure, skip or missing success fails
+the check. M2 has no eligible Samba credit tests; the allowlist records why.
+Later milestones add names to that file without changing the runner.
+
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
 GitHub's `check` job calls `scripts/check.sh` on every pull request and on
-`main`. Dispatch the workflow with `gate=true` for a gate run. The job name
+`main`. It also runs when a merge queue group requests checks.
+Dispatch the workflow with `gate=true` for a gate run. The job name
 `check` is fixed because branch protection requires it. Failed runs upload
 daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
 
@@ -160,7 +178,8 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance -f server=def
 
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
 MinIO locally. `server=default` builds without tags; `server=smbnext` builds with
-`-tags smbnext`. The same selection applies to every job in the run.
+`-tags smbnext`. The network-drop and network-outage scenarios always select
+`smbnext`; other jobs use the requested server.
 `test/macos/run.sh` runs `go test -tags macos -count=1 -timeout <limit> -v
 ./test/macos/...` with sudo for Apple's administrative commands. The Go test
 builds the binaries and owns Time Machine state. There are no parallel Time
@@ -182,10 +201,11 @@ The same test runs in the Linux checks. SQLite uses full fsync only on macOS.
 One Mac backs up a small test directory with Time Machine,
 with most of the disk excluded. A second, fresh Mac gets only the MinIO store,
 recovers the dataset, restores the directory with `tmutil restore` and compares
-it. Six more Macs each interrupt a second backup. Five of them then restart or
+it. Eight more Macs each interrupt a later backup. Five of them then restart or
 recover s3-smb and restore the first backup. In the machine-loss scenario the
 Mac exports the stopped store, and a further fresh Mac recovers it and restores
-the first backup. The scenarios kill the application or the Time Machine client.
+the first backup. The scenarios kill the application or the Time Machine client,
+or cut its TCP connection through the Go network fault proxy.
 They do not cut power and do not remove objects from S3. Every interruption,
 including machine-loss, requires a nonempty change in remote chunk objects.
 The resumed backup must also complete and restore the changed tree. The test
@@ -202,6 +222,38 @@ changed S3 chunks after the kill and before the new process serves, then
 requires the next backup to complete with a matching restore and the same PID.
 Cleanup reserves time to unload the job before stopping MinIO, also on failure
 or timeout.
+
+`network-drop` places `internal/netfault` between every Mac SMB client and the
+server, including Time Machine and restore mounts. It cuts during advancing
+Copying samples after 128 MiB, with at least 512 MiB of the four-GiB change left,
+and requires changed S3 chunks before the cut. After five seconds it restores
+forwarding without starting another backup. The same blocking Time Machine
+command must finish, the client log must show one backup start and a successful
+reconnect and the completed backup must restore the changed tree. A measured
+drop above 30 seconds fails rather than counting as a short-drop attempt. The earlier backup is restored
+and checked too.
+
+After the baseline loads smbfs, both network scenarios enable kernel SMB
+warning logs and save the previous level and readback in
+`smb-kernel-logging.json`. Cleanup restores the previous level, also on failure.
+Only the exact macOS non-idempotent refusal retries the test, up to three
+attempts. Three refusals save `network-drop-result.json` with `not tested` and
+end the Mac job without a passing check, with a clear `not tested` reason. They are not a passing M5 drop test.
+Ordinary failures and missing reconnect evidence fail without retry.
+`network-outage` holds the drop for at least 45 seconds and until the client
+fails on its own. It checks a visible command failure, no new completed backup,
+the earlier backup's restored contents and a successful next backup and restore.
+The server stays alive throughout both scenarios.
+
+The Linux helper tests use source-derived Apple SMBClient-494.120.2 log samples,
+not recordings. The integration agent replaces them with recordings from the
+first real Mac runs. Evidence for each attempt includes its cut status, measured
+outage times, command result and bounded macOS log.
+
+```sh
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios -f server=smbnext \
+  -f 'scenarios=["network-drop","network-outage"]'
+```
 
 To run just one scenario:
 

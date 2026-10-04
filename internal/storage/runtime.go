@@ -61,8 +61,10 @@ func CacheConfig(format *meta.Format, dir string, capacity *int64) (chunk.Config
 }
 
 type Runtime struct {
-	FS       *fs.FileSystem
-	Store    chunk.ChunkStore
+	FS    *fs.FileSystem
+	Store chunk.ChunkStore
+	// Config supplies the same I/O settings to the SMB filesystem adapter.
+	Config   *vfs.Config
 	once     sync.Once
 	closeErr error
 }
@@ -102,11 +104,12 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 		}
 		return vfs.Compact(c, store, args[0].([]meta.Slice), args[1].(uint64), args[2].(uint8))
 	})
-	filesystem, err := fs.NewFileSystem(filesystemConfig(format, &c), m, store, prometheus.NewRegistry())
+	conf := filesystemConfig(format, &c)
+	filesystem, err := fs.NewFileSystem(conf, m, store, prometheus.NewRegistry())
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{FS: filesystem, Store: store}, nil
+	return &Runtime{FS: filesystem, Store: store, Config: conf}, nil
 }
 
 func filesystemConfig(format *meta.Format, c *chunk.Config) *vfs.Config {
