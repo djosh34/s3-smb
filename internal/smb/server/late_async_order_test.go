@@ -29,7 +29,7 @@ func testLateAsyncOrder(t *testing.T, simultaneous bool) {
 	if simultaneous {
 		gates[1], gates[2] = gates[0], gates[0]
 	}
-	server.handlers[wire.Read] = func(ctx context.Context, message wire.Message) (reply, error) {
+	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, message wire.Message) (reply, error) {
 		if message.Header.MessageID < 1 || message.Header.MessageID > 3 {
 			return reply{}, errors.New("unexpected controlled request ID")
 		}
@@ -41,7 +41,7 @@ func testLateAsyncOrder(t *testing.T, simultaneous bool) {
 			return reply{}, ctx.Err()
 		}
 	}
-	client, ctx := pipeClient(t, server)
+	client, ctx := corePipeClient(t, server)
 	for _, gate := range gates {
 		t.Cleanup(gate.release)
 	}
