@@ -186,6 +186,7 @@ type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	FileID FileID
 	Remove bool
 }
 
