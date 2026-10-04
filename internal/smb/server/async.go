@@ -28,6 +28,8 @@ type pendingRequest struct {
 }
 
 func asyncEligible(command wire.Command) bool {
+	// Only storage waits qualify. Decision #169 refuses CHANGE_NOTIFY without
+	// watches or delayed completions; registering a handler cannot change that.
 	return command == wire.Read || command == wire.Write || command == wire.Flush
 }
 
