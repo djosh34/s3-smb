@@ -60,7 +60,7 @@ func (transport responseTransport) RoundTrip(req *http.Request) (*http.Response,
 }
 
 func TestCancelAndClose(t *testing.T) {
-	for _, phase := range []string{"headers", "body", "hold", "injected"} {
+	for _, phase := range []string{"headers", "body", "hold", "injected", "throttle"} {
 		for _, action := range []string{"cancel", "close"} {
 			t.Run(phase+"/"+action, func(t *testing.T) {
 				testInterruption(t, phase, action)
@@ -87,8 +87,11 @@ func testInterruption(t *testing.T, phase, action string) {
 	if phase == "body" {
 		fault = Fault{BodyDelay: time.Hour}
 	}
-	if phase == "injected" {
+	if phase == "injected" || phase == "throttle" {
 		fault.Status = http.StatusServiceUnavailable
+		if phase == "throttle" {
+			fault.Code = "SlowDown"
+		}
 		observed.armed.Store(true)
 	}
 	if err := proxy.SetFault(fault); err != nil {
@@ -141,5 +144,25 @@ func testInterruption(t *testing.T, phase, action string) {
 		}
 	} else if recorder.Code != http.StatusBadGateway {
 		t.Fatalf("interrupted %s status = %d, want 502", phase, recorder.Code)
+	}
+	if phase == "injected" || phase == "throttle" {
+		checkInterruptedStatusEvents(t, proxy)
+	}
+}
+
+func checkInterruptedStatusEvents(t *testing.T, proxy *Proxy) {
+	t.Helper()
+	select {
+	case event := <-proxy.Events():
+		if event.Kind != "header-delay" || event.Status != 0 {
+			t.Fatalf("interrupted delayed error claimed an injected status: %+v", event)
+		}
+	default:
+		t.Fatal("missing header delay event")
+	}
+	select {
+	case event := <-proxy.Events():
+		t.Fatalf("interrupted delayed error emitted extra event: %+v", event)
+	default:
 	}
 }
