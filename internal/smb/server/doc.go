@@ -10,11 +10,13 @@ package server
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/state"
+	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
 // EncryptionPolicy selects session confidentiality, not the server implementation.
@@ -57,4 +59,14 @@ type Options struct {
 //	func (server *Server) Serve(ctx context.Context, listener net.Listener) error
 //	func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error
 //	func (server *Server) Shutdown(ctx context.Context) error
-type Server struct{}
+type Server struct {
+	options      Options
+	handlers     map[wire.Command]handler
+	connections  map[*connection]struct{}
+	listeners    map[*ownedListener]struct{}
+	shutdownDone chan struct{}
+	shutdownErr  error
+	mu           sync.Mutex
+	workers      sync.WaitGroup
+	stopping     bool
+}
