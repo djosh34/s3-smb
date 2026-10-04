@@ -390,6 +390,22 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	return action
 }
 
+// InodeOpen reports whether an inode has any open or sharing reservation,
+// including named streams and detached durable opens.
+func (table *Table) InodeOpen(inode smb.Inode) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.inodeOpen(inode) {
+		return true
+	}
+	for _, request := range table.reservations {
+		if request.Object.Inode == inode {
+			return true
+		}
+	}
+	return false
+}
+
 func (table *Table) inodeOpen(inode smb.Inode) bool {
 	for _, open := range table.opens {
 		if open.Object.Inode == inode {

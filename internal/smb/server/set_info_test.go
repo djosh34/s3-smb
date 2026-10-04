@@ -433,7 +433,7 @@ func TestSetInfoChecksGrantedAccessPerClass(t *testing.T) {
 func TestSetInfoUnsupportedClassesAndTypesKeepConnection(t *testing.T) {
 	f := newSetInfoFixture(t, 0x102)
 	before := f.attr(t)
-	for _, class := range []uint8{11, uint8(wire.ClassFileStandard), uint8(wire.ClassFileRename), uint8(wire.ClassFileDisposition), 255} {
+	for _, class := range []uint8{11, uint8(wire.ClassFileStandard), 255} {
 		f.set(t, wire.SetInfoRequest{ID: wire.FileID(f.open.ID), InfoType: wire.InfoFile, InfoClass: class, Input: []byte{1}}, smb.StatusNotSupported)
 	}
 	for _, infoType := range []wire.InfoType{0, wire.InfoFilesystem, wire.InfoSecurity, 4, 255} {

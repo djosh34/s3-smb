@@ -41,8 +41,12 @@ func handleSetInfo(ctx context.Context, request RequestContext, message wire.Mes
 		result.status = setEndOfFileInfo(ctx, request, open, info.Input)
 	case uint8(wire.ClassFileAllocation):
 		result.status = setAllocationInfo(ctx, request, open, info.Input)
+	case uint8(wire.ClassFileRename):
+		result.status = setRenameInfo(ctx, request, open, info.Input)
+	case uint8(wire.ClassFileDisposition):
+		result.status = setDispositionInfo(ctx, request, open, info.Input)
 	default:
-		// Rename and disposition are owned by #336. Hard links are not supported.
+		// Hard links are not supported.
 		result.status = smb.StatusNotSupported
 	}
 	if result.status != smb.StatusSuccess {

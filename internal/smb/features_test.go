@@ -15,7 +15,8 @@ func TestFeatureMasks(t *testing.T) {
 	}{
 		{"negotiate", uint64(smb.AdvertisedCapabilities), 0x04},
 		{"filesystem", uint64(smb.AdvertisedFilesystemAttributes), 0x07},
-		{"aapl-not-enabled", smb.AAPLVolumeCapabilities, 0},
+		{"aapl-volume", smb.AAPLVolumeCapabilities, 0x06},
+		{"aapl-server", smb.AAPLServerCapabilities, 0},
 		{"aapl-case-sensitive", smb.AAPLCaseSensitive, 0x02},
 		{"aapl-full-sync", smb.AAPLFullSync, 0x04},
 		{"share-capabilities", uint64(smb.AdvertisedShareCapabilities), 0},
