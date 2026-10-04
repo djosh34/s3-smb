@@ -10,6 +10,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestNetworkScenarioWorkflow(t *testing.T) {
+	data, err := os.ReadFile("../../../.github/workflows/macos.yml")
+	must(t, err)
+	workflow := string(data)
+	for _, name := range []string{"network-drop", "network-outage"} {
+		if !strings.Contains(workflow, `"`+name+`"`) {
+			t.Fatal("network scenario missing from the default matrix", name)
+		}
+	}
+	selection := "MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage') && 'smbnext' || inputs.server }}"
+	if !strings.Contains(workflow, selection) {
+		t.Fatal("network scenarios must build smbnext without changing other jobs")
+	}
+}
+
 func TestM4Workflow(t *testing.T) {
 	data, err := os.ReadFile("../../../.github/workflows/macos.yml")
 	must(t, err)

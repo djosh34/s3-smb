@@ -133,6 +133,52 @@ func TestFlushedGrowthAndSizeChanges(t *testing.T) {
 	}
 }
 
+func TestFlushedRemovalDoesNotZeroExistingBytes(t *testing.T) {
+	l := NewLedger()
+	l.Write("file", 0, []byte("abcd"))
+	l.Flush("file")
+	l.Remove("file")
+	if err := l.CheckFlushed(reader(map[string]string{"file": "\x00\x00\x00\x00"})); err == nil {
+		t.Fatal("unflushed removal allowed corruption of a present flushed file")
+	}
+	for _, files := range []map[string]string{{}, {"file": "abcd"}} {
+		if err := l.CheckFlushed(reader(files)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Write("file", 0, []byte("xy"))
+	if err := l.CheckFlushed(reader(map[string]string{"file": "xy\x00\x00"})); err == nil {
+		t.Fatal("short recreation zeroed bytes outside its possible length")
+	}
+	l.Truncate("file", 4)
+	if err := l.CheckFlushed(reader(map[string]string{"file": "\x00\x00\x00\x00"})); err != nil {
+		t.Fatalf("zero-filled recreation: %v", err)
+	}
+}
+
+func TestFlushedTruncateDoesNotZeroUnshortenedBytes(t *testing.T) {
+	l := NewLedger()
+	l.Write("file", 0, []byte("abcd"))
+	l.Flush("file")
+	l.Truncate("file", 1)
+	if err := l.CheckFlushed(reader(map[string]string{"file": "a\x00\x00\x00"})); err == nil {
+		t.Fatal("unflushed truncation allowed corruption without shortening")
+	}
+	for _, data := range []string{"a", "abcd"} {
+		if err := l.CheckFlushed(reader(map[string]string{"file": data})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.Write("file", 0, []byte("z"))
+	if err := l.CheckFlushed(reader(map[string]string{"file": "z\x00\x00\x00"})); err == nil {
+		t.Fatal("write below the truncated end allowed unrelated zeros")
+	}
+	l.Truncate("file", 4)
+	if err := l.CheckFlushed(reader(map[string]string{"file": "a\x00\x00\x00"})); err != nil {
+		t.Fatalf("zero-filled regrowth: %v", err)
+	}
+}
+
 func TestSettledAttemptAtFlushAndMark(t *testing.T) {
 	l := NewLedger()
 	l.Attempt("file", 0, []byte("abc"))
