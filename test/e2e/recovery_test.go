@@ -36,6 +36,7 @@ type fixture struct {
 	clientAddr                   string // Empty uses the daemon address; chaos tests set a proxy address.
 	encrypted                    bool
 	password, secret             string
+	binary                       string // Empty uses the default integration daemon.
 	cacheSize                    string
 	storageCapacity              string        // Empty means no volume limit.
 	interval                     string        // Metadata backup interval. Empty means 2s.
@@ -170,7 +171,11 @@ func (f *fixture) start() *daemon {
 	if err = os.MkdirAll(dir, 0700); err != nil {
 		f.t.Fatal(err)
 	}
-	d := &daemon{cmd: exec.Command(os.Getenv("S3_SMB_E2E_BINARY"), "serve", "-c", config), done: make(chan error, 1), tty: master, t: f.t}
+	binary := f.binary
+	if binary == "" {
+		binary = os.Getenv("S3_SMB_E2E_BINARY")
+	}
+	d := &daemon{cmd: exec.Command(binary, "serve", "-c", config), done: make(chan error, 1), tty: master, t: f.t}
 	d.cmd.Stdin = slave
 	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	for _, stream := range []string{"stdout", "stderr"} {
