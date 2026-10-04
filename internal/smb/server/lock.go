@@ -42,7 +42,7 @@ func handleLock(ctx context.Context, request RequestContext, message wire.Messag
 	}
 	// The table keys ranges by the open's complete ObjectKey and applies the
 	// vector atomically. FAIL_IMMEDIATELY never changes our non-blocking policy.
-	result.status = request.Opens.Lock(open.ID, request.Binding(), ranges, unlock)
+	result.status = request.Opens.LockSequence(open.ID, request.Binding(), ranges, unlock, body.Sequence)
 	if result.status != smb.StatusSuccess {
 		return result, nil
 	}

@@ -222,7 +222,8 @@ type Break struct {
 }
 
 // Table owns all indexes. Returned structs and slices are copies. Failed methods
-// leave state unchanged. Status-returning methods return StatusSuccess on success,
+// leave state unchanged, except LockSequence invalidates mismatched replay metadata
+// before applying a vector. Status-returning methods return StatusSuccess on success,
 // otherwise a command-specific status, such as SHARING_VIOLATION, DELETE_PENDING,
 // LOCK_NOT_GRANTED, FILE_LOCK_CONFLICT, RANGE_NOT_LOCKED or DUPLICATE_OBJECTID.
 // Detached durable opens still participate in every sharing and lock check.
@@ -244,6 +245,7 @@ type Table struct {
 type openEntry struct {
 	deleteName smb.Name
 	Open
+	lockSequences      [64]lockSequenceEntry
 	dispositionPending bool
 }
 

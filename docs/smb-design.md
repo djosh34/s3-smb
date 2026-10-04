@@ -166,6 +166,14 @@ finals remain protected after removal.
 A transport drop detaches durable opens immediately, without waiting for S3.
 The server cancels old request contexts but keeps acknowledged data and durable handles.
 Detached opens retain granted access, sharing, deletion intent, locks and leases.
+Durable opens also retain 64 private LOCK sequence slots through DH2C.
+MS-SMB2 3.3.5.14 uses the low four sequence bits as the number and the remaining
+bits as the index. Index 0 or above 64 uses normal processing. A matching valid
+number succeeds without changing ranges. A changed number invalidates that slot
+before processing, even if the vector fails. This replay-metadata change is the
+exception to failed table methods leaving state unchanged; range vectors remain
+atomic. Successful lock and unlock vectors record the new number.
+Close and expiry discard the slots with the open. Ordinary opens ignore sequence.
 Non-durable opens close after active request references drain.
 Old requests cannot publish grants or replies on the new binding.
 DH2C validates the file ID, CreateGuid, client GUID, user, share and lease key.
