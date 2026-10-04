@@ -19,8 +19,8 @@ import (
 type Entry struct {
 	Path   string `json:"path"`
 	Type   string `json:"type"`
-	Bytes  int64  `json:"bytes,omitempty"`
 	SHA256 string `json:"sha256,omitempty"`
+	Bytes  int64  `json:"bytes,omitempty"`
 }
 
 // Counts summarizes a fixture tree.
@@ -47,7 +47,7 @@ func Manifest(root string) ([]Entry, Counts, error) {
 		case d.IsDir():
 			row.Type = "directory"
 		case d.Type().IsRegular():
-			file, err := os.Open(path)
+			file, err := os.Open(path) //nolint:gosec // WalkDir selected a regular file in the explicitly supplied fixture tree.
 			if err != nil {
 				return err
 			}
@@ -69,7 +69,7 @@ func Manifest(root string) ([]Entry, Counts, error) {
 
 // WriteManifest writes one entry per line, refusing to overwrite evidence.
 func WriteManifest(path string, rows []Entry) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // The caller chooses an exclusive evidence output, not a user request.
 	if err != nil {
 		return err
 	}
@@ -84,7 +84,7 @@ func WriteManifest(path string, rows []Entry) error {
 
 // ReadManifest rejects empty or duplicate references.
 func ReadManifest(path string) ([]Entry, error) {
-	file, err := os.Open(path)
+	file, err := os.Open(path) //nolint:gosec // The caller chooses a manifest in the run-owned evidence or transfer directory.
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +106,9 @@ func ReadManifest(path string) ([]Entry, error) {
 
 // Difference records missing, extra, or changed content.
 type Difference struct {
-	Path     string `json:"path"`
 	Expected *Entry `json:"expected"`
 	Actual   *Entry `json:"actual"`
+	Path     string `json:"path"`
 }
 
 func index(rows []Entry) (map[string]Entry, error) {

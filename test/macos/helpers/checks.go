@@ -39,9 +39,11 @@ func CheckExclusion(output string, excluded bool) error {
 	return nil
 }
 
-var runningPattern = regexp.MustCompile(`Running\s*=\s*([01])\s*;`)
-var copyingPattern = regexp.MustCompile(`BackupPhase\s*=\s*Copying`)
-var bytesPattern = regexp.MustCompile(`(?m)^\s*bytes\s*=\s*"?([+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"?\s*;`)
+var (
+	runningPattern = regexp.MustCompile(`Running\s*=\s*([01])\s*;`)
+	copyingPattern = regexp.MustCompile(`BackupPhase\s*=\s*Copying`)
+	bytesPattern   = regexp.MustCompile(`(?m)^\s*bytes\s*=\s*"?([+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"?\s*;`)
+)
 
 // Running rejects an unknown native status format.
 func Running(text string) (bool, error) {
@@ -83,8 +85,10 @@ func BuildTags(server string) (string, error) {
 	}
 }
 
-var releasePattern = regexp.MustCompile(`^RELEASE\.[0-9TZ-]+$`)
-var commitPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+var (
+	releasePattern = regexp.MustCompile(`^RELEASE\.[0-9TZ-]+$`)
+	commitPattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+)
 
 // MinIOPin reads the same immutable source pin used by Linux.
 func MinIOPin(dockerfile string) (string, string, error) {

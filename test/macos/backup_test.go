@@ -9,14 +9,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
 
-	"github.com/djosh34/s3-smb/test/macos/helpers"
 	"howett.net/plist"
+
+	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 type entity struct {
@@ -59,19 +59,22 @@ func (h *harness) destinationSetup() {
 	h.native(args...)
 	h.native(append(append([]string{"/usr/bin/security", "find-internet-password"}, attributes...), keychain)...)
 }
+
 func (h *harness) status() bool {
 	running, err := helpers.Running(h.native("/usr/bin/tmutil", "status"))
 	h.must(err)
 	return running
 }
+
 func (h *harness) startBackup(label string) {
 	if h.backup != nil {
 		h.t.Fatal("backup already active")
 	}
-	h.backup = h.start(label+"-startbackup", exec.CommandContext(h.ctx, "/usr/bin/tmutil", "startbackup", "--block", "--destination", h.destination))
+	h.backup = h.start(label+"-startbackup", nativeCommand(h.ctx, "/usr/bin/tmutil", "startbackup", "--block", "--destination", h.destination))
 	h.event("time-machine-start", map[string]any{"label": label})
 }
-func (h *harness) completeBackup(label string) time.Time {
+
+func (h *harness) completeBackup(label string) (time.Time, error) {
 	deadline := time.Now().Add(90 * time.Minute)
 	next := time.Time{}
 	for !h.backup.exited() {
@@ -94,23 +97,23 @@ func (h *harness) completeBackup(label string) time.Time {
 	h.backup = nil
 	h.must(p.log.Close())
 	if p.err != nil || h.status() {
-		h.t.Fatalf("Time Machine did not complete cleanly: %v", p.err)
+		return time.Time{}, fmt.Errorf("Time Machine did not complete cleanly: %w", errors.Join(p.err, errors.New("backup client failed or backup still running")))
 	}
 	h.event("time-machine-command-completed", map[string]any{"label": label})
 	// This is only the command boundary. remoteBackup must also find a completed native backup.
-	return time.Now().UTC()
+	return time.Now().UTC(), nil
 }
 
 type receipt struct {
-	Key      string
 	Snapshot time.Time
+	Key      string
 }
 
 func (h *harness) metadata(after time.Time, label string) receipt {
 	path := filepath.Join(h.local, "state/backup-receipt.json")
 	deadline := time.Now().Add(15 * time.Minute)
 	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // This is the application's receipt inside the test-owned state directory.
 		if err == nil {
 			var point receipt
 			h.must(json.Unmarshal(data, &point))
@@ -150,6 +153,7 @@ func mountpoints(text string) []string {
 	}
 	return paths
 }
+
 func (h *harness) detach(ctx context.Context) error {
 	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
 	text, err := run("/usr/bin/hdiutil", "info", "-plist")
@@ -157,7 +161,7 @@ func (h *harness) detach(ctx context.Context) error {
 		return err
 	}
 	var info imageInfo
-	if _, err := plist.Unmarshal([]byte(text), &info); err != nil {
+	if _, err = plist.Unmarshal([]byte(text), &info); err != nil {
 		return err
 	}
 	devices := append([]string(nil), h.attachments...)
@@ -191,33 +195,44 @@ func (h *harness) detach(ctx context.Context) error {
 		}
 	}
 	for index := len(devices) - 1; index >= 0; index-- {
-		device := devices[index]
-		if _, err := run("/usr/bin/hdiutil", "detach", device); err == nil {
-			continue
-		}
-		deadline := time.Now().Add(time.Minute)
-		for {
-			text, err := run("/usr/bin/hdiutil", "info", "-plist")
-			if err != nil {
-				return err
-			}
-			if !strings.Contains(text, "<string>"+device+"</string>") {
-				break
-			}
-			if time.Now().After(deadline) {
-				return fmt.Errorf("cannot detach %s", device)
-			}
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(5 * time.Second):
-			}
-			if _, err := run("/usr/bin/hdiutil", "detach", "-force", device); err == nil {
-				break
-			}
+		if err := h.detachDevice(ctx, devices[index]); err != nil {
+			return err
 		}
 	}
 	h.attachments = nil
+	return h.detachShares(ctx)
+}
+
+func (h *harness) detachDevice(ctx context.Context, device string) error {
+	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
+	if _, err := run("/usr/bin/hdiutil", "detach", device); err == nil {
+		return nil
+	}
+	deadline := time.Now().Add(time.Minute)
+	for {
+		text, err := run("/usr/bin/hdiutil", "info", "-plist")
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(text, "<string>"+device+"</string>") {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("cannot detach %s", device)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(5 * time.Second):
+		}
+		if _, err := run("/usr/bin/hdiutil", "detach", "-force", device); err == nil {
+			return nil
+		}
+	}
+}
+
+func (h *harness) detachShares(ctx context.Context) error {
+	run := func(args ...string) (string, error) { return h.command(ctx, 2*time.Minute, "", args...) }
 	deadline := time.Now().Add(time.Minute)
 	for {
 		text, err := run("/sbin/mount")
@@ -253,6 +268,7 @@ func (h *harness) detach(ctx context.Context) error {
 		}
 	}
 }
+
 func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
 	args := []string{"/usr/bin/hdiutil", "attach", "-nobrowse", "-plist"}
 	if readonly {
@@ -279,6 +295,7 @@ func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
 	}
 	return devices, volumes
 }
+
 func (h *harness) remoteBackup(label, identifier string) string {
 	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
 	h.must(err)
@@ -313,30 +330,12 @@ func (h *harness) remoteBackup(label, identifier string) string {
 			break
 		}
 	}
-	var selected string
+	latest := ""
 	if identifier == "" {
-		selected = strings.TrimSpace(h.run(10*time.Minute, "/usr/bin/tmutil", "latestbackup", "-d", volumes[0], "-m"))
-		count := 0
-		for _, path := range backups {
-			if path == selected {
-				count++
-			}
-		}
-		if count != 1 {
-			h.t.Fatal("latest backup absent from completed remote list", selected, backups)
-		}
-	} else {
-		count := 0
-		for _, path := range backups {
-			if filepath.Base(path) == identifier {
-				selected = path
-				count++
-			}
-		}
-		if count != 1 {
-			h.t.Fatal("completed baseline not present exactly once after recovery", identifier, backups)
-		}
+		latest = strings.TrimSpace(h.run(10*time.Minute, "/usr/bin/tmutil", "latestbackup", "-d", volumes[0], "-m"))
 	}
+	selected, err := helpers.SelectBackup(backups, latest, identifier)
+	h.must(err)
 	info, err := os.Stat(selected)
 	h.must(err)
 	if !info.IsDir() || strings.HasSuffix(filepath.Base(selected), ".inProgress") {
@@ -347,6 +346,7 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected}, false)
 	return selected
 }
+
 func (h *harness) backupTree(selected string) string {
 	volumes, err := os.ReadDir(selected)
 	h.must(err)
@@ -367,6 +367,7 @@ func (h *harness) backupTree(selected string) string {
 	}
 	return found[0]
 }
+
 func (h *harness) restore(selected, reference, name string) helpers.Counts {
 	source := h.backupTree(selected)
 	if !strings.HasPrefix(source, "/Volumes/") || filepath.Clean(source) == filepath.Clean(h.proof) {

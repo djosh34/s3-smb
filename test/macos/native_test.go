@@ -4,7 +4,6 @@
 package macos
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -12,12 +11,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/creack/pty"
+
+	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 type process struct {
@@ -41,7 +40,7 @@ func (p *process) exited() bool {
 
 func (h *harness) start(name string, cmd *exec.Cmd) *process {
 	h.t.Helper()
-	log, err := os.OpenFile(filepath.Join(h.evidence, name+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	log, err := os.OpenFile(filepath.Join(h.evidence, name+".log"), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The log path is built from a harness label and the run-owned evidence directory.
 	h.must(err)
 	cmd.Stdout, cmd.Stderr = log, log
 	if err := cmd.Start(); err != nil {
@@ -112,19 +111,26 @@ func (h *harness) command(ctx context.Context, timeout time.Duration, directory 
 	h.serial++
 	name := fmt.Sprintf("%04d-%s.log", h.serial, filepath.Base(args[0]))
 	h.t.Logf("native-command-start %s %v", name, args)
-	cmd := exec.CommandContext(ctx, args[0], args[1:]...)
+	cmd := nativeCommand(ctx, args...)
 	cmd.Dir = directory
-	var output bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &output, &output
+	path := filepath.Join(h.evidence, name)
+	log, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Evidence paths belong to this test run.
+	if err != nil {
+		return "", err
+	}
+	cmd.Stdout, cmd.Stderr = log, log
 	start := time.Now()
-	err := cmd.Run()
-	writeErr := os.WriteFile(filepath.Join(h.evidence, name), output.Bytes(), 0o600)
+	err = errors.Join(cmd.Run(), log.Close())
 	h.save("commands.jsonl", map[string]any{"argv": args, "start": start, "end": time.Now(), "error": fmt.Sprint(err), "output": name}, true)
 	h.t.Logf("native-command-exit %s %v", name, err)
 	if err != nil {
-		err = fmt.Errorf("%v: %w; see %s", args, err, name)
+		return "", fmt.Errorf("%v: %w; see %s", args, err, name)
 	}
-	return output.String(), errors.Join(err, writeErr)
+	if args[0] == "/usr/bin/log" {
+		return "", nil
+	} // Keep large unified logs on disk.
+	output, err := os.ReadFile(path) //nolint:gosec // Read only the command log just created above.
+	return string(output), err
 }
 
 func (h *harness) run(timeout time.Duration, args ...string) string {
@@ -148,52 +154,35 @@ func (h *harness) pause(delay time.Duration) {
 	}
 }
 
-var pointPattern = regexp.MustCompile(`Recover metadata from (\S+)`)
+func nativeCommand(ctx context.Context, args ...string) *exec.Cmd {
+	return exec.CommandContext(ctx, args[0], args[1:]...) //nolint:gosec // Callers supply only harness-owned binaries and native test commands, never shell text.
+}
 
 func drainTerminal(terminal *os.File, log io.Writer, phase string, ready chan<- string) error {
-	var buffer []byte
-	confirmed, reported := false, false
+	startup := helpers.NewStartup(phase)
 	data := make([]byte, 64*1024)
 	for {
-		count, err := terminal.Read(data)
-		if count > 0 {
-			if _, writeErr := log.Write(data[:count]); writeErr != nil {
-				return writeErr
-			}
-			buffer = append(buffer, data[:count]...)
-			if len(buffer) > 128*1024 {
-				buffer = buffer[len(buffer)-128*1024:]
-			}
-			if bytes.Contains(buffer, []byte("Continue? [yes/no]: ")) && !confirmed {
-				expected := "Initialize a genuinely empty S3 dataset?"
-				if phase == "recover" {
-					expected = "Recover metadata from "
-				}
-				if phase == "restart" || !bytes.Contains(buffer, []byte(expected)) {
-					return errors.New("unexpected application confirmation; refusing automatic answer")
-				}
-				if _, err := terminal.Write([]byte("yes\n")); err != nil {
-					return err
-				}
-				confirmed = true
-			}
-			if bytes.Contains(buffer, []byte(`"msg":"SMB serving"`)) && !reported {
-				if phase != "restart" && !confirmed {
-					return errors.New("fresh start did not require documented confirmation")
-				}
-				point := ""
-				if match := pointPattern.FindSubmatch(buffer); match != nil {
-					point = string(match[1])
-				}
-				ready <- point
-				reported = true
-			}
+		count, readErr := terminal.Read(data)
+		if _, err := log.Write(data[:count]); err != nil {
+			return err
 		}
-		if errors.Is(err, io.EOF) || errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
-			return nil
-		}
+		answer, serving, point, err := startup.Observe(data[:count])
 		if err != nil {
 			return err
+		}
+		if answer {
+			if _, err := terminal.Write([]byte("yes\n")); err != nil {
+				return err
+			}
+		}
+		if serving {
+			ready <- point
+		}
+		if errors.Is(readErr, io.EOF) || errors.Is(readErr, syscall.EIO) || errors.Is(readErr, os.ErrClosed) {
+			return nil
+		}
+		if readErr != nil {
+			return readErr
 		}
 	}
 }
@@ -234,7 +223,7 @@ logging:
 	h.applicationSerial++
 	log, err := os.OpenFile(filepath.Join(h.evidence, fmt.Sprintf("application-%d-%s.log", h.applicationSerial, phase)), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	h.must(err)
-	cmd := exec.CommandContext(h.ctx, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
+	cmd := nativeCommand(h.ctx, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
 	terminal, err := pty.Start(cmd)
 	if err != nil {
 		h.must(errors.Join(err, log.Close()))
@@ -254,9 +243,6 @@ logging:
 		h.t.Fatal(h.ctx.Err())
 	case <-time.After(3 * time.Minute):
 		h.t.Fatal("application startup timeout")
-	}
-	if phase == "recover" && strings.TrimSpace(p.point) == "" {
-		h.t.Fatal("recovery did not name a metadata point")
 	}
 	h.event("application-ready", map[string]any{"phase": phase, "pid": cmd.Process.Pid, "recovered_from": p.point})
 }

@@ -13,7 +13,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -30,9 +29,9 @@ type harness struct {
 	t                                                                         *testing.T
 	ctx                                                                       context.Context
 	work, evidence, transfer, bin, local, share, proof, interval, destination string
-	serial, applicationSerial                                                 int
 	daemon, minio, backup                                                     *process
 	attachments                                                               []string
+	serial, applicationSerial                                                 int
 	finished                                                                  bool
 }
 
@@ -42,6 +41,7 @@ func (h *harness) must(err error) {
 		h.t.Fatal(err)
 	}
 }
+
 func (h *harness) save(name string, value any, appendLine bool) {
 	h.t.Helper()
 	data, err := json.Marshal(value)
@@ -50,16 +50,18 @@ func (h *harness) save(name string, value any, appendLine bool) {
 	if appendLine {
 		flags = os.O_CREATE | os.O_WRONLY | os.O_APPEND
 	}
-	file, err := os.OpenFile(filepath.Join(h.evidence, name), flags, 0o600)
+	file, err := os.OpenFile(filepath.Join(h.evidence, name), flags, 0o600) //nolint:gosec // Only harness-selected evidence names are written under the run-owned directory.
 	h.must(err)
 	_, err = file.Write(append(data, '\n'))
 	h.must(errors.Join(err, file.Close()))
 }
+
 func (h *harness) event(name string, fields map[string]any) {
 	h.t.Helper()
 	h.t.Log(name, fields)
 	h.save("acceptance.jsonl", map[string]any{"time": time.Now().UTC(), "event": name, "fields": fields}, true)
 }
+
 func absent(path string) error {
 	_, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -78,7 +80,7 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", "mac-acceptance")
 	t.Setenv("MINIO_ROOT_PASSWORD", "synthetic-mac-acceptance-secret")
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 20 * time.Minute, "backup": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
 		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
@@ -153,6 +155,7 @@ func (h *harness) platform(recovery bool) {
 	}
 	h.native("/bin/df", "-k")
 }
+
 func (h *harness) exclusions(diagnostic bool) {
 	for _, path := range helpers.Exclusions {
 		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
@@ -168,6 +171,7 @@ func (h *harness) exclusions(diagnostic bool) {
 		}
 	}
 }
+
 func (h *harness) checkExclusions() {
 	for path, excluded := range map[string]bool{h.proof: false, filepath.Join(h.proof, "nested/message.txt"): false, filepath.Join(h.proof, "empty"): false, filepath.Join(h.work, "objects"): true, "/Users/runner/Library": true} {
 		output := h.native("/usr/bin/tmutil", "isexcluded", path)
@@ -175,13 +179,14 @@ func (h *harness) checkExclusions() {
 		h.must(helpers.CheckExclusion(output, excluded))
 	}
 }
+
 func (h *harness) services(fresh bool) {
 	for _, port := range []string{"1445", "19000", "19003"} {
-		listener, err := net.Listen("tcp", "127.0.0.1:"+port)
+		listener, err := (&net.ListenConfig{}).Listen(h.ctx, "tcp", "127.0.0.1:"+port)
 		h.must(err)
 		h.must(listener.Close())
 	}
-	cmd := exec.CommandContext(h.ctx, filepath.Join(h.bin, "minio"), "server", "--address", "127.0.0.1:19000", "--console-address", "127.0.0.1:19003", filepath.Join(h.work, "objects"))
+	cmd := nativeCommand(h.ctx, filepath.Join(h.bin, "minio"), "server", "--address", "127.0.0.1:19000", "--console-address", "127.0.0.1:19003", filepath.Join(h.work, "objects"))
 	cmd.Env = append(os.Environ(), "MINIO_ROOT_USER=mac-acceptance", "MINIO_ROOT_PASSWORD=synthetic-mac-acceptance-secret")
 	h.minio = h.start("minio", cmd)
 	client := &http.Client{Timeout: 2 * time.Second}
@@ -208,6 +213,7 @@ func (h *harness) services(fresh bool) {
 		}
 	}
 }
+
 func (h *harness) objects(prefix string) map[string]int64 {
 	output := h.run(5*time.Minute, filepath.Join(h.bin, "fixture"), "bucket-list", "--endpoint", "http://127.0.0.1:19000", "--bucket", "time-machine", "--prefix", prefix)
 	var result struct {
@@ -223,12 +229,14 @@ func (h *harness) objects(prefix string) map[string]int64 {
 	}
 	return objects
 }
+
 func (h *harness) mount() {
 	h.must(os.MkdirAll(h.share, 0o700))
 	h.native("/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine", h.share)
 	h.native("/usr/bin/smbutil", "statshares", "-a")
 	h.native("/sbin/mount")
 }
+
 func (h *harness) createTree() {
 	h.must(absent(h.proof))
 	for _, path := range []string{"nested/deeper", "empty", "nested/empty"} {
@@ -240,12 +248,14 @@ func (h *harness) createTree() {
 	h.must(os.Mkdir(filepath.Join(h.transfer, "reference"), 0o700))
 	h.manifest(h.proof, filepath.Join(h.transfer, "reference/tree.jsonl"))
 }
+
 func (h *harness) randomFile(name string, size int64) {
-	file, err := os.OpenFile(filepath.Join(h.proof, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := os.OpenFile(filepath.Join(h.proof, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The name is one of the fixed test fixture files.
 	h.must(err)
 	_, err = io.CopyN(file, rand.Reader, size)
 	h.must(errors.Join(err, file.Close()))
 }
+
 func (h *harness) manifest(tree, path string) helpers.Counts {
 	rows, counts, err := helpers.Manifest(tree)
 	h.must(err)

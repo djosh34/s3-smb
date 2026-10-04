@@ -4,6 +4,7 @@
 package macos
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ func (h *harness) build() {
 	// go test starts in the package directory, not the checkout root.
 	root, err := filepath.Abs("../..")
 	h.must(err)
-	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile"))
+	dockerfile, err := os.ReadFile(filepath.Join(root, "test/Dockerfile")) //nolint:gosec // Read the checked-out test pin, not an external input.
 	h.must(err)
 	release, commit, err := helpers.MinIOPin(string(dockerfile))
 	h.must(err)
@@ -37,21 +38,10 @@ func (h *harness) build() {
 	source, err := os.MkdirTemp(h.work, "minio-source-")
 	h.must(err)
 	defer func() { h.must(os.RemoveAll(source)) }()
-	build := func(dir string, args ...string) string {
-		output, err := h.command(h.ctx, 20*time.Minute, dir, args...)
-		h.must(err)
-		return output
-	}
-	build(root, "go", "build", "-p", "2", "-tags", tags, "-o", filepath.Join(h.bin, "s3-smb"), ".")
-	h.native(filepath.Join(h.bin, "s3-smb"), "help")
-	h.native(filepath.Join(h.bin, "s3-smb"), "version")
-	metadata := h.native("go", "version", "-m", filepath.Join(h.bin, "s3-smb"))
-	h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(metadata), 0o600))
-	build(source, "git", "init")
-	build(source, "git", "remote", "add", "origin", "https://github.com/minio/minio.git")
-	build(source, "git", "fetch", "--depth", "1", "origin", commit)
-	build(source, "git", "checkout", "--detach", "FETCH_HEAD")
-	build(source, "go", "build", "-p", "2", "-o", filepath.Join(h.bin, "minio"), ".")
-	h.native("go", "version", "-m", filepath.Join(h.bin, "minio"))
-	build(root, "go", "build", "-p", "2", "-o", filepath.Join(h.bin, "fixture"), "./test/macos/fixture")
+	metadata, err := helpers.Build(h.ctx, root, h.bin, source, os.Getenv("MAC_SERVER"), commit,
+		func(ctx context.Context, dir string, args ...string) (string, error) {
+			return h.command(ctx, 20*time.Minute, dir, args...)
+		})
+	h.must(err)
+	h.must(os.WriteFile(filepath.Join(h.evidence, "native-build.txt"), []byte(metadata), 0o600)) //nolint:gosec // The path is the run-owned evidence directory; compiler output is only file content.
 }

@@ -18,67 +18,69 @@ func must(t *testing.T, err error) {
 
 func TestManifest(t *testing.T) {
 	for _, change := range []string{"none", "content", "missing", "extra", "empty", "type", "symlink", "metadata", "outside"} {
-		t.Run(change, func(t *testing.T) {
-			base := t.TempDir()
-			tree := filepath.Join(base, "tree")
-			for _, path := range []string{"nested/deeper", "nested/empty", "empty"} {
-				must(t, os.MkdirAll(filepath.Join(tree, path), 0o700))
-			}
-			for path, value := range map[string]string{"file": "independent test data\x00", "nested/deeper/file": "nested test data", "zero": ""} {
-				must(t, os.WriteFile(filepath.Join(tree, path), []byte(value), 0o600))
-			}
-			before, counts, err := Manifest(tree)
-			must(t, err)
-			if counts.Entries != 8 || counts.Files != 3 || counts.Bytes != 38 {
-				t.Fatalf("counts: %+v", counts)
-			}
-			if before[0].Path != "." || before[0].Type != "directory" {
-				t.Fatal(before)
-			}
-			switch change {
-			case "none":
-			case "content":
-				must(t, os.WriteFile(filepath.Join(tree, "nested/deeper/file"), []byte("changed"), 0o600))
-			case "missing":
-				must(t, os.Remove(filepath.Join(tree, "file")))
-			case "extra":
-				must(t, os.WriteFile(filepath.Join(tree, "extra"), []byte("extra"), 0o600))
-			case "empty":
-				must(t, os.Remove(filepath.Join(tree, "nested/empty")))
-			case "type":
-				must(t, os.Remove(filepath.Join(tree, "empty")))
-				must(t, os.WriteFile(filepath.Join(tree, "empty"), nil, 0o600))
-			case "symlink":
-				must(t, os.Remove(filepath.Join(tree, "empty")))
-				must(t, os.Symlink(base, filepath.Join(tree, "empty")))
-			case "metadata":
-				must(t, os.Chmod(filepath.Join(tree, "file"), 0o400))
-			case "outside":
-				must(t, os.WriteFile(filepath.Join(base, "ordinary-system-file"), []byte("not test data"), 0o600))
-			}
-			after, _, err := Manifest(tree)
-			must(t, err)
-			slices.Reverse(after)
-			path := filepath.Join(base, "manifest.jsonl")
-			must(t, WriteManifest(path, after))
-			loaded, err := ReadManifest(path)
-			must(t, err)
-			diff, err := Compare(before, loaded)
-			must(t, err)
-			equal := change == "none" || change == "metadata" || change == "outside"
-			if (len(diff) == 0) != equal {
-				t.Fatalf("differences: %+v", diff)
-			}
-			if change == "content" && (len(diff) != 1 || diff[0].Path != "nested/deeper/file") {
-				t.Fatal(diff)
-			}
-			if change == "symlink" && (len(diff) != 1 || !strings.HasPrefix(diff[0].Actual.Type, "unexpected:")) {
-				t.Fatal(diff)
-			}
-			if err := WriteManifest(path, after); err == nil {
-				t.Fatal("overwrote evidence")
-			}
-		})
+		t.Run(change, func(t *testing.T) { testManifest(t, change) })
+	}
+}
+
+func testManifest(t *testing.T, change string) {
+	base := t.TempDir()
+	tree := filepath.Join(base, "tree")
+	for _, path := range []string{"nested/deeper", "nested/empty", "empty"} {
+		must(t, os.MkdirAll(filepath.Join(tree, path), 0o700))
+	}
+	for path, value := range map[string]string{"file": "independent test data\x00", "nested/deeper/file": "nested test data", "zero": ""} {
+		must(t, os.WriteFile(filepath.Join(tree, path), []byte(value), 0o600))
+	}
+	before, counts, err := Manifest(tree)
+	must(t, err)
+	if counts.Entries != 8 || counts.Files != 3 || counts.Bytes != 38 {
+		t.Fatalf("counts: %+v", counts)
+	}
+	if before[0].Path != "." || before[0].Type != "directory" {
+		t.Fatal(before)
+	}
+	switch change {
+	case "none":
+	case "content":
+		must(t, os.WriteFile(filepath.Join(tree, "nested/deeper/file"), []byte("changed"), 0o600))
+	case "missing":
+		must(t, os.Remove(filepath.Join(tree, "file")))
+	case "extra":
+		must(t, os.WriteFile(filepath.Join(tree, "extra"), []byte("extra"), 0o600))
+	case "empty":
+		must(t, os.Remove(filepath.Join(tree, "nested/empty")))
+	case "type":
+		must(t, os.Remove(filepath.Join(tree, "empty")))
+		must(t, os.WriteFile(filepath.Join(tree, "empty"), nil, 0o600))
+	case "symlink":
+		must(t, os.Remove(filepath.Join(tree, "empty")))
+		must(t, os.Symlink(base, filepath.Join(tree, "empty")))
+	case "metadata":
+		must(t, os.Chmod(filepath.Join(tree, "file"), 0o400))
+	case "outside":
+		must(t, os.WriteFile(filepath.Join(base, "ordinary-system-file"), []byte("not test data"), 0o600))
+	}
+	after, _, err := Manifest(tree)
+	must(t, err)
+	slices.Reverse(after)
+	path := filepath.Join(base, "manifest.jsonl")
+	must(t, WriteManifest(path, after))
+	loaded, err := ReadManifest(path)
+	must(t, err)
+	diff, err := Compare(before, loaded)
+	must(t, err)
+	equal := change == "none" || change == "metadata" || change == "outside"
+	if (len(diff) == 0) != equal {
+		t.Fatalf("differences: %+v", diff)
+	}
+	if change == "content" && (len(diff) != 1 || diff[0].Path != "nested/deeper/file") {
+		t.Fatal(diff)
+	}
+	if change == "symlink" && (len(diff) != 1 || !strings.HasPrefix(diff[0].Actual.Type, "unexpected:")) {
+		t.Fatal(diff)
+	}
+	if err := WriteManifest(path, after); err == nil {
+		t.Fatal("overwrote evidence")
 	}
 }
 

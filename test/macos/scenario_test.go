@@ -31,7 +31,8 @@ func (h *harness) baseline() map[string]any {
 	h.createTree()
 	h.checkExclusions()
 	h.startBackup("baseline")
-	completed := h.completeBackup("baseline")
+	completed, err := h.completeBackup("baseline")
+	h.must(err)
 	h.must(h.detach(h.ctx))
 	h.mount()
 	selected := h.remoteBackup("baseline", "")
@@ -40,11 +41,13 @@ func (h *harness) baseline() map[string]any {
 	h.metadata(completed, "baseline")
 	return map[string]any{"baseline": filepath.Base(selected)}
 }
+
 func (h *harness) stopDaemon(abrupt bool) {
 	p := h.daemon
 	h.daemon = nil
 	h.must(h.stop(p, abrupt, 45*time.Second))
 }
+
 func (h *harness) stopClient() {
 	output, err := h.command(h.ctx, time.Minute, "", "/usr/bin/tmutil", "stopbackup")
 	h.t.Log("stopbackup", output, err)
@@ -69,6 +72,7 @@ func (h *harness) stopClient() {
 	}
 	h.must(h.detach(h.ctx))
 }
+
 func (h *harness) copying() string {
 	h.startBackup("interrupted")
 	deadline := time.Now().Add(30 * time.Minute)
@@ -86,6 +90,7 @@ func (h *harness) copying() string {
 	h.t.Fatal("Time Machine did not reach Copying in 30 minutes")
 	return ""
 }
+
 func (h *harness) cold() {
 	if h.daemon != nil {
 		h.stopDaemon(false)
@@ -93,6 +98,7 @@ func (h *harness) cold() {
 	h.must(os.RemoveAll(h.local))
 	h.startDaemon("recover")
 }
+
 func (h *harness) scenario(name string) map[string]any {
 	switch name {
 	case "server-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
@@ -175,7 +181,9 @@ func (h *harness) scenario(name string) map[string]any {
 	for _, label := range []string{"resumed", "resumed-retry"} {
 		h.startBackup(label)
 		// Time Machine may return 0 without completing a backup. The native list is the gate.
-		h.completeBackup(label)
+		if _, err := h.completeBackup(label); err != nil {
+			h.event("resumed-backup-failed", map[string]any{"label": label, "error": err.Error()})
+		}
 		h.must(h.detach(h.ctx))
 		h.mount()
 		latest = h.remoteBackup(label, "")
@@ -192,6 +200,7 @@ func (h *harness) scenario(name string) map[string]any {
 	h.must(h.detach(h.ctx))
 	return result
 }
+
 func (h *harness) recoverStore() map[string]any {
 	h.must(absent(h.local))
 	h.must(absent(filepath.Join(h.work, "objects")))
