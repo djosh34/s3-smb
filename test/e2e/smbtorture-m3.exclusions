@@ -1,0 +1,28 @@
+# Exact ID<TAB>reason documented in smbtorture-m3.md.
+# M4 deferrals are not unsupported-feature claims.
+smb2.setinfo.setinfo	position-mode-acls-eas
+smb2.getinfo.complex.complex	windows-eas-acls-shortnames
+smb2.getinfo.fsinfo.fsinfo	quota-objectid-sector
+smb2.getinfo.qfs_buffercheck.qfs_buffercheck	quota-sector
+smb2.getinfo.qfile_buffercheck.qfile_buffercheck	windows-eas-shortnames-compression
+smb2.getinfo.qsec_buffercheck.qsec_buffercheck	acls
+smb2.getinfo.normalized.normalized	normalized-case-dialect
+smb2.getinfo.getinfo_access.getinfo_access	windows-eas-acls-shortnames
+smb2.read.position.position	position-policy
+smb2.read.bug14607.bug14607	samba-private-ioctl
+smb2.dir.one.one	windows-eas-shortnames
+smb2.dir.file-index.file-index	optional-file-index
+smb2.compound.related3.related3	objectids
+smb2.compound.related4.related4	acls-objectids
+smb2.compound.related6.related6	compound-error-policy
+smb2.compound.related7.related7	change-notify
+smb2.compound.related8.related8	change-notify
+smb2.compound.related9.related9	change-notify
+smb2.compound.interim1.interim1	change-notify
+smb2.compound.interim2.interim2	change-notify
+smb2.compound.compound-break.compound-break	oplocks
+smb2.compound.compound-padding.compound-padding	m4-streams
+smb2.rename.share_delete_and_delete_access.share_delete_and_delete_access	m4-parent-sharing
+smb2.rename.no_share_delete_but_delete_access.no_share_delete_but_delete_access	m4-parent-sharing
+smb2.rename.share_delete_no_delete_access.share_delete_no_delete_access	m4-parent-sharing
+smb2.rename.no_share_delete_no_delete_access.no_share_delete_no_delete_access	m4-parent-sharing
