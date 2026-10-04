@@ -29,6 +29,7 @@ func FuzzServerStream(f *testing.F) {
 			t.Skip("stream exceeds corpus limit")
 		}
 		options := testOptions(t)
+		// CREATE and I/O mutations must not affect the next input.
 		options.Storage = smbtest.NewStorage(t)
 		server, err := New(options)
 		if err != nil {
