@@ -22,7 +22,7 @@ func normalizeFileAttributes(attributes uint32, directory bool) uint32 {
 }
 
 func setCreateAttributes(ctx context.Context, storage smb.Storage, create wire.CreateRequest, resolved smb.Resolved, action uint32) error {
-	if action == 1 || create.FileAttributes == 0 {
+	if action == 1 || action != 0 && create.FileAttributes == 0 {
 		return nil
 	}
 	attributes := create.FileAttributes

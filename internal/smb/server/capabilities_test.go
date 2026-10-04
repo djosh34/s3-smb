@@ -40,11 +40,11 @@ func (client *capabilityClient) exchange(t *testing.T, command wire.Command, bod
 		SessionID: client.session.SessionID, TreeID: client.session.TreeID,
 	}, Body: body}
 	client.next++
-	responses := exchange(client.ctx, t, client.client, message)
-	if len(responses) != 1 || responses[0].Header.Status != status {
-		t.Fatalf("%v response = %+v, want status %#x", command, responses, status)
+	response := ioRoundTrip(client.ctx, t, client.client, message)
+	if response.Header.Status != status {
+		t.Fatalf("%v response = %+v, want status %#x", command, response, status)
 	}
-	return responses[0]
+	return response
 }
 
 func (client *capabilityClient) create(t *testing.T, request wire.CreateRequest, status smb.Status) wire.CreateResponse {
