@@ -42,7 +42,7 @@ func handleClose(ctx context.Context, request RequestContext, message wire.Messa
 	}
 	closeErr := request.Cleanup(ctx, []state.CloseAction{action})
 	if cleanupErr := errors.Join(removeErr, queryErr, closeErr); cleanupErr != nil {
-		return reply{}, cleanupErr
+		return reply{fileID: wire.FileID(action.FileID)}, cleanupErr
 	}
 	body, err := wire.EncodeCloseResponse(response)
 	return reply{body: body, fileID: wire.FileID(action.FileID)}, err
