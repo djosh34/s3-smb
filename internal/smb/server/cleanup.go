@@ -18,6 +18,9 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 }
 
 func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction) error {
+	if action.Remove {
+		defer server.options.State.CompleteDelete(action.Object)
+	}
 	var result error
 	if action.Handle != nil {
 		server.drainOpen(action.FileID)

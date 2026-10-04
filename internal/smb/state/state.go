@@ -121,6 +121,7 @@ type Lease struct {
 // never cross stream keys. DeletePending rejects new opens. DeleteName is the
 // name selected for deletion, not the name of the last closing handle. For a
 // renamed base, the close path resolves PathOf and verifies the inode again.
+// DeletePending remains set until CompleteDelete reports the cleanup outcome.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
 // Records are removed only after opens, reservations, locks and leases are gone.
@@ -244,6 +245,7 @@ type openEntry struct {
 type objectEntry struct {
 	ObjectRecord
 	deleteCommitted bool
+	removalPending  bool
 }
 
 type createIdentity struct {
