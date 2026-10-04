@@ -80,8 +80,6 @@ linters:
       - '^internal/config/[^/]+\.go$'
       - '^internal/logging/[^/]+\.go$'
       - '^internal/storage/[^/]+\.go$'
-      - '^test/e2e/[^/]+\.go$'
-      - '^test/macos/fixture/[^/]+\.go$'
 
 formatters:
   enable:

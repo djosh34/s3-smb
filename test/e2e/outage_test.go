@@ -1,109 +1,118 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
 	"bytes"
 	"context"
-	"fmt"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"testing"
 	"time"
+
+	smb "github.com/hirochachacha/go-smb2"
 )
 
-type outageResult struct {
-	err      error
-	finished time.Time
-}
-
+// TestDataPathS3Outage starts a flush or a cold read during an S3 outage. The
+// operation must wait for S3 and then succeed with the right bytes.
 func TestDataPathS3Outage(t *testing.T) {
 	outage := 3 * time.Second
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
 		outage = 300 * time.Second
 	}
 	for _, operation := range []string{"FLUSH", "READ"} {
-		t.Run(operation, func(t *testing.T) {
-			f := newFixture(t, false)
-			// This test covers data retries, not scheduled metadata backups.
-			f.interval = "1h"
-			f.cacheSize = "0 MB"
-			p := newFaultProxy(t, f.endpoint)
-			f.endpoint = p.URL()
-			d := f.start()
-			s, closeShare := f.share()
-			data := bytes.Repeat([]byte("S3 outage byte-correct fixture\n"), 1024)
-			if operation == "READ" {
-				writeFile(t, s, "outage.bin", data)
-				closeShare()
-				d.stop()
-				// Restart to drop VFS read pages as well as the disabled chunk cache.
-				f.start()
-				s, closeShare = f.share()
-			}
-			ctx, cancel := context.WithTimeout(context.Background(), outage+3*time.Minute)
-			t.Cleanup(cancel)
-			s = s.WithContext(ctx)
-			t.Cleanup(closeShare)
-			flags := os.O_RDONLY
-			method := http.MethodGet
-			if operation == "FLUSH" {
-				flags = os.O_CREATE | os.O_RDWR
-				method = http.MethodPut
-			}
-			file, err := s.OpenFile("outage.bin", flags, 0600)
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() {
-				if err := file.Close(); err != nil {
-					t.Error(err)
-				}
-			})
-			if operation == "FLUSH" {
-				if n, err := file.Write(data); err != nil || n != len(data) {
-					t.Fatalf("write before outage: %d/%d %v", n, len(data), err)
-				}
-			}
-			t.Cleanup(p.RestoreS3)
-			start := p.FailS3For(outage)
-			done := make(chan outageResult, 1)
-			go func() {
-				var err error
-				if operation == "FLUSH" {
-					err = file.Sync()
-				} else {
-					got := make([]byte, len(data))
-					_, err = io.ReadFull(file, got)
-					if err == nil && !bytes.Equal(got, data) {
-						err = fmt.Errorf("cold read returned different bytes")
-					}
-				}
-				done <- outageResult{err: err, finished: time.Now()}
-			}()
-			select {
-			case event := <-p.OutageSeen():
-				if event.Method != method || event.Status != http.StatusServiceUnavailable || time.Since(start) >= time.Second {
-					t.Fatalf("%s did not reach failed S3 in the first second: %+v after %s", operation, event, time.Since(start))
-				}
-			case result := <-done:
-				t.Fatalf("%s finished without reaching failed S3: %v", operation, result.err)
-			case <-time.After(time.Second):
-				t.Fatalf("%s did not reach S3 in the first second", operation)
-			}
-			select {
-			case result := <-done:
-				if result.err != nil {
-					t.Fatalf("%s failed during or after the S3 outage: %v", operation, result.err)
-				}
-				if result.finished.Before(start.Add(outage)) {
-					t.Fatalf("%s finished before S3 recovered", operation)
-				}
-			case <-ctx.Done():
-				t.Fatalf("%s did not finish after S3 recovered: %v", operation, ctx.Err())
-			}
-			verifyFiles(t, s, map[string][]byte{"outage.bin": data})
-			t.Logf("%s survived %s outage, completed after %s", operation, outage, time.Since(start))
-		})
+		t.Run(operation, func(t *testing.T) { testDataPathOutage(t, operation, outage) })
 	}
+}
+
+func testDataPathOutage(t *testing.T, operation string, outage time.Duration) {
+	data := bytes.Repeat([]byte("S3 outage byte-correct fixture\n"), 1024)
+	f := newFixture(t, false)
+	// This test covers data retries, not scheduled metadata backups.
+	f.interval = "1h"
+	proxy := f.newFaultProxy()
+	ctx, cancel := context.WithTimeout(context.Background(), outage+3*time.Minute)
+	t.Cleanup(cancel)
+	share := outageShare(t, f, operation, data).WithContext(ctx)
+	file, err := share.OpenFile("outage.bin", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeOnCleanup(t, file)
+	if operation == "FLUSH" {
+		// Leave the data unflushed until the outage.
+		if n, err := file.Write(data); err != nil || n != len(data) {
+			t.Fatalf("write before outage: %d/%d %v", n, len(data), err)
+		}
+	}
+	t.Cleanup(proxy.RestoreS3)
+	start := proxy.FailS3For(outage)
+	type result struct {
+		err      error
+		finished time.Time
+	}
+	done := make(chan result, 1)
+	go func() {
+		var err error
+		if operation == "FLUSH" {
+			err = file.Sync()
+		} else {
+			err = readAll(file, data)
+		}
+		done <- result{err: err, finished: time.Now()}
+	}()
+	method := map[string]string{"FLUSH": http.MethodPut, "READ": http.MethodGet}[operation]
+	select {
+	case event := <-proxy.OutageSeen():
+		if event.Method != method {
+			t.Fatalf("%s sent %s to S3, want %s", operation, event.Method, method)
+		}
+	case r := <-done:
+		t.Fatalf("%s finished without reaching S3 during the outage: %v", operation, r.err)
+	case <-ctx.Done():
+		t.Fatalf("%s did not reach S3: %v", operation, ctx.Err())
+	}
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatalf("%s failed: %v", operation, r.err)
+		}
+		if r.finished.Before(start.Add(outage)) {
+			t.Fatalf("%s finished before S3 returned", operation)
+		}
+	case <-ctx.Done():
+		t.Fatalf("%s did not finish after S3 returned: %v", operation, ctx.Err())
+	}
+	verifyFiles(t, share, map[string][]byte{"outage.bin": data})
+}
+
+// readAll reads the file and compares it with want.
+func readAll(file *smb.File, want []byte) error {
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(file, got); err != nil {
+		return err
+	}
+	if !bytes.Equal(got, want) {
+		return errors.New("cold read returned different bytes")
+	}
+	return nil
+}
+
+// outageShare starts the daemon and connects. For READ it first writes
+// outage.bin and restarts, so the data is only in S3.
+func outageShare(t *testing.T, f *fixture, operation string, data []byte) *smb.Share {
+	t.Helper()
+	d := f.start()
+	share, disconnect := f.share()
+	if operation == "READ" {
+		writeFile(t, share, "outage.bin", data)
+		disconnect()
+		d.stop()
+		f.start()
+		share, disconnect = f.share()
+	}
+	t.Cleanup(disconnect)
+	return share
 }

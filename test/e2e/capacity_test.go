@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
@@ -11,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/storage"
 )

@@ -50,7 +50,7 @@ case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
   "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
-    [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
+    [[ ${S3_SMB_SAMBA:-} == 1 && ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
