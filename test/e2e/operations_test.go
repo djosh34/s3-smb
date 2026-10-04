@@ -155,6 +155,9 @@ func TestResourceForkOffsetsAndResize(t *testing.T) {
 }
 
 func TestMissingDataIsSMBError(t *testing.T) {
+	if os.Getenv("S3_SMB_CHECK_MODE") != "gate" {
+		t.Skip("permanent missing reads exhaust at least 361.829s of retries; run gate mode")
+	}
 	f := newFixture(t, false)
 	d := f.start()
 	s, close := f.share()
@@ -183,6 +186,9 @@ func TestMissingDataIsSMBError(t *testing.T) {
 	f.freshLocal()
 	d = f.start()
 	s, close = f.share()
+	readCtx, readCancel := context.WithTimeout(context.Background(), 7*time.Minute)
+	defer readCancel()
+	s = s.WithContext(readCtx)
 	got, err := s.ReadFile("missing.bin")
 	if err == nil {
 		t.Fatalf("missing referenced data returned successful %d-byte file", len(got))
