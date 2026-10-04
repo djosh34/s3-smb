@@ -3,40 +3,63 @@ package server
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
 type parentGuard struct {
-	mu   sync.Mutex
+	held chan struct{}
 	refs uint64
 }
 
-// lockParent locks namespace operations in one parent until the returned unlock.
-func lockParent(request RequestContext, parent smb.Inode) func() {
-	server := request.server
+func (server *Server) parentGuard(parent smb.Inode) *parentGuard {
 	server.namespaceMu.Lock()
+	defer server.namespaceMu.Unlock()
 	if server.parents == nil {
 		server.parents = make(map[smb.Inode]*parentGuard)
 	}
 	guard := server.parents[parent]
 	if guard == nil {
-		guard = &parentGuard{}
+		guard = &parentGuard{held: make(chan struct{}, 1)}
 		server.parents[parent] = guard
 	}
 	guard.refs++
-	server.namespaceMu.Unlock()
-	guard.mu.Lock()
+	return guard
+}
+
+func (server *Server) dropParent(parent smb.Inode, guard *parentGuard) {
+	server.namespaceMu.Lock()
+	defer server.namespaceMu.Unlock()
+	guard.refs--
+	if guard.refs == 0 {
+		delete(server.parents, parent)
+	}
+}
+
+// lockParent locks namespace operations in one parent until the returned unlock.
+// Handlers may take this guard while holding useOpen. Cleanup must never wait
+// for active references while holding a namespace guard.
+func lockParent(request RequestContext, parent smb.Inode) func() {
+	guard := request.server.parentGuard(parent)
+	guard.held <- struct{}{}
 	return func() {
-		server.namespaceMu.Lock()
-		guard.refs--
-		if guard.refs == 0 {
-			delete(server.parents, parent)
-		}
-		guard.mu.Unlock()
-		server.namespaceMu.Unlock()
+		<-guard.held
+		request.server.dropParent(parent, guard)
+	}
+}
+
+func lockParentContext(ctx context.Context, request RequestContext, parent smb.Inode) (func(), error) {
+	guard := request.server.parentGuard(parent)
+	select {
+	case guard.held <- struct{}{}:
+		return func() {
+			<-guard.held
+			request.server.dropParent(parent, guard)
+		}, nil
+	case <-ctx.Done():
+		request.server.dropParent(parent, guard)
+		return nil, ctx.Err()
 	}
 }
 
@@ -67,7 +90,14 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 		if err != nil {
 			return smb.Resolved{}, nil, err
 		}
-		unlock := lockParent(request, discovered.Name.Parent)
+		unlock, err := lockParentContext(ctx, request, discovered.Name.Parent)
+		if err != nil {
+			return smb.Resolved{}, nil, err
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			unlock()
+			return smb.Resolved{}, nil, ctxErr
+		}
 		selected, err := request.Storage.Lookup(ctx, path)
 		if err != nil {
 			unlock()
@@ -80,8 +110,9 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 	}
 }
 
-// closeOpen holds the current parent guard from table removal through cleanup.
-// Callers release their own useOpen reference before calling it.
+// closeOpen guards table removal, then unlocks before draining active references.
+// Cleanup locks the current parent again for deletion. Delete-pending must cover
+// that gap (#370). Callers release their own useOpen reference before calling it.
 func closeOpen(ctx context.Context, request RequestContext, id state.FileID) error {
 	open, status := request.Opens.Find(id, request.Binding())
 	if status != smb.StatusSuccess {
@@ -108,8 +139,7 @@ func closeOpen(ctx context.Context, request RequestContext, id state.FileID) err
 			unlock()
 			return smb.ErrInvalidHandle
 		}
-		err = request.server.cleanupAction(context.WithoutCancel(ctx), action, &selected)
 		unlock()
-		return err
+		return request.server.cleanup(context.WithoutCancel(ctx), []state.CloseAction{action})
 	}
 }
