@@ -1,5 +1,5 @@
 name: Time Machine end-to-end
-# Build the dispatch ref, then run backup and restore, M4, failure scenarios or discovery.
+# Build the dispatch ref, then run backup and restore, M4, interruption scenarios or discovery.
 on:
   workflow_dispatch:
     inputs:
@@ -24,7 +24,7 @@ on:
       scenarios:
         description: Failed-backup scenarios to run, as a JSON list
         required: true
-        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss"]'
+        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage"]'
         type: string
 permissions:
   contents: read
@@ -227,6 +227,7 @@ jobs:
     env:
       MAC_PHASE: scenario
       MAC_SCENARIO: ${{ matrix.scenario }}
+      MAC_SERVER: ${{ (matrix.scenario == 'network-drop' || matrix.scenario == 'network-outage') && 'smbnext' || inputs.server }}
     steps:
       - name: Set task paths
         run: |
