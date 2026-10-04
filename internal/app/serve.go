@@ -71,7 +71,7 @@ func (r *resources) close() error {
 		}
 	}
 	if r.serveDone != nil {
-		if err := <-r.serveDone; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, net.ErrClosed) {
+		if err := unexpectedServeError(<-r.serveDone); err != nil {
 			return fmt.Errorf("SMB serving failed during shutdown; state lock retained: %w", err)
 		}
 	}
@@ -356,7 +356,8 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		return fmt.Errorf("metadata backup protection failed; stopping writable SMB: %w", err)
 	case err = <-r.serveDone:
-		if ctx.Err() != nil {
+		err = unexpectedServeError(err)
+		if err == nil && ctx.Err() != nil {
 			return nil
 		}
 		if err == nil {
@@ -364,6 +365,21 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 		}
 		return fmt.Errorf("SMB serving failed: %w", err)
 	}
+}
+
+// unexpectedServeError removes only bare shutdown signals from joined errors.
+func unexpectedServeError(err error) error {
+	if err == nil || err == context.Canceled || err == net.ErrClosed {
+		return nil
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		var result error
+		for _, cause := range joined.Unwrap() {
+			result = errors.Join(result, unexpectedServeError(cause))
+		}
+		return result
+	}
+	return err
 }
 
 func (r *resources) startSMB(ctx context.Context, c config.SMBConfig, metadataPath string) error {

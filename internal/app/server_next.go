@@ -25,7 +25,7 @@ func newSMBServer(runtime *storage.Runtime, c config.SMBConfig, metadataPath str
 	adapter, err := smbfs.New(smbfs.Options{
 		Filesystem: runtime.FS, Config: runtime.Config, Store: runtime.Store,
 		Barrier: barrier, MetadataPath: metadataPath,
-		Capacity: uint64(runtime.Config.Format.Capacity), ReadOnly: c.ReadOnly,
+		Capacity: runtime.Config.Format.Capacity, ReadOnly: c.ReadOnly,
 	})
 	if err != nil {
 		return nil, nil, err

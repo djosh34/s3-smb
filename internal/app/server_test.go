@@ -4,6 +4,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"path/filepath"
 	"testing"
@@ -109,6 +110,41 @@ type shutdownAdapter struct{ called bool }
 func (a *shutdownAdapter) Shutdown() error {
 	a.called = true
 	return nil
+}
+
+func TestSMBShutdownDoesNotHideJoinedServeError(t *testing.T) {
+	acceptErr := errors.New("accept failed")
+	for _, signal := range []error{context.Canceled, net.ErrClosed} {
+		t.Run(signal.Error(), func(t *testing.T) {
+			done := make(chan error, 1)
+			done <- errors.Join(signal, acceptErr)
+			close(done)
+			r := &resources{serveDone: done}
+			if err := r.close(); !errors.Is(err, acceptErr) {
+				t.Fatalf("lost joined accept error: %v", err)
+			}
+		})
+	}
+}
+
+func TestSMBShutdownAcceptsOnlyExpectedServeErrors(t *testing.T) {
+	for _, err := range []error{nil, context.Canceled, net.ErrClosed, errors.Join(context.Canceled, net.ErrClosed)} {
+		done := make(chan error, 1)
+		done <- err
+		close(done)
+		r := &resources{serveDone: done}
+		if err := r.close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// A wrapped error carries context beyond the shutdown signal.
+	wrapped := fmt.Errorf("accept failed: %w", context.Canceled)
+	done := make(chan error, 1)
+	done <- wrapped
+	close(done)
+	if err := (&resources{serveDone: done}).close(); !errors.Is(err, wrapped) {
+		t.Fatalf("lost wrapped accept error: %v", err)
+	}
 }
 
 func TestSMBShutdownFailureKeepsStorageAndStateLock(t *testing.T) {
