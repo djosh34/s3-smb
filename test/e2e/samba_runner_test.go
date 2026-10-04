@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -29,6 +30,31 @@ func TestParseTortureAllowlist(t *testing.T) {
 			got, err := parseTortureAllowlist(tt.input, listing)
 			if (err != nil) != tt.invalid || !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("got %v, %v; want %v, invalid=%t", got, err, tt.want, tt.invalid)
+			}
+		})
+	}
+}
+
+func TestRequireRaceSmbnextBuild(t *testing.T) {
+	for _, tt := range []struct {
+		name, race, tags string
+		valid            bool
+	}{
+		{name: "race-enabled new server", race: "true", tags: "smbnext", valid: true},
+		{name: "multiple tags", race: "true", tags: "other,smbnext", valid: true},
+		{name: "plain default build"},
+		{name: "race-enabled old server", race: "true"},
+		{name: "plain new server", tags: "smbnext"},
+		{name: "race disabled", race: "false", tags: "smbnext"},
+		{name: "tag substring", race: "true", tags: "not-smbnext"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			err := requireRaceSmbnextBuild([]debug.BuildSetting{
+				{Key: "-race", Value: tt.race},
+				{Key: "-tags", Value: tt.tags},
+			})
+			if (err == nil) != tt.valid {
+				t.Fatalf("got %v; valid=%t", err, tt.valid)
 			}
 		})
 	}

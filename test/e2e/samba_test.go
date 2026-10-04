@@ -2,11 +2,14 @@ package e2e
 
 import (
 	"context"
+	"debug/buildinfo"
 	_ "embed"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
+	"runtime/debug"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -100,10 +103,35 @@ func runSamba(ctx context.Context, run sambaCommand, addr, share, authFile, allo
 	return nil
 }
 
+// The tagged app constructor selects internal/smb/server. Check the executable,
+// not the test binary, so a plain or old-server daemon cannot pass the race run.
+func requireRaceSmbnextBuild(settings []debug.BuildSetting) error {
+	var race, tags string
+	for _, setting := range settings {
+		switch setting.Key {
+		case "-race":
+			race = setting.Value
+		case "-tags":
+			tags = setting.Value
+		}
+	}
+	if race != "true" || !slices.Contains(strings.Split(tags, ","), "smbnext") {
+		return fmt.Errorf("Samba daemon must be built with -race -tags smbnext; got -race=%q -tags=%q", race, tags)
+	}
+	return nil
+}
+
 func TestSambaInterop(t *testing.T) {
 	binary := os.Getenv("S3_SMB_SAMBA_BINARY")
 	if binary == "" {
 		t.Skip("needs the smbnext daemon and Samba in the Linux integration run")
+	}
+	info, err := buildinfo.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := requireRaceSmbnextBuild(info.Settings); err != nil {
+		t.Fatal(err)
 	}
 	f := newFixture(t, false)
 	f.binary = binary

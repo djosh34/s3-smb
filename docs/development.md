@@ -144,7 +144,9 @@ all local state, including from a metadata backup taken while files were being
 written.
 
 The Docker step also builds a race-enabled `smbnext` daemon and runs
-`TestSambaInterop`. smbclient authenticates and connects to `TimeMachine` with
+`TestSambaInterop` with `GORACE=halt_on_error=1`. The test checks the daemon's
+build information for `-race` and the `smbnext` tag before starting it.
+smbclient authenticates and connects to `TimeMachine` with
 SMB 3.1.1 and encryption, then quits without listing files. The smbtorture runner
 checks tool versions, validates `test/e2e/smbtorture.allowlist` against `--list`,
 and runs each exact test ID separately. A failure, skip or missing success fails

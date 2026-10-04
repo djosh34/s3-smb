@@ -22,5 +22,5 @@ go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...
 
 echo '== Samba checks against smbnext =='
 go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .
-S3_SMB_SAMBA_BINARY=/tmp/s3-smb-next \
+GORACE=halt_on_error=1 S3_SMB_SAMBA_BINARY=/tmp/s3-smb-next \
   go test -race -shuffle=on -count=1 -timeout=10m -run '^TestSambaInterop$' ./test/e2e

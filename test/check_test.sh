@@ -50,7 +50,7 @@ case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
   "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
-    [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next ]] ;;
+    [[ ${S3_SMB_SAMBA_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
@@ -293,6 +293,12 @@ run_internal() {
   bash -c 'cd() { builtin cd "$CHECK_TEST_SOURCE"; }; source "$1"' \
     _ "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1
 }
+# Both check modes use the race daemon and stop at the first detected race.
+export S3_SMB_CHECK_MODE=pr
+run_internal
+contains 'go [pr] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
+export S3_SMB_CHECK_MODE=gate
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
