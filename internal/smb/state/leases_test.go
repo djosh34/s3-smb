@@ -49,15 +49,15 @@ func TestLeaseBreakCapturesNotificationAndAcknowledgesWithoutEpoch(t *testing.T)
 				t.Fatal("duplicate break notification")
 			}
 			if test.ack {
-				actions, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, test.target)
+				_, actions, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, test.target)
 				statusIs(t, status, smb.StatusSuccess)
 				if len(actions) != 0 {
 					t.Fatal("non-durable acknowledgement returned cleanup")
 				}
-				_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, test.target)
+				_, _, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, test.target)
 				statusIs(t, status, smb.StatusUnsuccessful)
 			} else {
-				_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
+				_, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
 				statusIs(t, status, smb.StatusUnsuccessful)
 			}
 			if notification.CurrentState != test.current {
@@ -82,17 +82,15 @@ func TestAckBreakChecksIdentityAndSubset(t *testing.T) {
 		state   uint32
 		want    smb.Status
 	}{
-		{binding: state.Binding{SessionID: 2, TreeID: 1}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
-		{binding: state.Binding{SessionID: 1, TreeID: 2}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
 		{binding: binding, client: state.GUID{9}, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
 		{binding: binding, client: req.ClientGUID, key: state.GUID{9}, state: smb.LeaseRead, want: smb.StatusObjectNameNotFound},
 		{binding: binding, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead | smb.LeaseHandle, want: 0xc00000d0},
 		{binding: state.Binding{}, client: req.ClientGUID, key: grant.Lease.Key, state: smb.LeaseRead, want: smb.StatusInvalidParameter},
 	} {
-		_, status := table.AckBreak(test.binding, test.client, test.key, test.state)
+		_, _, status := table.AckBreak(test.binding, test.client, test.key, test.state)
 		statusIs(t, status, test.want)
 	}
-	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
+	_, _, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
 	statusIs(t, status, smb.StatusSuccess)
 }
 
@@ -104,7 +102,7 @@ func TestRejectedAckDoesNotExtendBreakDeadline(t *testing.T) {
 	open := commit(t, table, req, grant)
 	startBreak(t, table, req.Object, smb.LeaseRead|smb.LeaseHandle)
 	*now = now.Add(10 * time.Second)
-	actions, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, grant.Lease.State)
+	_, actions, status := table.AckBreak(binding, req.ClientGUID, open.LeaseKey, grant.Lease.State)
 	statusIs(t, status, 0xc00000d0)
 	if len(actions) != 0 {
 		t.Fatalf("rejected acknowledgment returned cleanup: %+v", actions)
@@ -278,7 +276,7 @@ func TestAckDroppingHClosesDetachedMembers(t *testing.T) {
 	if notification.Binding != second.Binding {
 		t.Fatalf("notification chose detached member: %+v", notification)
 	}
-	actions, status := table.AckBreak(second.Binding, second.ClientGUID, second.LeaseKey, smb.LeaseRead)
+	_, actions, status := table.AckBreak(second.Binding, second.ClientGUID, second.LeaseKey, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 	if len(actions) != 1 || actions[0].Handle != first.Handle {
 		t.Fatalf("ack cleanup: %+v", actions)
@@ -312,7 +310,7 @@ func TestLeaseKeyIsSharedOnlyOnOneObject(t *testing.T) {
 	statusIs(t, table.Abort(token), smb.StatusSuccess)
 	closeOpen(t, table, first)
 	startBreak(t, table, req.Object, smb.LeaseRead)
-	_, status = table.AckBreak(binding, req.ClientGUID, second.LeaseKey, smb.LeaseRead)
+	_, _, status = table.AckBreak(binding, req.ClientGUID, second.LeaseKey, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 	closeOpen(t, table, second)
 	commit(t, table, otherReq, grant)
@@ -324,7 +322,7 @@ func TestLeaseGrantsCannotAcquireConflictingRights(t *testing.T) {
 		rights     state.Rights
 		leaseState uint32
 	}{
-		{name: "read cache with writer", rights: state.RightWrite, leaseState: smb.LeaseRead},
+		{name: "write cache with writer", rights: state.RightWrite, leaseState: smb.LeaseRead | smb.LeaseHandle | smb.LeaseWrite},
 		{name: "write cache with reader", rights: state.RightRead, leaseState: smb.LeaseRead | smb.LeaseHandle | smb.LeaseWrite},
 		{name: "write cache with metadata open", leaseState: smb.LeaseRead | smb.LeaseHandle | smb.LeaseWrite},
 	} {
@@ -366,7 +364,7 @@ func TestConflictCannotCommitUntilLeaseBreakEnds(t *testing.T) {
 	startBreak(t, table, req.Object, 0)
 	_, status = table.Commit(token, otherGrant)
 	statusIs(t, status, smb.StatusSharingViolation)
-	_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
+	_, _, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, 0)
 	statusIs(t, status, smb.StatusSuccess)
 	_, status = table.Commit(token, otherGrant)
 	statusIs(t, status, smb.StatusSuccess)
@@ -385,7 +383,7 @@ func TestPendingLeaseGrantCannotExceedTarget(t *testing.T) {
 	grant.Lease.State = smb.LeaseRead
 	_, status = table.Commit(token, grant)
 	statusIs(t, status, smb.StatusSuccess)
-	_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead)
+	_, _, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 }
 
@@ -399,20 +397,26 @@ func TestBreakTargetOnlyLosesRights(t *testing.T) {
 	if first.Epoch != 0 {
 		t.Fatalf("epoch did not wrap: %d", first.Epoch)
 	}
-	second := startBreak(t, table, req.Object, smb.LeaseRead)
-	if second.CurrentState != grant.Lease.State || second.NewState != smb.LeaseRead || second.Epoch != 1 {
-		t.Fatalf("strengthened break: %+v", second)
+	for _, target := range []uint32{smb.LeaseRead, smb.LeaseRead | smb.LeaseHandle} {
+		if breaks, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, target); len(breaks) != 0 || len(actions) != 0 {
+			t.Fatal("pending break emitted another notification")
+		}
 	}
-	if breaks, actions := table.BreakLeases(req.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead|smb.LeaseHandle); len(breaks) != 0 || len(actions) != 0 {
-		t.Fatal("pending target regained H")
-	}
-	_, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead|smb.LeaseHandle)
-	statusIs(t, status, 0xc00000d0)
-	_, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead)
+	breaks, actions, status := table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead|smb.LeaseHandle)
 	statusIs(t, status, smb.StatusSuccess)
+	if len(actions) != 0 || len(breaks) != 1 || breaks[0].CurrentState != 3 || breaks[0].NewState != 1 || breaks[0].Epoch != first.Epoch {
+		t.Fatalf("queued break regained H or changed epoch: %+v, %+v", breaks, actions)
+	}
+	_, _, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead|smb.LeaseHandle)
+	statusIs(t, status, smb.StatusRequestNotAccepted)
+	breaks, actions, status = table.AckBreak(binding, req.ClientGUID, grant.Lease.Key, smb.LeaseRead)
+	statusIs(t, status, smb.StatusSuccess)
+	if len(breaks) != 0 || len(actions) != 0 {
+		t.Fatal("acknowledged queue returned more work")
+	}
 	last := startBreak(t, table, req.Object, 0)
-	if last.CurrentState != smb.LeaseRead || last.AckRequired {
-		t.Fatalf("R-only break after downgrade: %+v", last)
+	if last.CurrentState != smb.LeaseRead || last.AckRequired || last.Epoch != 1 {
+		t.Fatalf("independent R-only break after downgrade: %+v", last)
 	}
 }
 
@@ -430,7 +434,7 @@ func TestLeaseUpgradeAdvancesServerEpoch(t *testing.T) {
 	if notification.Epoch != 9 || notification.CurrentState != smb.LeaseRead|smb.LeaseHandle {
 		t.Fatalf("upgrade notification: %+v", notification)
 	}
-	_, status := table.AckBreak(second.Binding, second.ClientGUID, second.LeaseKey, 0)
+	_, _, status := table.AckBreak(second.Binding, second.ClientGUID, second.LeaseKey, 0)
 	statusIs(t, status, smb.StatusSuccess)
 }
 
@@ -444,7 +448,7 @@ func TestHandleBreakCanRetainReadAndWriteCaching(t *testing.T) {
 	if notification.CurrentState != smb.LeaseRead|smb.LeaseHandle|smb.LeaseWrite || notification.NewState != smb.LeaseRead|smb.LeaseWrite || !notification.AckRequired {
 		t.Fatalf("handle-only break: %+v", notification)
 	}
-	_, status := table.AckBreak(binding, open.ClientGUID, open.LeaseKey, smb.LeaseRead|smb.LeaseWrite)
+	_, _, status := table.AckBreak(binding, open.ClientGUID, open.LeaseKey, smb.LeaseRead|smb.LeaseWrite)
 	statusIs(t, status, smb.StatusSuccess)
 	found, status := table.Find(open.ID, binding)
 	statusIs(t, status, smb.StatusSuccess)
@@ -457,7 +461,7 @@ func TestHandleBreakCanRetainReadAndWriteCaching(t *testing.T) {
 	}
 }
 
-func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
+func TestAckLeaseLookupDoesNotRequireReconnectedBinding(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
 	grant := durableGrant(req)
@@ -468,9 +472,10 @@ func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
 	table.Disconnect(1)
 	fresh, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusSuccess)
-	_, status = table.AckBreak(binding, req.ClientGUID, open.LeaseKey, smb.LeaseRead)
-	statusIs(t, status, smb.StatusInvalidParameter)
-	_, status = table.AckBreak(fresh.Binding, fresh.ClientGUID, fresh.LeaseKey, smb.LeaseRead)
+	_, status = table.Find(fresh.ID, binding)
+	statusIs(t, status, smb.StatusFileClosed)
+	// Session retirement is validated by the server, not open membership here.
+	_, _, status = table.AckBreak(state.Binding{SessionID: fresh.Binding.SessionID + 1}, fresh.ClientGUID, fresh.LeaseKey, smb.LeaseRead)
 	statusIs(t, status, smb.StatusSuccess)
 }
 

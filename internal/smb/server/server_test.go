@@ -32,14 +32,39 @@ func testOptions(t *testing.T) Options {
 
 func pipeClient(t *testing.T, server *Server) (*smbtest.Client, context.Context) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	return configuredPipeClient(t, server, false)
+}
+
+// corePipeClient supplies identity without authentication or protection. These
+// tests isolate framing and async plumbing; session tests use real Login.
+func corePipeClient(t *testing.T, server *Server) (*smbtest.Client, context.Context) {
+	t.Helper()
+	return configuredPipeClient(t, server, true)
+}
+
+func configuredPipeClient(t *testing.T, server *Server, coreIdentity bool) (*smbtest.Client, context.Context) {
+	t.Helper()
+	return boundedPipeClient(t, server, coreIdentity, 3*time.Second)
+}
+
+func boundedPipeClient(t *testing.T, server *Server, coreIdentity bool, bound time.Duration) (*smbtest.Client, context.Context) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), bound)
 	local, remote := net.Pipe()
 	client, err := smbtest.NewClient(remote)
 	if err != nil {
 		t.Fatal(err)
 	}
+	connCtx, connCancel := context.WithCancel(ctx)
+	connection, err := server.addConnection(connCtx, connCancel, local)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if coreIdentity {
+		connection.sessions[77] = &sessionEntry{identity: Session{SessionID: 77}, active: true, trees: map[uint32]Tree{12: {TreeID: 12, Share: "backup"}}}
+	}
 	done := make(chan error, 1)
-	go func() { done <- server.ServeConn(ctx, local) }()
+	go func() { done <- server.runConnection(connCtx, connection) }()
 	t.Cleanup(func() {
 		if err := client.Close(); err != nil {
 			t.Error(err)
@@ -69,7 +94,7 @@ func exchange(ctx context.Context, t *testing.T, client *smbtest.Client, message
 	return reply.Messages
 }
 
-func echo(t *testing.T, id uint64) wire.Message {
+func echo(t testing.TB, id uint64) wire.Message {
 	t.Helper()
 	body, err := wire.EncodeEchoRequest(wire.EmptyRequest{})
 	if err != nil {

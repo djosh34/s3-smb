@@ -98,6 +98,7 @@ func TestStaleBindingCannotChangeAnOpen(t *testing.T) {
 func TestDeleteGrantChecksSharingBeforeReservation(t *testing.T) {
 	table := newTable(t)
 	deny := requestWithStream(1, "xattr")
+	deny.GrantedAccess = 1
 	deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	commit(t, table, deny, state.Grant{})
 	req := request(1)

@@ -25,6 +25,7 @@ const (
 	StatusInvalidParameter                 Status = 0xc000000d
 	StatusNoSuchFile                       Status = 0xc000000f
 	StatusInvalidDeviceRequest             Status = 0xc0000010
+	StatusInvalidDeviceState               Status = 0xc0000184
 	StatusEndOfFile                        Status = 0xc0000011
 	StatusMoreProcessingRequired           Status = 0xc0000016
 	StatusAccessDenied                     Status = 0xc0000022
@@ -41,6 +42,7 @@ const (
 	StatusDiskFull                         Status = 0xc000007f
 	StatusInsufficientResources            Status = 0xc000009a
 	StatusMediaWriteProtected              Status = 0xc00000a2
+	StatusBadImpersonationLevel            Status = 0xc00000a5
 	StatusFileIsADirectory                 Status = 0xc00000ba
 	StatusNotSupported                     Status = 0xc00000bb
 	StatusBadNetworkName                   Status = 0xc00000cc

@@ -23,8 +23,8 @@ func closeOpen(t *testing.T, table *state.Table, open state.Open) state.CloseAct
 	t.Helper()
 	action, status := table.Close(open.ID, open.Binding)
 	statusIs(t, status, smb.StatusSuccess)
-	if action.Handle != open.Handle {
-		t.Fatal("close lost storage handle")
+	if action.FileID != open.ID || action.Handle != open.Handle {
+		t.Fatal("close lost open identity or storage handle")
 	}
 	_, status = table.Find(open.ID, open.Binding)
 	statusIs(t, status, smb.StatusFileClosed)
@@ -50,6 +50,9 @@ func TestDeletePendingAndClearingIndependentIntent(t *testing.T) {
 	if !action.Remove || action.Object != second.Object || action.Name != name {
 		t.Fatalf("last close cleanup = %+v", action)
 	}
+	_, status = table.Reserve(request(1))
+	statusIs(t, status, smb.StatusDeletePending)
+	table.CompleteDelete(action.Object)
 	commit(t, table, request(1), state.Grant{})
 }
 
@@ -58,6 +61,7 @@ func TestCreateDeleteOnCloseBecomesPendingOnlyAtClose(t *testing.T) {
 	first := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
 	second := commit(t, table, request(1), state.Grant{})
 	denyDelete := request(1)
+	denyDelete.GrantedAccess = 1
 	denyDelete.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	_, status := table.Reserve(denyDelete)
 	statusIs(t, status, smb.StatusSharingViolation)
@@ -164,6 +168,7 @@ func TestBaseDeleteSharingChecksEveryStream(t *testing.T) {
 		for _, committed := range []bool{false, true} {
 			table := newTable(t)
 			deny := requestWithStream(1, "xattr")
+			deny.GrantedAccess = 1
 			deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 			need := deleteRequest(1, "")
 			first, second := deny, need
@@ -190,6 +195,7 @@ func TestDeleteRequiresAccessAndCompatibleSharing(t *testing.T) {
 	req.GrantedAccess = 0x10000
 	open := commit(t, table, req, state.Grant{})
 	deny := requestWithStream(2, "xattr")
+	deny.GrantedAccess = 1
 	deny.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	_, status := table.Reserve(deny)
 	statusIs(t, status, smb.StatusSharingViolation)

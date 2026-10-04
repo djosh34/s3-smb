@@ -1,6 +1,12 @@
 package wire
 
 func readDirectoryMetadata(r *reader) (DirectoryMetadata, uint32) {
+	v, nameLength := readDirectoryBase(r)
+	v.EASize = r.u32()
+	return v, nameLength
+}
+
+func readDirectoryBase(r *reader) (DirectoryMetadata, uint32) {
 	var v DirectoryMetadata
 	v.FileIndex = r.u32()
 	v.Basic.Created = Filetime(r.u64())
@@ -11,11 +17,15 @@ func readDirectoryMetadata(r *reader) (DirectoryMetadata, uint32) {
 	v.AllocationSize = r.u64()
 	v.Basic.Attributes = r.u32()
 	nameLength := r.u32()
-	v.EASize = r.u32()
 	return v, nameLength
 }
 
 func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength int) {
+	writeDirectoryBase(b, v, nameLength)
+	b.u32(v.EASize)
+}
+
+func writeDirectoryBase(b *builder, v DirectoryMetadata, nameLength int) {
 	b.u32(v.FileIndex)
 	b.u64(uint64(v.Basic.Created))
 	b.u64(uint64(v.Basic.Accessed))
@@ -25,7 +35,6 @@ func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength int) {
 	b.u64(v.AllocationSize)
 	b.u32(v.Basic.Attributes)
 	b.length32(nameLength)
-	b.u32(v.EASize)
 }
 
 // DecodeDirectoryIDBothEntries validates names and every class 37 link.

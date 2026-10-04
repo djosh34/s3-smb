@@ -129,7 +129,11 @@ func TestReconnectRejectsEveryIdentityMismatch(t *testing.T) {
 			bad := good
 			test.modify(&bad)
 			_, status = table.Reconnect(bad)
-			statusIs(t, status, smb.StatusObjectNameNotFound)
+			want := smb.StatusObjectNameNotFound
+			if test.name == "user" {
+				want = smb.StatusAccessDenied
+			}
+			statusIs(t, status, want)
 			_, status = table.Reconnect(good)
 			statusIs(t, status, smb.StatusSuccess)
 			_, status = table.Reconnect(good)
@@ -158,12 +162,13 @@ func TestFakeClockExpiryUsesClosePath(t *testing.T) {
 	_, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusObjectNameNotFound)
 	actions := table.Expire()
-	if len(actions) != 1 || actions[0].Handle != open.Handle || !actions[0].Remove || actions[0].Name != grant.DeleteName {
+	if len(actions) != 1 || actions[0].FileID != open.ID || actions[0].Handle != open.Handle || !actions[0].Remove || actions[0].Name != grant.DeleteName {
 		t.Fatalf("expiry cleanup: %+v", actions)
 	}
 	if len(table.Expire()) != 0 || len(table.CloseAll()) != 0 {
 		t.Fatal("expired twice")
 	}
+	table.CompleteDelete(actions[0].Object)
 	fresh := commit(t, table, request(1), state.Grant{})
 	statusIs(t, table.CheckIO(fresh.ID, binding, 1, 1, true), smb.StatusSuccess)
 	commit(t, table, req, durableGrant(req))

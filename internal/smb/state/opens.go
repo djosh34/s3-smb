@@ -26,6 +26,8 @@ func New(now func() time.Time) (*Table, error) {
 		objects:      make(map[smb.ObjectKey]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
 		leaseObjects: make(map[leaseIdentity]smb.ObjectKey),
+		mutations:    make(map[Mutation]mutationEntry),
+		breakChanges: make(chan struct{}),
 	}, nil
 }
 
@@ -99,6 +101,11 @@ func sharingCompatible(left, right OpenRequest) bool {
 	if left.Object.Inode != right.Object.Inode {
 		return true
 	}
+	// MS-FSA 2.1.5.1.2.2 excludes metadata-only opens from both
+	// directions of sharing, including base deletion against named streams.
+	if left.SharingIntent == 0 || right.SharingIntent == 0 {
+		return true
+	}
 	if left.Object.Stream == right.Object.Stream {
 		return left.SharingIntent & ^Rights(right.Sharing) == 0 && right.SharingIntent & ^Rights(left.Sharing) == 0
 	}
@@ -164,9 +171,17 @@ func (table *Table) releaseReservation(reservation Reservation, request OpenRequ
 func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
+	return table.commitOpen(reservation, grant)
+}
+
+// commitOpen requires table.mu. Its publication path is shared by both callers.
+func (table *Table) commitOpen(reservation Reservation, grant Grant) (Open, smb.Status) {
 	request, exists := table.reservations[reservation]
 	if !exists {
 		return Open{}, smb.StatusInvalidParameter
+	}
+	if table.deletePending(request.Object) {
+		return Open{}, smb.StatusDeletePending
 	}
 	if status := table.validateGrant(request, reservation, grant); status != smb.StatusSuccess {
 		return Open{}, status
@@ -180,12 +195,16 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		Handle: grant.Handle, User: request.User, Share: request.Share, Object: request.Object,
 		ID: FileID{Persistent: table.nextPersistent, Volatile: table.nextVolatile}, Binding: request.Binding,
 		ClientGUID: request.ClientGUID, CreateGUID: request.CreateGUID, CreateParameters: request.CreateParameters,
-		GrantedAccess: request.GrantedAccess, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
-		DeleteOnClose: grant.DeleteOnClose, Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
+		GrantedAccess: request.GrantedAccess, CreateAction: grant.CreateAction, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
+		DeleteOnClose: grant.DeleteOnClose, WriteThrough: grant.WriteThrough,
+		Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
 	}
-	if grant.Lease.State != 0 {
+	joining := table.lease(request.Object, leaseIdentity{client: grant.Lease.ClientGUID, key: grant.Lease.Key}) != nil
+	if grant.Lease.State != 0 || joining {
 		open.LeaseKey = grant.Lease.Key
-		table.commitLease(request.Object, grant.Lease)
+		if grant.Lease.State != 0 {
+			table.commitLease(request.Object, grant.Lease)
+		}
 	}
 	table.releaseReservation(reservation, request)
 	table.opens[open.ID.Persistent] = &openEntry{Open: open, deleteName: grant.DeleteName}
@@ -201,7 +220,7 @@ func validName(name smb.Name, object smb.ObjectKey) bool {
 	return name.Parent != 0 && name.Base != "" && name.Stream == object.Stream
 }
 
-func (table *Table) validateGrant(request OpenRequest, reservation Reservation, grant Grant) smb.Status {
+func (table *Table) validateGrantMetadata(request OpenRequest, reservation Reservation, grant Grant) smb.Status {
 	if grant.Handle == nil || grant.DurableTimeout < 0 || grant.DurableTimeout > smb.MaxDurableTimeout {
 		return smb.StatusInvalidParameter
 	}
@@ -218,10 +237,17 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 			return smb.StatusSharingViolation
 		}
 	}
+	return smb.StatusSuccess
+}
+
+func (table *Table) validateGrant(request OpenRequest, reservation Reservation, grant Grant) smb.Status {
+	if status := table.validateGrantMetadata(request, reservation, grant); status != smb.StatusSuccess {
+		return status
+	}
 	if status := table.validateLease(request, reservation, grant); status != smb.StatusSuccess {
 		return status
 	}
-	if grant.DurableTimeout != 0 && (grant.Lease.State&smb.LeaseHandle == 0 || request.CreateGUID == (GUID{})) {
+	if grant.DurableTimeout != 0 && (!table.durableLeaseEligible(request, grant.Lease) || request.CreateGUID == (GUID{})) {
 		return smb.StatusInvalidParameter
 	}
 	return smb.StatusSuccess
@@ -262,6 +288,13 @@ func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status) {
 		return Open{}, status
 	}
 	return open.Open, smb.StatusSuccess
+}
+
+// DeletePending reports deletion of the selected object or its base file.
+func (table *Table) DeletePending(key smb.ObjectKey) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	return table.deletePending(key)
 }
 
 // SetDirectory saves a cursor, reusing the search pattern on continuation.
@@ -332,6 +365,11 @@ func (table *Table) prune(key smb.ObjectKey) {
 			return
 		}
 	}
+	for _, mutation := range table.mutations {
+		if mutation.object == key {
+			return
+		}
+	}
 	delete(table.objects, key)
 }
 
@@ -349,7 +387,7 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
-	action := CloseAction{Handle: open.Handle, Object: key}
+	action := CloseAction{FileID: open.ID, Handle: open.Handle, Object: key}
 	if open.DeleteOnClose || open.dispositionPending {
 		if !record.DeletePending {
 			record.DeleteName = open.deleteName
@@ -362,24 +400,57 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
 	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })
-	table.releaseLeases(record)
+	table.releaseLeases(record, open)
 	table.refreshDelete(record)
 	// A pending base deletion takes precedence when the inode's last open closes.
 	baseKey := smb.ObjectKey{Inode: key.Inode}
 	base := table.objects[baseKey]
 	if base != nil && base.DeletePending && !table.inodeOpen(key.Inode) {
 		action.Object, action.Name, action.Remove = baseKey, base.DeleteName, true
-		base.DeletePending, base.deleteCommitted = false, false
+		base.removalPending = true
 		if record != base {
 			record.DeletePending, record.deleteCommitted = false, false
 		}
 		table.prune(baseKey)
 	} else if key.Stream != "" && record.DeletePending && len(record.Opens) == 0 {
 		action.Name, action.Remove = record.DeleteName, true
-		record.DeletePending, record.deleteCommitted = false, false
+		record.removalPending = true
 	}
 	table.prune(key)
 	return action
+}
+
+// CompleteDelete releases the delete-pending barrier after a Remove action,
+// whether cleanup succeeded or failed. Until then Reserve and Commit reject
+// this object, including during bulk-close cleanup before its namespace lock.
+func (table *Table) CompleteDelete(object smb.ObjectKey) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	record := table.objects[object]
+	if record == nil || !record.removalPending {
+		return
+	}
+	record.removalPending = false
+	record.deleteCommitted = false
+	record.DeletePending = false
+	record.DeleteName = smb.Name{}
+	table.prune(object)
+}
+
+// InodeOpen reports whether an inode has any open or sharing reservation,
+// including named streams and detached durable opens.
+func (table *Table) InodeOpen(inode smb.Inode) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.inodeOpen(inode) {
+		return true
+	}
+	for _, request := range table.reservations {
+		if request.Object.Inode == inode {
+			return true
+		}
+	}
+	return false
 }
 
 func (table *Table) inodeOpen(inode smb.Inode) bool {

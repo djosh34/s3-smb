@@ -14,6 +14,17 @@ take precedence over the research.
 `smbtest` owns the raw client and real-adapter fixtures.
 No new package imports `internal/smb-old`.
 
+Storage access describes data permissions, not granted SMB masks.
+`AccessRead` permits reads; `AccessWrite` permits writes and truncate.
+`AccessAppend` restricts writes to offsets at or beyond the selected object's live EOF,
+including when combined with `AccessWrite` for destructive CREATE initialization.
+Alone, `AccessAppend` does not permit truncate.
+`Open` retains these permissions without creating or truncating data.
+`WriteAt` checks append access inside the adapter's existing per-inode mutation coordinator,
+atomically with every write and length change. Each stream has its own EOF.
+Normal `AccessWrite` has no append restriction. The server still checks granted SMB access
+for each operation, including later length changes.
+
 Code comments pin future function and method signatures.
 M1 adds their bodies and private state, without M0 stubs.
 Modules with one implementation return concrete pointers.
@@ -24,6 +35,31 @@ The wire codecs preserve FILETIME sentinels until the handler interprets them.
 The raw client issue (#269) starts after the wire PR (#200) merges, still in M1.
 Its M1 scope is framing and exact messages.
 M2 (#188) adds client login, signing and encryption against a running server.
+`smbtest.NewStorage(testing.TB)` supplies a real JuiceFS adapter and registers
+its cleanup. `smbtest/fixture.Start(ctx, server.Options)` serves it on loopback
+and returns a fixture with `Address` and `Close`. Close drains the server, not
+JuiceFS. Tests close the fixture before the storage helper's cleanup runs.
+The fixture subpackage avoids an import cycle in in-package server tests, which
+use the raw client and storage helper in `smbtest`.
+
+## Handler request context
+
+Handlers receive a cancellation context, a `server.RequestContext` and the wire
+message. The request context contains immutable `Session` and `Tree` snapshots,
+the shared `Opens` table and `Storage`. `Binding()` gives the identity used by
+open-table methods. Session and tree validation belongs to dispatch, not file
+handlers. Commands that need neither identity receive zero snapshots.
+Handlers must not retain snapshots as mutable connection state. They perform
+storage work outside table locks and drain active handle users before cleanup.
+The connection core still owns replies, credits, async identity and protection.
+Session and tree IDs are unique across the running server. A tree belongs to
+one session, even though every tree names the same configured share.
+LOGOFF and TREE_DISCONNECT invalidate the identity, cancel and drain its in-flight
+work, then run open-table cleanup. Identity holders are registered under the
+session lock, including synchronous work and async work before its pending reply.
+A cleanup member does not wait for itself or another cleanup member. It cancels
+other cleanup work and drains ordinary work. Cleanup continues if the transport is canceled. On a drop, the table
+detaches durable opens before waiting for work; storage cleanup follows the drain.
 
 ## CREATE and cleanup
 
@@ -35,9 +71,14 @@ The server commits the reservation only after storage open succeeds.
 On failure, the server aborts its reservation and closes every storage reference it acquired.
 The table releases its mutex before the server calls storage.
 
-The server takes the namespace guard before removing an open from the table.
+A Remove action retains delete-pending until CompleteDelete on every cleanup
+outcome, including failure or cancellation. This covers bulk closes that remove
+opens from the table before taking a namespace guard.
+Cleanup resolves the current inode path under its parent guard and retries if a
+rename changed that identity. An inode with no unique path is left untouched.
 The adapter verifies the expected inode before deleting a name.
-The server drains active request references before closing their storage handle.
+The server drains active request references before closing their storage handle,
+never while holding a namespace guard.
 For a base-file rename, the server locks both parents in inode order.
 Open state follows the inode, not a cached path.
 The adapter refuses named-stream rename with STATUS_NOT_SUPPORTED and leaves data unchanged.
@@ -71,6 +112,10 @@ After that window, the server returns the storage error visibly.
 
 The server validates the whole compound before dispatch.
 The server verifies request signatures and credit charges before changing state.
+A missing or bad signature, or plaintext on an encrypted session, gets
+ACCESS_DENIED before any member of that compound is dispatched. A denial for
+multiple encrypted sessions uses separate transforms, one session per frame.
+Invalid GCM authentication or malformed framing still closes the transport.
 Each command consumes its credit charge once.
 For multi-credit commands, the charge rounds the larger of input and expected output up to 64 KiB units.
 A synchronous response grants credits once.
@@ -86,6 +131,11 @@ Each dependent request gets its own pending reply and async ID.
 The server waits for the prerequisite before executing a dependent request, including CLOSE.
 The server saves inherited session, tree and FileId from the preceding operation.
 This inheritance also applies when the preceding operation uses an existing handle.
+Handlers report the FileId they used or created even when returning an error.
+Members that report no FileId leave the saved ID unchanged.
+An error-severity predecessor blocks a following related FileId command with the
+same status, even when the predecessor used or generated no FileId. This is the
+server's simple dispatch policy. Warning statuses do not block the next member.
 The server sends completed prefix replies only once.
 Final responses use fresh buffers and may be compounded or sent separately.
 Unrelated members need not wait on S3.
@@ -103,17 +153,41 @@ SMB 3.1.1 uses SHA-512 preauth and NTLMv2 inside SPNEGO.
 The server prefers offered GMAC and AES-256-GCM.
 When signing offers have no overlap, MS-SMB2 requires the AES-CMAC default.
 Session-derived keys protect authenticated traffic.
+Each session forks the completed NEGOTIATE transcript, then hashes its own
+SESSION_SETUP requests and challenge replies. Keys use the hash through the
+last request, not the final response.
 Plaintext replies are signed, including final SESSION_SETUP.
 Interim replies follow the protocol's unsigned-interim exception.
 AES-GCM encrypts and authenticates encrypted traffic, including interim replies.
 The server does not sign encrypted messages separately.
 The server verifies the GCM tag before decoding plaintext.
+A reply to an encrypted request is encrypted even when plaintext is allowed.
+Verification and per-request reply-key retention use one locked session snapshot.
+Replies never look up session membership again, including protection denials.
+The raw client verifies final SESSION_SETUP before tree connect. Its returned
+`NextMessageID` lets a test send new traffic without reusing a handshake credit.
 A protector never reuses a send nonce.
 Reconnect derives fresh keys and nonce state.
+Successful SESSION_SETUP processes PreviousSessionId across connections. It
+removes a matching session for the same user and uses disconnect cleanup, which
+detaches durable opens instead of closing them. It detaches existing opens before
+canceling and draining identity holders, then detaches late grants before storage
+cleanup. Missing, self and different-user identities are ignored. LOGOFF also removes incomplete authentication exchanges.
+Removed sessions do not occupy a session slot. Outstanding replies keep a key
+reference only until their final response, so LOGOFF replies and canceled async
+finals remain protected after removal.
 
 A transport drop detaches durable opens immediately, without waiting for S3.
 The server cancels old request contexts but keeps acknowledged data and durable handles.
 Detached opens retain granted access, sharing, deletion intent, locks and leases.
+Durable opens also retain 64 private LOCK sequence slots through DH2C.
+MS-SMB2 3.3.5.14 uses the low four sequence bits as the number and the remaining
+bits as the index. Index 0 or above 64 uses normal processing. A matching valid
+number succeeds without changing ranges. A changed number invalidates that slot
+before processing, even if the vector fails. This replay-metadata change is the
+exception to failed table methods leaving state unchanged; range vectors remain
+atomic. Successful lock and unlock vectors record the new number.
+Close and expiry discard the slots with the open. Ordinary opens ignore sequence.
 Non-durable opens close after active request references drain.
 Old requests cannot publish grants or replies on the new binding.
 DH2C validates the file ID, CreateGuid, client GUID, user, share and lease key.
@@ -129,6 +203,14 @@ On a sharing violation against an open with an H lease, the server breaks H, wai
 A lease acknowledgment has no epoch field.
 The table checks its identity and acknowledged subset against the current break.
 Each returned break includes its captured current state and acknowledgment requirement.
+A stronger operation queues revocation without changing the pending target, epoch or deadline, so the original acknowledgment remains valid.
+The selected MS-SMB2 3.3.4.7 Appendix A footnote 249 policy keeps the epoch for ACK-triggered continuations granting neither W nor H.
+A queued destructive operation follows RWH-to-RH, RH-to-R, then R-to-NONE; the final R-only notification needs no acknowledgment.
+Each new required-ACK stage gets its own 35-second deadline. Independent breaks advance the epoch once.
+Both conflicting CREATE waiters remain pending through the RH-to-R acknowledgment.
+ACK replies report the accepted acknowledgment state, not a later continuation's held state.
+`Lease.EffectiveState` includes queued revocation for new rights and durability promises; wire lease replies retain the captured held state, break-in-progress flag and epoch.
+Cancellation ends the caller's wait, not the captured or queued break.
 A timed-out break revokes the whole lease, even when its target retained caching rights.
 A break removing H closes fully detached members at once, without waiting for an acknowledgment.
 BreakLeases returns both notifications and cleanup actions.

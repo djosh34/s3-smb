@@ -36,9 +36,8 @@ const (
 
 // Exact FileFsAttributeInformation and AAPL masks. Storage is case-sensitive and
 // preserves spelling. Do not advertise ACL fidelity, object IDs, sparse files,
-// hard links, open-by-ID, quotas, reparse points or server-side copy. M3 omits
-// named streams. M4 adds FileNamedStreams to AdvertisedFilesystemAttributes
-// and enables AAPLVolumeCapabilities when its AAPL handler is ready.
+// hard links, open-by-ID, quotas, reparse points or server-side copy. Named
+// streams are advertised only once their server tests pass.
 const (
 	FileCaseSensitiveSearch        uint32 = 0x00000001
 	FileCasePreservedNames         uint32 = 0x00000002
@@ -48,7 +47,7 @@ const (
 	AAPLServerCapabilities         uint64 = 0
 	AAPLCaseSensitive              uint64 = 0x00000002
 	AAPLFullSync                   uint64 = 0x00000004
-	AAPLVolumeCapabilities         uint64 = 0
+	AAPLVolumeCapabilities         uint64 = AAPLCaseSensitive | AAPLFullSync
 )
 
 // Feature and resource limits. Durable v2 is only for regular unnamed files
