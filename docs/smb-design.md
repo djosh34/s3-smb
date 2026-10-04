@@ -50,6 +50,25 @@ A cleanup member does not wait for itself or another cleanup member. It cancels
 other cleanup work and drains ordinary work. Cleanup continues if the transport is canceled. On a drop, the table
 detaches durable opens before waiting for work; storage cleanup follows the drain.
 
+## Handler request context
+
+Handlers receive a cancellation context, a `server.RequestContext` and the wire
+message. The request context contains immutable `Session` and `Tree` snapshots,
+the shared `Opens` table and `Storage`. `Binding()` gives the identity used by
+open-table methods. Session and tree validation belongs to dispatch, not file
+handlers. Commands that need neither identity receive zero snapshots.
+Handlers must not retain snapshots as mutable connection state. They perform
+storage work outside table locks and drain active handle users before cleanup.
+The connection core still owns replies, credits, async identity and protection.
+Session and tree IDs are unique across the running server. A tree belongs to
+one session, even though every tree names the same configured share.
+LOGOFF and TREE_DISCONNECT invalidate the identity, cancel and drain its in-flight
+work, then run open-table cleanup. Identity holders are registered under the
+session lock, including synchronous work and async work before its pending reply.
+A cleanup member does not wait for itself or another cleanup member. It cancels
+other cleanup work and drains ordinary work. Cleanup continues if the transport is canceled. On a drop, the table
+detaches durable opens before waiting for work; storage cleanup follows the drain.
+
 ## CREATE and cleanup
 
 The server holds the parent namespace guard during CREATE.
