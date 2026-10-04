@@ -58,6 +58,7 @@ func TestCreateDeleteOnCloseBecomesPendingOnlyAtClose(t *testing.T) {
 	first := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
 	second := commit(t, table, request(1), state.Grant{})
 	denyDelete := request(1)
+	denyDelete.GrantedAccess = 1
 	denyDelete.Sharing = state.ShareMode(state.RightRead | state.RightWrite)
 	_, status := table.Reserve(denyDelete)
 	statusIs(t, status, smb.StatusSharingViolation)
