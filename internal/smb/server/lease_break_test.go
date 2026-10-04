@@ -135,6 +135,11 @@ func checkLeaseBreakNotification(t *testing.T, cipher, signing uint16, current u
 func TestLeaseBreakAcknowledgmentRejectsInvalidRequests(t *testing.T) {
 	server, client, ctx, session, _ := leaseServer(t, smb.CipherAES128GCM, smb.SigningGMAC)
 	otherClient, _, other := loginClient(t, server, smb.CipherAES128GCM, smb.SigningGMAC)
+	wrongClient, wrongCtx := pipeClient(t, server)
+	wrongSession, loginErr := wrongClient.Login(wrongCtx, smbtest.LoginOptions{Share: server.options.ShareName, Account: server.options.Account, Cipher: smb.CipherAES128GCM, Signing: smb.SigningGMAC, ClientGUID: [16]byte{3}})
+	if loginErr != nil {
+		t.Fatal(loginErr)
+	}
 	open := insertLeaseOpen(t, server, session, 2, smb.LeaseRead|smb.LeaseWrite|smb.LeaseHandle, false)
 	done := startServerBreak(ctx, server, open, smb.LeaseRead)
 	if _, err := client.WaitLeaseBreak(ctx); err != nil {
@@ -153,7 +158,11 @@ func TestLeaseBreakAcknowledgmentRejectsInvalidRequests(t *testing.T) {
 			t.Fatalf("invalid ack changed break: %+v", response.Header)
 		}
 	}
-	response := acknowledgeBreak(ctx, t, otherClient, other, other.NextMessageID, open.LeaseKey, smb.LeaseRead)
+	response := acknowledgeBreak(ctx, t, wrongClient, wrongSession, wrongSession.NextMessageID, open.LeaseKey, smb.LeaseRead)
+	if response.Header.Status != smb.StatusObjectNameNotFound || !server.options.State.BreakPending(state.Break{ClientGUID: open.ClientGUID, LeaseKey: open.LeaseKey}) {
+		t.Fatal("another client acknowledged or changed the lease")
+	}
+	response = acknowledgeBreak(ctx, t, otherClient, other, other.NextMessageID, open.LeaseKey, smb.LeaseRead)
 	if response.Header.Status != smb.StatusInvalidParameter {
 		t.Fatalf("another session acknowledged lease: %+v", response.Header)
 	}
@@ -171,13 +180,14 @@ func TestLeaseBreakAcknowledgmentRejectsInvalidRequests(t *testing.T) {
 func TestDetachedLeaseBreakRetainingHCompletesWithoutNotification(t *testing.T) {
 	server, client, ctx, session, storage := leaseServer(t, 0, smb.SigningCMAC)
 	open := insertLeaseOpen(t, server, session, 2, smb.LeaseRead|smb.LeaseWrite|smb.LeaseHandle, true)
+	joinDurableLease(t, server, session, open)
 	if actions := server.options.State.Disconnect(session.SessionID); len(actions) != 0 {
 		t.Fatal("durable open closed on disconnect")
 	}
 	if err := server.BreakLeases(ctx, open.Object, state.GUID{9}, state.GUID{9}, smb.LeaseRead|smb.LeaseHandle); err != nil {
 		t.Fatal(err)
 	}
-	if storage.closed.Load() != 1 || server.options.State.LeasesBreaking(open.Object, state.GUID{9}, state.GUID{9}) {
+	if storage.closed.Load() != 2 || server.options.State.LeasesBreaking(open.Object, state.GUID{9}, state.GUID{9}) {
 		t.Fatal("detached break kept rights or handle")
 	}
 	if err := client.Send(ctx, []wire.Message{sessionEcho(t, session, session.NextMessageID)}); err != nil {
