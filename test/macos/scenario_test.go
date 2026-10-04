@@ -155,6 +155,8 @@ func (h *harness) scenario(name string) result {
 		}
 	}
 	aborted := time.Now().UTC()
+	var after map[string]int64
+	newPID := 0
 	switch name {
 	case "client-abort-cold":
 		for _, args := range [][]string{{"/usr/bin/tmutil", "stopbackup"}, {"/usr/bin/pkill", "-9", "-x", "backupd"}} {
@@ -166,15 +168,15 @@ func (h *harness) scenario(name string) result {
 			h.t.Log("forced client unmount", output, err)
 		}
 	case "launchd-kill-restart":
-		h.run(time.Minute, "/bin/launchctl", "kill", "SIGKILL", launchdJob)
-		newPID := h.launchdReady(launchdPID, 2)
-		h.save("launchd-restart.json", map[string]any{"old_pid": launchdPID, "new_pid": newPID, "at_kill": atKill})
+		after, newPID = h.killLaunchd(launchdPID, atKill)
 	default:
 		h.stopDaemon(true)
 	}
 	h.stopClient()
-	// Check before any recovery or metadata wait. This also runs for machine-loss.
-	after := h.objects("s3-smb/chunks/")
+	// Check before any recovery or metadata wait. launchd captured this before restart.
+	if after == nil {
+		after = h.objects("s3-smb/chunks/")
+	}
 	h.must(helpers.CheckRemoteChange(before, after))
 	h.save("interrupted-chunks.json", map[string]any{"before": before, "after": after, "at_kill": atKill})
 	outcome.Scenario, outcome.AtKill = name, atKill
@@ -202,6 +204,9 @@ func (h *harness) scenario(name string) result {
 	h.must(h.detach())
 	latest := h.resumeBackup(outcome.Baseline, name == "launchd-kill-restart")
 	outcome.ResumedRestore = h.restore(latest, updated, "restore-resumed")
+	if name == "launchd-kill-restart" {
+		h.checkLaunchdPID(newPID)
+	}
 	outcome.Resumed, outcome.ChunkObjectsEnd = filepath.Base(latest), len(h.objects("s3-smb/chunks/"))
 	if h.daemon != nil {
 		outcome.RecoveredFrom = h.daemon.point
@@ -276,14 +281,23 @@ func (h *harness) finish() {
 			h.t.Error(err)
 		}
 	}
-	if h.backup != nil {
-		h.t.Error("owned Time Machine startbackup still active at final cleanup")
-		report(h.stopBackup(30 * time.Second))
-	}
-	if h.daemon != nil || h.launchdPlist != "" || len(h.attachments) != 0 {
-		report(h.detach())
-	}
-	report(h.unloadLaunchd())
+	// Leave two minutes of the outer budget for bootout and stopping services.
+	//nolint:contextcheck // Native commands use h.ctx, set to each callback's context before calls.
+	report(helpers.Cleanup(ctx, 5*time.Minute, func(clientCtx context.Context) error {
+		h.ctx = clientCtx
+		var err error
+		if h.backup != nil {
+			h.t.Error("owned Time Machine startbackup still active at final cleanup")
+			err = h.stopBackup(30 * time.Second)
+		}
+		if h.daemon != nil || h.launchdPlist != "" || len(h.attachments) != 0 {
+			err = errors.Join(err, h.detach())
+		}
+		return err
+	}, func(cleanupCtx context.Context) error {
+		h.ctx = cleanupCtx
+		return h.unloadLaunchd()
+	}))
 	if h.daemon != nil {
 		report(stop(h.daemon, false))
 		h.daemon = nil

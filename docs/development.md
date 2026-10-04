@@ -195,9 +195,11 @@ The scenarios are `server-kill-restart`, `launchd-kill-restart`,
 `machine-loss`. `launchd-kill-restart` initializes in the foreground, then
 loads [the shipped plist](com.s3-smb.plist) into the system domain with test
 paths. It kills s3-smb with SIGKILL while Time Machine is copying and requires
-a new launchd PID, a new SMB serving log entry without consent, changed S3
-chunks and a completed next backup with a matching restore. Cleanup unloads
-the job before stopping MinIO, also on failure or timeout.
+a new launchd PID and a new SMB serving log entry without consent. It captures
+changed S3 chunks after the kill and before the new process serves, then
+requires the next backup to complete with a matching restore and the same PID.
+Cleanup reserves time to unload the job before stopping MinIO, also on failure
+or timeout.
 
 To run just one scenario:
 
