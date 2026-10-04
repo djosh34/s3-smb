@@ -30,13 +30,16 @@ type isolationPlan struct {
 	cut      chaos.Schedule
 	restore  chaos.Schedule
 	hold     time.Duration
+	probes   int
 }
 
 func makeIsolationPlan(seed uint64, kind string, gate bool) isolationPlan {
 	random := chaos.Rand(seed, "isolation/"+kind)
 	hold := 4*time.Second + time.Duration(random.IntN(1000))*time.Millisecond
+	probes := 17
 	if gate {
 		hold += 26 * time.Second
+		probes = 121
 	}
 	fault := netfault.Fault{Stall: true}
 	if kind == "slow" {
@@ -46,6 +49,7 @@ func makeIsolationPlan(seed uint64, kind string, gate bool) isolationPlan {
 		activate: chaos.Schedule{{At: time.Duration(50+random.IntN(100)) * time.Millisecond, Net: &fault}},
 		restore:  chaos.Schedule{{Net: &netfault.Fault{}}},
 		hold:     hold,
+		probes:   probes,
 	}
 	if kind == "cut" {
 		plan.cut = chaos.Schedule{{At: time.Duration(150+random.IntN(100)) * time.Millisecond, Cut: true}}
@@ -177,18 +181,20 @@ func runIsolation(t *testing.T, seed uint64, kind, operation string) {
 			t.Fatal(err)
 		}
 	}
-	for i := range 3 {
+	// Probe throughout the fault window, including its final offset. Even if a
+	// probe is late, nothing restores traffic until that probe has passed.
+	for i := range plan.probes {
+		offset := time.Duration(i) * plan.hold / time.Duration(plan.probes-1)
+		timer := time.NewTimer(time.Until(faultStarted.Add(offset)))
+		select {
+		case <-timer.C:
+		case <-t.Context().Done():
+			timer.Stop()
+			t.Fatal(t.Context().Err())
+		}
+		timer.Stop()
 		data := isolationBytes(seed, fmt.Sprintf("healthy/%s/%s/%d", kind, operation, i), len(healthyData))
 		isolationProbe(t, healthy, echo, ledger, data, bound)
-	}
-	// No timed schedule can restore traffic while a healthy probe is blocked.
-	// Keep the fault installed for the seeded PR or gate duration as well.
-	timer := time.NewTimer(time.Until(faultStarted.Add(plan.hold)))
-	defer timer.Stop()
-	select {
-	case <-timer.C:
-	case <-t.Context().Done():
-		t.Fatal(t.Context().Err())
 	}
 	if kind != "cut" {
 		select {
@@ -395,6 +401,9 @@ func TestIsolationPlan(t *testing.T) {
 			t.Fatal("different seeds made the same plan")
 		}
 		gate := makeIsolationPlan(357, kind, true)
+		if first.probes != 17 || gate.probes != 121 {
+			t.Fatal("missing probes across the full fault window")
+		}
 		if first.hold < 4*time.Second || first.hold >= 5*time.Second || gate.hold < 30*time.Second || gate.hold >= 31*time.Second {
 			t.Fatalf("unexpected fault lengths: PR=%s gate=%s", first.hold, gate.hold)
 		}
