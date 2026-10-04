@@ -120,7 +120,7 @@ type Lease struct {
 // ObjectRecord describes the per-(inode, stream) record. Opens, locks and leases
 // never cross stream keys. DeletePending rejects new opens. DeleteName is the
 // name selected for deletion, not the name of the last closing handle. For a
-// renamed base, the close path resolves PathOf and verifies the inode again.
+// changed entry, Storage.Remove verifies the recorded name's expected inode.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
 // Records are removed only after opens, reservations, locks and leases are gone.
@@ -175,7 +175,7 @@ type Grant struct {
 
 // CloseAction transfers cleanup to the server. The table has already removed
 // the open and ranges. The server closes Handle and, if Remove is true, calls
-// identity-checked Remove after resolving the current name under a parent guard.
+// identity-checked Remove on the recorded name under a parent guard.
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server

@@ -145,8 +145,8 @@ func (*cleanupStorage) Lookup(context.Context, string) (smb.Resolved, error) {
 }
 
 func (storage *cleanupStorage) Remove(_ context.Context, name smb.Name, inode smb.Inode) error {
-	if name.Base != "renamed" || inode != 2 {
-		return errors.New("shutdown used a stale deletion name")
+	if name.Base != "old" || inode != 2 {
+		return errors.New("shutdown lost the recorded deletion name")
 	}
 	storage.removed.Add(1)
 	return storage.removeErr

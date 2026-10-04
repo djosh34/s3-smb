@@ -25,20 +25,7 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 }
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
-	path, err := server.options.Storage.PathOf(ctx, action.Object.Inode)
-	if err != nil {
-		return fmt.Errorf("find deletion name: %w", err)
-	}
-	resolved, err := server.options.Storage.Lookup(ctx, path)
-	if err != nil {
-		return fmt.Errorf("resolve deletion name: %w", err)
-	}
-	if !resolved.Exists || resolved.Object.Inode != action.Object.Inode {
-		return errors.New("deletion name no longer identifies the closed inode")
-	}
-	name := resolved.Name
-	name.Stream = action.Object.Stream
-	if err := server.options.Storage.Remove(ctx, name, action.Object.Inode); err != nil {
+	if err := server.options.Storage.Remove(ctx, action.Name, action.Object.Inode); err != nil {
 		return fmt.Errorf("remove closed object: %w", err)
 	}
 	return nil
