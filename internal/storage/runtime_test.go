@@ -17,6 +17,25 @@ import (
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
+func TestNewFormatUsesNoCompression(t *testing.T) {
+	for _, encrypted := range []bool{false, true} {
+		f, err := NewFormat("test", encrypted, 14)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.Compression != "none" {
+			t.Fatalf("encrypted=%t: new format compression = %q, want none", encrypted, f.Compression)
+		}
+		c, err := CacheConfig(f, t.TempDir(), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Compress != "none" {
+			t.Fatalf("encrypted=%t: chunk compression = %q, want none", encrypted, c.Compress)
+		}
+	}
+}
+
 func TestCacheConfig(t *testing.T) {
 	f, err := NewFormat("test", false, 14)
 	if err != nil {
