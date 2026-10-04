@@ -12,6 +12,7 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 	var result error
 	for _, action := range actions {
 		if action.Handle != nil {
+			server.drainOpen(action.FileID)
 			if err := server.options.Storage.Close(ctx, action.Handle); err != nil {
 				result = errors.Join(result, fmt.Errorf("close open: %w", err))
 			}
