@@ -29,7 +29,7 @@ type pendingRequest struct {
 }
 
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Read || command == wire.Write || command == wire.Flush
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
@@ -131,6 +131,10 @@ func (connection *connection) complete(pending *pendingRequest) {
 	case <-connection.ctx.Done():
 		return
 	case <-pending.work.done:
+	}
+	// Both cases can be ready when late work finishes after a disconnect.
+	if connection.ctx.Err() != nil {
+		return
 	}
 	// Final success and error share this path, with identity saved at pending.
 	// They never call the credit allocator or reuse the interim buffer.

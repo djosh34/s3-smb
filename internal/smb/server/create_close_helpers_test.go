@@ -28,7 +28,7 @@ func fileCreate(ctx context.Context, t *testing.T, client *smbtest.Client, sessi
 		t.Fatal(err)
 	}
 	message := wire.Message{Header: wire.Header{Command: wire.Create, MessageID: id, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 1}, Body: body}
-	return exchange(ctx, t, client, message)[0]
+	return ioRoundTrip(ctx, t, client, message)
 }
 
 func fileClose(ctx context.Context, t *testing.T, client *smbtest.Client, session smbtest.Session, id uint64, fileID wire.FileID, flags uint16) wire.Message {
@@ -38,7 +38,7 @@ func fileClose(ctx context.Context, t *testing.T, client *smbtest.Client, sessio
 		t.Fatal(err)
 	}
 	message := wire.Message{Header: wire.Header{Command: wire.Close, MessageID: id, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 1}, Body: body}
-	return exchange(ctx, t, client, message)[0]
+	return ioRoundTrip(ctx, t, client, message)
 }
 
 func createdFile(t *testing.T, message wire.Message) wire.CreateResponse {

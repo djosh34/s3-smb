@@ -176,9 +176,11 @@ type Grant struct {
 	DeleteOnClose  bool
 }
 
-// CloseAction transfers cleanup to the server. The table has already removed
-// the open and ranges. The server closes Handle and, if Remove is true, calls
-// identity-checked Remove after resolving the current name under a parent guard.
+// CloseAction transfers cleanup to the server. FileID names the removed open;
+// active references use its persistent half across reconnects. The table has
+// already removed the open and ranges. The server closes Handle and, if Remove
+// is true, calls identity-checked Remove after resolving the current name under
+// a parent guard.
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server

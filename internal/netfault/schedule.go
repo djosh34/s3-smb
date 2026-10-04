@@ -19,8 +19,11 @@ func (p *Proxy) Schedule(ctx context.Context, steps []Step) (<-chan error, error
 	}
 	var previous time.Duration
 	for _, step := range steps {
-		if step.After < previous || step.Fault.Delay < 0 {
-			return nil, errors.New("invalid network fault schedule time or delay")
+		if step.After < previous {
+			return nil, errors.New("invalid network fault schedule time")
+		}
+		if err := step.Fault.validate(); err != nil {
+			return nil, err
 		}
 		previous = step.After
 	}

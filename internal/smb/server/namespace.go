@@ -94,6 +94,10 @@ func lookupLocked(ctx context.Context, request RequestContext, path string) (smb
 		if err != nil {
 			return smb.Resolved{}, nil, err
 		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			unlock()
+			return smb.Resolved{}, nil, ctxErr
+		}
 		selected, err := request.Storage.Lookup(ctx, path)
 		if err != nil {
 			unlock()
