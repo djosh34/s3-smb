@@ -136,31 +136,62 @@ func TestDirectoryTimesAcrossTruncateAndReopen(t *testing.T) {
 }
 
 func TestDirectoryTimesAcrossSetAttr(t *testing.T) {
-	for _, retained := range []bool{false, true} {
-		t.Run(map[bool]string{false: "without_handle", true: "with_handle"}[retained], func(t *testing.T) {
-			f := newFixture(t, 0)
-			r := f.create(t, "data", smb.KindFile)
-			if retained {
-				f.open(t, r.Object, smb.AccessRead)
-			}
-			initial := time.Unix(1000000000, 0).UTC()
-			if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Accessed: &initial, Modified: &initial, Changed: &initial}); err != nil {
-				t.Fatal(err)
-			}
-			generation := f.fs.directoryGeneration()
-			page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
-			if err != nil || len(page) != 1 {
-				t.Fatalf("pre-setattr page = %+v, %v", page, err)
-			}
-			stamp := time.Date(2100, 1, 1, 0, 0, 0, 123456700, time.UTC)
-			if err = f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Accessed: &stamp, Modified: &stamp, Changed: &stamp}); err != nil {
-				t.Fatal(err)
-			}
-			got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
-			if err != nil || !got.Accessed.Equal(stamp) || !got.Modified.Equal(stamp) || !got.Changed.Equal(stamp) {
-				t.Fatalf("page across setattr = %+v, %v; want times %v", got, err, stamp)
-			}
-		})
+	initial := time.Unix(1000000000, 0).UTC()
+	stamp := time.Date(2100, 1, 1, 0, 0, 0, 123456700, time.UTC)
+	bits := uint32(0x02)
+	changes := []struct {
+		name   string
+		change smb.AttrChange
+		want   smb.Attr
+	}{
+		{
+			name:   "times",
+			change: smb.AttrChange{Accessed: &stamp, Modified: &stamp, Changed: &stamp},
+			want:   smb.Attr{Created: initial, Accessed: stamp, Modified: stamp, Changed: stamp, Attributes: 0x80},
+		},
+		{
+			name:   "created_only",
+			change: smb.AttrChange{Created: &stamp},
+			want:   smb.Attr{Created: stamp, Accessed: initial, Modified: initial, Changed: initial, Attributes: 0x80},
+		},
+		{
+			name:   "attributes_only",
+			change: smb.AttrChange{Attributes: &bits},
+			want:   smb.Attr{Created: initial, Accessed: initial, Modified: initial, Changed: initial, Attributes: 0x02},
+		},
+	}
+	for _, retention := range []struct {
+		name     string
+		retained bool
+	}{
+		{name: "without_handle"},
+		{name: "with_handle", retained: true},
+	} {
+		for _, change := range changes {
+			t.Run(retention.name+"/"+change.name, func(t *testing.T) {
+				f := newFixture(t, 0)
+				r := f.create(t, "data", smb.KindFile)
+				if retention.retained {
+					f.open(t, r.Object, smb.AccessRead)
+				}
+				if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Created: &initial, Accessed: &initial, Modified: &initial, Changed: &initial}); err != nil {
+					t.Fatal(err)
+				}
+				generation := f.fs.directoryGeneration()
+				page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+				if err != nil || len(page) != 1 {
+					t.Fatalf("pre-setattr page = %+v, %v", page, err)
+				}
+				if err = f.fs.SetAttr(t.Context(), r.Object, change.change); err != nil {
+					t.Fatal(err)
+				}
+				got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+				want := change.want
+				if err != nil || !got.Created.Equal(want.Created) || !got.Accessed.Equal(want.Accessed) || !got.Modified.Equal(want.Modified) || !got.Changed.Equal(want.Changed) || got.Attributes != want.Attributes {
+					t.Fatalf("page across setattr = %+v, %v; want %+v", got, err, want)
+				}
+			})
+		}
 	}
 }
 

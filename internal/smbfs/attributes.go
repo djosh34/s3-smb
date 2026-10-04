@@ -217,7 +217,7 @@ func (s *FS) touchStream(ctx context.Context, ino smb.Inode, st *inodeState) err
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &attr)); err != nil {
 		return err
 	}
-	defer s.invalidateDirectoryTimes(st)
+	defer s.invalidateDirectoryRow(st)
 	if !attr.Parent.IsTrash() {
 		return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
 	}
@@ -331,6 +331,10 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	if _, err := s.attr(ctx, key, st); err != nil {
 		return err
 	}
+	if change.Accessed != nil || change.Modified != nil || change.Changed != nil || change.Created != nil || change.Attributes != nil {
+		// A later error can leave some attributes changed, so invalidate on error too.
+		defer s.invalidateDirectoryRow(st)
+	}
 	if change.Size != nil {
 		if err := s.truncate(ctx, key, st, *change.Size); err != nil {
 			return err
@@ -341,7 +345,7 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 			return err
 		}
 	}
-	if err := s.setTimes(ctx, key.Inode, st, change); err != nil {
+	if err := s.setTimes(ctx, key.Inode, change); err != nil {
 		return err
 	}
 	if err := s.setProperties(ctx, key.Inode, change); err != nil {
@@ -351,7 +355,7 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	return nil
 }
 
-func (s *FS) setTimes(ctx context.Context, ino smb.Inode, st *inodeState, change smb.AttrChange) error {
+func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
 	var a meta.Attr
 	var mask uint16
 	if change.Accessed != nil {
@@ -376,8 +380,6 @@ func (s *FS) setTimes(ctx context.Context, ino smb.Inode, st *inodeState, change
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &stored)); err != nil {
 		return err
 	}
-	// A later error can leave some timestamps changed, so invalidate on error too.
-	defer s.invalidateDirectoryTimes(st)
 	// JuiceFS forbids path-based time changes in trash. Retained references use
 	// the same private exact-time representation without changing trash admission.
 	if !stored.Parent.IsTrash() {
@@ -410,7 +412,7 @@ func (s *FS) setTimes(ctx context.Context, ino smb.Inode, st *inodeState, change
 	return nil
 }
 
-func (s *FS) invalidateDirectoryTimes(st *inodeState) {
+func (s *FS) invalidateDirectoryRow(st *inodeState) {
 	st.liveMu.Lock()
 	st.live.flushed = s.flushes.Add(1)
 	st.liveMu.Unlock()
