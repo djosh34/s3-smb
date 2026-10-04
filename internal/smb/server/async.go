@@ -29,7 +29,7 @@ type pendingRequest struct {
 }
 
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Read || command == wire.Write || command == wire.Flush
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
