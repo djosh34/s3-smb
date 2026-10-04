@@ -49,13 +49,7 @@ func runChaosOutage(t *testing.T, seed uint64, command wire.Command, permanent b
 	if permanent {
 		bound = 12 * time.Minute
 	}
-	// Replace this selector with newChaosFixture when the shared helper lands.
-	binary := os.Getenv("S3_SMB_CHAOS_BINARY")
-	if binary == "" {
-		t.Skip("S3_SMB_CHAOS_BINARY is not set")
-	}
-	f := newFixture(t, false)
-	f.binary = binary
+	f := newChaosFixture(t, false)
 	f.cacheSize = "0 MB"
 	f.interval = "1h"
 	metadata := command == wire.Flush
