@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,7 +32,7 @@ type imageInfo struct {
 }
 
 func (h *harness) destinationSetup() {
-	output := h.run(2*time.Minute, "/usr/bin/tmutil", "setdestination", "smb://timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine")
+	output := h.run(2*time.Minute, "/usr/bin/tmutil", "setdestination", "smb://timemachine:synthetic-tm-control@"+h.smbAddress+"/TimeMachine")
 	if strings.Contains(output, "The backup destination could not be set.") {
 		h.t.Fatal("tmutil could not set the destination despite exit 0")
 	}
@@ -47,11 +48,13 @@ func (h *harness) destinationSetup() {
 		h.t.Fatal("expected exactly one Time Machine destination with an ID")
 	}
 	h.destination = info.Destinations[0].ID
-	// Port 1445 bypasses Apple's loopback restriction. backupd needs the System keychain.
+	// A nonstandard port bypasses Apple's loopback restriction. backupd needs the System keychain.
 	keychain := "/Library/Keychains/System.keychain"
 	output, err = h.try(2*time.Minute, "/usr/bin/security", "find-internet-password", "-s", "127.0.0.1", "-a", "timemachine", keychain)
 	h.t.Log("existing synthetic credential", output, err)
-	attributes := []string{"-s", "127.0.0.1", "-a", "timemachine", "-P", "1445", "-r", "smb ", "-p", "TimeMachine"}
+	_, port, err := net.SplitHostPort(h.smbAddress)
+	h.must(err)
+	attributes := []string{"-s", "127.0.0.1", "-a", "timemachine", "-P", port, "-r", "smb ", "-p", "TimeMachine"}
 	args := append([]string{"/usr/bin/security", "add-internet-password", "-U"}, attributes...)
 	args = append(args, "-T", "/System/Library/CoreServices/NetAuthAgent.app/Contents/MacOS/NetAuthSysAgent", "-T", "/System/Library/CoreServices/TimeMachine/backupd", "-w", "synthetic-tm-control", keychain)
 	h.run(2*time.Minute, args...)
@@ -131,22 +134,8 @@ func (h *harness) metadata(after time.Time, label string) receipt {
 	return point
 }
 
-func mountpoints(text string) []string {
-	var paths []string
-	for _, line := range strings.Split(text, "\n") {
-		if !strings.Contains(line, "(smbfs") || !strings.Contains(line, "127.0.0.1:1445/TimeMachine on ") {
-			continue
-		}
-		_, tail, ok := strings.Cut(line, " on ")
-		if !ok {
-			continue
-		}
-		path, _, ok := strings.Cut(tail, " (")
-		if ok {
-			paths = append(paths, path)
-		}
-	}
-	return paths
+func (h *harness) mountpoints(text string) []string {
+	return helpers.SMBMountpoints(text, h.smbAddress)
 }
 
 func (h *harness) detach() error {
@@ -167,7 +156,7 @@ func (h *harness) detach() error {
 	}
 	devices := append([]string(nil), h.attachments...)
 	for _, image := range info.Images {
-		owned := strings.HasPrefix(image.Path, h.share+"/") || strings.Contains(image.Path, "/127.0.0.1/") || strings.Contains(image.Path, "/127.0.0.1:1445/")
+		owned := strings.HasPrefix(image.Path, h.share+"/") || strings.Contains(image.Path, "/127.0.0.1/") || strings.Contains(image.Path, "/"+h.smbAddress+"/")
 		if !strings.HasSuffix(image.Path, ".sparsebundle") || !owned {
 			continue
 		}
@@ -222,7 +211,7 @@ func (h *harness) detachShares() error {
 		if err != nil {
 			return false, err
 		}
-		paths := mountpoints(text)
+		paths := h.mountpoints(text)
 		for _, path := range paths {
 			if _, err := h.try(2*time.Minute, "/sbin/umount", path); err != nil {
 				h.t.Log("SMB mount still busy", err)
@@ -237,7 +226,7 @@ func (h *harness) detachShares() error {
 	if err != nil {
 		return err
 	}
-	for _, path := range mountpoints(text) {
+	for _, path := range h.mountpoints(text) {
 		if _, err = h.try(2*time.Minute, "/sbin/umount", "-f", path); err != nil {
 			return err
 		}
@@ -246,7 +235,7 @@ func (h *harness) detachShares() error {
 	if err != nil {
 		return err
 	}
-	if len(mountpoints(text)) != 0 {
+	if len(h.mountpoints(text)) != 0 {
 		return errors.New("task SMB mount remains")
 	}
 	return nil
