@@ -50,6 +50,27 @@ func TestUseOpenValidatesIdentity(t *testing.T) {
 	}
 }
 
+func TestUseOpenResolvesRelatedFileID(t *testing.T) {
+	server, err := New(testOptions(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := insertSessionOpen(t, server, smbtest.Session{SessionID: 1, TreeID: 2}, false, 3)
+	request := openRequestContext(server, open)
+	request.related, request.fileID = true, wire.FileID(open.ID)
+	placeholder := wire.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}
+	found, release, status := useOpen(request, placeholder)
+	if status != smb.StatusSuccess || found.ID != open.ID {
+		t.Fatalf("inherited open: %+v, %#x", found, status)
+	}
+	release()
+	request.fileID = wire.FileID{}
+	_, release, status = useOpen(request, placeholder)
+	if status != smb.StatusInvalidParameter || release != nil {
+		t.Fatalf("missing inherited open: %#x", status)
+	}
+}
+
 func TestCleanupDrainsOpenUses(t *testing.T) {
 	options := testOptions(t)
 	storage := &cleanupStorage{}
@@ -93,6 +114,44 @@ func TestCleanupDrainsOpenUses(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("cleanup did not drain")
 	}
+}
+
+func TestReconnectKeepsReferencesAcrossVolatileIDs(t *testing.T) {
+	options := testOptions(t)
+	storage := &cleanupStorage{}
+	options.Storage = storage
+	server, err := New(options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	open := insertSessionOpen(t, server, smbtest.Session{SessionID: 1, TreeID: 2}, true, 3)
+	_, release, status := useOpen(openRequestContext(server, open), wire.FileID(open.ID))
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	defer release()
+	if actions := options.State.Disconnect(open.Binding.SessionID); len(actions) != 0 {
+		t.Fatal("durable open closed on drop")
+	}
+	attached, status := options.State.Reconnect(state.ReconnectRequest{
+		ID: open.ID, Binding: state.Binding{SessionID: 4, TreeID: 5},
+		User: open.User, Share: open.Share, ClientGUID: open.ClientGUID,
+		CreateGUID: open.CreateGUID, LeaseKey: open.LeaseKey,
+	})
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	_, newRelease, status := useOpen(openRequestContext(server, attached), wire.FileID(attached.ID))
+	if status != smb.StatusSuccess {
+		t.Fatal(status)
+	}
+	newRelease()
+	server.openMu.Lock()
+	uses := server.activeOpens[open.ID.Persistent]
+	if uses == nil || uses.count != 1 {
+		t.Error("old binding's reference was not preserved")
+	}
+	server.openMu.Unlock()
 }
 
 func assertCleanupWaiting(t *testing.T, done <-chan error, storage *cleanupStorage) {
