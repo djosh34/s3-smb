@@ -83,20 +83,20 @@ func (client *Client) decodeMessages(payload []byte) (Reply, error) {
 
 // Called with protectionMu held, after checking the reply identity.
 func (client *Client) verifyPlaintextReply(message wire.Message) error {
-	if client.encrypted && message.Header.Command != wire.SessionSetup {
-		return errors.New("smbtest: encrypted session received plaintext")
-	}
-	if message.Header.Status == smb.StatusPending && message.Header.Flags&wire.FlagSigned == 0 {
-		return nil
-	}
-	// MS-SMB2 3.3.4.7 permits unsigned plaintext lease notifications.
-	// Validate the notification body before bypassing verification.
-	if !client.encrypted && isLeaseBreak(message.Header) && message.Header.Flags&wire.FlagSigned == 0 {
+	// Negotiated GCM does not require encrypted notifications. MS-SMB2
+	// 3.3.4.7 permits this exact unsigned notification on plaintext sessions.
+	if !client.requireEncryption && isLeaseBreak(message.Header) && message.Header.Flags&wire.FlagSigned == 0 {
 		if len(message.Body) != 44 {
 			return errors.New("smbtest: invalid unsigned lease break length")
 		}
 		_, err := wire.DecodeLeaseBreakNotification(message)
 		return err
+	}
+	if client.encrypted && message.Header.Command != wire.SessionSetup {
+		return errors.New("smbtest: encrypted request received plaintext reply")
+	}
+	if message.Header.Status == smb.StatusPending && message.Header.Flags&wire.FlagSigned == 0 {
+		return nil
 	}
 	return client.protector.Verify(message.Raw)
 }

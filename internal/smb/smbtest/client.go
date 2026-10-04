@@ -38,17 +38,18 @@ type Reply struct {
 // Login enables protection. Send changes signing flags and signatures, but
 // preserves supplied identities and credits. Raw I/O remains unchanged.
 type Client struct {
-	conn         net.Conn
-	protector    *crypt.Protector
-	pending      map[uint64]pendingReply
-	sendSlot     chan struct{}
-	closeErr     error
-	replies      []Reply
-	leaseBreaks  []wire.LeaseBreakNotification
-	protectionMu sync.RWMutex
-	sessionID    uint64
-	closeOnce    sync.Once
-	encrypted    bool
+	conn              net.Conn
+	protector         *crypt.Protector
+	pending           map[uint64]pendingReply
+	sendSlot          chan struct{}
+	closeErr          error
+	replies           []Reply
+	leaseBreaks       []wire.LeaseBreakNotification
+	protectionMu      sync.RWMutex
+	sessionID         uint64
+	closeOnce         sync.Once
+	encrypted         bool
+	requireEncryption bool
 }
 
 type pendingReply struct {
