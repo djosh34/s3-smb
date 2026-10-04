@@ -32,7 +32,41 @@ func TestLeaseBreakUnsolicitedHeaderAndProtection(t *testing.T) {
 	}
 }
 
-func checkPlaintextBreak(t *testing.T, payload []byte) {
+func TestLeaseBreakNegotiatedGCMDoesNotRequireEncryption(t *testing.T) {
+	for _, cipher := range []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM} {
+		t.Run(fmt.Sprintf("cipher_%d", cipher), func(t *testing.T) {
+			options := testOptions(t)
+			options.Encryption = AllowPlaintext
+			options.Storage = &cleanupStorage{}
+			server, err := New(options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client, ctx, session := loginClient(t, server, cipher, smb.SigningGMAC)
+			open := insertLeaseOpen(t, server, session, 3, smb.LeaseRead|smb.LeaseHandle|smb.LeaseWrite, false)
+			target := uint32(smb.LeaseRead | smb.LeaseHandle)
+			done := startServerBreak(ctx, server, open, target)
+			payload, err := client.ReceiveRaw(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			notification := checkPlaintextBreak(t, payload)
+			want := wire.LeaseBreakNotification{Key: [16]byte(open.LeaseKey), Epoch: 8, Flags: 1, CurrentState: smb.LeaseRead | smb.LeaseHandle | smb.LeaseWrite, NewState: target}
+			if notification != want {
+				t.Fatalf("notification: %+v, want %+v", notification, want)
+			}
+			// The client voluntarily encrypts the acknowledgment. Its reply must
+			// authenticate with GCM even though this notification was plaintext.
+			response := acknowledgeBreak(ctx, t, client, session, session.NextMessageID, open.LeaseKey, target)
+			if response.Header.Status != smb.StatusSuccess {
+				t.Fatal(response.Header)
+			}
+			finishServerBreak(ctx, t, done)
+		})
+	}
+}
+
+func checkPlaintextBreak(t *testing.T, payload []byte) wire.LeaseBreakNotification {
 	t.Helper()
 	messages, err := wire.Split(payload)
 	if err != nil || len(messages) != 1 {
@@ -42,7 +76,9 @@ func checkPlaintextBreak(t *testing.T, payload []byte) {
 	if header.Command != wire.OplockBreak || header.MessageID != ^uint64(0) || header.SessionID != 0 || header.TreeID != 0 || header.Credit != 0 || header.CreditCharge != 0 || header.Flags != wire.FlagResponse || header.Signature != [16]byte{} {
 		t.Fatalf("unsolicited header: %+v", header)
 	}
-	if _, err := wire.DecodeLeaseBreakNotification(messages[0]); err != nil {
+	notification, err := wire.DecodeLeaseBreakNotification(messages[0])
+	if err != nil {
 		t.Fatal(err)
 	}
+	return notification
 }
