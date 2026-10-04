@@ -14,7 +14,7 @@ import (
 const (
 	fileSupersede uint32 = iota
 	fileOpen
-	fileCreate
+	fileCreateDisposition
 	fileOpenIf
 	fileOverwrite
 	fileOverwriteIf
@@ -78,7 +78,7 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 		return 0, false, smb.StatusFileIsADirectory
 	}
 	switch create.Disposition {
-	case fileCreate:
+	case fileCreateDisposition:
 		return 0, false, smb.StatusObjectNameCollision
 	case fileOpen, fileOpenIf:
 		return 1, false, smb.StatusSuccess // FILE_OPENED.
@@ -131,7 +131,7 @@ func createStorageAccess(granted uint32, destructive bool) smb.Access {
 	return access
 }
 
-func handleCreate(ctx context.Context, request RequestContext, message wire.Message) (result reply, resultErr error) {
+func handleCreate(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	create, status := decodeCreate(message)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
@@ -141,10 +141,26 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: smb.StatusInvalidParameter}, nil
 	}
 	granted := expandCreateAccess(create.DesiredAccess)
-	resolved, err := request.Storage.Lookup(ctx, create.Name)
-	if err != nil {
-		return reply{}, err
+	result, unlock, err := createLocked(ctx, request, create, granted)
+	if unlock != nil {
+		unlock()
 	}
+	return result, err
+}
+
+// createLocked holds the parent from selection through grant publication. The
+// caller releases unlock even on a sharing violation, before waiting or retrying.
+func createLocked(ctx context.Context, request RequestContext, create wire.CreateRequest, granted uint32) (reply, func(), error) {
+	resolved, unlock, err := lookupLocked(ctx, request, create.Name)
+	if err != nil {
+		return reply{}, nil, err
+	}
+	result, err := createSelected(ctx, request, create, resolved, granted)
+	return result, unlock, err
+}
+
+func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (result reply, resultErr error) {
+	var err error
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
@@ -210,7 +226,24 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
 	response.Contexts = contexts
 	body, err := wire.EncodeCreateResponse(response)
-	return reply{body: body, fileID: response.ID}, err
+	if err != nil {
+		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
+	}
+	return reply{body: body, fileID: response.ID}, nil
+}
+
+// A failed reply has never exposed this grant to a client. Its parent is still
+// guarded, so storage cleanup must not try to acquire that guard again.
+func closeFailedCreate(ctx context.Context, request RequestContext, open state.Open) error {
+	action, status := request.Opens.Close(open.ID, request.Binding())
+	if status != smb.StatusSuccess {
+		return fmt.Errorf("close failed CREATE: status %#x", status)
+	}
+	closeErr := request.Storage.Close(ctx, action.Handle)
+	if action.Remove {
+		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object.Inode))
+	}
+	return closeErr
 }
 
 func createResponse(attr smb.Attr, action uint32) (wire.CreateResponse, error) {
