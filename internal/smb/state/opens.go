@@ -188,13 +188,16 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 		Handle: grant.Handle, User: request.User, Share: request.Share, Object: request.Object,
 		ID: FileID{Persistent: table.nextPersistent, Volatile: table.nextVolatile}, Binding: request.Binding,
 		ClientGUID: request.ClientGUID, CreateGUID: request.CreateGUID, CreateParameters: request.CreateParameters,
-		GrantedAccess: request.GrantedAccess, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
+		GrantedAccess: request.GrantedAccess, CreateAction: grant.CreateAction, SharingIntent: request.SharingIntent, Sharing: request.Sharing,
 		DeleteOnClose: grant.DeleteOnClose, WriteThrough: grant.WriteThrough,
 		Durable: grant.DurableTimeout > 0, DurableTimeout: grant.DurableTimeout,
 	}
-	if grant.Lease.State != 0 {
+	joining := table.lease(request.Object, leaseIdentity{client: grant.Lease.ClientGUID, key: grant.Lease.Key}) != nil
+	if grant.Lease.State != 0 || joining {
 		open.LeaseKey = grant.Lease.Key
-		table.commitLease(request.Object, grant.Lease)
+		if grant.Lease.State != 0 {
+			table.commitLease(request.Object, grant.Lease)
+		}
 	}
 	table.releaseReservation(reservation, request)
 	table.opens[open.ID.Persistent] = &openEntry{Open: open, deleteName: grant.DeleteName}
@@ -230,7 +233,7 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 	if status := table.validateLease(request, reservation, grant); status != smb.StatusSuccess {
 		return status
 	}
-	if grant.DurableTimeout != 0 && (grant.Lease.State&smb.LeaseHandle == 0 || request.CreateGUID == (GUID{})) {
+	if grant.DurableTimeout != 0 && (!table.durableLeaseEligible(request, grant.Lease) || request.CreateGUID == (GUID{})) {
 		return smb.StatusInvalidParameter
 	}
 	return smb.StatusSuccess
@@ -378,7 +381,7 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
 	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })
-	table.releaseLeases(record)
+	table.releaseLeases(record, open)
 	table.refreshDelete(record)
 	// A pending base deletion takes precedence when the inode's last open closes.
 	baseKey := smb.ObjectKey{Inode: key.Inode}

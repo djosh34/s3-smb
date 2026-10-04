@@ -10,10 +10,12 @@ func commandHandlers() map[wire.Command]handler {
 		wire.Flush:          handleFlush,
 		wire.Read:           handleRead,
 		wire.Write:          handleWrite,
+		wire.Lock:           handleLock,
 		wire.IOCTL:          handleIOCTL,
 		wire.Echo:           handleEcho,
 		wire.QueryDirectory: handleQueryDirectory,
 		wire.QueryInfo:      handleQueryInfo,
 		wire.SetInfo:        handleSetInfo,
+		wire.OplockBreak:    handleOplockBreak,
 	}
 }

@@ -31,21 +31,27 @@ type Reply struct {
 // NextCommand links and padding; SendRaw bypasses all encoding. Receive checks
 // pending and final async identities. ReceiveRaw bypasses that check, so callers
 // must not mix it with Receive for a pending request.
-// Send and Receive may run concurrently, with only one receiver. Context
+// Send and Receive may run concurrently, with only one receiver across Receive,
+// WaitLeaseBreak and ReceiveRaw. Receive queues lease breaks instead of returning
+// them as replies; WaitLeaseBreak queues normal replies instead. Do not mix
+// ReceiveRaw with either decoded receiver. Context
 // cancellation interrupts I/O. An I/O error closes the connection; requests are
 // never retried. Callers must use NewClient and close the client when done.
 // Login enables protection. Send changes signing flags and signatures, but
 // preserves supplied identities and credits. Raw I/O remains unchanged.
 type Client struct {
-	conn         net.Conn
-	protector    *crypt.Protector
-	pending      map[uint64]pendingReply
-	sendSlot     chan struct{}
-	closeErr     error
-	protectionMu sync.RWMutex
-	sessionID    uint64
-	closeOnce    sync.Once
-	encrypted    bool
+	conn              net.Conn
+	protector         *crypt.Protector
+	pending           map[uint64]pendingReply
+	sendSlot          chan struct{}
+	closeErr          error
+	replies           []Reply
+	leaseBreaks       []wire.LeaseBreakNotification
+	protectionMu      sync.RWMutex
+	sessionID         uint64
+	closeOnce         sync.Once
+	encrypted         bool // Outgoing requests and their replies use GCM.
+	requireEncryption bool // SESSION_SETUP requires GCM for notifications too.
 }
 
 type pendingReply struct {

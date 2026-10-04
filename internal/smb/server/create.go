@@ -50,7 +50,8 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 	if create.Options&fileDirectoryFile != 0 && create.Disposition != fileCreateDisposition && create.Disposition != fileOpen && create.Disposition != fileOpenIf {
 		return create, smb.StatusInvalidParameter
 	}
-	return create, smb.StatusSuccess
+	_, status := decodeCreateLease(create)
+	return create, status
 }
 
 // expandCreateAccess removes generic bits before storing the granted mask.
@@ -119,16 +120,12 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	}
 }
 
-func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status) {
-	open := state.OpenRequest{
-		Object: resolved.Object, Binding: request.Binding(), User: request.Session.User,
-		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
-		GrantedAccess: granted, Sharing: state.ShareMode(create.ShareAccess & 7),
+func reserveCreate(request RequestContext, create wire.CreateRequest, resolved smb.Resolved, granted uint32) (state.Reservation, smb.Status, error) {
+	open, err := openRequestForCreate(request, create, resolved.Object, granted)
+	if err != nil {
+		return 0, smb.StatusInvalidParameter, errors.Join(smb.ErrInvalidParameter, err)
 	}
-	if create.Disposition == fileSupersede || create.Options&fileDeleteOnClose != 0 {
-		open.SharingIntent |= state.RightDelete
-	}
-	return request.Opens.Reserve(open)
+	return reserveCreateLease(request, create, resolved, open)
 }
 
 func createGrant(create wire.CreateRequest, resolved smb.Resolved, handle smb.Handle) state.Grant {
@@ -163,11 +160,10 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 	if status = checkDeleteOnClose(create.Options, granted); status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	result, unlock, err := createLocked(ctx, request, create, granted)
-	if unlock != nil {
-		unlock()
+	if result, handled, err := replayCreate(ctx, request, message, create); handled {
+		return result, err
 	}
-	return result, err
+	return runCreateWithLeases(ctx, request, create, granted)
 }
 
 // createLocked holds the parent from selection through grant publication. The
@@ -203,9 +199,9 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 			return reply{}, err
 		}
 	}
-	reservation, status := reserveCreate(request, create, resolved, granted)
-	if status != smb.StatusSuccess {
-		return reply{status: status}, nil
+	reservation, status, err := reserveCreate(request, create, resolved, granted)
+	if status != smb.StatusSuccess || err != nil {
+		return reply{status: status}, err
 	}
 	var handle smb.Handle
 	committed := false
@@ -240,14 +236,22 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if err != nil {
 		return reply{}, err
 	}
-	open, status := request.Opens.Commit(reservation, createGrant(create, resolved, handle))
+	grant := createGrant(create, resolved, handle)
+	if leaseStatus := grantCreateLease(request, create, resolved, reservation, &grant); leaseStatus != smb.StatusSuccess {
+		return reply{status: leaseStatus}, nil
+	}
+	grant.CreateAction = action
+	if durableErr := grantCreateDurable(request, create, reservation, &grant); durableErr != nil {
+		return reply{}, errors.Join(smb.ErrInvalidParameter, durableErr)
+	}
+	open, status := request.Opens.Commit(reservation, grant)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
 	committed = true
 	response.ID = wire.FileID{Persistent: open.ID.Persistent, Volatile: open.ID.Volatile}
 	response.Contexts = contexts
-	body, err := wire.EncodeCreateResponse(response)
+	body, err := encodeGrantedCreate(request, create, resolved, open, response)
 	if err != nil {
 		return reply{}, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, open))
 	}

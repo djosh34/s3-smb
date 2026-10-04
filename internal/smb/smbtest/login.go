@@ -135,7 +135,8 @@ func (client *Client) loginAuthenticate(ctx context.Context, session *Session, o
 				return errors.New("smbtest: incomplete, guest or anonymous session")
 			}
 			client.protectionMu.Lock()
-			client.encrypted = options.Cipher != 0 || decoded.Flags&4 != 0
+			client.requireEncryption = decoded.Flags&smb.SessionEncryptData != 0
+			client.encrypted = options.Cipher != 0 || client.requireEncryption
 			client.protectionMu.Unlock()
 			return nil
 		}
