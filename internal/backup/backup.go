@@ -9,7 +9,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -24,8 +23,7 @@ import (
 type Options struct {
 	StateDir          string
 	DatabasePath      string
-	Interval, Timeout time.Duration // Timeout covers all attempts of one backup.
-	Attempts          int
+	Interval, Timeout time.Duration // Timeout bounds startup backups and receipt verification.
 	Protection        *Protection
 }
 type Receipt struct {
@@ -40,10 +38,11 @@ type Manager struct {
 	receipt Receipt
 	busy    chan struct{}
 	now     func() time.Time
+	wait    func(context.Context, time.Duration) error
 }
 
 func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error) {
-	if m == nil || blob == nil || opts.StateDir == "" || opts.DatabasePath == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Attempts < 1 || opts.Protection == nil {
+	if m == nil || blob == nil || opts.StateDir == "" || opts.DatabasePath == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Protection == nil {
 		return nil, errors.New("invalid metadata backup options")
 	}
 	if opts.Protection.interval != opts.Interval || opts.Timeout > opts.Protection.budget {
@@ -57,13 +56,26 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 	if err := cleanupSnapshotStaging(filepath.Join(opts.StateDir, "backup-staging")); err != nil {
 		return nil, err
 	}
-	return &Manager{meta: m, blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now}, nil
+	return &Manager{meta: m, blob: blob, opts: opts, busy: make(chan struct{}, 1), now: time.Now, wait: waitForRetry}, nil
 }
 
-// Backup takes one metadata backup within Timeout. On timeout it closes
-// protection. The caller calls Wait before closing the database or state lock.
+// Backup retries until the last verified backup's protection expires, or until
+// Timeout at startup. On failure it closes protection. The caller calls Wait
+// before closing the database or state lock.
 func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
-	ctx, cancel := context.WithTimeout(ctx, m.opts.Timeout)
+	m.mu.Lock()
+	previous := m.receipt
+	m.mu.Unlock()
+	now := m.now().Round(0)
+	deadline := now.Add(m.opts.Timeout)
+	if !previous.Snapshot.IsZero() {
+		if err := m.opts.Protection.Check(); err != nil {
+			m.opts.Protection.Close()
+			return Receipt{}, err
+		}
+		deadline = previous.Snapshot.Add(m.opts.Interval + m.opts.Protection.budget)
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline.Sub(now))
 	defer cancel()
 	select {
 	case m.busy <- struct{}{}:
@@ -78,9 +90,12 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 	done := make(chan result, 1)
 	go func() {
 		defer func() { <-m.busy }()
-		r, e := m.attempts(ctx)
+		r, e := m.attempts(ctx, deadline)
 		if e == nil {
 			e = ctx.Err()
+		}
+		if e == nil && !m.now().Round(0).Before(deadline) {
+			e = context.DeadlineExceeded
 		}
 		if e == nil {
 			e = m.save(r)
@@ -99,7 +114,6 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 	}()
 	var r Receipt
 	var err error
-	deadline := m.now().Round(0).Add(m.opts.Timeout)
 	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 wait:
@@ -121,6 +135,9 @@ wait:
 	if err == nil {
 		err = ctx.Err()
 	}
+	if err == nil && !m.now().Round(0).Before(deadline) {
+		err = context.DeadlineExceeded
+	}
 	if err == nil {
 		err = m.opts.Protection.protect(r.Snapshot)
 	}
@@ -138,13 +155,17 @@ wait:
 // before closing the metadata database.
 func (m *Manager) Wait() { m.busy <- struct{}{}; <-m.busy }
 
-func (m *Manager) attempts(ctx context.Context) (Receipt, error) {
+func (m *Manager) attempts(ctx context.Context, deadline time.Time) (Receipt, error) {
 	var last error
-	for i := 0; i < m.opts.Attempts; i++ {
+	backoff := time.Second
+	for {
 		if err := ctx.Err(); err != nil {
-			return Receipt{}, err
+			return Receipt{}, errors.Join(err, last)
 		}
 		now := m.now().UTC().Round(0)
+		if !now.Before(deadline) {
+			return Receipt{}, errors.Join(context.DeadlineExceeded, last)
+		}
 		key := "meta/snapshot-" + now.Format("2006-01-02-150405") + ".db.gz"
 		if err := m.reserve(key); err != nil {
 			last = err
@@ -159,15 +180,27 @@ func (m *Manager) attempts(ctx context.Context) (Receipt, error) {
 			}
 			last = err
 		}
-		if i+1 < m.opts.Attempts {
-			select {
-			case <-ctx.Done():
-				return Receipt{}, ctx.Err()
-			case <-time.After(time.Second):
-			}
+		delay := min(backoff, deadline.Sub(m.now().Round(0)))
+		if delay <= 0 {
+			return Receipt{}, errors.Join(context.DeadlineExceeded, last)
 		}
+		slog.Warn("metadata backup failed; retrying", "error", last, "retry_in", delay)
+		if err := m.wait(ctx, delay); err != nil {
+			return Receipt{}, errors.Join(err, last)
+		}
+		backoff = min(2*backoff, 30*time.Second)
 	}
-	return Receipt{}, fmt.Errorf("metadata backup failed after %d attempts: %w", m.opts.Attempts, last)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 func (m *Manager) reserve(key string) error {
 	// One empty file per backup name, kept across restarts. With a single
@@ -275,8 +308,8 @@ func (m *Manager) Reuse(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
-// Run takes a backup each interval and returns the first failure. It closes
-// protection when it returns, also on cancellation. The caller stops SMB.
+// Run takes a backup each interval, retrying failures while protection is valid.
+// It closes protection when it returns, also on cancellation. The caller stops SMB.
 func (m *Manager) Run(ctx context.Context) error {
 	defer m.opts.Protection.Close()
 	for {

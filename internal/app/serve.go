@@ -294,7 +294,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Protection: r.protection})
 		if err != nil {
 			return err
 		}
