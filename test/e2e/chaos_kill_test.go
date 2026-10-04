@@ -18,8 +18,7 @@ func TestChaosKillRestart(t *testing.T) {
 	seed := chaos.Seed(t)
 	data := chaos.Rand(seed, "kill-data")
 	faults := chaos.Rand(seed, "kill-faults")
-	// Switch to newChaosFixture when the harness fixture helper lands.
-	f := newFixture(t, false)
+	f := newChaosFixture(t, false)
 	f.interval = "1h"
 	f.cacheSize = "0 MB"
 	s3Proxy := newFaultProxy(t, f.endpoint)
