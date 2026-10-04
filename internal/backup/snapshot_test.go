@@ -44,11 +44,18 @@ func TestSnapshotWhileWriterHasUncommittedChanges(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
+	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0600 {
+		t.Fatal("snapshot is not private", st, err)
+	}
 	snapshot, err := openSnapshotDB(path, "ro")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer snapshot.Close()
+	defer func() {
+		if err := snapshot.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var got int64
 	if err = snapshot.QueryRowContext(ctx, "SELECT value FROM jfs_counter WHERE name='nextInode'").Scan(&got); err != nil {
 		t.Fatal(err)
@@ -64,7 +71,11 @@ func TestSnapshotWhileWriterHasUncommittedChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer f.Close()
+	defer func() {
+		if err := f.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)

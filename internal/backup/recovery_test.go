@@ -34,7 +34,11 @@ func queryCount(t *testing.T, path, table string) int {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer db.Close()
+	defer func() {
+		if err := db.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
 	var count int
 	if err = db.QueryRowContext(context.Background(), "SELECT count(*) FROM "+table).Scan(&count); err != nil {
 		t.Fatal(err)
