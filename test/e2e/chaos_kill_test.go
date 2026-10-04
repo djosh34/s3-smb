@@ -122,7 +122,7 @@ func chaosKillCheckpoint(t *testing.T, f *fixture, ledger *chaos.Ledger, names [
 	for _, name := range names {
 		chaosKillFlushWrite(t, share, ledger, name, chaosKillBytes(rng, 128<<10))
 	}
-	if err := ledger.CheckAcknowledged(share.ReadFile); err != nil {
+	if err := ledger.CheckAcknowledged(chaosRead(share.ReadFile)); err != nil {
 		t.Fatalf("acknowledged checkpoint: %v", err)
 	}
 }
@@ -197,7 +197,7 @@ func chaosKillCheckFlushed(t *testing.T, f *fixture, ledger *chaos.Ledger) {
 	t.Helper()
 	share, closeShare := f.share()
 	defer closeShare()
-	if err := ledger.CheckFlushed(share.ReadFile); err != nil {
+	if err := ledger.CheckFlushed(chaosRead(share.ReadFile)); err != nil {
 		t.Fatalf("rule 2 after restart: %v", err)
 	}
 	entries, err := share.ReadDir(".")
