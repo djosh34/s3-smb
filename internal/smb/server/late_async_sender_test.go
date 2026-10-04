@@ -94,7 +94,7 @@ func TestLateAsyncCompletionRacesPartialWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	release := newAsyncGate()
-	server.handlers[wire.Read] = func(ctx context.Context, _ wire.Message) (reply, error) {
+	server.handlers[wire.Read] = func(ctx context.Context, _ RequestContext, _ wire.Message) (reply, error) {
 		select {
 		case <-release.done:
 			return reply{status: smb.StatusFileLockConflict}, nil
