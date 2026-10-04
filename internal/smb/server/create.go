@@ -43,17 +43,17 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 
 // expandCreateAccess removes generic bits before storing the granted mask.
 func expandCreateAccess(desired uint32) uint32 {
-	granted := desired &^ 0xf2000000
-	if desired&0x80000000 != 0 {
-		granted |= 0x00120089 // FILE_GENERIC_READ.
+	granted := desired &^ (genericRead | genericWrite | genericExecute | genericAll | maximumAllowed)
+	if desired&genericRead != 0 {
+		granted |= fileGenericRead
 	}
-	if desired&0x40000000 != 0 {
-		granted |= 0x00120116 // FILE_GENERIC_WRITE.
+	if desired&genericWrite != 0 {
+		granted |= fileGenericWrite
 	}
-	if desired&0x20000000 != 0 {
-		granted |= 0x001200a0 // FILE_GENERIC_EXECUTE.
+	if desired&genericExecute != 0 {
+		granted |= fileGenericExecute
 	}
-	if desired&0x12000000 != 0 { // GENERIC_ALL or MAXIMUM_ALLOWED.
+	if desired&(genericAll|maximumAllowed) != 0 {
 		granted |= fileAllAccess
 	}
 	return granted
