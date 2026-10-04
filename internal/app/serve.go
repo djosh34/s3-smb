@@ -388,6 +388,11 @@ func unexpectedServeError(err error) error {
 		return result
 	}
 	if errors.Is(err, net.ErrClosed) {
+		for cause := errors.Unwrap(err); cause != nil; cause = errors.Unwrap(cause) {
+			if _, ok := cause.(interface{ Unwrap() []error }); ok {
+				return unexpectedServeError(cause)
+			}
+		}
 		return nil
 	}
 	return err
