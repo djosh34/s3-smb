@@ -122,7 +122,7 @@ func TestLockVectorsNeverWait(t *testing.T) {
 					message := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 32, Length: 8, Flags: flags}, wire.LockElement{Offset: offset, Length: 8, Flags: flags})
 					if compound {
 						prefix := lockMessage(t, session, id, other.ID, wire.LockElement{Offset: 64 + offset, Length: 8, Flags: flags})
-						message.Header.MessageID++
+						message = lockMessage(t, session, id+1, state.FileID{Persistent: math.MaxUint64, Volatile: math.MaxUint64}, wire.LockElement{Offset: 32, Length: 8, Flags: flags}, wire.LockElement{Offset: offset, Length: 8, Flags: flags})
 						message.Header.Flags |= wire.FlagRelated
 						message.Header.SessionID, message.Header.TreeID = math.MaxUint64, math.MaxUint32
 						lockExchange(ctx, t, client, []smb.Status{smb.StatusSuccess, want}, prefix, message)
