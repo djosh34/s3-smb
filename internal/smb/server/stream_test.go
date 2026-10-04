@@ -112,7 +112,10 @@ func TestStreamRejectsTruncatedReply(t *testing.T) {
 		name   string
 		length int
 	}{
-		{name: "prefix", length: 2},
+		{name: "one prefix byte", length: 1},
+		{name: "two prefix bytes", length: 2},
+		{name: "three prefix bytes", length: 3},
+		{name: "prefix only", length: 4},
 		{name: "body", length: len(reply) - 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {

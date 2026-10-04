@@ -162,7 +162,11 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 	var payload []byte
 	var readErr error
 	if wantReply {
-		payload, readErr = readFrame(conn, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
+		reader := &streamReplyReader{Reader: conn}
+		payload, readErr = readFrame(reader, max(smb.MaxTransactSize, smb.MaxReadSize, smb.MaxWriteSize)+smb.CreditUnit)
+		if reader.started && streamPeerClosed(readErr) {
+			readErr = io.ErrUnexpectedEOF
+		}
 		if readErr != nil {
 			readErr = fmt.Errorf("read reply: %w", readErr)
 			// Unblock the writer before waiting for its result.
@@ -195,6 +199,17 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 		}
 	}
 	return messages, false, nil
+}
+
+type streamReplyReader struct {
+	io.Reader
+	started bool
+}
+
+func (reader *streamReplyReader) Read(buffer []byte) (int, error) {
+	n, err := reader.Reader.Read(buffer)
+	reader.started = reader.started || n > 0
+	return n, err
 }
 
 func streamPeerClosed(err error) bool {
