@@ -26,7 +26,7 @@ import (
 // 524,288 eight-MiB bands describe a fully allocated four-TiB sparsebundle.
 // Seed metadata, not four TiB of content. A real SMB sentinel checks recovery.
 func TestNamespaceBackupMeasurements(t *testing.T) {
-	bands := 512
+	bands := 4096
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
 		bands = 524288
 	}
@@ -320,10 +320,11 @@ func stagingBytes(root string) (int64, error) {
 func measuredStart(t *testing.T, f *fixture) (*daemon, int64) {
 	t.Helper()
 	done := make(chan struct{})
-	result := make(chan struct {
+	type observation struct {
 		peak int64
 		err  error
-	}, 1)
+	}
+	result := make(chan observation, 1)
 	go func() {
 		ticker := time.NewTicker(5 * time.Millisecond)
 		defer ticker.Stop()
@@ -331,10 +332,7 @@ func measuredStart(t *testing.T, f *fixture) (*daemon, int64) {
 		for {
 			bytes, err := stagingBytes(f.root)
 			if err != nil {
-				result <- struct {
-					peak int64
-					err  error
-				}{peak, err}
+				result <- observation{peak, err}
 				return
 			}
 			if bytes > peak {
@@ -342,10 +340,7 @@ func measuredStart(t *testing.T, f *fixture) (*daemon, int64) {
 			}
 			select {
 			case <-done:
-				result <- struct {
-					peak int64
-					err  error
-				}{peak, nil}
+				result <- observation{peak, nil}
 				return
 			case <-ticker.C:
 			}

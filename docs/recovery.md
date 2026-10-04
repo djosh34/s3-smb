@@ -93,6 +93,67 @@ If recovery fails, do not delete objects, generate a new key, change the
 encryption setting or format the bucket to get past the error. s3-smb never falls
 back to an older backup on its own. Keep the logs and the bucket as they are.
 
+## Measured snapshot costs and limits
+
+On 4 October 2026, the Linux ARM64 daemon at `75ee83b` backed up a namespace
+of 524,288 eight-MiB band files, each with two four-MiB slices. That represents
+a fully allocated four-TiB sparsebundle, larger than a typical one-to-three-TiB
+Time Machine dataset. The fixture seeds metadata offline, not four TiB of data.
+It also backs up and restores a real file over SMB. Encryption is enabled so
+publication and readback exercise the whole-object buffers.
+
+The run used local MinIO on an eight-CPU, 11-GiB shared Linux VM:
+
+| Measurement | Result |
+| --- | --- |
+| Encrypted snapshot size | 21,303,280 bytes (20.3 MiB) |
+| Snapshot start to durable receipt | 1.12 s |
+| Backup daemon startup to SMB readiness | 1.43 s |
+| Cold recovery to SMB readiness | 2.04 s |
+| Backup daemon peak RSS | 290,353,152 bytes (277 MiB) |
+| Recovery daemon peak RSS | 283,197,440 bytes (270 MiB) |
+| Backup staging disk high-water sample | 134,287,360 bytes (128 MiB) |
+| Recovery staging disk high-water sample | 134,152,192 bytes (128 MiB) |
+
+RSS comes from the daemon's Linux `VmHWM`, not the test runner's Go heap.
+Staging measurements sample allocated file blocks every 5 ms in the backup and
+recovery staging directories, including SQLite sidecars. They can miss a short
+peak and exclude the source database, file data and unrelated temporary files.
+Cold recovery uses an empty local state and read-only startup. Its time includes
+key unlocking, identity inspection, download, validation, session cleanup and
+SMB startup, with no new backup. These are quiet-daemon costs, not measurements
+under concurrent client writes. Slice history, extended attributes and larger
+namespaces can increase them.
+
+`TestNamespaceBackupMeasurements` runs 524,288 bands in gate mode and 4,096 in
+PR mode. Both fail above 1 GiB peak daemon RSS or 60 s for backup publication or
+cold recovery. The memory ceiling is over 3.6 times the measured peak; the time
+ceiling is over 29 times the slower measured path. The test records JSON in the
+check's log directory and CI saves it as `namespace-measurement`. Run the shared
+machine's checks under `flock /tmp/s3-smb-check.lock scripts/check.sh --gate`.
+
+The encrypted wrapper still holds whole compressed objects during encryption,
+decryption and conditional publication. This run found no memory problem that
+justifies changing those paths. It does not establish a namespace cap.
+
+Keep the existing limits. A backup may use the whole `backup.interval` (one hour
+by default), leaving ample room over this 1.12 s local result and a five-minute
+S3 outage. The 30 s dial and response-header limits do not cap streaming body
+time. Each chunk read or write has 60 s; a four-MiB block needs about 68 KiB/s to
+finish within that budget, before overhead. Local MinIO results are not a promise
+about remote S3 latency, but provide no measured reason to raise these limits or
+add settings. Retry values remain `Meta.Retries=53` and chunk `MaxRetries=12`.
+They cover a five-minute outage for uploads, flushes and one slice reader at a
+time; concurrent cold reads are tracked separately in issue #297. Recovery still
+returns the last metadata backup, not writes made after it.
+
+The Mac acceptance workflow was dispatched on this branch as
+[run 37169493777](https://github.com/djosh34/s3-smb/actions/runs/37169493777).
+It is still queued. The harness records snapshot object bytes and time from the
+snapshot timestamp to the receipt's modification time in
+`native-point-after-completion` events; it does not depend on JSON dump names.
+The judgement above uses Linux numbers until the Mac evidence is available.
+
 ## Why retention matters
 
 An old metadata backup may point at data blocks that no longer exist. JuiceFS
