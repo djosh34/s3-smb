@@ -48,16 +48,16 @@ func (connection *connection) decodePayload(payload []byte) ([]wire.Message, err
 	// placeholders affect identity lookup, not the bytes covered by signatures.
 	connection.rememberProtection(messages, encrypted)
 	var preceding uint64
-	for _, message := range messages {
+	for index, message := range messages {
 		header := message.Header
 		id := header.SessionID
-		if header.Flags&wire.FlagRelated != 0 {
+		if index > 0 && header.Flags&wire.FlagRelated != 0 {
 			id = preceding
 		}
 		preceding = id
 		session := connection.sessions[id]
 		if encrypted != nil {
-			if id != encrypted.identity.SessionID || header.Command == wire.Negotiate || header.Command == wire.SessionSetup {
+			if index == 0 && header.Flags&wire.FlagRelated != 0 || id != encrypted.identity.SessionID || header.Command == wire.Negotiate || header.Command == wire.SessionSetup {
 				return nil, errors.New("encrypted compound has an invalid session or command")
 			}
 			continue
@@ -94,9 +94,9 @@ func verifyPlaintextRequest(message wire.Message, session *sessionEntry) error {
 // policy denial. Every member's reply uses this snapshot, never a later lookup.
 func (connection *connection) rememberProtection(messages []wire.Message, encrypted *sessionEntry) {
 	var preceding uint64
-	for _, message := range messages {
+	for index, message := range messages {
 		id := message.Header.SessionID
-		if message.Header.Flags&wire.FlagRelated != 0 {
+		if index > 0 && message.Header.Flags&wire.FlagRelated != 0 {
 			id = preceding
 		}
 		preceding = id

@@ -10,13 +10,10 @@ import (
 // validateCompound decodes all known bodies and checks charges before dispatch.
 // A bad body rejects the compound as a whole, without running a prefix handler.
 func validateCompound(messages []wire.Message) error {
-	for index, message := range messages {
+	for _, message := range messages {
 		header := message.Header
 		if header.Flags&wire.FlagResponse != 0 || header.Flags&wire.FlagAsync != 0 && header.Command != wire.Cancel {
 			return errors.New("request uses a response header")
-		}
-		if index == 0 && header.Flags&wire.FlagRelated != 0 {
-			return errors.New("first compound member is related")
 		}
 		if (header.Command == wire.Negotiate || header.Command == wire.SessionSetup) && len(messages) != 1 {
 			return errors.New("NEGOTIATE and SESSION_SETUP cannot be compounded")
