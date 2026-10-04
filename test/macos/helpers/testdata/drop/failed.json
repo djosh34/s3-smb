@@ -1,0 +1,7 @@
+[
+  {
+    "senderImagePath": "/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs",
+    "processImagePath": "/kernel",
+    "eventMessage": "smb_iod_reconnect: id 1 Reconnect Tree Connect failed to share TimeMachine on server 127.0.0.1 error = 60"
+  }
+]
