@@ -165,6 +165,20 @@ func (connection *connection) send(messages []wire.Message) error {
 	if len(messages) == 0 {
 		return nil
 	}
+	if connection.mixedEncryption(messages) {
+		// One transform belongs to one session. Policy-error replies to a
+		// plaintext compound spanning encrypted sessions need separate frames.
+		for _, message := range messages {
+			if err := connection.sendFrame([]wire.Message{message}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return connection.sendFrame(messages)
+}
+
+func (connection *connection) sendFrame(messages []wire.Message) error {
 	payload, err := connection.encodePayload(messages)
 	if err != nil {
 		return err
@@ -213,7 +227,7 @@ func (connection *connection) dispatch(ctx context.Context, message wire.Message
 		return connection.negotiate(message)
 	}
 	if message.Header.Command == wire.SessionSetup {
-		return connection.sessionSetup(message)
+		return connection.sessionSetup(ctx, message)
 	}
 	if message.Header.Command > wire.OplockBreak {
 		return reply{status: smb.StatusNotSupported}, nil

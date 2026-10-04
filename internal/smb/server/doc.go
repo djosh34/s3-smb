@@ -67,6 +67,7 @@ type Server struct {
 	parents          map[smb.Inode]*parentGuard
 	handlers         map[wire.Command]handler
 	connections      map[*connection]struct{}
+	sessions         map[uint64]*connection
 	listeners        map[*ownedListener]struct{}
 	shutdownDone     chan struct{}
 	scavengerStop    chan struct{}

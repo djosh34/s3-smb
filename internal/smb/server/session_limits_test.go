@@ -41,7 +41,7 @@ func TestConnectionBoundsIncompleteSessionExchanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := connection.sessionSetup(wire.Message{Header: wire.Header{Command: wire.SessionSetup}, Body: body})
+	result, err := connection.sessionSetup(t.Context(), wire.Message{Header: wire.Header{Command: wire.SessionSetup}, Body: body})
 	if err != nil || result.status != smb.StatusInsufficientResources || len(connection.sessions) != 64 {
 		t.Fatalf("session limit: %+v %v", result, err)
 	}

@@ -403,7 +403,7 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 		return 0, nil
 	}
 	if h.key.Stream != "" {
-		return s.writeStream(ctx, h.key, src, offset)
+		return s.writeStream(ctx, h.key, h.state, src, offset)
 	}
 	live := h.state.snapshot()
 	if h.state.writer == nil {
@@ -419,7 +419,7 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 	return len(src), nil
 }
 
-func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, offset uint64) (int, error) {
+func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, st *inodeState, src []byte, offset uint64) (int, error) {
 	end := offset + uint64(len(src))
 	if end > maxStreamSize {
 		return 0, smb.ErrFileTooLarge
@@ -436,7 +436,7 @@ func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, off
 	if err = s.saveStream(ctx, key, data); err != nil {
 		return 0, err
 	}
-	if err = s.touchStream(ctx, key.Inode); err != nil {
+	if err = s.touchStream(ctx, key.Inode, st); err != nil {
 		return 0, err
 	}
 	return len(src), nil
@@ -470,7 +470,7 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		if err = s.saveStream(ctx, key, data); err != nil {
 			return err
 		}
-		return s.touchStream(ctx, key.Inode)
+		return s.touchStream(ctx, key.Inode, st)
 	}
 	if err = s.flush(ctx, st); err != nil {
 		return err
