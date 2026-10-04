@@ -143,7 +143,7 @@ func TestFinalSessionSetupMatchesTranscript(t *testing.T) {
 }
 
 func TestPlaintextCompoundVerifiesEveryMemberBeforeDispatch(t *testing.T) {
-	for _, tamper := range []int{-1, 0, 1} {
+	for _, tamper := range []int{-1, 0, 1, 2} {
 		t.Run(fmt.Sprintf("member_%d", tamper), func(t *testing.T) { checkPlainCompound(t, tamper) })
 	}
 }
@@ -166,31 +166,52 @@ func checkPlainCompound(t *testing.T, tamper int) {
 	first.Header.SessionID = id
 	second.Header.SessionID, second.Header.Flags = ^uint64(0), wire.FlagRelated
 	payload := signMessages(t, protector, first, second)
-	if tamper >= 0 {
+	if tamper == 2 {
+		payload[72+16] &^= byte(wire.FlagSigned)
+	} else if tamper >= 0 {
 		payload[tamper*72+48] ^= 1
 	}
 	sendPayload(ctx, t, client, payload)
 	response, err := client.Receive(ctx)
-	if tamper >= 0 {
-		if err == nil || calls.Load() != 0 {
-			t.Fatal("tampered compound reached a handler")
-		}
-		return
-	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(response.Messages) != 2 || calls.Load() != 2 {
+	want, wantCalls := smb.StatusSuccess, int32(2)
+	if tamper >= 0 {
+		want, wantCalls = smb.StatusAccessDenied, 0
+	}
+	if len(response.Messages) != 2 || calls.Load() != wantCalls {
 		t.Fatalf("compound: %+v", response.Messages)
 	}
 	for _, member := range response.Messages {
-		if member.Header.SessionID != id || member.Header.Status != smb.StatusSuccess {
+		if member.Header.SessionID != id || member.Header.Status != want {
 			t.Fatalf("related identity: %+v", member.Header)
 		}
 		if verifyErr := protector.Verify(member.Raw); verifyErr != nil {
 			t.Fatal(verifyErr)
 		}
 	}
+	message := echo(t, 5)
+	message.Header.SessionID = id
+	sendPayload(ctx, t, client, signMessages(t, protector, message))
+	if next := receiveSignedEcho(ctx, t, client, protector); next.Header.Status != smb.StatusSuccess || calls.Load() != wantCalls+1 {
+		t.Fatal("signature refusal closed the connection")
+	}
+}
+
+func receiveSignedEcho(ctx context.Context, t *testing.T, client *smbtest.Client, protector *crypt.Protector) wire.Message {
+	t.Helper()
+	response, err := client.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Messages) != 1 {
+		t.Fatal("expected one ECHO reply")
+	}
+	if err := protector.Verify(response.Messages[0].Raw); err != nil {
+		t.Fatal(err)
+	}
+	return response.Messages[0]
 }
 
 func TestEncryptionRejectsChangedTagAndPlaintextBeforeDispatch(t *testing.T) {
@@ -235,6 +256,10 @@ func checkEncryptionInput(t *testing.T, mode string) {
 	}
 	sendPayload(ctx, t, client, payload)
 	response, err := client.ReceiveRaw(ctx)
+	if mode == "plaintext" {
+		checkPlaintextDenial(ctx, t, client, protector, response, err, message, &calls)
+		return
+	}
 	if mode != "valid" {
 		if err == nil || calls.Load() != 0 {
 			t.Fatal("invalid protection reached a handler")
