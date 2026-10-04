@@ -1,6 +1,8 @@
 package server
 
 import (
+	"context"
+
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -30,6 +32,7 @@ type Tree struct {
 // before executing cleanup returned by Opens. Resolve request IDs with FileID,
 // then set reply.fileID to the ID used or created so related members inherit it.
 type RequestContext struct {
+	server  *Server
 	Storage smb.Storage
 	Opens   *state.Table
 	Tree    Tree
@@ -51,11 +54,17 @@ func (request RequestContext) FileID(id wire.FileID) (wire.FileID, smb.Status) {
 	return id, smb.StatusSuccess
 }
 
+// Cleanup runs CloseActions from the open table through the one cleanup path.
+// CLOSE and lease acknowledgment handlers use it to drain active references.
+func (request RequestContext) Cleanup(ctx context.Context, actions []state.CloseAction) error {
+	return request.server.cleanup(ctx, actions)
+}
+
 // Binding identifies the session and tree for open-table operations.
 func (request RequestContext) Binding() state.Binding {
 	return state.Binding{SessionID: request.Session.SessionID, TreeID: request.Tree.TreeID}
 }
 
 func (connection *connection) requestContext() RequestContext {
-	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State}
+	return RequestContext{Storage: connection.server.options.Storage, Opens: connection.server.options.State, server: connection.server}
 }
