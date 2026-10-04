@@ -1,6 +1,6 @@
 package wire
 
-// DecodeFileBasicInformation reads the MS-FSCC class buffer.
+// DecodeFileBasicInformation reads the class prefix, ignoring extra SET_INFO bytes.
 func DecodeFileBasicInformation(data []byte) (FileBasicInformation, error) {
 	r := reader{data: data}
 	var v FileBasicInformation
@@ -10,7 +10,7 @@ func DecodeFileBasicInformation(data []byte) (FileBasicInformation, error) {
 	v.Changed = Filetime(r.u64())
 	v.Attributes = r.u32()
 	r.skip(4)
-	return v, r.exact()
+	return v, r.err
 }
 
 // EncodeFileBasicInformation writes fields in MS-FSCC order.
@@ -203,12 +203,12 @@ func EncodeFileIDInformation(v FileIDInformation) ([]byte, error) {
 	return b.data, nil
 }
 
-// DecodeFileDispositionInformation reads the MS-FSCC class buffer.
+// DecodeFileDispositionInformation reads the class prefix, ignoring extra bytes.
 func DecodeFileDispositionInformation(data []byte) (FileDispositionInformation, error) {
 	r := reader{data: data}
 	var v FileDispositionInformation
 	v.DeletePending = r.boolean()
-	return v, r.exact()
+	return v, r.err
 }
 
 // EncodeFileDispositionInformation writes fields in MS-FSCC order.
@@ -218,12 +218,12 @@ func EncodeFileDispositionInformation(v FileDispositionInformation) ([]byte, err
 	return b.data, nil
 }
 
-// DecodeFileEndOfFileInformation reads the MS-FSCC class buffer.
+// DecodeFileEndOfFileInformation reads the class prefix, ignoring extra bytes.
 func DecodeFileEndOfFileInformation(data []byte) (FileEndOfFileInformation, error) {
 	r := reader{data: data}
 	var v FileEndOfFileInformation
 	v.EndOfFile = r.u64()
-	return v, r.exact()
+	return v, r.err
 }
 
 // EncodeFileEndOfFileInformation writes fields in MS-FSCC order.
@@ -233,12 +233,12 @@ func EncodeFileEndOfFileInformation(v FileEndOfFileInformation) ([]byte, error) 
 	return b.data, nil
 }
 
-// DecodeFileAllocationInformation reads the MS-FSCC class buffer.
+// DecodeFileAllocationInformation reads the class prefix, ignoring extra bytes.
 func DecodeFileAllocationInformation(data []byte) (FileAllocationInformation, error) {
 	r := reader{data: data}
 	var v FileAllocationInformation
 	v.AllocationSize = r.u64()
-	return v, r.exact()
+	return v, r.err
 }
 
 // EncodeFileAllocationInformation writes fields in MS-FSCC order.

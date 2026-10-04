@@ -82,7 +82,7 @@ func EncodeFileAllInformation(v FileAllInformation) ([]byte, error) {
 	return b.finish()
 }
 
-// DecodeFileRenameInformation preserves the destination and root identity.
+// DecodeFileRenameInformation reads the declared name and ignores extra bytes.
 func DecodeFileRenameInformation(data []byte) (FileRenameInformation, error) {
 	r := reader{data: data}
 	var v FileRenameInformation
@@ -91,9 +91,6 @@ func DecodeFileRenameInformation(data []byte) (FileRenameInformation, error) {
 	v.RootDirectory = r.u64()
 	n := r.u32()
 	v.Name = r.text(r.region(20, uint64(n), 20, 2))
-	if uint64(n)+20 != uint64(len(data)) {
-		r.err = errMalformed
-	}
 	return v, r.err
 }
 

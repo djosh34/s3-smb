@@ -15,6 +15,7 @@ func DecodeFiletime(value Filetime) (time.Time, error) {
 	ticks := uint64(value)
 	seconds := ticks / filetimeTicksPerSecond
 	nanos := ticks % filetimeTicksPerSecond * 100
+	// Division already bounds both values; these checks make that visible to gosec.
 	if seconds > 9223372036854775807 || nanos > 9223372036854775807 {
 		return time.Time{}, errMalformed
 	}
@@ -30,6 +31,7 @@ func EncodeFiletime(value time.Time) (Filetime, error) {
 	seconds += filetimeUnixOffset
 	ticks := uint64(seconds) * filetimeTicksPerSecond
 	nanoseconds := value.Nanosecond()
+	// Nanosecond is nonnegative; the check gives gosec an explicit cast bound.
 	if nanoseconds < 0 {
 		return 0, errMalformed
 	}

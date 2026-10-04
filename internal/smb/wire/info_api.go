@@ -8,7 +8,8 @@ package wire
 //
 // Basic is used by both QUERY_INFO and SET_INFO. Its decoder preserves every raw
 // Filetime. Other fixed classes below are QUERY_INFO results unless named as a
-// SET_INFO class in the next section.
+// SET_INFO class in the next section. Basic and the mutation class decoders
+// require their declared fields but ignore trailing bytes in a SET_INFO buffer.
 //
 //	func DecodeFileBasicInformation(data []byte) (FileBasicInformation, error)
 //	func EncodeFileBasicInformation(info FileBasicInformation) ([]byte, error)

@@ -23,10 +23,8 @@ func DecodeHeader(packet []byte) (Header, error) {
 	if h.Flags&FlagResponse != 0 {
 		h.Status = smb.Status(status)
 	} else {
-		if status>>16 != 0 {
-			return Header{}, errMalformed
-		}
-		h.ChannelSequence = uint16(status)
+		// The upper word is reserved in requests and must be ignored.
+		h.ChannelSequence = uint16(status & 0xffff)
 	}
 	if h.Flags&FlagAsync != 0 {
 		h.AsyncID = r.u64()
@@ -88,7 +86,8 @@ func Split(packet []byte) ([]Message, error) {
 			}
 			n = int(h.NextCommand)
 		}
-		messages = append(messages, Message{Header: h, Body: clone(packet[64:n]), Raw: clone(packet[:n])})
+		raw := clone(packet[:n])
+		messages = append(messages, Message{Header: h, Body: raw[64:], Raw: raw})
 		packet = packet[n:]
 	}
 	if len(messages) == 0 {

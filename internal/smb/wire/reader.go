@@ -66,11 +66,7 @@ func (r *reader) u64() uint64 {
 func (r *reader) guid() [16]byte { var v [16]byte; copy(v[:], r.take(16)); return v }
 func (r *reader) id() FileID     { return FileID{Persistent: r.u64(), Volatile: r.u64()} }
 func (r *reader) boolean() bool {
-	b := r.u8()
-	if b > 1 {
-		r.err = errMalformed
-	}
-	return b == 1
+	return r.u8() != 0
 }
 
 func (r *reader) exact() error {
@@ -207,11 +203,19 @@ func (b *builder) length8(n int) {
 }
 
 func (b *builder) length16(n int) {
-	if n < 0 || n > 65535 {
-		b.err = errMalformed
+	v, err := count16(n)
+	if err != nil {
+		b.err = err
 		return
 	}
-	b.u16(uint16(n))
+	b.u16(v)
+}
+
+func count16(n int) (uint16, error) {
+	if n < 0 || n > 65535 {
+		return 0, errMalformed
+	}
+	return uint16(n), nil
 }
 
 func (b *builder) length32(n int) {
@@ -248,6 +252,7 @@ func (b *builder) finish() ([]byte, error) {
 	return b.data, nil
 }
 
+// The masks preserve two's-complement bits and keep gosec's casts in range.
 func (r *reader) i32() int32 {
 	v := r.u32()
 	if v&0x80000000 != 0 {
@@ -263,8 +268,8 @@ func (b *builder) i32(v int32) {
 	}
 	b.u32(^uint32(-(v + 1) & 0x7fffffff))
 }
-func size16(n int) bool { return n >= 0 && uint64(n) <= 0xffff }
-func size32(n int) bool { return n >= 0 && uint64(n) <= 0xffffffff }
+func size16(n int) bool { _, err := count16(n); return err == nil }
+func size32(n int) bool { _, err := count32(n); return err == nil }
 
 func body(m Message, command Command, response bool, size uint16, fixed int) *reader {
 	r := &reader{data: m.Body}

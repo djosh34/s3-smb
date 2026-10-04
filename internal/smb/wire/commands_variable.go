@@ -34,7 +34,6 @@ func EncodeSessionSetupRequest(v SessionSetupRequest) ([]byte, error) {
 	b.length16(len(v.Token))
 	b.u64(v.PreviousSessionID)
 	b.bytes(v.Token)
-
 	return b.finish()
 }
 
@@ -64,7 +63,6 @@ func EncodeSessionSetupResponse(v SessionSetupResponse) ([]byte, error) {
 	}
 	b.length16(len(v.Token))
 	b.bytes(v.Token)
-
 	return b.finish()
 }
 
@@ -98,13 +96,12 @@ func EncodeTreeConnectRequest(v TreeConnectRequest) ([]byte, error) {
 	}
 	b.length16(len(name))
 	b.bytes(name)
-
 	return b.finish()
 }
 
 // DecodeCreateRequest validates fixed fields and variable buffers.
 func DecodeCreateRequest(m Message) (CreateRequest, error) {
-	r := body(m, Create, false, 57, 56)
+	r := body(m, Create, false, 57, 57)
 	var v CreateRequest
 	r.skip(1)
 	v.OplockLevel = r.u8()
@@ -119,7 +116,7 @@ func DecodeCreateRequest(m Message) (CreateRequest, error) {
 	nameLength := r.u16()
 	contextOffset := r.u32()
 	contextLength := r.u32()
-	v.Name = r.text(r.field(uint64(nameOffset), uint64(nameLength), 56, 2))
+	v.Name = r.text(r.field(uint64(nameOffset), uint64(nameLength), 56, 8))
 	v.Contexts = r.createContexts(contextOffset, contextLength, 56)
 	return v, r.err
 }
@@ -166,8 +163,9 @@ func EncodeCreateRequest(v CreateRequest) ([]byte, error) {
 	if len(contexts) > 0 {
 		b.align(8)
 		b.bytes(contexts)
+	} else if len(name) == 0 {
+		b.u8(0)
 	}
-
 	return b.finish()
 }
 
@@ -223,7 +221,6 @@ func EncodeCreateResponse(v CreateResponse) ([]byte, error) {
 	}
 	b.length32(len(contexts))
 	b.bytes(contexts)
-
 	return b.finish()
 }
 
@@ -267,7 +264,6 @@ func EncodeReadRequest(v ReadRequest) ([]byte, error) {
 	}
 	b.length16(len(v.ChannelInfo))
 	b.bytes(v.ChannelInfo)
-
 	return b.finish()
 }
 
@@ -275,7 +271,6 @@ func EncodeReadRequest(v ReadRequest) ([]byte, error) {
 func DecodeReadResponse(m Message) (ReadResponse, error) {
 	r := body(m, Read, true, 17, 16)
 	var v ReadResponse
-
 	offset := r.u8()
 	r.skip(1)
 	length := r.u32()
@@ -292,7 +287,6 @@ func EncodeReadResponse(v ReadResponse) ([]byte, error) {
 	}
 	b := builder{}
 	b.u16(17)
-
 	if len(v.Data) > 0 {
 		b.u8(80)
 	} else {
@@ -303,7 +297,6 @@ func EncodeReadResponse(v ReadResponse) ([]byte, error) {
 	b.u32(v.Remaining)
 	b.u32(0)
 	b.bytes(v.Data)
-
 	return b.finish()
 }
 
@@ -311,7 +304,6 @@ func EncodeReadResponse(v ReadResponse) ([]byte, error) {
 func DecodeWriteRequest(m Message) (WriteRequest, error) {
 	r := body(m, Write, false, 49, 48)
 	var v WriteRequest
-
 	offset := r.u16()
 	length := r.u32()
 	v.Offset = r.u64()
@@ -333,7 +325,6 @@ func EncodeWriteRequest(v WriteRequest) ([]byte, error) {
 	}
 	b := builder{}
 	b.u16(49)
-
 	if len(v.Data) > 0 {
 		b.u16(112)
 	} else {
@@ -353,7 +344,6 @@ func EncodeWriteRequest(v WriteRequest) ([]byte, error) {
 	b.u32(v.Flags)
 	b.bytes(v.Data)
 	b.bytes(v.ChannelInfo)
-
 	return b.finish()
 }
 
@@ -361,7 +351,6 @@ func EncodeWriteRequest(v WriteRequest) ([]byte, error) {
 func DecodeLockRequest(m Message) (LockRequest, error) {
 	r := body(m, Lock, false, 48, 48)
 	var v LockRequest
-
 	count := r.u16()
 	v.Sequence = r.u32()
 	v.ID = r.id()
@@ -383,7 +372,6 @@ func EncodeLockRequest(v LockRequest) ([]byte, error) {
 	}
 	b := builder{}
 	b.u16(48)
-
 	b.length16(len(v.Elements))
 	b.u32(v.Sequence)
 	b.id(v.ID)
@@ -393,7 +381,6 @@ func EncodeLockRequest(v LockRequest) ([]byte, error) {
 		b.u32(e.Flags)
 		b.u32(0)
 	}
-
 	return b.finish()
 }
 
@@ -435,7 +422,6 @@ func EncodeQueryDirectoryRequest(v QueryDirectoryRequest) ([]byte, error) {
 	b.length16(len(name))
 	b.u32(v.OutputLength)
 	b.bytes(name)
-
 	return b.finish()
 }
 
@@ -477,7 +463,6 @@ func EncodeQueryInfoRequest(v QueryInfoRequest) ([]byte, error) {
 	b.u32(v.Flags)
 	b.id(v.ID)
 	b.bytes(v.Input)
-
 	return b.finish()
 }
 
@@ -515,7 +500,6 @@ func EncodeSetInfoRequest(v SetInfoRequest) ([]byte, error) {
 	b.u32(v.AdditionalInformation)
 	b.id(v.ID)
 	b.bytes(v.Input)
-
 	return b.finish()
 }
 
@@ -523,7 +507,6 @@ func EncodeSetInfoRequest(v SetInfoRequest) ([]byte, error) {
 func DecodeQueryInfoResponse(m Message) (QueryResponse, error) {
 	r := body(m, QueryInfo, true, 9, 8)
 	var v QueryResponse
-
 	offset := r.u16()
 	length := r.u32()
 	v.Data = clone(r.field(uint64(offset), uint64(length), 8, 1))
@@ -537,7 +520,6 @@ func EncodeQueryInfoResponse(v QueryResponse) ([]byte, error) {
 	}
 	b := builder{}
 	b.u16(9)
-
 	if len(v.Data) > 0 {
 		b.u16(72)
 	} else {
@@ -545,7 +527,6 @@ func EncodeQueryInfoResponse(v QueryResponse) ([]byte, error) {
 	}
 	b.length32(len(v.Data))
 	b.bytes(v.Data)
-
 	return b.finish()
 }
 
@@ -553,7 +534,6 @@ func EncodeQueryInfoResponse(v QueryResponse) ([]byte, error) {
 func DecodeQueryDirectoryResponse(m Message) (QueryResponse, error) {
 	r := body(m, QueryDirectory, true, 9, 8)
 	var v QueryResponse
-
 	offset := r.u16()
 	length := r.u32()
 	v.Data = clone(r.field(uint64(offset), uint64(length), 8, 1))
@@ -567,7 +547,6 @@ func EncodeQueryDirectoryResponse(v QueryResponse) ([]byte, error) {
 	}
 	b := builder{}
 	b.u16(9)
-
 	if len(v.Data) > 0 {
 		b.u16(72)
 	} else {
@@ -575,7 +554,6 @@ func EncodeQueryDirectoryResponse(v QueryResponse) ([]byte, error) {
 	}
 	b.length32(len(v.Data))
 	b.bytes(v.Data)
-
 	return b.finish()
 }
 
@@ -622,7 +600,6 @@ func EncodeIOCTLRequest(v IOCTLRequest) ([]byte, error) {
 	b.u32(v.Flags)
 	b.u32(0)
 	b.bytes(v.Input)
-
 	return b.finish()
 }
 
@@ -640,13 +617,17 @@ func DecodeIOCTLResponse(m Message) (IOCTLResponse, error) {
 	v.Flags = r.u32()
 	r.skip(4)
 	v.Input = clone(r.field(uint64(inputOffset), uint64(inputLength), 48, 1))
-	v.Output = clone(r.field(uint64(outputOffset), uint64(outputLength), 48, 1))
+	v.Output = clone(r.field(uint64(outputOffset), uint64(outputLength), 48, 8))
 	return v, r.err
 }
 
 // EncodeIOCTLResponse writes the command body without an SMB header.
 func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
-	if !size32(len(v.Input)) || !size32(len(v.Output)) || !size32(112+len(v.Input)+len(v.Output)) {
+	outputOffset := 112 + len(v.Input)
+	if len(v.Output) > 0 {
+		outputOffset += (8 - outputOffset%8) % 8
+	}
+	if !size32(len(v.Input)) || !size32(len(v.Output)) || !size32(outputOffset+len(v.Output)) {
 		return nil, errMalformed
 	}
 	b := builder{}
@@ -661,7 +642,7 @@ func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
 	}
 	b.length32(len(v.Input))
 	if len(v.Output) > 0 {
-		b.length32(112 + len(v.Input))
+		b.length32(outputOffset)
 	} else {
 		b.u32(0)
 	}
@@ -669,8 +650,10 @@ func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
 	b.u32(v.Flags)
 	b.u32(0)
 	b.bytes(v.Input)
+	if len(v.Output) > 0 {
+		b.align(8)
+	}
 	b.bytes(v.Output)
-
 	return b.finish()
 }
 
@@ -708,7 +691,6 @@ func EncodeErrorResponse(v ErrorResponse) ([]byte, error) {
 	if len(v.Data) == 0 {
 		b.u8(0)
 	}
-
 	return b.finish()
 }
 
@@ -718,6 +700,9 @@ func validateErrorContexts(v ErrorResponse) error {
 	}
 	r := reader{data: v.Data}
 	for i := uint8(0); i < v.ContextCount; i++ {
+		if i > 0 {
+			r.skip((8 - r.pos%8) % 8)
+		}
 		n := r.u32()
 		r.skip(4)
 		if uint64(n) > uint64(len(v.Data)) {

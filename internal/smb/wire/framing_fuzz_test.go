@@ -11,6 +11,10 @@ func FuzzSplit(f *testing.F) {
 		f.Fatal(err)
 	}
 	f.Add(packet)
+	reserved := clone(packet)
+	reserved[10] = 0xff
+	reserved[11] = 0xee
+	f.Add(reserved)
 	f.Add([]byte{})
 	f.Add([]byte{0xff})
 	f.Fuzz(func(t *testing.T, packet []byte) {
@@ -22,8 +26,17 @@ func FuzzSplit(f *testing.F) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if !bytes.Equal(packet, joined) {
-			t.Fatal("compound bytes changed")
+		again, err := Split(joined)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(again) != len(members) {
+			t.Fatal("compound member count changed")
+		}
+		for i, member := range members {
+			if again[i].Header != member.Header || !bytes.Equal(again[i].Body, member.Body) {
+				t.Fatal("decoded compound changed")
+			}
 		}
 	})
 }

@@ -21,8 +21,11 @@ func decodeCreateContexts(data []byte) ([]CreateContext, error) {
 			}
 			r.data = data[:int(next)]
 		}
-		name := r.region(uint64(nameOffset), uint64(nameLength), 16, 1)
-		payload := r.region(uint64(dataOffset), uint64(dataLength), 16, 8)
+		name := r.region(uint64(nameOffset), uint64(nameLength), 16, 8)
+		var payload []byte
+		if dataLength != 0 {
+			payload = r.region(uint64(dataOffset), uint64(dataLength), 16, 8)
+		}
 		if next == 0 {
 			end := uint64(16)
 			for _, field := range r.ranges {

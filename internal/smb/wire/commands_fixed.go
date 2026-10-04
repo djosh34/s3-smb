@@ -356,6 +356,5 @@ func DecodeSetInfoResponse(m Message) (EmptyResponse, error) {
 func EncodeSetInfoResponse(_ EmptyResponse) ([]byte, error) {
 	b := builder{}
 	b.u16(2)
-	b.zero(0)
 	return b.data, nil
 }
