@@ -9,7 +9,12 @@
 // Constructors do not hide testing.T; they return every I/O and cleanup error.
 package smbtest
 
-import "github.com/djosh34/s3-smb/internal/smb/wire"
+import (
+	"net"
+	"sync"
+
+	"github.com/djosh34/s3-smb/internal/smb/wire"
+)
 
 // Reply carries the members from one received frame. The client identifies
 // pending replies by STATUS_PENDING and FlagAsync. It correlates both MessageID
@@ -19,22 +24,21 @@ type Reply struct {
 	Raw      []byte
 }
 
-// Client preserves supplied headers, credits and compound flags. M1 adds private
-// transport state and the following methods. Callers must use NewClient.
-// Send encodes and frames one complete compound payload.
-// Receive reads and splits one complete frame. It returns each interim and final
-// reply separately. M2 adds protection after Login, without repairing headers.
-// SendRaw writes framed bytes verbatim without encoding or protection.
-// ReceiveRaw reads one frame and returns its unmodified payload.
-// Send and Receive may run concurrently, with only one receiver.
-// Close returns any transport error. No method retries a request automatically.
-//
-//	func (client *Client) Send(ctx context.Context, messages []wire.Message) error
-//	func (client *Client) Receive(ctx context.Context) (Reply, error)
-//	func (client *Client) SendRaw(ctx context.Context, framed []byte) error
-//	func (client *Client) ReceiveRaw(ctx context.Context) ([]byte, error)
-//	func (client *Client) Close() error
-type Client struct{}
+// Client preserves supplied headers, credits and compound flags. Send computes
+// NextCommand links and padding; SendRaw bypasses all encoding. Receive checks
+// pending and final async identities. ReceiveRaw bypasses that check, so callers
+// must not mix it with Receive for a pending request.
+// Send and Receive may run concurrently, with only one receiver. Context
+// cancellation interrupts I/O. An I/O error closes the connection; requests are
+// never retried. Callers must use NewClient and close the client when done.
+// M2 adds protection after Login without repairing headers.
+type Client struct {
+	conn      net.Conn
+	pending   map[uint64]uint64
+	sendMu    sync.Mutex
+	closeOnce sync.Once
+	closeErr  error
+}
 
 // Fixture owns the listener, server and test clients, not JuiceFS. M2 provides
 // Start(ctx context.Context, options server.Options) (*Fixture, error), listening
