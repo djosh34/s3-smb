@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
+
 	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 
@@ -301,6 +303,58 @@ func TestIOUsesRetainedKindAndLength(t *testing.T) {
 	}
 	if counted.attrs.Load() != 0 || counted.xattrs.Load() != 0 {
 		t.Fatalf("adapter queried attributes during I/O: attr=%d, xattr=%d", counted.attrs.Load(), counted.xattrs.Load())
+	}
+}
+
+func TestDirectoryPageAvoidsPerEntryQueriesDuringRead(t *testing.T) {
+	f := newFixture(t, 0)
+	dir := f.create(t, "dir", smb.KindDirectory)
+	for i := range 16 {
+		f.create(t, fmt.Sprintf("dir/band-%02d", i), smb.KindFile)
+	}
+	other := f.create(t, "other", smb.KindFile)
+	h := f.open(t, other.Object, smb.AccessRead|smb.AccessWrite)
+	write(t, f.fs, h, "data", 0)
+	counted := &countedMetadata{Meta: f.metadata}
+	f.fs.metadata = counted
+	var reads int
+	conn, err := f.fs.directory.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = conn.Raw(func(raw any) error {
+		sqliteConn, ok := raw.(*sqlite3.SQLiteConn)
+		if !ok {
+			return errors.New("unexpected directory driver")
+		}
+		return sqliteConn.RegisterFunc("read_during_page", func() (int, error) {
+			done := make(chan error, 1)
+			go func() {
+				data := make([]byte, 4)
+				n, readErr := f.fs.ReadAt(t.Context(), h, data, 0)
+				if readErr == nil && (n != 4 || string(data) != "data") {
+					readErr = errors.New("unexpected concurrent read result")
+				}
+				done <- readErr
+			}()
+			reads++
+			return 1, <-done
+		}, false)
+	})
+	if err = errors.Join(err, conn.Close()); err != nil {
+		t.Fatal(err)
+	}
+	// The connection-local view guarantees a READ overlaps the SQL page, without
+	// sleeps or timing-dependent loops. It leaves the persistent schema unchanged.
+	if _, err = f.fs.directory.ExecContext(t.Context(), `CREATE TEMP VIEW jfs_edge AS SELECT * FROM main.jfs_edge WHERE read_during_page()=1`); err != nil {
+		t.Fatal(err)
+	}
+	page, err := f.fs.ReadDir(t.Context(), dir.Object.Inode, 0, 16)
+	if err != nil || len(page) != 16 || reads == 0 {
+		t.Fatalf("page during READ = %d entries, %d reads, %v", len(page), reads, err)
+	}
+	if counted.attrs.Load() != 1 || counted.xattrs.Load() != 0 || counted.lookups.Load() != 0 || counted.directories.Load() != 0 {
+		t.Fatalf("READ caused per-entry queries: attrs=%d, xattrs=%d, lookups=%d, directories=%d", counted.attrs.Load(), counted.xattrs.Load(), counted.lookups.Load(), counted.directories.Load())
 	}
 }
 

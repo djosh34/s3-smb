@@ -261,7 +261,6 @@ func (s *FS) flush(ctx context.Context, st *inodeState) error {
 	live := st.snapshot()
 	live.dirty = false
 	st.publish(live)
-	s.commits.Add(1)
 	return ctx.Err()
 }
 
@@ -294,6 +293,8 @@ func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
 	}
 	xattrErr := s.clearUnlinkedXattrs(cleanup, h.key.Inode)
 	closeErr := backendError(s.metadata.Close(storageContext(cleanup), meta.Ino(h.key.Inode)))
+	// Invalidate pre-close SQL snapshots before dropping the live length.
+	s.commits.Add(1)
 	live := h.state.snapshot()
 	live.valid = false
 	h.state.publish(live)
