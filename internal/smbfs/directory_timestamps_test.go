@@ -90,6 +90,51 @@ func TestDirectoryModifiedTimeAcrossFlushCompletion(t *testing.T) {
 	}
 }
 
+func TestDirectoryTimesAcrossTruncateAndReopen(t *testing.T) {
+	for _, operation := range []string{"truncate_buffered", "set_attr_size", "truncate_clean", "close_and_reopen"} {
+		t.Run(operation, func(t *testing.T) {
+			f := newFixture(t, 0)
+			r := f.create(t, "data", smb.KindFile)
+			h := f.open(t, r.Object, smb.AccessWrite)
+			initial := time.Unix(1000000000, 0).UTC()
+			if err := f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Modified: &initial, Changed: &initial}); err != nil {
+				t.Fatal(err)
+			}
+			if operation != "truncate_clean" {
+				write(t, f.fs, h, "abcdef", 0)
+			}
+			generation := f.fs.directoryGeneration()
+			page, err := f.fs.directoryPage(t.Context(), 1, 0, 10)
+			if err != nil || len(page) != 1 {
+				t.Fatalf("pre-mutation page = %+v, %v", page, err)
+			}
+			switch operation {
+			case "truncate_buffered", "truncate_clean":
+				err = f.fs.Truncate(t.Context(), h, 8)
+			case "set_attr_size":
+				size := uint64(8)
+				err = f.fs.SetAttr(t.Context(), r.Object, smb.AttrChange{Size: &size})
+			case "close_and_reopen":
+				err = f.fs.Close(t.Context(), h)
+				if err == nil {
+					f.open(t, r.Object, smb.AccessRead)
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, err := f.fs.GetAttr(t.Context(), r.Object)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := f.fs.directoryAttr(t.Context(), page[0], generation)
+			if err != nil || !got.Modified.Equal(want.Modified) || !got.Changed.Equal(want.Changed) || got.Size != want.Size {
+				t.Fatalf("page across %s = %+v, %v; want %+v", operation, got, err, want)
+			}
+		})
+	}
+}
+
 func TestFlushTimesStayUnchangedAfterLastClose(t *testing.T) {
 	f := newFixture(t, 0)
 	r := f.create(t, "data", smb.KindFile)

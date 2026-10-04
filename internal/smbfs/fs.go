@@ -49,7 +49,7 @@ type FS struct {
 type liveState struct {
 	modified time.Time
 	size     uint64
-	flushed  uint64 // generation of the last dirty flush on this inode
+	flushed  uint64 // generation invalidating older directory rows for this inode
 	dirty    bool
 	valid    bool // size is authoritative while the native reference is retained
 }
@@ -245,7 +245,7 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 		if err = backendError(s.metadata.Open(storageContext(ctx), meta.Ino(key.Inode), flags, &raw)); err != nil {
 			return nil, err
 		}
-		st.publish(liveState{size: raw.Length, valid: true})
+		st.publish(liveState{size: raw.Length, flushed: s.flushes.Add(1), valid: true})
 	}
 	st.refs.Add(1)
 	if key.Stream != "" {
@@ -485,7 +485,7 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 	}
 	s.writer.Truncate(meta.Ino(key.Inode), size)
 	s.reader.Truncate(meta.Ino(key.Inode), size)
-	st.publish(liveState{size: size, valid: st.refs.Load() > 0})
+	st.publish(liveState{size: size, flushed: s.flushes.Add(1), valid: st.refs.Load() > 0})
 	s.commits.Add(1)
 	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
 	return nil
