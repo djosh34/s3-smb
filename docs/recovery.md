@@ -162,12 +162,20 @@ are tracked in
 [Adapter reads survive a 5-minute S3 outage when several block reads fail together](https://github.com/djosh34/s3-smb/issues/297).
 Recovery still returns the last metadata backup, not writes made after it.
 
-The Mac acceptance workflow was dispatched on this branch as
-[run 37169493777](https://github.com/djosh34/s3-smb/actions/runs/37169493777).
-It has not finished. The harness records snapshot object bytes and time from the
-snapshot timestamp to the receipt's modification time in
-`native-point-after-completion` events; it does not depend on JSON dump names.
-The judgement above uses Linux numbers until the Mac evidence is available.
+The Mac acceptance
+[run 37169493777](https://github.com/djosh34/s3-smb/actions/runs/37169493777)
+passed on 4 October 2026, including recovery on fresh Macs and all five failure
+scenarios. The backup job's `acceptance.jsonl` records a 40,977-byte encrypted
+snapshot (40.0 KiB) and 0.1 s from snapshot start to receipt write, rounded to
+tenths, in its `native-point-after-completion` event. This is receipt-write
+timing, not the full durable completion time bounded by the Linux test.
+
+The Mac run used a small Time Machine dataset and local MinIO. It preceded the
+`MaxUpload` reduction, so it does not test the new upload concurrency. Together
+with the larger Linux measurement, its snapshot size and timing give no reason
+to raise the backup budget, 30 s dial/header limits or 60 s chunk limits. Neither
+run establishes remote S3 latency; the four-upload pool and its uplink
+requirement above still apply. The outage retry settings remain unchanged.
 
 ## Why retention matters
 
