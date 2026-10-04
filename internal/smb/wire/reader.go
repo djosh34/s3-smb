@@ -12,9 +12,9 @@ var errMalformed = errors.New("wire: malformed encoding")
 // reader records the first error. All reads after a short read remain safe.
 type reader struct {
 	data   []byte
-	pos    int
-	err    error
 	ranges []span
+	err    error
+	pos    int
 }
 
 type span struct{ start, end uint64 }
@@ -100,9 +100,9 @@ func (r *reader) region(offset, length, minimum, alignment uint64) []byte {
 		}
 	}
 	r.ranges = append(r.ranges, span{offset, end})
-	return r.data[int(offset):int(end)]
+	return r.data[offset:end]
 }
-func (r *reader) field(offset, length uint64, minimum int, alignment uint64) []byte {
+func (r *reader) field(offset, length uint64, minimum uint64, alignment uint64) []byte {
 	if length == 0 && offset == 0 {
 		return nil
 	}
@@ -110,7 +110,7 @@ func (r *reader) field(offset, length uint64, minimum int, alignment uint64) []b
 		r.err = errMalformed
 		return nil
 	}
-	return r.region(offset-64, length, uint64(minimum), alignment)
+	return r.region(offset-64, length, minimum, alignment)
 }
 func (r *reader) text(b []byte) string {
 	s, err := decodeUTF16(b)
@@ -160,7 +160,10 @@ func encodeUTF16(s string) ([]byte, error) {
 }
 
 // builder emits fields in wire order. Padding is always zero.
-type builder struct{ data []byte }
+type builder struct {
+	data []byte
+	err  error
+}
 
 func (b *builder) u8(v uint8)      { b.data = append(b.data, v) }
 func (b *builder) u16(v uint16)    { b.data = binary.LittleEndian.AppendUint16(b.data, v) }
@@ -178,8 +181,51 @@ func (b *builder) boolean(v bool) {
 	}
 }
 func (b *builder) align(n int) { b.zero((n - len(b.data)%n) % n) }
-func size16(n int) bool        { return n >= 0 && uint64(n) <= 0xffff }
-func size32(n int) bool        { return n >= 0 && uint64(n) <= 0xffffffff }
+
+// Length conversions check the field width before narrowing.
+func (b *builder) length8(n int) {
+	if n < 0 || n > 255 {
+		b.err = errMalformed
+		return
+	}
+	b.u8(uint8(n))
+}
+func (b *builder) length16(n int) {
+	if n < 0 || n > 65535 {
+		b.err = errMalformed
+		return
+	}
+	b.u16(uint16(n))
+}
+func (b *builder) length32(n int) {
+	if n < 0 || uint64(n) > 4294967295 {
+		b.err = errMalformed
+		return
+	}
+	b.u32(uint32(n))
+}
+func (b *builder) finish() ([]byte, error) {
+	if b.err != nil {
+		return nil, b.err
+	}
+	return b.data, nil
+}
+func (r *reader) i32() int32 {
+	v := r.u32()
+	if v&0x80000000 != 0 {
+		return -1 - int32(^v&0x7fffffff)
+	}
+	return int32(v & 0x7fffffff)
+}
+func (b *builder) i32(v int32) {
+	if v >= 0 {
+		b.u32(uint32(v))
+		return
+	}
+	b.u32(^uint32(-(v + 1)))
+}
+func size16(n int) bool { return n >= 0 && uint64(n) <= 0xffff }
+func size32(n int) bool { return n >= 0 && uint64(n) <= 0xffffffff }
 
 func body(m Message, command Command, response bool, size uint16, fixed int) *reader {
 	r := &reader{data: m.Body}
