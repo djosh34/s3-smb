@@ -14,12 +14,13 @@ import (
 
 // Layouts come from MS-SMB2 2.2.1 (headers), 2.2.2 (ERROR), 2.2.4 and
 // 2.2.4.1 (NEGOTIATE and contexts), and 2.2.29 (ECHO). Reply values follow
-// 3.3.4.2, 3.3.4.4 and 3.3.5.3.1. Requests may use encoders, but every reply,
-// including the initial negotiation, is read with ReceiveRaw.
+// 3.3.4.2, 3.3.4.4 and 3.3.5.3.1. Requests may use encoders and the login
+// fixture uses the test client, but replies under test use ReceiveRaw.
 const (
 	layoutHeaderSize = 64
 	layoutResponse   = 0x00000001
 	layoutAsync      = 0x00000002
+	layoutSigned     = 0x00000008
 )
 
 type layoutField struct {
@@ -89,7 +90,12 @@ func assertLayoutHeader(t *testing.T, raw []byte, want layoutHeader) {
 			layoutField{"tree ID", 36, 4, uint64(want.treeID)},
 		)
 	}
-	if !bytes.Equal(raw[48:64], make([]byte, 16)) {
+	zeroSignature := bytes.Equal(raw[48:64], make([]byte, 16))
+	if want.flags&layoutSigned != 0 {
+		if zeroSignature {
+			t.Error("signed reply has zero signature at offset 48")
+		}
+	} else if !zeroSignature {
 		t.Errorf("unsigned signature at offset 48 = %x", raw[48:64])
 	}
 }
@@ -174,30 +180,39 @@ func TestPendingReplyByteLayout(t *testing.T) {
 	// Controlled work cannot finish until the interim reply has been checked.
 	// This tests the connection's async header without adding a file handler.
 	server, release := controlledAsync(t, wire.Flush, reply{status: smb.StatusFileLockConflict}, nil)
-	client, ctx := corePipeClient(t, server)
-	layoutExchange(ctx, t, client, negotiateMessage(t, 2))
-	request := asyncMessage(t, wire.Flush, 2)
+	// Configure signed plaintext before serving so ReceiveRaw sees SMB2 bytes.
+	// Login still authenticates and connects the share through the real server.
+	server.options.Encryption = AllowPlaintext
+	client, ctx, session := loginClient(t, server, 0, smb.SigningGMAC)
+	request := asyncMessage(t, wire.Flush, session.NextMessageID+1)
+	request.Header.SessionID = session.SessionID
 	request.Header.ProcessID = 0x76543210
+	request.Header.TreeID = session.TreeID
 	raw := layoutExchange(ctx, t, client, request)
 	assertLayoutError(t, raw)
 	asyncID := binary.LittleEndian.Uint64(raw[32:40])
 	if asyncID == 0 {
 		t.Fatal("interim reply has zero async ID at offset 32")
 	}
+	if asyncID == request.Header.MessageID {
+		t.Fatal("layout fixture needs distinct message and async IDs")
+	}
 	want := layoutHeader{
 		status: 0x00000103, flags: layoutResponse | layoutAsync, command: 0x0007,
-		charge: 1, credits: 16, messageID: 2, sessionID: 77, asyncID: asyncID,
+		charge: 1, credits: 16, messageID: request.Header.MessageID, sessionID: session.SessionID, asyncID: asyncID,
 	}
 	assertLayoutHeader(t, raw, want)
 
 	// ECHO still completes while the controlled operation remains pending.
-	echoRaw := layoutExchange(ctx, t, client, echo(t, 1))
+	echoRaw := layoutExchange(ctx, t, client, sessionEcho(t, session, session.NextMessageID))
 	assertLayoutHeader(t, echoRaw, layoutHeader{
-		flags: layoutResponse, command: 0x000d, charge: 1, credits: 1, messageID: 1,
+		flags: layoutResponse | layoutSigned, command: 0x000d, charge: 1, credits: 1,
+		messageID: session.NextMessageID, sessionID: session.SessionID,
 	})
 	close(release)
 	final := layoutReceive(ctx, t, client)
 	want.status, want.credits = 0xc0000054, 0
+	want.flags |= layoutSigned
 	assertLayoutHeader(t, final, want)
 	assertLayoutError(t, final)
 }
