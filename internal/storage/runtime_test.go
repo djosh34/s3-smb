@@ -212,6 +212,9 @@ func TestFilesystemNativeLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if runtime.Config == nil || runtime.Config.Format.UUID != f.UUID || runtime.Config.Chunk == nil || runtime.Config.Chunk.CacheSize != 0 || runtime.Config.Meta.Retries != filesystemRetries {
+		t.Fatal("runtime did not expose its adapter I/O settings")
+	}
 	ctx := meta.NewContext(1, 0, []uint32{0})
 	handle, errno := runtime.FS.Create(ctx, "/fixture", 0600, 0)
 	if errno != 0 {

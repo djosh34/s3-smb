@@ -73,6 +73,8 @@ then check `go mod tidy -diff` and gofmt. `go test -count=1 ./...` runs the Go
 unit tests, including the untagged helpers in `test/macos/helpers`. It does not
 run Time Machine. The Docker step runs `go test -race -shuffle=on` over the
 untagged packages with MinIO available, including the Linux integration tests.
+It also runs `go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...`
+to check the new server's startup, shutdown and app wiring.
 The gofmt check skips vendored code (`internal/juicefs`, `internal/thirdparty`)
 and the frozen SMB server (`internal/smb-old`).
 `scripts/lint-tools.sh` downloads golangci-lint 2.14.0, shellcheck 0.11.0 and
