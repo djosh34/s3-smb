@@ -14,6 +14,17 @@ take precedence over the research.
 `smbtest` owns the raw client and real-adapter fixtures.
 No new package imports `internal/smb-old`.
 
+Storage access describes data permissions, not granted SMB masks.
+`AccessRead` permits reads; `AccessWrite` permits writes and truncate.
+`AccessAppend` restricts writes to offsets at or beyond the selected object's live EOF,
+including when combined with `AccessWrite` for destructive CREATE initialization.
+Alone, `AccessAppend` does not permit truncate.
+`Open` retains these permissions without creating or truncating data.
+`WriteAt` checks append access inside the adapter's existing per-inode mutation coordinator,
+atomically with every write and length change. Each stream has its own EOF.
+Normal `AccessWrite` has no append restriction. The server still checks granted SMB access
+for each operation, including later length changes.
+
 Code comments pin future function and method signatures.
 M1 adds their bodies and private state, without M0 stubs.
 Modules with one implementation return concrete pointers.

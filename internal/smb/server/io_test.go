@@ -122,7 +122,7 @@ func insertIOOpen(t *testing.T, server *Server, session smbtest.Session, path st
 	if status != smb.StatusSuccess {
 		t.Fatal(status)
 	}
-	handle, err := storage.Open(t.Context(), selected.Object, smb.AccessRead|smb.AccessWrite)
+	handle, err := storage.Open(t.Context(), selected.Object, createStorageAccess(granted, false))
 	if err != nil {
 		if abortStatus := server.options.State.Abort(token); abortStatus != smb.StatusSuccess {
 			t.Error(abortStatus)
