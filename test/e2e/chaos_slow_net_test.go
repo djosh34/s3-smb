@@ -71,8 +71,7 @@ func TestChaosSlowNetwork(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), budget)
 	t.Cleanup(cancel)
-	// This call switches to newChaosFixture when the shared helper lands.
-	f := newFixture(t, true)
+	f := newChaosFixture(t, true)
 	f.interval = "1h"
 	s3Proxy, err := s3fault.New(ctx, f.endpoint)
 	if err != nil {
