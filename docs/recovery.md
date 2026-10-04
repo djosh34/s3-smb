@@ -25,7 +25,7 @@ All objects are under the prefix `s3-smb/`:
 - `s3-smb/keys/<volume UUID>.pem`: the encryption key, protected by your
   passphrase. Only in encrypted mode.
 - `s3-smb/juicefs_uuid`: the volume UUID, which startup checks.
-- `s3-smb/chunks/...`: file data, in JuiceFS's layout.
+- `s3-smb/chunks/...`: uncompressed file data, encrypted by default, in JuiceFS's layout.
 - `s3-smb/meta/snapshot-YYYY-MM-DD-HHMMSS.db.gz`: compressed SQLite snapshots,
   encrypted when encryption is on. The gzip header records the database SHA-256.
 
@@ -59,8 +59,7 @@ one per week for 2 months and one per month for 2 years.
    the dataset. Only one s3-smb may write a bucket, on any machine. The local
    lock only stops a second process with the same `storage.state_dir`.
 2. Install the same s3-smb version and write a config with the saved details and
-   an empty `storage.state_dir`. Leave `storage.compression` out, so s3-smb uses
-   the setting stored in the bucket. Read secrets from a file or a literal value.
+   an empty `storage.state_dir`. Read secrets from a file or a literal value.
    A secret helper program, such as a password manager command, may not work yet
    on a fresh machine.
 3. Run `s3-smb serve -c config.yaml` in a terminal. s3-smb finds no local
