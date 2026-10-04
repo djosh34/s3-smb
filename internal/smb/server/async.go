@@ -132,6 +132,10 @@ func (connection *connection) complete(pending *pendingRequest) {
 		return
 	case <-pending.work.done:
 	}
+	// Both cases can be ready when late work finishes after a disconnect.
+	if connection.ctx.Err() != nil {
+		return
+	}
 	// Final success and error share this path, with identity saved at pending.
 	// They never call the credit allocator or reuse the interim buffer.
 	message, err := asyncResponse(pending.header, pending.work.result, pending.asyncID, 0)
