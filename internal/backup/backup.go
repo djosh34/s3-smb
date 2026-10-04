@@ -63,6 +63,7 @@ func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error)
 // Timeout at startup. On failure it closes protection. The caller calls Wait
 // before closing the database or state lock.
 func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
+	parent := ctx
 	m.mu.Lock()
 	previous := m.receipt
 	m.mu.Unlock()
@@ -100,17 +101,33 @@ func (m *Manager) Backup(ctx context.Context) (Receipt, error) {
 		if e == nil {
 			e = m.save(r)
 		}
-		// Saving the receipt and removing old backups run in this worker, so
-		// Wait covers them. Protection is closed during the first backup after
-		// startup, so that one removes nothing.
-		if e == nil && m.opts.Protection.Check() == nil {
-			cleanupCtx, stop := context.WithTimeout(ctx, 10*time.Second)
+		// Publish protection and the result together, so a deadline cannot
+		// close protection after a verified receipt was accepted in time.
+		m.mu.Lock()
+		if e == nil {
+			e = ctx.Err()
+		}
+		if e == nil && !m.now().Round(0).Before(deadline) {
+			e = context.DeadlineExceeded
+		}
+		if e == nil {
+			e = m.opts.Protection.protect(r.Snapshot)
+		}
+		if e == nil {
+			m.receipt = r
+		}
+		done <- result{r, e}
+		m.mu.Unlock()
+		// Retention is optional and uses its own budget, not the old protection
+		// deadline. The worker stays busy until it ends, so Wait still joins it.
+		// The first backup after startup removes nothing.
+		if e == nil && !previous.Snapshot.IsZero() {
+			cleanupCtx, stop := context.WithTimeout(parent, 10*time.Second)
 			if err := m.cleanup(cleanupCtx, m.now()); err != nil {
 				slog.Warn("metadata backup retention deferred", "error", err)
 			}
 			stop()
 		}
-		done <- result{r, e}
 	}()
 	var r Receipt
 	var err error
@@ -132,27 +149,31 @@ wait:
 			}
 		}
 	}
-	if err == nil {
-		err = ctx.Err()
+	m.mu.Lock()
+	// A deadline and a successful publication can both be ready. Honor the
+	// result accepted by the worker before deciding whether to close protection.
+	if err != nil {
+		select {
+		case result := <-done:
+			r, err = result.r, result.err
+		default:
+		}
 	}
-	if err == nil && !m.now().Round(0).Before(deadline) {
-		err = context.DeadlineExceeded
-	}
 	if err == nil {
-		err = m.opts.Protection.protect(r.Snapshot)
+		err = parent.Err()
 	}
 	if err != nil {
 		m.opts.Protection.Close()
+	}
+	m.mu.Unlock()
+	if err != nil {
 		return Receipt{}, err
 	}
-	m.mu.Lock()
-	m.receipt = r
-	m.mu.Unlock()
 	return r, nil
 }
 
-// Wait blocks until a backup left running by a timeout has ended. Call it
-// before closing the metadata database.
+// Wait joins the backup worker, including retention after a successful backup
+// and work left running by a timeout. Call it before closing the database.
 func (m *Manager) Wait() { m.busy <- struct{}{}; <-m.busy }
 
 func (m *Manager) attempts(ctx context.Context, deadline time.Time) (Receipt, error) {

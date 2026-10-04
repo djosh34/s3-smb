@@ -40,7 +40,6 @@ func TestScheduledMetadataBackupS3Outage(t *testing.T) {
 		}
 		return receipt
 	}
-	baseline := readReceipt()
 	checkServing := func() {
 		select {
 		case err := <-d.done:
@@ -50,20 +49,9 @@ func TestScheduledMetadataBackupS3Outage(t *testing.T) {
 		default:
 		}
 	}
-	// Cut S3 just before the next backup is due. The interval also supplies
-	// enough protection budget for the outage and the capped retry delay.
-	due := time.NewTimer(time.Until(baseline.Snapshot.Add(interval - time.Second)))
-	defer due.Stop()
-	select {
-	case <-due.C:
-	case err := <-d.done:
-		d.stopped = true
-		d.closeLogs()
-		t.Fatalf("daemon stopped before the scheduled backup: %v", err)
-	}
 	s, disconnect := f.share()
 	t.Cleanup(disconnect)
-	ctx, cancel := context.WithTimeout(context.Background(), outage+2*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), interval+outage+2*time.Minute)
 	t.Cleanup(cancel)
 	s = s.WithContext(ctx)
 	file, err := s.Create("backup-outage.txt")
@@ -76,6 +64,18 @@ func TestScheduledMetadataBackupS3Outage(t *testing.T) {
 		}
 	})
 	t.Cleanup(proxy.RestoreS3)
+	// Finish SMB setup before waiting, then cut S3 just before the next backup
+	// is due. The interval covers the outage and the capped retry delay.
+	baseline := readReceipt()
+	due := time.NewTimer(time.Until(baseline.Snapshot.Add(interval - time.Second)))
+	defer due.Stop()
+	select {
+	case <-due.C:
+	case err := <-d.done:
+		d.stopped = true
+		d.closeLogs()
+		t.Fatalf("daemon stopped before the scheduled backup: %v", err)
+	}
 	start := proxy.FailS3For(outage)
 	select {
 	case event := <-proxy.MetadataFailureSeen():
