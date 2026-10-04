@@ -81,6 +81,7 @@ type FileID struct {
 
 // Message is one compound member. Body excludes its header. Raw is the exact
 // received header, body and padding used for verification, not a re-encoding.
+// Split makes one owned copy per member; Body is a view into that member's Raw.
 type Message struct {
 	Body   []byte
 	Raw    []byte

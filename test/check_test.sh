@@ -37,10 +37,12 @@ set -Eeuo pipefail
 command=${0##*/}
 command=${command%-stub}
 printf '%s [%s] %s\n' "$command" "$S3_SMB_CHECK_MODE" "$*" >> "$CHECK_TEST_COMMANDS"
+if [[ ${GOOS:-} == darwin ]]; then
+  printf 'darwin %s %s\n' "$command" "$*" >> "$CHECK_TEST_COMMANDS"
+fi
 if [[ ${CHECK_TEST_FAIL:-} == "$command $*" ]]; then exit 17; fi
 if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFIX"* ]]; then exit 17; fi
 case "$command $*" in
-  'python3 '*) [[ ${PYTHONDONTWRITEBYTECODE:-} == 1 ]] ;;
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
@@ -56,7 +58,7 @@ case "$command $*" in
 esac
 STUB
 chmod +x "$fixture/bin/stub"
-for command in go gofmt docker sleep python3 golangci-lint shellcheck actionlint; do
+for command in go gofmt docker sleep golangci-lint shellcheck actionlint; do
   ln -s stub "$fixture/bin/$command"
 done
 export PATH="$fixture/bin:$PATH"
@@ -102,7 +104,8 @@ contains 'script-tests'
 contains 'tool-tests'
 contains 'config-tests'
 contains 'pin-tests'
-contains "python3 [pr] -m unittest discover -s test/macos -p test_*.py"
+contains 'darwin golangci-lint run --build-tags macos ./test/macos/...'
+contains 'darwin go vet -tags macos ./test/macos/...'
 contains 'go [pr] test -count=1 ./...'
 absent 'go [pr] test -race '
 absent 'docker [pr] inspect '
@@ -133,7 +136,8 @@ absent "-t $image "
 # Gate discovery runs all targets in their own packages, with exact limits.
 run_check --gate
 succeeds
-contains "python3 [gate] -m unittest discover -s test/macos -p test_*.py"
+contains 'darwin golangci-lint run --build-tags macos ./test/macos/...'
+contains 'darwin go vet -tags macos ./test/macos/...'
 contains 'go [gate] test -count=1 ./...'
 contains 'go [gate] test -run ^$ -fuzz ^FuzzFirst$ -fuzztime 1m -parallel 2 example/one'
 contains 'go [gate] test -run ^$ -fuzz ^FuzzSecond$ -fuzztime 1m -parallel 2 example/one'
@@ -152,8 +156,9 @@ unset CHECK_TEST_TARGETS
 # Failures stop later stages. Seed and exploration failures request artifacts.
 for command in 'golangci-lint config verify' 'golangci-lint run ./...' \
   'golangci-lint run --build-tags smbnext ./...' \
+  'golangci-lint run --build-tags macos ./test/macos/...' \
   'go mod tidy -diff' 'go vet ./...' 'go vet -tags smbnext ./...' \
-  'python3 -m unittest discover -s test/macos -p test_*.py' \
+  'go vet -tags macos ./test/macos/...' \
   'go test -count=1 ./...' \
   'go list -f {{if or .TestGoFiles .XTestGoFiles}}{{.ImportPath}}{{end}} ./...' \
   'go test -list ^Fuzz example/one' \
