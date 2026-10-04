@@ -1,0 +1,19 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117958
+time: 2026-10-04 12:45:58.986825
+test: smb2.lock.unlock.unlock
+time: 2026-10-04 12:45:58.986998
+time: 2026-10-04 12:45:59.050994
+success: smb2.lock.unlock.unlock
+Testing unlock exclusive with shared
+  taking exclusive lock.
+  try to unlock the exclusive with a shared unlock call.
+  try shared lock on h2, to test the unlock.
+  unlock the exclusive lock
+Testing unlock shared with exclusive
+  taking shared lock.
+  try to unlock the shared with an exclusive unlock call.
+  try exclusive lock on h2, to test the unlock.
+  unlock the exclusive lock
+Test unlocking stacked 0-byte locks
+Test unlocking stacked exclusive/shared locks

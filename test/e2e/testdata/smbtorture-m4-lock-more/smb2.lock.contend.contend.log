@@ -1,0 +1,9 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117959
+time: 2026-10-04 12:45:59.698785
+test: smb2.lock.contend.contend
+time: 2026-10-04 12:45:59.698947
+time: 2026-10-04 12:45:59.747735
+success: smb2.lock.contend.contend
+Testing lock contention:
+  shared should contend on exclusive on different handle.

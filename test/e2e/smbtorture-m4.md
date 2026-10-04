@@ -38,9 +38,10 @@ The source files used for the four families have these SHA-256 hashes:
 | `streams.c` | `01d95f8066c566816903f2d5b4733ab76bb74cbd8774b0803dee127f80b8f5dd` |
 
 `selected` means passing evidence is recorded below. `probe` means the exact
-name is source-verified but has no passing race-daemon proof here. `excluded`
-means the whole test requires an unsupported expectation. A pending probe or
-supported failure cannot become an exclusion merely to make a list pass.
+name is source-verified but unproven. `blocked` means a supported expectation
+failed. `excluded` means the whole test requires an unsupported expectation.
+A pending probe or supported failure cannot become an exclusion merely to
+make a list pass.
 
 ## Passing evidence
 
@@ -78,12 +79,46 @@ The daemon then exited 0 after SIGTERM with no race output.
 `testdata/smbtorture-m4-lock.proof` retains raw output, Samba seeds,
 source and executable hashes, commands and the local artifact path. This
 probes the Mac area's checked stack, not a native macOS gate. It does not
-establish a pass on a future dependency union. The staged list now contains
-seven proven IDs.
+establish a pass on a future dependency union.
+
+A second clean race-daemon run on the same LOCK source tested the other 12
+source candidates. Nine passed. Two supported expectations failed and remain
+blockers. `multiple-unlock` failed because it requires partial unlock commit;
+that expectation is excluded by the final M0 atomic-vector contract and
+[the existing LOCK triage](https://github.com/djosh34/s3-smb/pull/389#issuecomment-5979338429).
+This is an explicit design exclusion, not a request to change unlock behavior.
+Raw output for all 12 tests is in `testdata/smbtorture-m4-lock-more/`.
+Samba seeds were 1791117958 through 1791117960. Daemon exit was 0 with no race;
+raw stderr SHA-256 is
+`89b0e135440e72b7f230d8898911440e2c18fba20ae5257e63de67ede3785496`.
+
+Nine CREATE cases ran against the M3 owner's unchanged approved local union
+`6578d39b2ce953037bbaf3728fa27a2bf54a8773`. It contains checked CREATE/CLOSE,
+FLUSH, READ/WRITE, directory and information handlers, but no LOCK registration.
+Its inputs were #376 `1f1b5d4` (including #380 `f0c1353`, #399 `0e5d912`,
+#410 `365c907`), #395 `f2680fe`, #398 `4064e5b`, #397 `7252f34`,
+#374 `e137e2b` and #404 `1e7f4e3`. No source or policy edits were made for
+these probes. The race smbnext executable SHA-256 is
+`10780fe2107bcfbb0bd64e1cf18a179ca3b2b9d149b89b18e6f5c055417072d4`.
+Seven passed, including a fresh `multi` pass; two supported status checks failed.
+Raw output is in `testdata/smbtorture-m4-create/`, with artifacts at
+`/tmp/449-evidence/create-6578d39`. The same pinned encrypted command and
+isolated MinIO procedure were used. Daemon exit was 0 with no race; raw stderr
+SHA-256 is `55c0035efc14b392e927b49b26b06ea167f9a5bee5b72478a785d91ab43d14bc`.
+
+The staged selection contains 22 proven IDs. This is not a green M4 gate:
+passing subsets do not erase the supported blockers below.
 
 ## Probe blockers
 
-All `probe` entries remain pending. In particular, the non-AAPL
+| Exact ID | Observed failure | Owner |
+| --- | --- | --- |
+| `smb2.lock.valid-request.valid-request` | `lock.c:281`: mixed FAIL_IMMEDIATELY flags returned OK instead of INVALID_PARAMETER | Combined E LOCK/state |
+| `smb2.lock.zerobyteread.zerobyteread` | `lock.c:1529`: zero-byte READ returned FILE_LOCK_CONFLICT instead of OK | Combined B READ |
+| `smb2.create.leading-slash.leading-slash` | `create.c:1514`: OBJECT_NAME_INVALID instead of INVALID_PARAMETER | Combined B CREATE |
+| `smb2.create.impersonation.impersonation` | `create.c:1558`: OK instead of BAD_IMPERSONATION_LEVEL | Combined B CREATE |
+
+No handler fixes are owned by this selection work. All `probe` entries remain pending. In particular, the non-AAPL
 zero-byte enumeration test is not proof of AAPL zero-byte-open behavior.
 The base-rename-with-open-stream test expects ACCESS_DENIED even though the
 stream shares deletion; the Mac owner must compare that expectation with the
@@ -97,9 +132,11 @@ Record the daemon source SHA, all dependency heads, command, shuffle seed,
 per-ID result and artifact location. A source inspection or mocked runner test
 is not passing interoperability evidence.
 
-Use the one shared `testSambaInterop(t, allowlist)` helper after its approved
-extraction from [PR #433](https://github.com/djosh34/s3-smb/pull/433). Do not
-merge that PR's M5 production activation merely to obtain the helper.
+`TestSambaM4Interop` uses the one shared Samba fixture helper, whose test-only
+extraction was approved from [PR #433](https://github.com/djosh34/s3-smb/pull/433).
+The default integration command still selects only `TestSambaInterop` and its
+unchanged default list. Run M4 explicitly only on an agreed feature stack.
+Do not merge M5 production activation merely to obtain the helper.
 M5 [#348](https://github.com/djosh34/s3-smb/issues/348) remains a separate
 selection and explicit activation.
 

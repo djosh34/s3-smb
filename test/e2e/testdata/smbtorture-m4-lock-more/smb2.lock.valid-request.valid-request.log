@@ -1,0 +1,14 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117958
+time: 2026-10-04 12:45:58.027918
+test: smb2.lock.valid-request.valid-request
+time: 2026-10-04 12:45:58.028092
+time: 2026-10-04 12:45:58.049652
+failure: smb2.lock.valid-request.valid-request [
+../../source4/torture/smb2/lock.c:281: status was NT_STATUS_OK, expected NT_STATUS_INVALID_PARAMETER: (../../source4/torture/smb2/lock.c:281)
+]
+Test request with 0 locks.
+Test >63-bit lock requests.
+Test basic lock stacking.
+Test flags field permutations.
+Test return error when 2 locks are requested

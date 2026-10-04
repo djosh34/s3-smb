@@ -1,7 +1,7 @@
 # Exact ID<TAB>state<TAB>pinned source and requirement
 # selected = recorded passing evidence; probe = unproven, not an exclusion.
-# excluded = unsupported expectation, not a supported failure.
-smb2.lock.valid-request.valid-request	probe	lock.c:71-344 validates flags, stacking and vectors.
+# blocked = a supported expectation failed; excluded = an unsupported expectation.
+smb2.lock.valid-request.valid-request	blocked	lock.c:71-344 validates flags, stacking and vectors.
 smb2.lock.rw-none.rw-none	excluded	lock.c:480-500 skips unless target is Windows 2008 with the NONE-lock bug.
 smb2.lock.rw-shared.rw-shared	selected	lock.c:354-515 checks shared-lock I/O through two opens without FAIL_IMMEDIATELY; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
 smb2.lock.rw-exclusive.rw-exclusive	selected	lock.c:354-478,517-530 checks exclusive-lock owner and other-open I/O; race daemon a2e42e77 passed, smbtorture-m4-lock.proof.
@@ -11,37 +11,37 @@ smb2.lock.async.async	excluded	lock.c:798-865 requires a conflicting lock to pen
 smb2.lock.cancel.cancel	excluded	lock.c:867-994 requires pending conflicting locks before CANCEL; locks never wait (#169).
 smb2.lock.cancel-tdis.cancel-tdis	excluded	lock.c:996-1089 requires a pending lock before TREE_DISCONNECT; locks never wait (#169).
 smb2.lock.cancel-logoff.cancel-logoff	excluded	lock.c:1091-1186 requires a pending lock before LOGOFF; locks never wait (#169).
-smb2.lock.errorcode.errorcode	probe	lock.c:1188-1310 checks repeated immediate conflicts and zero-length overlap status.
-smb2.lock.zerobytelength.zerobytelength	probe	lock.c:1316-1470 checks zero-length range conflicts.
-smb2.lock.zerobyteread.zerobyteread	probe	lock.c:1472-1589 checks zero-length reads against locks.
-smb2.lock.unlock.unlock	probe	lock.c:1591-1830 checks shared/exclusive unlock ownership and stacking.
-smb2.lock.multiple-unlock.multiple-unlock	probe	lock.c:1832-2141 checks multi-element unlock errors and surviving ranges.
-smb2.lock.stacking.stacking	probe	lock.c:2143-2345 checks stacked shared ranges and exact unlock.
-smb2.lock.contend.contend	probe	lock.c:2347-2415 checks immediate conflicting ranges through two opens.
-smb2.lock.context.context	probe	lock.c:2417-2482 checks lock context across handles.
-smb2.lock.range.range	probe	lock.c:2484-2683 checks overflow and immediate range conflicts.
-smb2.lock.overlap.overlap	probe	lock.c:2685-2786 checks overlapping locks across two connections.
-smb2.lock.truncate.truncate	probe	lock.c:2788-2904 checks truncation with byte ranges held.
+smb2.lock.errorcode.errorcode	selected	lock.c:1188-1310 checks repeated immediate conflicts and zero-length overlap status.
+smb2.lock.zerobytelength.zerobytelength	selected	lock.c:1316-1470 checks zero-length range conflicts.
+smb2.lock.zerobyteread.zerobyteread	blocked	lock.c:1472-1589 checks zero-length reads against locks.
+smb2.lock.unlock.unlock	selected	lock.c:1591-1830 checks shared/exclusive unlock ownership and stacking.
+smb2.lock.multiple-unlock.multiple-unlock	excluded	lock.c:1903-1934 requires partial unlock after a later error, contrary to M0 atomic vectors; #389 triage 5979338429.
+smb2.lock.stacking.stacking	selected	lock.c:2143-2345 checks stacked shared ranges and exact unlock.
+smb2.lock.contend.contend	selected	lock.c:2347-2415 checks immediate conflicting ranges through two opens.
+smb2.lock.context.context	selected	lock.c:2417-2482 checks lock context across handles.
+smb2.lock.range.range	selected	lock.c:2484-2683 checks overflow and immediate range conflicts.
+smb2.lock.overlap.overlap	selected	lock.c:2685-2786 checks overlapping locks across two connections.
+smb2.lock.truncate.truncate	selected	lock.c:2788-2904 checks truncation with byte ranges held.
 smb2.lock.replay_broken_windows.replay_broken_windows	excluded	lock.c:2906-3168 expects broken Windows LockSequence replay semantics, not the SMB3 rules.
 smb2.lock.replay_smb3_specification_durable.replay_smb3_specification_durable	excluded	lock.c:3170-3382 requires classic batch oplock and durable-v1 grant; neither is supported (#169).
 smb2.lock.replay_smb3_specification_multi.replay_smb3_specification_multi	excluded	lock.c:3170-3368,3384-3412 requires a classic batch oplock and multichannel; neither is advertised (#169).
 smb2.lock.ctdb-delrec-deadlock.ctdb-delrec-deadlock	excluded	lock.c:3414-3465 skips unless CTDB clustering is enabled; no clustered server.
 smb2.create.gentest.gentest	excluded	create.c:460-692 requires fixed Windows option/access/attribute masks and maximal-access context, beyond the advertised policy.
 smb2.create.blob.blob	excluded	create.c:698-879 requires maximal-access and on-disk-ID contexts and timewarp behavior; no object-ID feature.
-smb2.create.open.open	probe	create.c:1029-1205 checks every disposition and CREATE/QUERY_INFO field agreement; util.c:66-170 accepts EAS_NOT_SUPPORTED.
+smb2.create.open.open	selected	create.c:1029-1205 checks every disposition and CREATE/QUERY_INFO field agreement; util.c:66-170 accepts EAS_NOT_SUPPORTED.
 smb2.create.brlocked.brlocked	probe	create.c:1210-1286 checks overwrite-if while another handle holds an immediate byte lock.
 smb2.create.multi.multi	selected	create.c:1290-1408 races CREATE across three connections; PR #415 bc71cfdef9ca013192b80ff1c741a3e9ff177aa1 passed.
-smb2.create.delete.delete	probe	create.c:1413-1481 checks DELETE access on a read-only-attribute file.
-smb2.create.leading-slash.leading-slash	probe	create.c:1489-1517 expects INVALID_PARAMETER for a leading-slash directory CREATE.
-smb2.create.impersonation.impersonation	probe	create.c:1524-1563 checks invalid impersonation-level rejection.
+smb2.create.delete.delete	selected	create.c:1413-1481 checks DELETE access on a read-only-attribute file.
+smb2.create.leading-slash.leading-slash	blocked	create.c:1489-1517 expects INVALID_PARAMETER for a leading-slash directory CREATE.
+smb2.create.impersonation.impersonation	blocked	create.c:1524-1563 checks invalid impersonation-level rejection.
 smb2.create.aclfile.aclfile	excluded	create.c:893-1024,1566-1572 sets and queries file ACLs; ACL fidelity is not advertised.
 smb2.create.acldir.acldir	excluded	create.c:893-1024,1574-1580 sets and queries directory ACLs; ACL fidelity is not advertised.
 smb2.create.nulldacl.nulldacl	excluded	create.c:1599-1859 requires null-DACL persistence and security descriptor operations; ACL fidelity is not advertised.
-smb2.create.mkdir-dup.mkdir-dup	probe	create.c:1864-2006 races OPEN_IF directory creation and checks one CREATED plus one EXISTED action.
-smb2.create.dir-alloc-size.dir-alloc-size	probe	create.c:2011-2067 checks directory CREATE allocation hint is ignored or bounded.
-smb2.create.dosattr_tmp_dir.dosattr_tmp_dir	probe	create.c:3375-3420 rejects the temporary attribute on a directory.
+smb2.create.mkdir-dup.mkdir-dup	selected	create.c:1864-2006 races OPEN_IF directory creation and checks one CREATED plus one EXISTED action.
+smb2.create.dir-alloc-size.dir-alloc-size	selected	create.c:2011-2067 checks directory CREATE allocation hint is ignored or bounded.
+smb2.create.dosattr_tmp_dir.dosattr_tmp_dir	selected	create.c:3375-3420 rejects the temporary attribute on a directory.
 smb2.create.quota-fake-file.quota-fake-file	excluded	create.c:3424-3480 requires successful open of $Extend\$Quota:$Q:$INDEX_ALLOCATION; quotas are not advertised.
-smb2.create.bench-path-contention-shared.bench-path-contention-shared	probe	create.c:3488-3954 benchmarks concurrent path opens; no unsupported grant is required.
+smb2.create.bench-path-contention-shared.bench-path-contention-shared	selected	create.c:3488-3954 benchmarks concurrent path opens; no unsupported grant is required.
 smb2.streams.dir.dir	probe	streams.c:227-305 checks directory stream rejection and an empty stream list.
 smb2.streams.io.io	probe	streams.c:307-502 checks stream offsets, deletion, enumeration and spelling variants; review case expectations before activation.
 smb2.streams.sharemodes.sharemodes	probe	streams.c:580-657 checks separate-stream sharing and same-stream conflicts.

@@ -1,0 +1,8 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118219
+time: 2026-10-04 12:50:19.732647
+test: smb2.create.open.open
+time: 2026-10-04 12:50:19.732908
+time: 2026-10-04 12:50:20.349589
+success: smb2.create.open.open
+Checking SMB2 Open

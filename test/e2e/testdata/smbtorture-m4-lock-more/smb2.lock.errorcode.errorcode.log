@@ -1,0 +1,8 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117958
+time: 2026-10-04 12:45:58.237648
+test: smb2.lock.errorcode.errorcode
+time: 2026-10-04 12:45:58.237812
+time: 2026-10-04 12:45:58.297020
+success: smb2.lock.errorcode.errorcode
+Testing LOCK_NOT_GRANTED vs. FILE_LOCK_CONFLICT

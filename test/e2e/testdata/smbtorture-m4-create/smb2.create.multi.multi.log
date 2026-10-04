@@ -1,0 +1,12 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118220
+time: 2026-10-04 12:50:20.551715
+test: smb2.create.multi.multi
+time: 2026-10-04 12:50:20.551950
+time: 2026-10-04 12:50:20.578362
+success: smb2.create.multi.multi
+Testing SMB2 Open with multiple connections
+waiting for replies
+File 0 returned status NT_STATUS_OK
+File 1 returned status NT_STATUS_OBJECT_NAME_COLLISION
+File 2 returned status NT_STATUS_OBJECT_NAME_COLLISION

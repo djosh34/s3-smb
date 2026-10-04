@@ -1,0 +1,10 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117960
+time: 2026-10-04 12:46:00.768379
+test: smb2.lock.truncate.truncate
+time: 2026-10-04 12:46:00.768557
+time: 2026-10-04 12:46:00.831318
+success: smb2.lock.truncate.truncate
+Testing truncation of locked file:
+  overwrite disposition is allowed on a locked file.
+  supersede disposition is allowed on a locked file.

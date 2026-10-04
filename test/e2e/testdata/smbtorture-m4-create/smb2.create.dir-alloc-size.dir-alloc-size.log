@@ -1,0 +1,9 @@
+smbtorture 4.17.12-Debian
+Using seed 1791118221
+time: 2026-10-04 12:50:21.784377
+test: smb2.create.dir-alloc-size.dir-alloc-size
+time: 2026-10-04 12:50:21.784620
+time: 2026-10-04 12:50:22.007929
+success: smb2.create.dir-alloc-size.dir-alloc-size
+Checking initial allocation size on directories
+Got directory alloc size: 0

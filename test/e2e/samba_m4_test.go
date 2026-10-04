@@ -43,7 +43,7 @@ func TestM4Inventory(t *testing.T) {
 		if !slices.Contains(available, name) || covered[name] {
 			t.Fatalf("unknown or repeated inventory ID: %s", name)
 		}
-		if !slices.Contains([]string{"selected", "probe", "excluded"}, state) {
+		if !slices.Contains([]string{"selected", "probe", "blocked", "excluded"}, state) {
 			t.Fatalf("unknown inventory state for %s: %s", name, state)
 		}
 		if slices.Contains(selected, name) != (state == "selected") {
@@ -56,6 +56,12 @@ func TestM4Inventory(t *testing.T) {
 			t.Fatalf("unaccounted pinned ID: %s", name)
 		}
 	}
+}
+
+// The Linux integration command still selects only TestSambaInterop.
+// M4 runs explicitly after the feature owners agree activation.
+func TestSambaM4Interop(t *testing.T) {
+	testSambaInterop(t, m4TortureAllowlist)
 }
 
 func TestM4Runner(t *testing.T) {

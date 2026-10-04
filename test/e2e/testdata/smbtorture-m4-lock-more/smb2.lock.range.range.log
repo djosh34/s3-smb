@@ -1,0 +1,11 @@
+smbtorture 4.17.12-Debian
+Using seed 1791117960
+time: 2026-10-04 12:46:00.159746
+test: smb2.lock.range.range
+time: 2026-10-04 12:46:00.159911
+time: 2026-10-04 12:46:00.268884
+success: smb2.lock.range.range
+Testing locks spread across the 64-bit offset range
+  establishing 10 locks
+  testing 10 locks
+  removing 10 locks

@@ -9,3 +9,20 @@ smb2.lock.rw-shared.rw-shared
 smb2.lock.rw-exclusive.rw-exclusive
 smb2.lock.auto-unlock.auto-unlock
 smb2.lock.lock.lock
+# Further clean real race-daemon runs; raw output in testdata/smbtorture-m4-lock-more/.
+smb2.lock.errorcode.errorcode
+smb2.lock.zerobytelength.zerobytelength
+smb2.lock.unlock.unlock
+smb2.lock.stacking.stacking
+smb2.lock.contend.contend
+smb2.lock.context.context
+smb2.lock.range.range
+smb2.lock.overlap.overlap
+smb2.lock.truncate.truncate
+# CREATE probes on the M3 owner's unchanged checked 6578d39 union.
+smb2.create.open.open
+smb2.create.delete.delete
+smb2.create.mkdir-dup.mkdir-dup
+smb2.create.dir-alloc-size.dir-alloc-size
+smb2.create.dosattr_tmp_dir.dosattr_tmp_dir
+smb2.create.bench-path-contention-shared.bench-path-contention-shared
