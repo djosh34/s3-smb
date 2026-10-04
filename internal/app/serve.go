@@ -16,11 +16,18 @@ import (
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
-	smb2 "github.com/djosh34/s3-smb/internal/smb-old/smb2/server"
-	"github.com/djosh34/s3-smb/internal/smb-old/smb2/vfs"
-	"github.com/djosh34/s3-smb/internal/smb-old/smbfs"
+	"github.com/djosh34/s3-smb/internal/smbfs"
 	"github.com/djosh34/s3-smb/internal/storage"
 )
+
+type smbServer interface {
+	Serve(context.Context, net.Listener) error
+	Shutdown(context.Context) error
+}
+
+type smbAdapter interface {
+	Shutdown() error
+}
 
 // resources holds what serve opened, in the order it was opened. After a failed
 // or stuck close the state lock stays held and the process exits.
@@ -30,9 +37,10 @@ type resources struct {
 	metadata     meta.Meta
 	session      bool
 	runtime      *storage.Runtime
-	adapter      *smbfs.FS
-	server       *smb2.Server
+	adapter      smbAdapter
+	server       smbServer
 	listener     net.Listener
+	serveDone    <-chan error
 	protection   *backup.Protection
 	manager      *backup.Manager
 	cancelBackup context.CancelFunc
@@ -48,14 +56,23 @@ func (r *resources) close() error {
 	if r.cancelBackup != nil {
 		r.cancelBackup()
 	}
-	if r.listener != nil {
-		_ = r.listener.Close()
-	}
 	if r.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := r.server.ShutdownContext(ctx); err != nil {
+		if err := r.server.Shutdown(ctx); err != nil {
 			return fmt.Errorf("SMB shutdown failed; state lock retained: %w", err)
+		}
+	}
+	// Serve owns the listener. Close it here too in case startup stopped before
+	// Serve registered it. A listener already closed by Shutdown is expected.
+	if r.listener != nil {
+		if err := r.listener.Close(); err != nil && !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("listener shutdown failed; state lock retained: %w", err)
+		}
+	}
+	if r.serveDone != nil {
+		if err := <-r.serveDone; err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, net.ErrClosed) {
+			return fmt.Errorf("SMB serving failed during shutdown; state lock retained: %w", err)
 		}
 	}
 	if r.adapter != nil {
@@ -314,18 +331,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	if err = r.metadata.NewSession(true); err != nil {
 		return err
 	}
-	r.adapter, err = smbfs.New(r.runtime.FS, c.SMB.ReadOnly)
-	if err != nil {
+	if err = r.startSMB(ctx, c.SMB, dbPath); err != nil {
 		return err
 	}
-	auth := &smb2.NTLMAuthenticator{UserPassword: map[string]string{c.SMB.Username: c.SMB.Password}, NbName: "s3-smb"}
-	r.server = smb2.NewServer(&smb2.ServerConfig{Xatrrs: true}, auth, map[string]vfs.VFSFileSystem{c.SMB.Share: r.adapter})
-	r.listener, err = net.Listen("tcp", c.SMB.Listen)
-	if err != nil {
-		return fmt.Errorf("listen on configured SMB address (no fallback): %w", err)
-	}
-	serveDone := make(chan error, 1)
-	go func() { serveDone <- r.server.ServeListener(r.listener) }()
 	var backupFailure <-chan error
 	if !c.SMB.ReadOnly {
 		backupCtx, cancel := context.WithCancel(ctx)
@@ -347,12 +355,34 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 			return errors.New("metadata backup protection stopped unexpectedly")
 		}
 		return fmt.Errorf("metadata backup protection failed; stopping writable SMB: %w", err)
-	case err = <-serveDone:
+	case err = <-r.serveDone:
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err == nil {
 			return errors.New("SMB server stopped unexpectedly")
 		}
 		return fmt.Errorf("SMB serving failed: %w", err)
 	}
+}
+
+func (r *resources) startSMB(ctx context.Context, c config.SMBConfig, metadataPath string) error {
+	var err error
+	r.server, r.adapter, err = newSMBServer(r.runtime, c, metadataPath)
+	if err != nil {
+		return fmt.Errorf("construct SMB server: %w", err)
+	}
+	r.listener, err = net.Listen("tcp", c.Listen)
+	if err != nil {
+		return fmt.Errorf("listen on configured SMB address (no fallback): %w", err)
+	}
+	done := make(chan error, 1)
+	r.serveDone = done
+	go func() {
+		done <- r.server.Serve(ctx, r.listener)
+		close(done)
+	}()
+	return nil
 }
 
 // verifyRemoteMarker accepts a missing volume marker when the newest metadata
