@@ -291,7 +291,7 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Protection: r.protection})
 		if err != nil {
 			return err
 		}
@@ -377,6 +377,11 @@ func unexpectedServeError(err error) error {
 		return result
 	}
 	if errors.Is(err, net.ErrClosed) {
+		for cause := errors.Unwrap(err); cause != nil; cause = errors.Unwrap(cause) {
+			if _, ok := cause.(interface{ Unwrap() []error }); ok {
+				return unexpectedServeError(cause)
+			}
+		}
 		return nil
 	}
 	return err

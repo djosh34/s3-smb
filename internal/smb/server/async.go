@@ -16,9 +16,10 @@ const localWait = 5 * time.Millisecond
 // work publishes one immutable result before closing done. Dependent members
 // wait for that publication, rather than for transport completion.
 type work struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	result reply
+	done     chan struct{}
+	cancel   context.CancelFunc
+	result   reply
+	compound compoundState
 }
 
 type pendingRequest struct {
@@ -31,20 +32,26 @@ func asyncEligible(command wire.Command) bool {
 	return command == wire.Read || command == wire.Write || command == wire.Flush
 }
 
-func (connection *connection) execute(ctx context.Context, message wire.Message) reply {
-	result, err := connection.dispatch(ctx, message)
+func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
+	if err := ctx.Err(); err != nil {
+		return reply{status: smb.StatusFromError(err)}
+	}
+	if message.Header.Flags&wire.FlagRelated != 0 && needsFileID(message.Header.Command) && previous.status&0xc0000000 == 0xc0000000 {
+		return reply{status: previous.status}
+	}
+	result, err := connection.dispatch(ctx, message, previous)
 	if err != nil {
 		level, text := slog.LevelError, "request failed"
 		if errors.Is(err, context.Canceled) {
 			level, text = slog.LevelDebug, "request canceled"
 		}
 		connection.server.options.Logger.Log(ctx, level, text, "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
-		return reply{status: smb.StatusFromError(err)}
+		return reply{status: smb.StatusFromError(err), fileID: result.fileID}
 	}
 	return result
 }
 
-func (connection *connection) startWork(ctx context.Context, message wire.Message, prerequisite *work) *work {
+func (connection *connection) startWork(ctx context.Context, message wire.Message, prerequisite *work, previous compoundState) *work {
 	ctx, cancel := context.WithCancel(ctx)
 	operation := &work{done: make(chan struct{}), cancel: cancel}
 	connection.workers.Add(1)
@@ -55,16 +62,15 @@ func (connection *connection) startWork(ctx context.Context, message wire.Messag
 		if prerequisite != nil {
 			select {
 			case <-prerequisite.done:
-				if prerequisite.result.status != smb.StatusSuccess {
-					operation.result.status = smb.StatusInvalidParameter
-					return
-				}
+				previous = prerequisite.compound
 			case <-ctx.Done():
 				operation.result.status = smb.StatusCancelled
+				operation.compound = previous.after(operation.result)
 				return
 			}
 		}
-		operation.result = connection.execute(ctx, message)
+		operation.result = connection.execute(ctx, message, previous)
+		operation.compound = previous.after(operation.result)
 	}()
 	return operation
 }
