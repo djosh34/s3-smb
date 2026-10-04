@@ -19,6 +19,9 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 
 // selected is non-nil only when the caller already holds its parent guard.
 func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction, selected *smb.Resolved) error {
+	if action.Remove {
+		defer server.options.State.CompleteDelete(action.Object)
+	}
 	var result error
 	if action.Handle != nil {
 		server.drainOpen(action.FileID)
@@ -37,7 +40,6 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 }
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
-	defer server.options.State.CompleteDelete(action.Object)
 	path, err := server.options.Storage.PathOf(ctx, action.Object.Inode)
 	if err != nil {
 		return fmt.Errorf("find deletion name: %w", err)
