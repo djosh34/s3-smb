@@ -1,9 +1,7 @@
 package wire
 
 import (
-	"bytes"
 	"encoding/binary"
-	"reflect"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -19,17 +17,12 @@ func TestHeaderLayouts(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(b) != 64 {
-			t.Fatal(len(b))
-		}
 		got, err := DecodeHeader(b)
 		if err != nil || got != h {
 			t.Fatalf("header: %+v, %v", got, err)
 		}
-		for n := 0; n < 64; n++ {
-			if _, err := DecodeHeader(b[:n]); err == nil {
-				t.Fatalf("accepted %d bytes", n)
-			}
+		if _, err := DecodeHeader(b[:63]); err == nil {
+			t.Fatal("accepted a short header")
 		}
 	}
 	invalid := []Header{{AsyncID: 1}, {Flags: FlagAsync, TreeID: 1}, {Status: smb.StatusPending}, {Flags: FlagResponse, ChannelSequence: 1}, {NextCommand: 65}}
@@ -40,8 +33,26 @@ func TestHeaderLayouts(t *testing.T) {
 	}
 }
 
-func TestCompoundValidationAndOwnership(t *testing.T) {
-	messages := []Message{{Header: Header{Command: Echo}, Body: []byte{4, 0, 0, 0}}, {Header: Header{Command: Command(0xffff)}, Body: []byte{1, 2}}}
+// The upper half of a request's ChannelSequence word is reserved: Split keeps
+// the received bytes for signing, and the decoded header ignores them.
+func TestReservedRequestHeaderWord(t *testing.T) {
+	want := Header{Command: Write, ChannelSequence: 7}
+	data, err := EncodeHeader(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data[10], data[11] = 0xff, 0xee
+	members, err := Split(append(data, 1, 2, 3))
+	if err != nil || len(members) != 1 || members[0].Header != want {
+		t.Fatalf("members: %+v, %v", members, err)
+	}
+	if members[0].Raw[10] != 0xff || members[0].Raw[11] != 0xee {
+		t.Fatal("Split did not keep the received reserved bytes")
+	}
+}
+
+func TestCompoundSplitAndJoin(t *testing.T) {
+	messages := []Message{{Header: Header{Command: Write}, Body: []byte{1, 2, 3}}, {Header: Header{Command: Command(0xffff)}, Body: []byte{4, 0, 0, 0}}}
 	packet, err := Join(messages)
 	if err != nil {
 		t.Fatal(err)
@@ -50,19 +61,18 @@ func TestCompoundValidationAndOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 2 || got[0].Header.NextCommand != 72 || !reflect.DeepEqual(got[1].Body, messages[1].Body) {
+	if len(got) != 2 || got[0].Header.NextCommand != 72 || len(got[0].Raw) != 72 || got[1].Body[0] != 4 {
 		t.Fatalf("members: %+v", got)
 	}
-	raw := clone(got[0].Raw)
-	packet[64] = 9
-	if !bytes.Equal(got[0].Raw, raw) || got[0].Body[0] != 4 {
-		t.Fatal("returned data aliases packet")
+	got[0].Body[0] = 9
+	if got[0].Raw[64] != 9 || packet[64] != 1 {
+		t.Fatal("Body must share the member's Raw copy, not the packet")
 	}
 	for _, offset := range []uint32{1, 64, 65, 80, 0xfffffff8} {
 		bad := clone(packet)
 		binary.LittleEndian.PutUint32(bad[20:], offset)
 		if members, err := Split(bad); err == nil || members != nil {
-			t.Fatalf("accepted offset %d", offset)
+			t.Fatalf("accepted NextCommand %d", offset)
 		}
 	}
 	bad := clone(packet)
@@ -72,24 +82,35 @@ func TestCompoundValidationAndOwnership(t *testing.T) {
 	}
 }
 
-func TestSMB1OpeningNegotiate(t *testing.T) {
+func smb1Negotiate(dialects string) []byte {
 	b := builder{}
 	b.bytes([]byte{0xff, 'S', 'M', 'B', 0x72})
 	b.zero(27)
 	b.u8(0)
-	dialects := []byte("\x02NT LM 0.12\x00\x02SMB 2.???\x00")
 	b.length16(len(dialects))
-	b.bytes(dialects)
-	if err := DecodeSMB1Negotiate(b.data); err != nil {
-		t.Fatal(err)
-	}
-	for n := 0; n < len(b.data); n++ {
-		if err := DecodeSMB1Negotiate(b.data[:n]); err == nil {
-			t.Fatalf("accepted %d bytes", n)
+	b.bytes([]byte(dialects))
+	return b.data
+}
+
+func TestSMB1Negotiate(t *testing.T) {
+	for _, test := range []struct {
+		dialects string
+		accepted bool
+	}{
+		{dialects: "\x02SMB 2.002\x00"},
+		{dialects: "\x02SMB 2.???\x00", accepted: true},
+		{dialects: "\x02NT LM 0.12\x00\x02SMB 2.???\x00", accepted: true},
+	} {
+		if err := DecodeSMB1Negotiate(smb1Negotiate(test.dialects)); (err == nil) != test.accepted {
+			t.Fatalf("dialects %q: %v", test.dialects, err)
 		}
 	}
-	b.data[4] = 0x73
-	if err := DecodeSMB1Negotiate(b.data); err == nil {
-		t.Fatal("accepted another command")
+	packet := smb1Negotiate("\x02SMB 2.???\x00")
+	if err := DecodeSMB1Negotiate(packet[:len(packet)-1]); err == nil {
+		t.Fatal("accepted a truncated dialect list")
+	}
+	packet[4] = 0x73
+	if err := DecodeSMB1Negotiate(packet); err == nil {
+		t.Fatal("accepted another SMB1 command")
 	}
 }

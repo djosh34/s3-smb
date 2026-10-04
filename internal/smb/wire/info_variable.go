@@ -17,9 +17,6 @@ func EncodeFileNameInformation(v FileNameInformation) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !size32(len(name)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.length32(len(name))
 	b.bytes(name)
@@ -100,9 +97,6 @@ func EncodeFileRenameInformation(v FileRenameInformation) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !size32(len(name)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.boolean(v.ReplaceIfExists)
 	b.zero(7)
@@ -134,9 +128,6 @@ func EncodeFilesystemVolumeInformation(v FilesystemVolumeInformation) ([]byte, e
 	if err != nil {
 		return nil, err
 	}
-	if !size32(len(name)) {
-		return nil, errMalformed
-	}
 	b := builder{}
 	b.u64(uint64(v.Created))
 	b.u32(v.Serial)
@@ -166,9 +157,6 @@ func EncodeFilesystemAttributeInformation(v FilesystemAttributeInformation) ([]b
 	name, err := encodeUTF16(v.Name)
 	if err != nil {
 		return nil, err
-	}
-	if !size32(len(name)) {
-		return nil, errMalformed
 	}
 	b := builder{}
 	b.u32(v.Attributes)
@@ -228,9 +216,6 @@ func EncodeFileStreamInformation(v FileStreamInformation) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
-		if !size32(len(name) + 31) {
-			return nil, errMalformed
-		}
 		member := builder{}
 		n := 24 + len(name)
 		if i < len(v.Entries)-1 {
@@ -244,7 +229,7 @@ func EncodeFileStreamInformation(v FileStreamInformation) ([]byte, error) {
 		member.u64(e.AllocationSize)
 		member.bytes(name)
 		if i < len(v.Entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

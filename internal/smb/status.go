@@ -18,7 +18,6 @@ const (
 	StatusBufferOverflow                   Status = 0x80000005
 	StatusNoMoreFiles                      Status = 0x80000006
 	StatusUnsuccessful                     Status = 0xc0000001
-	StatusNotImplemented                   Status = 0xc0000002
 	StatusInvalidInfoClass                 Status = 0xc0000003
 	StatusInfoLengthMismatch               Status = 0xc0000004
 	StatusInvalidHandle                    Status = 0xc0000008
@@ -59,7 +58,6 @@ const (
 	StatusUserSessionDeleted               Status = 0xc0000203
 	StatusSMBNoPreauthIntegrityHashOverlap Status = 0xc05d0000
 	StatusNetworkNameDeleted               Status = 0xc00000c9
-	StatusNetworkSessionExpired            Status = 0xc000035c
 	StatusRangeNotLocked                   Status = 0xc000007e
 	StatusFileTooLarge                     Status = 0xc0000904
 )

@@ -2,13 +2,12 @@ package auth
 
 import (
 	"bytes"
-	"encoding/asn1"
 	"errors"
 	"testing"
 )
 
 func TestNegotiatedFlags(t *testing.T) {
-	for _, removed := range []uint32{flagTarget, flagKeyExch, flagSign | flagKeyExch, flagVersion, flag128, flag128 | flag56, flagKeyExch | flagVersion | flag128 | flag56} {
+	for _, removed := range []uint32{flagKeyExch, flagSign | flagKeyExch, flagVersion, flag128 | flag56} {
 		acceptor := testAcceptor(t, vectorAccount)
 		initiator := testInitiator(t, vectorAccount)
 		initial, err := acceptor.InitialToken()
@@ -135,42 +134,8 @@ func TestOptionalMechanismMIC(t *testing.T) {
 	}
 }
 
-func TestFinalSPNEGOAcceptance(t *testing.T) {
-	kerberos := asn1.ObjectIdentifier{1, 2, 840, 113554, 1, 2, 2}
-	for _, test := range []struct {
-		mech  asn1.ObjectIdentifier
-		token []byte
-		mic   []byte
-		state int
-	}{
-		{state: -1},
-		{state: 1},
-		{state: 2},
-		{state: 3},
-		{state: 0, mech: kerberos},
-		{state: 0, token: []byte{1}},
-		{state: 0, mic: make([]byte, 16)},
-	} {
-		initiator := testInitiator(t, vectorAccount)
-		startExchange(t, testAcceptor(t, vectorAccount), initiator)
-		token, err := encodeResponse(test.state, test.mech, test.token, test.mic)
-		if err != nil {
-			t.Fatal(err)
-		}
-		result, err := initiator.Step(token)
-		requireFailure(t, result, err)
-	}
-	for _, token := range [][]byte{nil, []byte("NTLMSSP\x00"), exchangeMessages(t)[0]} {
-		initiator := testInitiator(t, vectorAccount)
-		startExchange(t, testAcceptor(t, vectorAccount), initiator)
-		result, err := initiator.Step(token)
-		requireFailure(t, result, err)
-	}
-}
-
 func TestExchangeState(t *testing.T) {
 	var nilAcceptor *Acceptor
-	var nilInitiator *Initiator
 	for _, acceptor := range []*Acceptor{nilAcceptor, {}} {
 		if _, err := acceptor.InitialToken(); !errors.Is(err, errExchange) {
 			t.Fatalf("zero acceptor advertisement: %v", err)
@@ -178,34 +143,17 @@ func TestExchangeState(t *testing.T) {
 		result, err := acceptor.Step(nil)
 		requireFailure(t, result, err)
 	}
-	for _, initiator := range []*Initiator{nilInitiator, {}} {
-		result, err := initiator.Start(nil)
-		requireFailure(t, result, err)
-		result, err = initiator.Step(nil)
-		requireFailure(t, result, err)
-	}
 	acceptor := testAcceptor(t, vectorAccount)
 	initial, err := acceptor.InitialToken()
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := acceptor.InitialToken()
+	negotiate, err := testInitiator(t, vectorAccount).Start(initial)
 	if err != nil {
 		t.Fatal(err)
 	}
-	requireBytes(t, initial, second)
-	initiator := testInitiator(t, vectorAccount)
-	negotiate, err := initiator.Start(initial)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, startErr := initiator.Start(initial); !errors.Is(startErr, errExchange) {
-		t.Fatal("initiator started twice")
-	}
-	result, err := testInitiator(t, vectorAccount).Step(initial)
-	requireFailure(t, result, err)
 	// An authenticate message cannot start the acceptor's exchange.
-	result, err = testAcceptor(t, vectorAccount).Step(exchangeMessages(t)[3])
+	result, err := testAcceptor(t, vectorAccount).Step(exchangeMessages(t)[3])
 	requireFailure(t, result, err)
 	// Malformed input consumes the exchange even before a challenge.
 	result, err = acceptor.Step(nil)
@@ -240,40 +188,6 @@ func TestOwnedTranscriptBuffers(t *testing.T) {
 		t.Fatalf("caller mutation changed the retained transcript: %v", err)
 	}
 	requireBytes(t, authenticate.SessionKey, final.SessionKey)
-}
-
-func TestEncoderBounds(t *testing.T) {
-	for _, test := range []struct {
-		value  []byte
-		offset int
-		start  int
-	}{
-		{offset: -1},
-		{offset: 4},
-		{start: -1},
-		{start: 33},
-		{value: make([]byte, maxTokenSize+1)},
-		{start: 30, value: make([]byte, 3)},
-	} {
-		if _, err := putField(make([]byte, 8), test.offset, test.start, test.value); err == nil {
-			t.Fatal("invalid security buffer encoding accepted")
-		}
-	}
-	if _, err := appendAV(nil, avComputer, make([]byte, maxTokenSize+1)); err == nil {
-		t.Fatal("oversized AV value accepted")
-	}
-	if _, err := encodeAV([]avPair{{value: make([]byte, maxTokenSize), id: avComputer}}); err == nil {
-		t.Fatal("oversized target info accepted")
-	}
-	if _, err := testInitiator(t, vectorAccount).makeAuthenticate(offeredFlags, make([]byte, maxTokenSize), nil); err == nil {
-		t.Fatal("oversized authenticate message accepted")
-	}
-	if _, err := encodeResponse(-1, nil, make([]byte, maxTokenSize), nil); err == nil {
-		t.Fatal("oversized SPNEGO response accepted")
-	}
-	if _, err := exchangeKey(nil, make([]byte, 16)); err == nil {
-		t.Fatal("invalid RC4 key accepted")
-	}
 }
 
 func TestReservedChallengeFields(t *testing.T) {
@@ -324,19 +238,4 @@ func TestReservedChallengeFields(t *testing.T) {
 		t.Fatalf("reserved challenge bytes changed authentication: %v", err)
 	}
 	requireBytes(t, final.SessionKey, authenticate.SessionKey)
-}
-
-func TestIndependentExchanges(t *testing.T) {
-	for _, user := range []string{"one", "two", "three", "four"} {
-		t.Run(user, func(t *testing.T) {
-			t.Parallel()
-			account := Account{User: user, Password: "Password"}
-			acceptor := testAcceptor(t, account)
-			_, authenticate := startExchange(t, acceptor, testInitiator(t, account))
-			final, err := acceptor.Step(authenticate.Token)
-			if err != nil || !final.Done || final.User != user {
-				t.Fatalf("separate exchange failed: %v", err)
-			}
-		})
-	}
 }

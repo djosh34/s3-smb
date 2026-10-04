@@ -7,7 +7,9 @@ const (
 	filetimeUnixOffset     int64  = 11_644_473_600
 )
 
-// DecodeFiletime divides before conversion to avoid nanosecond overflow.
+// DecodeFiletime converts a FILETIME, allowing zero as the 1601 epoch but
+// rejecting the -1 and -2 sentinels. It divides before conversion to avoid
+// nanosecond overflow.
 func DecodeFiletime(value Filetime) (time.Time, error) {
 	if value == FiletimeSuppress || value == FiletimeResume {
 		return time.Time{}, errMalformed
@@ -46,7 +48,8 @@ func EncodeFiletime(value time.Time) (Filetime, error) {
 	return result, nil
 }
 
-// DecodeTimeUpdate distinguishes all SET_INFO sentinels from ordinary times.
+// DecodeTimeUpdate reads a SET_INFO timestamp. Zero, -1 and -2 all return
+// TimeKeep; any other value is a time to set.
 func DecodeTimeUpdate(value Filetime) (TimeUpdate, error) {
 	if value == FiletimeUnchanged || value == FiletimeSuppress || value == FiletimeResume {
 		return TimeUpdate{Action: TimeKeep}, nil
@@ -56,23 +59,4 @@ func DecodeTimeUpdate(value Filetime) (TimeUpdate, error) {
 		return TimeUpdate{}, err
 	}
 	return TimeUpdate{Time: decoded, Action: TimeSet}, nil
-}
-
-// EncodeTimeUpdate uses zero for TimeKeep and cannot encode a sentinel as TimeSet.
-func EncodeTimeUpdate(update TimeUpdate) (Filetime, error) {
-	switch update.Action {
-	case TimeKeep:
-		return FiletimeUnchanged, nil
-	case TimeSet:
-		v, err := EncodeFiletime(update.Time)
-		if err != nil {
-			return 0, err
-		}
-		if v == FiletimeUnchanged {
-			return 0, errMalformed
-		}
-		return v, nil
-	default:
-		return 0, errMalformed
-	}
 }

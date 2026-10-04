@@ -83,7 +83,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if len(short) > 24 || !size32(111+len(name)) {
+		if len(short) > 24 {
 			return nil, errMalformed
 		}
 		member := builder{}
@@ -103,7 +103,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {
@@ -149,9 +149,6 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if !size32(87 + len(name)) {
-			return nil, errMalformed
-		}
 		member := builder{}
 		n := 80 + len(name)
 		if i < len(entries)-1 {
@@ -165,7 +162,7 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

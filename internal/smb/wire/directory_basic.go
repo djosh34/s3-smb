@@ -105,9 +105,6 @@ func encodeBasicDirectoryEntries(entries []DirectoryEntry, class DirectoryInfoCl
 		if err != nil {
 			return nil, err
 		}
-		if !size32(fixed + len(name) + 7) {
-			return nil, errMalformed
-		}
 		member := builder{}
 		n := fixed + len(name)
 		if i < len(entries)-1 {
@@ -139,7 +136,7 @@ func encodeBasicDirectoryEntries(entries []DirectoryEntry, class DirectoryInfoCl
 		}
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

@@ -220,141 +220,84 @@ func EncodeLeaseBreakNotification(v LeaseBreakNotification) ([]byte, error) {
 	return b.data, nil
 }
 
-// DecodeEchoRequest checks the command and structure size.
-func DecodeEchoRequest(m Message) (EmptyRequest, error) {
-	r := body(m, Echo, false, 4, 4)
-	return EmptyRequest{}, r.err
+// Empty bodies hold only the structure size and two reserved bytes, except
+// SET_INFO's response, which has no reserved bytes.
+func decodeEmpty(m Message, command Command, response bool) error {
+	size := uint16(4)
+	if command == SetInfo && response {
+		size = 2
+	}
+	return body(m, command, response, size, int(size)).err
 }
 
-// EncodeEchoRequest writes the empty command body.
-func EncodeEchoRequest(_ EmptyRequest) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
+func emptyBody() []byte { return []byte{4, 0, 0, 0} }
+
+// DecodeEchoRequest checks the command and structure size.
+func DecodeEchoRequest(m Message) (EmptyRequest, error) {
+	return EmptyRequest{}, decodeEmpty(m, Echo, false)
 }
+
+// EncodeEchoRequest writes the empty body.
+func EncodeEchoRequest(EmptyRequest) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeEchoResponse checks the command and structure size.
 func DecodeEchoResponse(m Message) (EmptyResponse, error) {
-	r := body(m, Echo, true, 4, 4)
-	return EmptyResponse{}, r.err
+	return EmptyResponse{}, decodeEmpty(m, Echo, true)
 }
 
-// EncodeEchoResponse writes the empty command body.
-func EncodeEchoResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeEchoResponse writes the empty body.
+func EncodeEchoResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeLogoffRequest checks the command and structure size.
 func DecodeLogoffRequest(m Message) (EmptyRequest, error) {
-	r := body(m, Logoff, false, 4, 4)
-	return EmptyRequest{}, r.err
+	return EmptyRequest{}, decodeEmpty(m, Logoff, false)
 }
 
-// EncodeLogoffRequest writes the empty command body.
-func EncodeLogoffRequest(_ EmptyRequest) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeLogoffRequest writes the empty body.
+func EncodeLogoffRequest(EmptyRequest) ([]byte, error) { return emptyBody(), nil }
 
-// DecodeLogoffResponse checks the command and structure size.
-func DecodeLogoffResponse(m Message) (EmptyResponse, error) {
-	r := body(m, Logoff, true, 4, 4)
-	return EmptyResponse{}, r.err
-}
-
-// EncodeLogoffResponse writes the empty command body.
-func EncodeLogoffResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeLogoffResponse writes the empty body.
+func EncodeLogoffResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeTreeDisconnectRequest checks the command and structure size.
 func DecodeTreeDisconnectRequest(m Message) (EmptyRequest, error) {
-	r := body(m, TreeDisconnect, false, 4, 4)
-	return EmptyRequest{}, r.err
+	return EmptyRequest{}, decodeEmpty(m, TreeDisconnect, false)
 }
 
-// EncodeTreeDisconnectRequest writes the empty command body.
-func EncodeTreeDisconnectRequest(_ EmptyRequest) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeTreeDisconnectRequest writes the empty body.
+func EncodeTreeDisconnectRequest(EmptyRequest) ([]byte, error) { return emptyBody(), nil }
 
-// DecodeTreeDisconnectResponse checks the command and structure size.
-func DecodeTreeDisconnectResponse(m Message) (EmptyResponse, error) {
-	r := body(m, TreeDisconnect, true, 4, 4)
-	return EmptyResponse{}, r.err
-}
-
-// EncodeTreeDisconnectResponse writes the empty command body.
-func EncodeTreeDisconnectResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeTreeDisconnectResponse writes the empty body.
+func EncodeTreeDisconnectResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeCancelRequest checks the command and structure size.
 func DecodeCancelRequest(m Message) (EmptyRequest, error) {
-	r := body(m, Cancel, false, 4, 4)
-	return EmptyRequest{}, r.err
+	return EmptyRequest{}, decodeEmpty(m, Cancel, false)
 }
 
-// EncodeCancelRequest writes the empty command body.
-func EncodeCancelRequest(_ EmptyRequest) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeCancelRequest writes the empty body.
+func EncodeCancelRequest(EmptyRequest) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeFlushResponse checks the command and structure size.
 func DecodeFlushResponse(m Message) (EmptyResponse, error) {
-	r := body(m, Flush, true, 4, 4)
-	return EmptyResponse{}, r.err
+	return EmptyResponse{}, decodeEmpty(m, Flush, true)
 }
 
-// EncodeFlushResponse writes the empty command body.
-func EncodeFlushResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeFlushResponse writes the empty body.
+func EncodeFlushResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeLockResponse checks the command and structure size.
 func DecodeLockResponse(m Message) (EmptyResponse, error) {
-	r := body(m, Lock, true, 4, 4)
-	return EmptyResponse{}, r.err
+	return EmptyResponse{}, decodeEmpty(m, Lock, true)
 }
 
-// EncodeLockResponse writes the empty command body.
-func EncodeLockResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(4)
-	b.zero(2)
-	return b.data, nil
-}
+// EncodeLockResponse writes the empty body.
+func EncodeLockResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
 // DecodeSetInfoResponse checks the command and structure size.
 func DecodeSetInfoResponse(m Message) (EmptyResponse, error) {
-	r := body(m, SetInfo, true, 2, 2)
-	return EmptyResponse{}, r.err
+	return EmptyResponse{}, decodeEmpty(m, SetInfo, true)
 }
 
-// EncodeSetInfoResponse writes the empty command body.
-func EncodeSetInfoResponse(_ EmptyResponse) ([]byte, error) {
-	b := builder{}
-	b.u16(2)
-	return b.data, nil
-}
+// EncodeSetInfoResponse writes the two-byte body.
+func EncodeSetInfoResponse(EmptyResponse) ([]byte, error) { return []byte{2, 0}, nil }
