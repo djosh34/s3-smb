@@ -3,7 +3,6 @@ package smbfs
 import (
 	"context"
 	"errors"
-	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -98,7 +97,7 @@ func (s *FS) lookupEntry(ctx context.Context, parent smb.Inode, base string) (sm
 	if eno != 0 {
 		return 0, a, backendError(eno)
 	}
-	if err := supported(smb.Inode(ino), &a); err != nil {
+	if err := admitted(smb.Inode(ino), &a); err != nil {
 		return 0, a, err
 	}
 	return smb.Inode(ino), a, nil
@@ -157,7 +156,7 @@ func (s *FS) checkName(ctx context.Context, name smb.Name) error {
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(name.Parent), &a)); err != nil {
 		return err
 	}
-	if err := supported(name.Parent, &a); err != nil {
+	if err := admitted(name.Parent, &a); err != nil {
 		return err
 	}
 	if a.Typ != meta.TypeDirectory {
@@ -227,45 +226,62 @@ func (s *FS) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Reso
 	return smb.Resolved{Name: name, Object: key, Attr: attr, Exists: err == nil}, err
 }
 
-// ReadDir uses a sorted position cookie, with no adapter cursor or attr snapshot.
+// ReadDir uses stable SQLite edge IDs with no adapter cursor or attr snapshot.
 func (s *FS) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limit uint32) ([]smb.DirEntry, error) {
-	a, err := s.GetAttr(ctx, smb.ObjectKey{Inode: ino})
-	if err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
-	}
-	if a.Kind != smb.KindDirectory {
-		return nil, smb.ErrNotDirectory
 	}
 	if limit == 0 {
 		return nil, smb.ErrInvalidParameter
 	}
-	var entries []*meta.Entry
-	if err := backendError(s.metadata.Readdir(storageContext(ctx), meta.Ino(ino), 1, &entries)); err != nil {
+	var raw meta.Attr
+	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &raw)); err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		name := string(entry.Name)
-		if validBase(name) {
-			names = append(names, name)
-		}
+	if err := admitted(ino, &raw); err != nil {
+		return nil, err
 	}
-	sort.Strings(names)
-	if uint64(cookie) >= uint64(len(names)) {
-		return nil, nil
+	if raw.Typ != meta.TypeDirectory {
+		return nil, smb.ErrNotDirectory
 	}
-	end := min(uint64(len(names)), uint64(cookie)+uint64(limit))
+	if err := backendError(s.metadata.Access(storageContext(ctx), meta.Ino(ino), meta.MODE_MASK_R|meta.MODE_MASK_X, &raw)); err != nil {
+		return nil, err
+	}
+	// The page query joins only live names and inodes. It needs no follow-up
+	// lookup that could fail because a name was removed after enumeration.
+	release := s.guardParent(ino)
+	defer release()
 	var out []smb.DirEntry
-	for i := uint64(cookie); i < end; i++ {
-		child, _, err := s.lookupEntry(ctx, ino, names[i])
+	for uint64(len(out)) < uint64(limit) {
+		entries, err := s.directoryPage(ctx, ino, cookie, limit)
 		if err != nil {
-			return nil, err
+			return nil, storageError(err)
 		}
-		a, err := s.GetAttr(ctx, smb.ObjectKey{Inode: child})
-		if err != nil {
-			return nil, err
+		if len(entries) == 0 {
+			break
 		}
-		out = append(out, smb.DirEntry{Name: names[i], Attr: a, Next: smb.Cookie(i + 1)})
+		for _, entry := range entries {
+			cookie = entry.next
+			if !validBase(entry.name) {
+				continue
+			}
+			if err := admitted(entry.inode, &entry.attr); err != nil {
+				continue
+			}
+			st, unpin := s.pin(entry.inode)
+			a, err := decorateAttr(entry.inode, &entry.attr, entry.values, st.snapshot())
+			unpin()
+			if errors.Is(err, smb.ErrNameNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, smb.DirEntry{Name: entry.name, Attr: a, Next: cookie})
+			if uint64(len(out)) == uint64(limit) {
+				return out, nil
+			}
+		}
 	}
 	return out, nil
 }
@@ -339,6 +355,10 @@ func (s *FS) Rename(ctx context.Context, r smb.RenameRequest) error {
 	if err := s.checkName(ctx, r.Destination); err != nil {
 		return err
 	}
+	// All renames share this namespace-only guard so ancestry cannot change
+	// between the directory check and mutation. File I/O never takes it.
+	s.renameMu.Lock()
+	defer s.renameMu.Unlock()
 	first, second := r.Source.Parent, r.Destination.Parent
 	if first > second {
 		first, second = second, first
@@ -349,8 +369,14 @@ func (s *FS) Rename(ctx context.Context, r smb.RenameRequest) error {
 		done := s.guardParent(second)
 		defer done()
 	}
-	if _, err := s.expected(ctx, r.Source, r.SourceInode); err != nil {
+	source, err := s.expected(ctx, r.Source, r.SourceInode)
+	if err != nil {
 		return err
+	}
+	if source.Typ == meta.TypeDirectory {
+		if err = s.checkAncestry(ctx, r.SourceInode, r.Destination.Parent); err != nil {
+			return err
+		}
 	}
 	if _, err := s.expected(ctx, r.Destination, r.DestinationInode); err != nil {
 		return err
@@ -371,6 +397,31 @@ func (s *FS) Rename(ctx context.Context, r smb.RenameRequest) error {
 	return nil
 }
 
+func (s *FS) checkAncestry(ctx context.Context, source, parent smb.Inode) error {
+	seen := make(map[smb.Inode]bool)
+	for parent != smb.Inode(meta.RootInode) {
+		if parent == source {
+			return smb.ErrInvalidParameter
+		}
+		if parent == 0 || seen[parent] {
+			return smb.ErrIO
+		}
+		seen[parent] = true
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		var attr meta.Attr
+		if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(parent), &attr)); err != nil {
+			return err
+		}
+		if err := admitted(parent, &attr); err != nil {
+			return err
+		}
+		parent = smb.Inode(attr.Parent)
+	}
+	return nil
+}
+
 // PathOf discovers the linked inode's current name, never a cached handle path.
 func (s *FS) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	if ino == 0 {
@@ -383,7 +434,10 @@ func (s *FS) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &a)); err != nil {
 		return "", err
 	}
-	if err := supported(ino, &a); err != nil {
+	if a.Parent.IsTrash() || a.Nlink == 0 {
+		return "", smb.ErrNameNotFound
+	}
+	if err := admitted(ino, &a); err != nil {
 		return "", err
 	}
 	if ino == smb.Inode(meta.RootInode) {
@@ -399,7 +453,7 @@ func (s *FS) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	p := strings.TrimPrefix(paths[0], "/")
 	parts, stream, err := parsePath(p)
 	if err != nil || stream != "" {
-		return "", smb.ErrAccessDenied
+		return "", smb.ErrNameNotFound
 	}
 	parent := smb.Inode(meta.RootInode)
 	for _, base := range parts {

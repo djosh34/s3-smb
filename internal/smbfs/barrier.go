@@ -3,7 +3,6 @@ package smbfs
 import (
 	"context"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -13,7 +12,7 @@ type diskBarrier struct{ path string }
 // NewMetadataBarrier validates the existing SQLite path. No descriptor is kept.
 func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 	if !filepath.IsAbs(metadataPath) {
-		return nil, fmt.Errorf("metadata path must be absolute")
+		return nil, errors.New("metadata path must be absolute")
 	}
 	root, err := os.OpenRoot(filepath.Dir(metadataPath))
 	if err != nil {
@@ -24,7 +23,7 @@ func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("metadata path must be a regular file")
+		return nil, errors.New("metadata path must be a regular file")
 	}
 	return &diskBarrier{path: metadataPath}, nil
 }

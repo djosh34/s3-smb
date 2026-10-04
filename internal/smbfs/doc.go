@@ -8,8 +8,8 @@
 // covers the SQLite database and WAL with ordinary fsync or the platform's
 // full-fsync barrier. It owns no persistent file descriptor or metadata connection.
 // Tests may inject a barrier to check ordering and failures. There are no global
-// handle or open registries. Handles carry a JuiceFS reference, immutable object
-// key and access mode. Private per-inode coordination is allowed and must not
+// handle or open registries. Handles retain an inode reference, immutable object
+// key, kind and access mode. Private per-inode coordination is allowed and must not
 // serialize unrelated inode I/O. New rejects a missing filesystem or barrier.
 // The caller owns and closes JuiceFS only after server shutdown closes all opens.
 package smbfs
@@ -17,7 +17,9 @@ package smbfs
 import (
 	"context"
 
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
 )
 
 // MetadataBarrier makes already committed metadata durable on local storage.
@@ -34,8 +36,15 @@ type MetadataBarrier interface {
 // policy. Capacity zero means no configured quota; free space is capped at 1 TiB.
 // ReadOnly forbids every mutation, including stream xattr writes.
 type Options struct {
-	Filesystem *jfs.FileSystem
+	// Config and Store are the runtime I/O settings and chunk store. The adapter
+	// owns one shared JuiceFS reader/writer, separate from FileSystem's private I/O.
+	Store      chunk.ChunkStore
 	Barrier    MetadataBarrier
-	Capacity   uint64
-	ReadOnly   bool
+	Config     *vfs.Config
+	Filesystem *jfs.FileSystem
+	// MetadataPath names the runtime SQLite database. Directory pages use a
+	// stateless indexed query because Meta has no stable paged enumeration API.
+	MetadataPath string
+	Capacity     uint64
+	ReadOnly     bool
 }

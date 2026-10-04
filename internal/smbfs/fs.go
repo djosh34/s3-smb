@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -20,31 +20,43 @@ import (
 const (
 	UID uint32 = 65534
 	GID uint32 = 65534
+	// JuiceFS's VFS uses signed 31-bit chunk indexes and 64 MiB chunks.
+	maxFileSize = meta.ChunkSize << 31
 )
 
-// FS coordinates shared JuiceFS file references, not SMB opens. The map mutex
-// only pins inode state. Each inode mutex owns its file reference and live size.
-// No backend work runs while the map mutex is held.
+// FS owns per-inode I/O coordination. Attribute snapshots use a separate small
+// lock, so metadata queries never wait for an inode's upload or cold read.
+// The map mutex only pins state; the rename mutex protects directory ancestry.
 type FS struct {
-	filesystem *jfs.FileSystem
-	metadata   meta.Meta
-	barrier    MetadataBarrier
-	inodes     map[smb.Inode]*inodeState
-	parents    map[smb.Inode]*parentGuard
-	mu         sync.Mutex
-	capacity   uint64
-	volumeID   uint64
-	readOnly   bool
+	filesystem   *jfs.FileSystem
+	metadata     meta.Meta
+	barrier      MetadataBarrier
+	reader       vfs.DataReader
+	writer       vfs.DataWriter
+	inodes       map[smb.Inode]*inodeState
+	parents      map[smb.Inode]*parentGuard
+	metadataPath string
+	mu           sync.Mutex
+	renameMu     sync.Mutex
+	capacity     uint64
+	volumeID     uint64
+	readOnly     bool
+}
+
+type liveState struct {
+	modified time.Time
+	size     uint64
+	dirty    bool
 }
 
 type inodeState struct {
-	modified time.Time
-	file     *jfs.File
-	mu       sync.Mutex
-	size     uint64
-	users    int
-	refs     int
-	dirty    bool
+	reader vfs.FileReader
+	writer vfs.FileWriter
+	live   liveState
+	liveMu sync.RWMutex
+	mu     sync.Mutex
+	refs   atomic.Int64
+	users  int
 }
 
 type handle struct {
@@ -52,6 +64,7 @@ type handle struct {
 	state  *inodeState
 	key    smb.ObjectKey
 	access smb.Access
+	kind   smb.Kind
 	closed bool
 }
 
@@ -59,24 +72,30 @@ func (h *handle) Key() smb.ObjectKey { return h.key }
 
 var _ smb.Storage = (*FS)(nil)
 
-// New constructs an adapter. The caller owns the JuiceFS runtime.
+// New constructs an adapter. The caller owns the JuiceFS runtime and chunk store.
 func New(options Options) (*FS, error) {
-	if options.Filesystem == nil || options.Barrier == nil {
+	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil {
 		return nil, smb.ErrInvalidParameter
 	}
-	format, err := options.Filesystem.Meta().Load(false)
+	if err := prepareDirectoryPages(options.MetadataPath, options.ReadOnly); err != nil {
+		return nil, storageError(err)
+	}
+	m := options.Filesystem.Meta()
+	volumeID, err := volumeIdentity(m.GetFormat().UUID)
 	if err != nil {
 		return nil, storageError(err)
 	}
+	reader := vfs.NewDataReader(options.Config, m, options.Store)
+	writer := vfs.NewDataWriter(options.Config, m, options.Store, reader)
 	return &FS{
-		filesystem: options.Filesystem, metadata: options.Filesystem.Meta(), barrier: options.Barrier,
-		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), capacity: options.Capacity,
-		volumeID: volumeIdentity(format.UUID), readOnly: options.ReadOnly,
+		filesystem: options.Filesystem, metadata: m, barrier: options.Barrier, reader: reader, writer: writer,
+		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), metadataPath: options.MetadataPath,
+		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly,
 	}, nil
 }
 
 func storageContext(ctx context.Context) meta.Context {
-	return meta.WrapWithCancel(ctx, 1, UID, []uint32{GID})
+	return meta.WrapWithoutCancel(ctx, 1, UID, []uint32{GID})
 }
 
 func storageError(err error) error {
@@ -124,7 +143,9 @@ func backendError(eno syscall.Errno) error {
 	return storageError(eno)
 }
 
-func (s *FS) acquire(ino smb.Inode) (*inodeState, func()) {
+// pin does not take the I/O lock. refs is atomic because attribute readers may
+// release their pin while an I/O operation retains or closes an inode reference.
+func (s *FS) pin(ino smb.Inode) (*inodeState, func()) {
 	s.mu.Lock()
 	st := s.inodes[ino]
 	if st == nil {
@@ -133,16 +154,32 @@ func (s *FS) acquire(ino smb.Inode) (*inodeState, func()) {
 	}
 	st.users++
 	s.mu.Unlock()
-	st.mu.Lock()
 	return st, func() {
 		s.mu.Lock()
 		st.users--
-		if st.users == 0 && st.refs == 0 {
+		if st.users == 0 && st.refs.Load() == 0 {
 			delete(s.inodes, ino)
 		}
 		s.mu.Unlock()
-		st.mu.Unlock()
 	}
+}
+
+func (s *FS) acquire(ino smb.Inode) (*inodeState, func()) {
+	st, unpin := s.pin(ino)
+	st.mu.Lock()
+	return st, func() { st.mu.Unlock(); unpin() }
+}
+
+func (st *inodeState) snapshot() liveState {
+	st.liveMu.RLock()
+	defer st.liveMu.RUnlock()
+	return st.live
+}
+
+func (st *inodeState) publish(live liveState) {
+	st.liveMu.Lock()
+	st.live = live
+	st.liveMu.Unlock()
 }
 
 func (s *FS) selected(ctx context.Context, ref smb.Handle, write bool) (*handle, func(), error) {
@@ -170,7 +207,7 @@ func (s *FS) selected(ctx context.Context, ref smb.Handle, write bool) (*handle,
 	return h, release, nil
 }
 
-// Open retains the shared native reference without changing data.
+// Open retains a JuiceFS inode reference without creating or truncating data.
 func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (smb.Handle, error) {
 	if access & ^(smb.AccessRead|smb.AccessWrite) != 0 {
 		return nil, smb.ErrInvalidParameter
@@ -180,60 +217,65 @@ func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (sm
 	}
 	st, release := s.acquire(key.Inode)
 	defer release()
-	if _, err := s.attr(ctx, key, st); err != nil {
+	a, err := s.attr(ctx, key, st)
+	if err != nil {
 		return nil, err
 	}
-	if st.file == nil {
-		p, err := s.PathOf(ctx, key.Inode)
-		if err != nil {
+	if st.refs.Load() == 0 {
+		var raw meta.Attr
+		flags := uint32(syscall.O_RDWR)
+		if s.readOnly {
+			flags = syscall.O_RDONLY
+		}
+		if err = backendError(s.metadata.Open(storageContext(ctx), meta.Ino(key.Inode), flags, &raw)); err != nil {
 			return nil, err
 		}
-		flags := uint32(vfs.MODE_MASK_R | vfs.MODE_MASK_W)
-		if s.readOnly {
-			flags = vfs.MODE_MASK_R
-		}
-		file, eno := s.filesystem.Open(storageContext(ctx), "/"+p, flags)
-		if eno != 0 {
-			return nil, backendError(eno)
-		}
-		if smb.Inode(file.Inode()) != key.Inode {
-			return nil, errors.Join(smb.ErrIdentityChanged, backendError(file.Close(storageContext(ctx)))) //nolint:contextcheck // JuiceFS Close uses background contexts internally despite receiving this context.
-		}
-		st.file = file
+		st.publish(liveState{size: raw.Length})
 	}
-	st.refs++
-	return &handle{owner: s, state: st, key: key, access: access}, nil
+	st.refs.Add(1)
+	return &handle{owner: s, state: st, key: key, access: access, kind: a.Kind}, nil
 }
 
 func (s *FS) flush(ctx context.Context, st *inodeState) error {
-	if st.file != nil {
-		if err := backendError(st.file.Fsync(storageContext(ctx))); err != nil { //nolint:contextcheck // JuiceFS Fsync uses background contexts internally despite receiving this context.
-			return err
+	if st.writer != nil {
+		if err := backendError(st.writer.Flush(storageContext(ctx))); err != nil {
+			return errors.Join(err, ctx.Err())
 		}
 	}
-	st.dirty = false
-	return nil
+	live := st.snapshot()
+	live.dirty = false
+	st.publish(live)
+	return ctx.Err()
 }
 
-// Close releases exactly one reference, propagating flush and close errors.
+// Close always releases its reference, including when ctx is already canceled.
+// Cancellation may abort the requested flush, but not native reference cleanup.
 func (s *FS) Close(ctx context.Context, ref smb.Handle) error {
-	h, release, err := s.selected(ctx, ref, false)
+	cleanup := context.WithoutCancel(ctx)
+	h, release, err := s.selected(cleanup, ref, false)
 	if err != nil {
 		return err
 	}
 	defer release()
 	h.closed = true
 	flushErr := s.flush(ctx, h.state)
-	h.state.refs--
-	if h.state.refs != 0 {
-		return flushErr
+	if h.state.refs.Add(-1) != 0 {
+		return errors.Join(flushErr, ctx.Err())
 	}
-	closeErr := backendError(h.state.file.Close(storageContext(ctx))) //nolint:contextcheck // JuiceFS Close uses background contexts internally despite receiving this context.
-	h.state.file = nil
-	return errors.Join(flushErr, closeErr)
+	var writerErr error
+	if h.state.writer != nil {
+		writerErr = backendError(h.state.writer.Close(storageContext(cleanup)))
+		h.state.writer = nil
+	}
+	if h.state.reader != nil {
+		h.state.reader.Close(storageContext(cleanup))
+		h.state.reader = nil
+	}
+	closeErr := backendError(s.metadata.Close(storageContext(cleanup), meta.Ino(h.key.Inode)))
+	return errors.Join(flushErr, writerErr, closeErr, ctx.Err())
 }
 
-// Flush commits all writes on the inode before applying the metadata barrier.
+// Flush covers the shared writer, then commits the requested metadata barrier.
 func (s *FS) Flush(ctx context.Context, ref smb.Handle, mode smb.SyncMode) error {
 	if mode != smb.SyncData && mode != smb.SyncFull {
 		return smb.ErrInvalidParameter
@@ -249,7 +291,7 @@ func (s *FS) Flush(ctx context.Context, ref smb.Handle, mode smb.SyncMode) error
 	return storageError(s.barrier.Commit(ctx, mode == smb.SyncFull))
 }
 
-// ReadAt reads the selected data object, including another handle's writes.
+// ReadAt reads the selected object, retaining the backend's shared-writer flush.
 func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint64) (int, error) {
 	h, release, err := s.selected(ctx, ref, false)
 	if err != nil {
@@ -259,18 +301,14 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 	if h.access&smb.AccessRead == 0 {
 		return 0, smb.ErrAccessDenied
 	}
-	if offset > math.MaxInt64 || uint64(len(dst)) > math.MaxInt64-offset {
-		return 0, smb.ErrInvalidParameter
+	if offset >= maxFileSize || uint64(len(dst)) >= maxFileSize-offset {
+		return 0, smb.ErrFileTooLarge
+	}
+	if h.kind == smb.KindDirectory {
+		return 0, smb.ErrIsDirectory
 	}
 	if len(dst) == 0 {
 		return 0, nil
-	}
-	a, err := s.attr(ctx, h.key, h.state)
-	if err != nil {
-		return 0, err
-	}
-	if a.Kind == smb.KindDirectory {
-		return 0, smb.ErrIsDirectory
 	}
 	if h.key.Stream != "" {
 		data, streamErr := s.stream(ctx, h.key)
@@ -286,71 +324,95 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 		}
 		return n, nil
 	}
-	n, err := h.state.file.Pread(storageContext(ctx), dst, int64(offset))
-	if err == nil && n < len(dst) {
-		err = io.EOF
+	if err = s.flush(ctx, h.state); err != nil {
+		return 0, err
 	}
-	return n, storageError(err)
+	size := h.state.snapshot().size
+	if offset >= size {
+		return 0, io.EOF
+	}
+	requested := len(dst)
+	if uint64(len(dst)) > size-offset {
+		dst = dst[:size-offset]
+	}
+	if h.state.reader == nil {
+		h.state.reader = s.reader.Open(meta.Ino(h.key.Inode), size)
+	}
+	var n int
+	var eno syscall.Errno
+	for {
+		n, eno = h.state.reader.Read(storageContext(ctx), offset, dst)
+		if eno != syscall.EAGAIN || ctx.Err() != nil {
+			break
+		}
+	}
+	if eno != 0 || ctx.Err() != nil {
+		return n, errors.Join(backendError(eno), ctx.Err())
+	}
+	if n < requested {
+		return n, io.EOF
+	}
+	return n, nil
 }
 
-// WriteAt writes with file offsets and zero-filled holes for both object kinds.
+// WriteAt uses the kind and live length already retained by Open.
 func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uint64) (int, error) {
 	h, release, err := s.selected(ctx, ref, true)
 	if err != nil {
 		return 0, err
 	}
 	defer release()
-	if offset > math.MaxInt64 || uint64(len(src)) > math.MaxInt64-offset {
-		return 0, smb.ErrInvalidParameter
+	if offset >= maxFileSize || uint64(len(src)) >= maxFileSize-offset {
+		return 0, smb.ErrFileTooLarge
 	}
-	a, err := s.attr(ctx, h.key, h.state)
-	if err != nil {
-		return 0, err
-	}
-	if a.Kind == smb.KindDirectory {
+	if h.kind == smb.KindDirectory {
 		return 0, smb.ErrIsDirectory
 	}
 	if len(src) == 0 {
 		return 0, nil
 	}
 	if h.key.Stream != "" {
-		end := offset + uint64(len(src))
-		if end > maxStreamSize {
-			return 0, smb.ErrFileTooLarge
-		}
-		data, err := s.stream(ctx, h.key)
-		if err != nil {
-			return 0, err
-		}
-		if end > uint64(len(data)) {
-			data = append(data, make([]byte, int(end)-len(data))...)
-		}
-		copy(data[offset:], src)
-		err = backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(h.key.Inode), h.key.Stream, data, meta.XattrReplace))
-		if err != nil {
-			return 0, err
-		}
-		if err = s.touchStream(ctx, h.key.Inode); err != nil {
-			return 0, err
-		}
-		return len(src), nil
+		return s.writeStream(ctx, h.key, src, offset)
 	}
-	n, eno := h.state.file.Pwrite(storageContext(ctx), src, int64(offset)) //nolint:contextcheck // JuiceFS Pwrite uses background contexts internally despite receiving this context.
-	if eno != 0 {
-		return n, backendError(eno)
+	live := h.state.snapshot()
+	if h.state.writer == nil {
+		h.state.writer = s.writer.Open(meta.Ino(h.key.Inode), live.size, 0)
 	}
-	if n != len(src) {
-		return n, storageError(io.ErrShortWrite)
+	if err = backendError(h.state.writer.Write(storageContext(ctx), offset, src)); err != nil {
+		return 0, errors.Join(err, ctx.Err())
 	}
-	h.state.size = max(a.Size, offset+uint64(len(src)))
-	h.state.modified = time.Now().UTC()
-	h.state.dirty = true
-	return n, nil
+	live.size = max(live.size, offset+uint64(len(src)))
+	live.modified = time.Now().UTC()
+	live.dirty = true
+	h.state.publish(live)
+	return len(src), nil
+}
+
+func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, offset uint64) (int, error) {
+	end := offset + uint64(len(src))
+	if end > maxStreamSize {
+		return 0, smb.ErrFileTooLarge
+	}
+	data, err := s.stream(ctx, key)
+	if err != nil {
+		return 0, err
+	}
+	if end > uint64(len(data)) {
+		data = append(data, make([]byte, int(end)-len(data))...)
+	}
+	copy(data[offset:], src)
+	if err = backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), key.Stream, data, meta.XattrReplace)); err != nil {
+		return 0, err
+	}
+	if err = s.touchStream(ctx, key.Inode); err != nil {
+		return 0, err
+	}
+	return len(src), nil
 }
 
 func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, size uint64) error {
-	if size > math.MaxInt64 {
-		return smb.ErrInvalidParameter
+	if size >= maxFileSize {
+		return smb.ErrFileTooLarge
 	}
 	a, err := s.attr(ctx, key, st)
 	if err != nil {
@@ -377,18 +439,26 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		}
 		return s.touchStream(ctx, key.Inode)
 	}
-	// Drain the shared writer before changing length. Its old slices can no
-	// longer commit after this truncate, even if another handle later flushes.
 	if err = s.flush(ctx, st); err != nil {
 		return err
 	}
-	if st.file != nil {
-		return backendError(st.file.Truncate(storageContext(ctx), size)) //nolint:contextcheck // JuiceFS Truncate uses background contexts internally despite receiving this context.
+	// Nonzero flags mean truncation through an already retained JuiceFS inode.
+	// This is the same distinction JuiceFS VFS makes for an open file in trash.
+	var flags uint8
+	if st.refs.Load() > 0 {
+		flags = 1
 	}
-	return backendError(s.metadata.Truncate(storageContext(ctx), meta.Ino(key.Inode), 0, size, nil, false))
+	if err = backendError(s.metadata.Truncate(storageContext(ctx), meta.Ino(key.Inode), flags, size, nil, false)); err != nil {
+		return err
+	}
+	s.writer.Truncate(meta.Ino(key.Inode), size)
+	s.reader.Truncate(meta.Ino(key.Inode), size)
+	st.publish(liveState{size: size})
+	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
+	return nil
 }
 
-// Truncate changes only the selected object's length.
+// Truncate changes only the selected object's length after draining its writer.
 func (s *FS) Truncate(ctx context.Context, ref smb.Handle, size uint64) error {
 	h, release, err := s.selected(ctx, ref, true)
 	if err != nil {

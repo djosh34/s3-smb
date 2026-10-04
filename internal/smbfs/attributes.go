@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"hash/fnv"
 	"strings"
 	"time"
 
@@ -22,26 +23,32 @@ const (
 	changedKey    = privatePrefix + "changed"
 )
 
-func volumeIdentity(uuid string) uint64 {
-	var hash uint64 = 14695981039346656037
-	for _, b := range []byte(uuid) {
-		hash ^= uint64(b)
-		hash *= 1099511628211
+func volumeIdentity(uuid string) (uint64, error) {
+	hash := fnv.New64a()
+	if _, err := hash.Write([]byte(uuid)); err != nil {
+		return 0, err
 	}
-	return hash
+	return hash.Sum64(), nil
 }
 
 func supported(ino smb.Inode, a *meta.Attr) error {
 	if ino == 0 {
 		return smb.ErrInvalidParameter
 	}
-	if vfs.IsSpecialNode(meta.Ino(ino)) || a.Parent.IsTrash() || !meta.Ino(ino).IsNormal() {
+	if vfs.IsSpecialNode(meta.Ino(ino)) || !meta.Ino(ino).IsNormal() {
 		return smb.ErrAccessDenied
 	}
 	if a.Typ != meta.TypeFile && a.Typ != meta.TypeDirectory {
 		return smb.ErrNotSupported
 	}
 	return nil
+}
+
+func admitted(ino smb.Inode, a *meta.Attr) error {
+	if a.Parent.IsTrash() {
+		return smb.ErrAccessDenied
+	}
+	return supported(ino, a)
 }
 
 func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.Attr, error) {
@@ -58,6 +65,24 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 	if err := supported(ino, &a); err != nil {
 		return smb.Attr{}, err
 	}
+	if a.Parent.IsTrash() && st.refs.Load() == 0 {
+		return smb.Attr{}, smb.ErrAccessDenied
+	}
+	var values privateAttrs
+	for index, key := range privateKeys {
+		eno := s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), key, &values[index])
+		if eno != 0 && !errors.Is(eno, meta.ENOATTR) {
+			return smb.Attr{}, backendError(eno)
+		}
+	}
+	return decorateAttr(ino, &a, values, st.snapshot())
+}
+
+type privateAttrs [5][]byte
+
+var privateKeys = [5]string{birthKey, attributesKey, accessedKey, modifiedKey, changedKey}
+
+func decorateAttr(ino smb.Inode, a *meta.Attr, values privateAttrs, live liveState) (smb.Attr, error) {
 	out := smb.Attr{Inode: ino, Size: a.Length, Accessed: time.Unix(a.Atime, int64(a.Atimensec)).UTC(), Modified: time.Unix(a.Mtime, int64(a.Mtimensec)).UTC(), Changed: time.Unix(a.Ctime, int64(a.Ctimensec)).UTC(), Attributes: 0x80}
 	if a.Typ == meta.TypeDirectory {
 		out.Kind = smb.KindDirectory
@@ -65,27 +90,18 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 		out.Attributes = 0x10
 	}
 	out.Created = out.Changed
-	var value []byte
-	eno := s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), birthKey, &value)
-	if eno != 0 && !errors.Is(eno, meta.ENOATTR) {
-		return smb.Attr{}, backendError(eno)
-	}
-	if eno == 0 {
-		created, parseErr := time.Parse(time.RFC3339Nano, string(value))
-		if parseErr != nil {
-			return smb.Attr{}, storageError(parseErr)
+	if len(values[0]) != 0 {
+		created, err := time.Parse(time.RFC3339Nano, string(values[0]))
+		if err != nil {
+			return smb.Attr{}, storageError(err)
 		}
 		out.Created = created.UTC()
 	}
-	eno = s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), attributesKey, &value)
-	if eno != 0 && !errors.Is(eno, meta.ENOATTR) {
-		return smb.Attr{}, backendError(eno)
-	}
-	if eno == 0 {
-		if len(value) != 4 {
+	if values[1] != nil {
+		if len(values[1]) != 4 {
 			return smb.Attr{}, smb.ErrIO
 		}
-		out.Attributes = binary.LittleEndian.Uint32(value)
+		out.Attributes = binary.LittleEndian.Uint32(values[1])
 		if out.Kind == smb.KindDirectory {
 			out.Attributes |= 0x10
 		} else {
@@ -93,35 +109,30 @@ func (s *FS) baseAttr(ctx context.Context, ino smb.Inode, st *inodeState) (smb.A
 		}
 	}
 	var err error
-	out.Accessed, err = s.explicitTime(ctx, ino, accessedKey, out.Accessed)
+	out.Accessed, err = explicitTime(values[2], out.Accessed)
 	if err != nil {
 		return smb.Attr{}, err
 	}
-	out.Modified, err = s.explicitTime(ctx, ino, modifiedKey, out.Modified)
+	out.Modified, err = explicitTime(values[3], out.Modified)
 	if err != nil {
 		return smb.Attr{}, err
 	}
-	out.Changed, err = s.explicitTime(ctx, ino, changedKey, out.Changed)
+	out.Changed, err = explicitTime(values[4], out.Changed)
 	if err != nil {
 		return smb.Attr{}, err
 	}
-	if st.dirty && out.Kind == smb.KindFile {
-		out.Size = st.size
-		out.Modified = st.modified
-		out.Changed = st.modified
+	if live.dirty && out.Kind == smb.KindFile {
+		out.Size = live.size
+		out.Modified = live.modified
+		out.Changed = live.modified
 	}
 	out.AllocationSize = allocation(out.Size)
 	return out, nil
 }
 
-func (s *FS) explicitTime(ctx context.Context, ino smb.Inode, key string, actual time.Time) (time.Time, error) {
-	var value []byte
-	eno := s.metadata.GetXattr(storageContext(ctx), meta.Ino(ino), key, &value)
-	if errors.Is(eno, meta.ENOATTR) {
+func explicitTime(value []byte, actual time.Time) (time.Time, error) {
+	if value == nil {
 		return actual, nil
-	}
-	if eno != 0 {
-		return time.Time{}, backendError(eno)
 	}
 	fields := strings.Split(string(value), "\n")
 	if len(fields) != 2 {
@@ -167,7 +178,17 @@ func validStream(name string) bool {
 
 func (s *FS) touchStream(ctx context.Context, ino smb.Inode) error {
 	var attr meta.Attr
-	return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
+	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &attr)); err != nil {
+		return err
+	}
+	if !attr.Parent.IsTrash() {
+		return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
+	}
+	now := time.Now().UTC()
+	if err := s.storeTime(ctx, ino, modifiedKey, now, time.Unix(attr.Mtime, int64(attr.Mtimensec))); err != nil {
+		return err
+	}
+	return s.storeTime(ctx, ino, changedKey, now, time.Unix(attr.Ctime, int64(attr.Ctimensec)))
 }
 
 func (s *FS) stream(ctx context.Context, key smb.ObjectKey) ([]byte, error) {
@@ -200,7 +221,7 @@ func (s *FS) attr(ctx context.Context, key smb.ObjectKey, st *inodeState) (smb.A
 
 // GetAttr returns current attributes without forcing uploads.
 func (s *FS) GetAttr(ctx context.Context, key smb.ObjectKey) (smb.Attr, error) {
-	st, release := s.acquire(key.Inode)
+	st, release := s.pin(key.Inode)
 	defer release()
 	return s.attr(ctx, key, st)
 }
@@ -212,6 +233,9 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 	}
 	st, release := s.acquire(key.Inode)
 	defer release()
+	if change.Size != nil && *change.Size >= maxFileSize {
+		return smb.ErrFileTooLarge
+	}
 	if _, err := s.attr(ctx, key, st); err != nil {
 		return err
 	}
@@ -220,9 +244,22 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 			return err
 		}
 	}
-	if err := s.flush(ctx, st); err != nil {
+	if change.Accessed != nil || change.Modified != nil || change.Changed != nil {
+		if err := s.flush(ctx, st); err != nil {
+			return err
+		}
+	}
+	if err := s.setTimes(ctx, key.Inode, change); err != nil {
 		return err
 	}
+	if err := s.setProperties(ctx, key.Inode, change); err != nil {
+		return err
+	}
+	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
+	return nil
+}
+
+func (s *FS) setTimes(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
 	var a meta.Attr
 	var mask uint16
 	if change.Accessed != nil {
@@ -240,18 +277,26 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 		a.Ctimensec = nanoseconds(*change.Changed)
 		mask |= meta.SetAttrCtime
 	}
-	if mask != 0 {
-		if err := backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(key.Inode), mask, 0, &a)); err != nil {
+	if mask == 0 {
+		return nil
+	}
+	var stored meta.Attr
+	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &stored)); err != nil {
+		return err
+	}
+	// JuiceFS forbids path-based time changes in trash. Retained references use
+	// the same private exact-time representation without changing trash admission.
+	if !stored.Parent.IsTrash() {
+		if err := backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), mask, 0, &a)); err != nil {
+			return err
+		}
+		if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &stored)); err != nil {
 			return err
 		}
 	}
 	// JuiceFS treats negative atime/mtime as "now" and always generates ctime.
 	// Keep the exact requested value alongside its backend timestamp. A later
 	// backend change invalidates this value, so it is not update suppression.
-	var stored meta.Attr
-	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(key.Inode), &stored)); err != nil {
-		return err
-	}
 	for _, field := range []struct {
 		actual time.Time
 		wanted *time.Time
@@ -264,33 +309,36 @@ func (s *FS) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChan
 		if field.wanted == nil {
 			continue
 		}
-		if err := s.storeTime(ctx, key.Inode, field.key, *field.wanted, field.actual); err != nil {
+		if err := s.storeTime(ctx, ino, field.key, *field.wanted, field.actual); err != nil {
 			return err
 		}
 	}
+	return nil
+}
+
+func (s *FS) setProperties(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
 	if change.Created != nil {
 		data, marshalErr := change.Created.UTC().MarshalText()
 		if marshalErr != nil {
 			return errors.Join(smb.ErrInvalidParameter, marshalErr)
 		}
-		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), birthKey, data, 0)); err != nil {
+		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(ino), birthKey, data, 0)); err != nil {
 			return err
 		}
 	}
 	if change.Attributes != nil {
 		data := make([]byte, 4)
 		binary.LittleEndian.PutUint32(data, *change.Attributes)
-		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(key.Inode), attributesKey, data, 0)); err != nil {
+		if err := backendError(s.metadata.SetXattr(storageContext(ctx), meta.Ino(ino), attributesKey, data, 0)); err != nil {
 			return err
 		}
 	}
-	s.filesystem.InvalidateAttr(meta.Ino(key.Inode))
 	return nil
 }
 
 // Streams lists only named data, not the adapter's private attributes.
 func (s *FS) Streams(ctx context.Context, ino smb.Inode) ([]smb.StreamInfo, error) {
-	st, release := s.acquire(ino)
+	st, release := s.pin(ino)
 	defer release()
 	if _, err := s.baseAttr(ctx, ino, st); err != nil {
 		return nil, err

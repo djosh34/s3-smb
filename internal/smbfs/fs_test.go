@@ -53,6 +53,8 @@ type fixture struct {
 	metadata meta.Meta
 	native   *jfs.FileSystem
 	store    *testStore
+	config   *vfs.Config
+	chunks   chunk.ChunkStore
 	path     string
 	handles  []smb.Handle
 }
@@ -99,7 +101,8 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixt
 	}
 	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: 1, GetTimeout: time.Second, PutTimeout: time.Second}
 	chunks := chunk.NewCachedStore(store, cc, nil)
-	native, err := jfs.NewFileSystem(&vfs.Config{Meta: mc, Format: format, Chunk: &cc}, m, chunks, nil)
+	config := &vfs.Config{Meta: mc, Format: format, Chunk: &cc}
+	native, err := jfs.NewFileSystem(config, m, chunks, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +110,11 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool) *fixt
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Options{Filesystem: native, Barrier: barrier, Capacity: capacity})
+	adapter, err := New(Options{Filesystem: native, Barrier: barrier, Capacity: capacity, MetadataPath: database, Config: config, Store: chunks})
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fixture{fs: adapter, metadata: m, native: native, store: store, path: database}
+	f := &fixture{fs: adapter, metadata: m, native: native, store: store, path: database, config: config, chunks: chunks}
 	t.Cleanup(func() {
 		store.slow.Store(false)
 		store.fail.Store(false)

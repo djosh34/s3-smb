@@ -168,7 +168,7 @@ func TestReadOnlyRejectsAllMutations(t *testing.T) {
 	f := newFixture(t, 0)
 	base := f.create(t, "data", smb.KindFile)
 	stream := f.create(t, "data:fork", smb.KindFile)
-	ro, err := New(Options{Filesystem: f.native, Barrier: f.fs.barrier, ReadOnly: true})
+	ro, err := New(Options{Filesystem: f.native, Barrier: f.fs.barrier, ReadOnly: true, MetadataPath: f.path, Config: f.config, Store: f.chunks})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -390,10 +390,10 @@ func TestAccessCancellationAndInvalidRanges(t *testing.T) {
 	_, err = f.fs.ReadAt(t.Context(), writer, make([]byte, 1), 0)
 	requireError(t, err, smb.ErrAccessDenied)
 	_, err = f.fs.WriteAt(t.Context(), writer, []byte("x"), math.MaxUint64)
-	requireError(t, err, smb.ErrInvalidParameter)
+	requireError(t, err, smb.ErrFileTooLarge)
 	_, err = f.fs.ReadAt(t.Context(), readOnly, make([]byte, 1), math.MaxUint64)
-	requireError(t, err, smb.ErrInvalidParameter)
-	requireError(t, f.fs.Truncate(t.Context(), writer, math.MaxUint64), smb.ErrInvalidParameter)
+	requireError(t, err, smb.ErrFileTooLarge)
+	requireError(t, f.fs.Truncate(t.Context(), writer, math.MaxUint64), smb.ErrFileTooLarge)
 	requireError(t, f.fs.Flush(t.Context(), writer, smb.SyncMode(9)), smb.ErrInvalidParameter)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
