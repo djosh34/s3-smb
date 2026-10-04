@@ -120,6 +120,59 @@ func TestFilesystemUnsupportedClasses(t *testing.T) {
 	}
 }
 
+func TestFilesystemCapacity(t *testing.T) {
+	for _, capacity := range []uint64{0, (3 << 30) + 1023} {
+		storage := newFilesMetaStorageWithCapacity(t, capacity)
+		space, err := storage.StatFS(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if capacity != 0 && space.Capacity != capacity {
+			t.Fatalf("capacity = %d, want %d", space.Capacity, capacity)
+		}
+		if capacity == 0 && space.Free != 1<<40 {
+			t.Fatalf("default free = %d, want 1 TiB", space.Free)
+		}
+		request := RequestContext{Storage: storage}
+		for _, class := range []wire.FilesystemInfoClass{wire.ClassFilesystemSize, wire.ClassFilesystemFullSize} {
+			data, status := queryFilesystemInfo(t.Context(), request, uint8(class), 1024)
+			if status != smb.StatusSuccess {
+				t.Fatalf("class %d status = %x", class, status)
+			}
+			if got := binary.LittleEndian.Uint64(data[0:8]); got != space.Capacity/4096 {
+				t.Fatalf("class %d total units = %d, want %d", class, got, space.Capacity/4096)
+			}
+			if got := binary.LittleEndian.Uint64(data[8:16]); got != space.Available/4096 {
+				t.Fatalf("class %d caller available = %d, want %d", class, got, space.Available/4096)
+			}
+			if class == wire.ClassFilesystemFullSize {
+				if got := binary.LittleEndian.Uint64(data[16:24]); got != space.Free/4096 {
+					t.Fatalf("actual available = %d, want %d", got, space.Free/4096)
+				}
+			}
+		}
+	}
+}
+
+func TestFilesystemVolumeOutputLength(t *testing.T) {
+	storage := newFilesMetaStorage(t)
+	request := RequestContext{Storage: storage, Tree: Tree{Share: "backup"}}
+	full, status := queryFilesystemInfo(t.Context(), request, uint8(wire.ClassFilesystemVolume), 1024)
+	if status != smb.StatusSuccess {
+		t.Fatalf("full status = %x", status)
+	}
+	for _, length := range []uint32{18, 19, 29, 30, 31} {
+		data, status := queryFilesystemInfo(t.Context(), request, uint8(wire.ClassFilesystemVolume), length)
+		if uint64(length) < uint64(len(full)) {
+			if status != smb.StatusBufferOverflow || !bytes.Equal(data, full[:length]) {
+				t.Fatalf("length %d: data/status = %x/%x", length, data, status)
+			}
+		} else if status != smb.StatusSuccess || !bytes.Equal(data, full) {
+			t.Fatalf("length %d: data/status = %x/%x", length, data, status)
+		}
+	}
+}
+
 func TestFilesystemStatFSError(t *testing.T) {
 	storage := newFilesMetaStorage(t)
 	ctx, cancel := context.WithCancel(t.Context())
