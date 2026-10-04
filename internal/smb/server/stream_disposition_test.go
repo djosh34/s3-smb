@@ -195,7 +195,7 @@ func TestStreamDispositionFollowsRenamedBaseIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := exchange(peer.ctx, t, peer.client, peer.message(wire.SetInfo, body))[0]
+	response := ioRoundTrip(peer.ctx, t, peer.client, peer.message(wire.SetInfo, body))
 	if response.Header.Status != smb.StatusSuccess {
 		t.Fatalf("SET_INFO rename: %#x", response.Header.Status)
 	}

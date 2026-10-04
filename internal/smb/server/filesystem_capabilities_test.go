@@ -13,8 +13,8 @@ func TestFilesystemRefusesUnimplementedCapabilities(t *testing.T) {
 	client := capabilityConnection(t, server)
 	attributes := client.filesystemAttributes(t)
 	const unsupported = 0x00000040 | 0x00400000 | 0x01000000 // Sparse files, hard links, open-by-ID.
-	if attributes&unsupported != 0 || attributes != smb.AdvertisedFilesystemAttributes {
-		t.Fatalf("filesystem attributes = %#x", attributes)
+	if attributes&unsupported != 0 || attributes != 0x00000007 {
+		t.Fatalf("filesystem attributes = %#x, want 0x00000007", attributes)
 	}
 }
 
