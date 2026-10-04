@@ -301,6 +301,29 @@ func TestLeaseUpgradeAdvancesServerEpoch(t *testing.T) {
 	statusIs(t, status, smb.StatusSuccess)
 }
 
+func TestHandleBreakCanRetainReadAndWriteCaching(t *testing.T) {
+	table := newTable(t)
+	req := durableRequest(1, 2)
+	grant := durableGrant(req)
+	grant.Lease.State |= smb.LeaseWrite
+	open := commit(t, table, req, grant)
+	notification := startBreak(t, table, open.Object, smb.LeaseRead|smb.LeaseWrite)
+	if notification.CurrentState != smb.LeaseRead|smb.LeaseHandle|smb.LeaseWrite || notification.NewState != smb.LeaseRead|smb.LeaseWrite || !notification.AckRequired {
+		t.Fatalf("handle-only break: %+v", notification)
+	}
+	_, status := table.AckBreak(binding, open.ClientGUID, open.LeaseKey, smb.LeaseRead|smb.LeaseWrite)
+	statusIs(t, status, smb.StatusSuccess)
+	found, status := table.Find(open.ID, binding)
+	statusIs(t, status, smb.StatusSuccess)
+	if found.Durable {
+		t.Fatal("RW lease kept durability without H")
+	}
+	notification = startBreak(t, table, open.Object, smb.LeaseRead)
+	if notification.CurrentState != smb.LeaseRead|smb.LeaseWrite || !notification.AckRequired {
+		t.Fatalf("write break after H ended: %+v", notification)
+	}
+}
+
 func TestOldBindingCannotAcknowledgeAfterReconnect(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
