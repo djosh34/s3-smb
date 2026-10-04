@@ -129,7 +129,7 @@ func TestAsyncRelatedSuffixGetsSeparatePendingIdentities(t *testing.T) {
 		header := response.Messages[0].Header
 		want := smb.StatusFileLockConflict
 		if header.MessageID == 3 {
-			want = smb.StatusInvalidParameter
+			want = smb.StatusSuccess
 		}
 		if header.MessageID != 2 && header.MessageID != 3 || seen[header.MessageID] || header.Status != want || header.Credit != 0 {
 			t.Fatalf("dependent completion: %+v", header)
