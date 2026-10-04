@@ -69,20 +69,34 @@ func (client *Client) decodeMessages(payload []byte) (Reply, error) {
 		return reply, nil
 	}
 	for _, message := range messages {
-		if message.Header.Flags&wire.FlagResponse == 0 || message.Header.SessionID != client.sessionID {
+		if message.Header.Flags&wire.FlagResponse == 0 || message.Header.SessionID != client.sessionID && !isLeaseBreak(message.Header) {
 			return reply, errors.New("smbtest: protected reply identity mismatch")
 		}
 		if !encrypted {
-			if client.encrypted && message.Header.Command != wire.SessionSetup {
-				return reply, errors.New("smbtest: encrypted session received plaintext")
-			}
-			if message.Header.Status == smb.StatusPending && message.Header.Flags&wire.FlagSigned == 0 {
-				continue
-			}
-			if err := client.protector.Verify(message.Raw); err != nil {
+			if err := client.verifyPlaintextReply(message); err != nil {
 				return reply, err
 			}
 		}
 	}
 	return reply, nil
+}
+
+// Called with protectionMu held, after checking the reply identity.
+func (client *Client) verifyPlaintextReply(message wire.Message) error {
+	if client.encrypted && message.Header.Command != wire.SessionSetup {
+		return errors.New("smbtest: encrypted session received plaintext")
+	}
+	if message.Header.Status == smb.StatusPending && message.Header.Flags&wire.FlagSigned == 0 {
+		return nil
+	}
+	// MS-SMB2 3.3.4.7 permits unsigned plaintext lease notifications.
+	// Validate the notification body before bypassing verification.
+	if !client.encrypted && isLeaseBreak(message.Header) && message.Header.Flags&wire.FlagSigned == 0 {
+		if len(message.Body) != 44 {
+			return errors.New("smbtest: invalid unsigned lease break length")
+		}
+		_, err := wire.DecodeLeaseBreakNotification(message)
+		return err
+	}
+	return client.protector.Verify(message.Raw)
 }
