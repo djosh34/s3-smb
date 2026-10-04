@@ -92,8 +92,9 @@ func (server *Server) sendLeaseBreak(ctx context.Context, notification state.Bre
 	}
 }
 
-// Notifications have SessionId zero, but use the holder's keys. They cannot use
-// replyProtection, whose entries correlate solicited replies by MessageId.
+// Notifications have SessionId zero. Encrypted sessions use the holder's keys;
+// plaintext notifications stay unsigned per MS-SMB2 3.3.4.7. Signing their fixed
+// MessageId with GMAC would reuse a nonce. They do not use replyProtection.
 func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte, error) {
 	connection.sessionMu.RLock()
 	defer connection.sessionMu.RUnlock()
@@ -113,9 +114,6 @@ func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte
 		return nil, err
 	}
 	header := wire.Header{Command: wire.OplockBreak, MessageID: ^uint64(0), Flags: wire.FlagResponse}
-	if !session.identity.Encrypted {
-		header.Flags |= wire.FlagSigned
-	}
 	payload, err := wire.Join([]wire.Message{{Header: header, Body: body}})
 	if err != nil {
 		return nil, err
@@ -123,11 +121,6 @@ func (connection *connection) encodeLeaseBreak(notification state.Break) ([]byte
 	if session.identity.Encrypted {
 		return session.protector.Seal(payload)
 	}
-	signature, err := session.protector.Sign(payload)
-	if err != nil {
-		return nil, err
-	}
-	copy(payload[48:64], signature[:])
 	return payload, nil
 }
 
