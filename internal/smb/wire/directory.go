@@ -103,7 +103,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {
@@ -165,7 +165,7 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

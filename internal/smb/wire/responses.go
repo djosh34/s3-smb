@@ -69,8 +69,7 @@ type WriteResponse struct {
 	Remaining uint32
 }
 
-// QueryResponse carries class bytes or directory entries encoded by the typed
-// functions in info_api.go. Unsupported classes are not decoded as another class.
+// QueryResponse carries encoded information class bytes or directory entries.
 type QueryResponse struct {
 	Data []byte
 }

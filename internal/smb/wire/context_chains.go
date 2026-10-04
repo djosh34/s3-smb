@@ -70,10 +70,10 @@ func encodeCreateContexts(contexts []CreateContext) ([]byte, error) {
 		}
 		member.length32(len(c.Data))
 		member.bytes([]byte(c.Name))
-		member.align(8)
+		member.align8()
 		member.bytes(c.Data)
 		if i < len(contexts)-1 {
-			member.align(8)
+			member.align8()
 			length, err := count32(len(member.data))
 			if err != nil {
 				return nil, err
@@ -121,7 +121,7 @@ func encodeNegotiateContexts(contexts []NegotiateContext) ([]byte, error) {
 			return nil, errMalformed
 		}
 		if i > 0 {
-			b.align(8)
+			b.align8()
 		}
 		b.u16(c.Type)
 		b.length16(len(c.Data))

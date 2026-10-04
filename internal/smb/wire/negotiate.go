@@ -63,7 +63,7 @@ func EncodeNegotiateRequest(v NegotiateRequest) ([]byte, error) {
 		b.u16(d)
 	}
 	if len(contexts) > 0 {
-		b.align(8)
+		b.align8()
 		b.bytes(contexts)
 	}
 	return b.finish()
@@ -125,7 +125,7 @@ func EncodeNegotiateResponse(v NegotiateResponse) ([]byte, error) {
 	}
 	b.bytes(v.Token)
 	if len(contexts) > 0 {
-		b.align(8)
+		b.align8()
 		b.bytes(contexts)
 	}
 	return b.finish()

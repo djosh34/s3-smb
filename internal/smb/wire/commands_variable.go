@@ -161,7 +161,7 @@ func EncodeCreateRequest(v CreateRequest) ([]byte, error) {
 	b.length32(len(contexts))
 	b.bytes(name)
 	if len(contexts) > 0 {
-		b.align(8)
+		b.align8()
 		b.bytes(contexts)
 	} else if len(name) == 0 {
 		b.u8(0)
@@ -603,24 +603,6 @@ func EncodeIOCTLRequest(v IOCTLRequest) ([]byte, error) {
 	return b.finish()
 }
 
-// DecodeIOCTLResponse validates fixed fields and variable buffers.
-func DecodeIOCTLResponse(m Message) (IOCTLResponse, error) {
-	r := body(m, IOCTL, true, 49, 48)
-	var v IOCTLResponse
-	r.skip(2)
-	v.ControlCode = r.u32()
-	v.ID = r.id()
-	inputOffset := r.u32()
-	inputLength := r.u32()
-	outputOffset := r.u32()
-	outputLength := r.u32()
-	v.Flags = r.u32()
-	r.skip(4)
-	v.Input = clone(r.field(uint64(inputOffset), uint64(inputLength), 48, 1))
-	v.Output = clone(r.field(uint64(outputOffset), uint64(outputLength), 48, 8))
-	return v, r.err
-}
-
 // EncodeIOCTLResponse writes the command body without an SMB header.
 func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
 	outputOffset := 112 + len(v.Input)
@@ -651,7 +633,7 @@ func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
 	b.u32(0)
 	b.bytes(v.Input)
 	if len(v.Output) > 0 {
-		b.align(8)
+		b.align8()
 	}
 	b.bytes(v.Output)
 	return b.finish()

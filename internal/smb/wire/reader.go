@@ -191,7 +191,9 @@ func (b *builder) boolean(v bool) {
 		b.u8(0)
 	}
 }
-func (b *builder) align(n int) { b.zero((n - len(b.data)%n) % n) }
+
+// align8 pads with zeros to the next eight-byte boundary.
+func (b *builder) align8() { b.zero((8 - len(b.data)%8) % 8) }
 
 // Length conversions check the field width before narrowing.
 func (b *builder) length8(n int) {

@@ -244,7 +244,7 @@ func EncodeFileStreamInformation(v FileStreamInformation) ([]byte, error) {
 		member.u64(e.AllocationSize)
 		member.bytes(name)
 		if i < len(v.Entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

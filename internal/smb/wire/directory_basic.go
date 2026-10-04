@@ -139,7 +139,7 @@ func encodeBasicDirectoryEntries(entries []DirectoryEntry, class DirectoryInfoCl
 		}
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

@@ -12,8 +12,7 @@ const (
 	InfoSecurity   InfoType = 3
 )
 
-// FileInfoClass identifies the file classes implemented by M1 codecs.
-// Supporting a codec does not advertise that a server handler is ready.
+// FileInfoClass identifies a file information class.
 type FileInfoClass uint8
 
 // File class numbers from MS-FSCC.
@@ -38,7 +37,7 @@ const (
 	ClassFileID           FileInfoClass = 59
 )
 
-// FilesystemInfoClass identifies supported filesystem class codecs.
+// FilesystemInfoClass identifies a filesystem information class.
 type FilesystemInfoClass uint8
 
 // Filesystem class numbers from MS-FSCC.
@@ -50,7 +49,7 @@ const (
 	ClassFilesystemFullSize  FilesystemInfoClass = 7
 )
 
-// DirectoryInfoClass identifies supported directory entry layouts.
+// DirectoryInfoClass identifies a directory entry layout.
 type DirectoryInfoClass uint8
 
 // Directory class numbers from MS-FSCC.
@@ -70,11 +69,10 @@ type Filetime uint64
 const (
 	// FiletimeUnchanged leaves a SET_INFO timestamp unchanged.
 	FiletimeUnchanged Filetime = 0
-	// FiletimeSuppress is the protocol's -1 sentinel. This server leaves the time
-	// unchanged for this SET_INFO only, without suppressing later updates (#189).
+	// FiletimeSuppress is the protocol's -1 sentinel. The server leaves the time
+	// unchanged for this SET_INFO only and does not suppress later updates.
 	FiletimeSuppress Filetime = 0xffffffffffffffff
-	// FiletimeResume is the protocol's -2 sentinel. This server also treats it as
-	// unchanged for this SET_INFO only; later I/O updates times as usual (#189).
+	// FiletimeResume is the protocol's -2 sentinel, treated like FiletimeSuppress.
 	FiletimeResume Filetime = 0xfffffffffffffffe
 )
 
@@ -88,8 +86,7 @@ const (
 )
 
 // TimeUpdate is DecodeTimeUpdate's result. Time is valid only for TimeSet.
-// TimeKeep leaves the field unchanged for this SET_INFO only. The server keeps
-// no per-open suppression state; later I/O updates times as usual (#189).
+// TimeKeep leaves the field unchanged for this SET_INFO only.
 type TimeUpdate struct {
 	Time   time.Time
 	Action TimeUpdateAction
@@ -273,55 +270,3 @@ type DirectoryIDFullEntry struct {
 	Name     string
 	Metadata DirectoryMetadata
 }
-
-// SID is a security identifier. Authority is the six bytes in big-endian order;
-// SubAuthorities are encoded as little-endian words. Revision must be one.
-type SID struct {
-	SubAuthorities []uint32
-	Authority      [6]byte
-	Revision       uint8
-}
-
-// ACEType identifies the simple ACE layouts decoded by this server.
-type ACEType uint8
-
-// Simple ACE type values from MS-DTYP.
-const (
-	ACEAllowed ACEType = 0
-	ACEDenied  ACEType = 1
-	ACEAudit   ACEType = 2
-)
-
-// ACE is a simple access or audit entry. Other ACE layouts are unsupported.
-type ACE struct {
-	Trustee SID
-	Mask    uint32
-	Flags   uint8
-	Type    ACEType
-}
-
-// ACL distinguishes an empty list from an absent descriptor ACL.
-type ACL struct {
-	Entries  []ACE
-	Revision uint8
-}
-
-// SecurityDescriptor is the self-relative QUERY_INFO and SET_INFO representation.
-// Control retains the presence bits. A nil DACL with DACLPresent means a null
-// DACL; an empty ACL pointer means an empty DACL. Offsets are codec-owned.
-// Decoding this structure does not promise ACL fidelity from the storage adapter.
-type SecurityDescriptor struct {
-	Owner    *SID
-	Group    *SID
-	SACL     *ACL
-	DACL     *ACL
-	Control  uint16
-	Revision uint8
-}
-
-// Security descriptor control bits needed to preserve absent, null and empty ACLs.
-const (
-	DACLPresent            uint16 = 0x0004
-	SACLPresent            uint16 = 0x0010
-	DescriptorSelfRelative uint16 = 0x8000
-)
