@@ -11,19 +11,21 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 type result struct {
-	Baseline        string         `json:"baseline"`
-	Scenario        string         `json:"scenario,omitempty"`
-	MetadataBackup  string         `json:"metadata_backup,omitempty"`
-	AtKill          string         `json:"at_kill,omitempty"`
-	Resumed         string         `json:"resumed,omitempty"`
-	RecoveredFrom   string         `json:"recovered_from,omitempty"`
-	BaselineRestore helpers.Counts `json:"baseline_restore,omitempty"`
-	ResumedRestore  helpers.Counts `json:"resumed_restore,omitempty"`
-	ChunkObjectsEnd int            `json:"chunk_objects_end,omitempty"`
+	NetworkDrop     *helpers.DropReport `json:"network_drop,omitempty"`
+	Baseline        string              `json:"baseline"`
+	Scenario        string              `json:"scenario,omitempty"`
+	MetadataBackup  string              `json:"metadata_backup,omitempty"`
+	AtKill          string              `json:"at_kill,omitempty"`
+	Resumed         string              `json:"resumed,omitempty"`
+	RecoveredFrom   string              `json:"recovered_from,omitempty"`
+	BaselineRestore helpers.Counts      `json:"baseline_restore,omitempty"`
+	ResumedRestore  helpers.Counts      `json:"resumed_restore,omitempty"`
+	ChunkObjectsEnd int                 `json:"chunk_objects_end,omitempty"`
 }
 
 func (h *harness) baseline() result {
@@ -37,6 +39,12 @@ func (h *harness) baseline() result {
 	h.must(err)
 	if len(entries) != 0 {
 		h.t.Fatal("initial application share not empty")
+	}
+	if os.Getenv("MAC_PHASE") == "m4" {
+		h.must(helpers.MacFeatures(func(args ...string) (string, error) {
+			return h.try(5*time.Minute, args...)
+		}, h.share, filepath.Join(h.bin, "fullsync")))
+		h.t.Log("m4-share-features-passed")
 	}
 	h.destinationSetup()
 	h.createTree()
@@ -121,6 +129,8 @@ func (h *harness) cold() {
 
 func (h *harness) scenario(name string) result {
 	switch name {
+	case "network-drop", "network-outage":
+		return h.networkScenario(name)
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
@@ -163,7 +173,7 @@ func (h *harness) scenario(name string) result {
 			output, err := h.try(time.Minute, args...)
 			h.t.Log("client abort", output, err)
 		}
-		for _, path := range mountpoints(h.run(2*time.Minute, "/sbin/mount")) {
+		for _, path := range h.mountpoints(h.run(2*time.Minute, "/sbin/mount")) {
 			output, err := h.try(2*time.Minute, "/sbin/umount", "-f", path)
 			h.t.Log("forced client unmount", output, err)
 		}
@@ -281,6 +291,9 @@ func (h *harness) finish() {
 			h.t.Error(err)
 		}
 	}
+	if h.proxy != nil {
+		report(h.proxy.SetFault(netfault.Fault{}))
+	}
 	// Leave two minutes of the outer budget for bootout and stopping services.
 	//nolint:contextcheck // Native commands use h.ctx, set to each callback's context before calls.
 	report(helpers.Cleanup(ctx, 5*time.Minute, func(clientCtx context.Context) error {
@@ -296,8 +309,12 @@ func (h *harness) finish() {
 		return err
 	}, func(cleanupCtx context.Context) error {
 		h.ctx = cleanupCtx
-		return h.unloadLaunchd()
+		return errors.Join(h.unloadLaunchd(), h.smbLogging.Restore(h.smbLogCommand))
 	}))
+	if h.proxy != nil {
+		report(h.proxy.Close())
+		h.proxy = nil
+	}
 	if h.daemon != nil {
 		report(stop(h.daemon, false))
 		h.daemon = nil

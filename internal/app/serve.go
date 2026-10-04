@@ -59,7 +59,7 @@ func (r *resources) close() error {
 	if r.server != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		if err := r.server.Shutdown(ctx); err != nil {
+		if err := unexpectedServeError(r.server.Shutdown(ctx)); err != nil {
 			return fmt.Errorf("SMB shutdown failed; state lock retained: %w", err)
 		}
 	}
@@ -286,15 +286,12 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
 	}
-	// Read-only sessions take file locks under session id 0. This process holds
-	// the state lock, so the earlier process is gone. Clear its lock rows before
-	// any session or SMB work starts.
-	if err = meta.ClearOrphanLocks(r.metadata); err != nil {
-		return fmt.Errorf("clear file locks left by an earlier process: %w", err)
+	if err = r.prepareSMBMetadata(); err != nil {
+		return err
 	}
 	var manager *backup.Manager
 	if !c.SMB.ReadOnly {
-		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Attempts: 3, Protection: r.protection})
+		manager, err = backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Protection: r.protection})
 		if err != nil {
 			return err
 		}
@@ -367,9 +364,9 @@ func serve(ctx context.Context, c *config.Resolved) (result error) {
 	}
 }
 
-// unexpectedServeError removes only bare shutdown signals from joined errors.
+// unexpectedServeError removes shutdown signals without hiding joined failures.
 func unexpectedServeError(err error) error {
-	if err == nil || err == context.Canceled || err == net.ErrClosed {
+	if err == nil || err == context.Canceled {
 		return nil
 	}
 	if joined, ok := err.(interface{ Unwrap() []error }); ok {
@@ -378,6 +375,14 @@ func unexpectedServeError(err error) error {
 			result = errors.Join(result, unexpectedServeError(cause))
 		}
 		return result
+	}
+	if errors.Is(err, net.ErrClosed) {
+		for cause := errors.Unwrap(err); cause != nil; cause = errors.Unwrap(cause) {
+			if _, ok := cause.(interface{ Unwrap() []error }); ok {
+				return unexpectedServeError(cause)
+			}
+		}
+		return nil
 	}
 	return err
 }
