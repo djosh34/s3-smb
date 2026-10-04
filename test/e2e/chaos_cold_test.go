@@ -266,22 +266,17 @@ func chaosColdLatest(t *testing.T, f *fixture, want string) {
 
 func chaosColdLogCheck(t *testing.T, d *daemon) {
 	t.Helper()
-	// Run after the fixture's stop cleanup, including when an assertion fails.
-	// sigkill and an explicit stop have already closed the files on success.
-	paths := make([]string, 0, len(d.logs))
-	for _, log := range d.logs {
-		paths = append(paths, log.Name())
-	}
+	// Include shutdown output even when an assertion fails.
 	t.Cleanup(func() {
 		d.stop()
-		for _, path := range paths {
-			data, err := os.ReadFile(path)
+		for _, log := range d.logs {
+			data, err := os.ReadFile(log.Name())
 			if err != nil {
 				t.Error(err)
 				continue
 			}
 			if err := chaos.CheckDaemonLog(data); err != nil {
-				t.Errorf("%s: %v", path, err)
+				t.Errorf("%s: %v", log.Name(), err)
 			}
 		}
 	})
