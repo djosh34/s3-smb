@@ -61,17 +61,24 @@ func (p *Proxy) forwardBytes(connection *link, direction Direction, dst net.Conn
 			p.mu.Unlock()
 			return net.ErrClosed
 		}
-		fault, generation := p.fault, p.generation
+		fault, generation, changed := p.fault, p.generation, p.changed
 		limited := fault.CutAfter > 0 && fault.CutDirection == direction
-		part := data
+		part := data[:min(len(data), 32*1024)]
 		if limited {
 			remaining := fault.CutAfter - connection.forwarded[direction-1]
-			if int64(len(part)) > remaining {
-				part = part[:remaining]
-			}
+			part = part[:min(int64(len(part)), remaining)]
 		}
 		p.mu.Unlock()
 
+		ready, err := p.bandwidthReady(connection, generation, changed, len(part), fault.BytesPerSecond)
+		if err != nil {
+			return err
+		}
+		if !ready {
+			// No bytes were sent. Recheck delay, stall, cap and cut for the
+			// unchanged suffix under the replacement fault.
+			continue
+		}
 		written, err := dst.Write(part)
 		p.mu.Lock()
 		cut := false
