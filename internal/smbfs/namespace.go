@@ -298,7 +298,7 @@ func (s *FS) directoryAttr(ctx context.Context, entry directoryEntry, generation
 	st, unpin := s.pin(entry.inode)
 	live := st.snapshot()
 	unpin()
-	// Flush, truncate and reopen can invalidate a row while live length stays
+	// Data and timestamp changes can invalidate a row while live length stays
 	// valid. Reread only the affected inode, not entries beside unrelated I/O.
 	// Last close drops the live length, so it still needs the commit counter.
 	if live.flushed > generation.flushes || (!live.valid && s.commits.Load() != generation.commits) {

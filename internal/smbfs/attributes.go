@@ -212,11 +212,12 @@ func validStream(name string) bool {
 	return name != "" && len(name) <= 255 && !strings.ContainsAny(name, "\x00:/\\") && !strings.HasPrefix(name, privatePrefix)
 }
 
-func (s *FS) touchStream(ctx context.Context, ino smb.Inode) error {
+func (s *FS) touchStream(ctx context.Context, ino smb.Inode, st *inodeState) error {
 	var attr meta.Attr
 	if err := backendError(s.metadata.GetAttr(storageContext(ctx), meta.Ino(ino), &attr)); err != nil {
 		return err
 	}
+	defer s.invalidateDirectoryTimes(st)
 	if !attr.Parent.IsTrash() {
 		return backendError(s.metadata.SetAttr(storageContext(ctx), meta.Ino(ino), meta.SetAttrMtimeNow, 0, &attr))
 	}
