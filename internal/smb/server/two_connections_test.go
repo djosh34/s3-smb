@@ -1,0 +1,135 @@
+package server
+
+import (
+	"context"
+	"testing"
+
+	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/state"
+	"github.com/djosh34/s3-smb/internal/smb/wire"
+	"github.com/djosh34/s3-smb/internal/smbfs"
+)
+
+func twoIOClients(t *testing.T, barrier smbfs.MetadataBarrier) (*ioFixture, *readWriteClient, *readWriteClient) {
+	t.Helper()
+	fixture := newIOFixture(t, barrier)
+	a := newReadWriteClient(t, fixture.adapter)
+	client, ctx, session := loginClient(t, a.server, smb.CipherAES128GCM, smb.SigningGMAC)
+	b := &readWriteClient{client: client, server: a.server, ctx: ctx, session: session, next: session.NextMessageID}
+	if a.session.SessionID == b.session.SessionID {
+		t.Fatal("independent logins reused a session")
+	}
+	return fixture, a, b
+}
+
+func createIOFile(t *testing.T, client *readWriteClient, request wire.CreateRequest) wire.CreateResponse {
+	t.Helper()
+	response := fileCreate(client.ctx, t, client.client, client.session, client.next, request)
+	client.next++
+	return createdFile(t, response)
+}
+
+func closeIOFile(t *testing.T, client *readWriteClient, id wire.FileID) {
+	t.Helper()
+	response := fileClose(client.ctx, t, client.client, client.session, client.next, id, 0)
+	client.next++
+	requireIOStatus(t, response, smb.StatusSuccess)
+	if _, err := wire.DecodeCloseResponse(response); err != nil {
+		t.Fatal(err)
+	}
+	binding := state.Binding{SessionID: client.session.SessionID, TreeID: client.session.TreeID}
+	if _, status := client.server.options.State.Find(state.FileID(id), binding); status != smb.StatusFileClosed {
+		t.Fatalf("CLOSE retained open: %#x", status)
+	}
+}
+
+func writeIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, data []byte) {
+	t.Helper()
+	response := client.write(t, wire.WriteRequest{ID: id, Data: data}, 1)
+	requireIOStatus(t, response, smb.StatusSuccess)
+	written, err := wire.DecodeWriteResponse(response)
+	if err != nil || uint64(written.Count) != uint64(len(data)) {
+		t.Fatalf("WRITE = %+v, %v", written, err)
+	}
+}
+
+func readIOBytes(t *testing.T, client *readWriteClient, id wire.FileID, length uint32, want string) {
+	t.Helper()
+	response := client.read(t, wire.ReadRequest{ID: id, Length: length}, 1)
+	requireIOStatus(t, response, smb.StatusSuccess)
+	read, err := wire.DecodeReadResponse(response)
+	if err != nil || string(read.Data) != want {
+		t.Fatalf("READ = %q, want %q, error %v", read.Data, want, err)
+	}
+}
+
+func echoIOClient(t *testing.T, client *readWriteClient) {
+	t.Helper()
+	body, err := wire.EncodeEchoRequest(wire.EmptyRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := client.exchange(t, wire.Echo, body, 1)
+	requireIOStatus(t, response, smb.StatusSuccess)
+	if _, err := wire.DecodeEchoResponse(response); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTwoConnectionReadAndFlush(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		reserved uint16
+		full     bool
+	}{
+		{name: "SyncData"},
+		{name: "SyncFull", reserved: 0xffff, full: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			commits := make(chan bool, 8)
+			barrier := flushBarrier(func(_ context.Context, full bool) error {
+				commits <- full
+				return nil
+			})
+			fixture, a, b := twoIOClients(t, barrier)
+			writer := createIOFile(t, a, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData | fileWriteData, ShareAccess: 7, Disposition: fileCreateDisposition})
+			reader := createIOFile(t, b, wire.CreateRequest{Name: "flush-data", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen})
+			payload := "acknowledged bytes from connection A"
+			writeIOBytes(t, a, writer.ID, []byte(payload))
+
+			// Knowing A's FileId does not give B access to A's open.
+			requireIOStatus(t, b.read(t, wire.ReadRequest{ID: writer.ID, Length: 1}, 1), smb.StatusFileClosed)
+			echoIOClient(t, b)
+			readIOBytes(t, b, reader.ID, 128, payload)
+			// READ can upload the shared writer. Complete another write so the
+			// FLUSH has work that B has not already committed by reading.
+			putsBefore := fixture.store.puts.Load()
+			payload = "A completed another write before B's FLUSH"
+			writeIOBytes(t, a, writer.ID, []byte(payload))
+
+			message := flushMessage(t, b.session, b.next, reader.ID, test.reserved)
+			b.next++
+			response := ioRoundTrip(b.ctx, t, b.client, message)
+			requireIOStatus(t, response, smb.StatusSuccess)
+			if _, err := wire.DecodeFlushResponse(response); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case full := <-commits:
+				if full != test.full {
+					t.Fatalf("metadata barrier full = %v, want %v", full, test.full)
+				}
+			default:
+				t.Fatal("FLUSH replied without a metadata barrier")
+			}
+			if fixture.store.puts.Load() <= putsBefore {
+				t.Fatal("B's FLUSH did not upload A's completed writes")
+			}
+			assertCommittedFlushData(t, fixture, []byte(payload))
+			closeIOFile(t, a, writer.ID)
+			// Closing A must not release B's separate storage reference.
+			readIOBytes(t, b, reader.ID, 128, payload)
+			closeIOFile(t, b, reader.ID)
+		})
+	}
+}
