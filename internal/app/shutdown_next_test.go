@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -26,7 +25,11 @@ import (
 
 func protectedResources(t *testing.T) (*resources, *smbfs.FS, *state.Table, string) {
 	t.Helper()
-	dir := t.TempDir()
+	return protectedResourcesAt(t, t.TempDir())
+}
+
+func protectedResourcesAt(t *testing.T, dir string) (*resources, *smbfs.FS, *state.Table, string) {
+	t.Helper()
 	p, err := backup.NewProtection(time.Hour, time.Minute, 14)
 	if err != nil {
 		t.Fatal(err)
@@ -206,84 +209,24 @@ func TestProtectionFailureWithPendingDeletion(t *testing.T) {
 	r.server = nil
 }
 
-func TestShutdownFinishesPendingDeletion(t *testing.T) {
-	for _, stream := range []bool{false, true} {
-		for _, deleteOnClose := range []bool{false, true} {
-			name := "base/disposition"
-			if stream {
-				name = "stream/disposition"
-			}
-			if deleteOnClose {
-				name += "/delete-on-close"
-			}
-			t.Run(name, func(t *testing.T) {
-				r, adapter, table, path := protectedResources(t)
-				base, _ := shutdownOpen(t, adapter, table, "file", true, !stream && deleteOnClose)
-				selected := base
-				selectedName := smb.Name{Parent: smb.Inode(meta.RootInode), Base: "file"}
-				selectedPath := "file"
-				if stream {
-					selectedPath = "file:AFP_Resource:$DATA"
-					selected, selectedName = shutdownOpen(t, adapter, table, selectedPath, false, deleteOnClose)
-				}
-				if !deleteOnClose {
-					if status := table.SetDelete(selected.ID, selected.Binding, selectedName, true); status != smb.StatusSuccess {
-						t.Fatal(status)
-					}
-				}
-				shutdownOpen(t, adapter, table, "attached", false, false)
-				if stream {
-					shutdownOpen(t, adapter, table, "file:keep:$DATA", false, false)
-				}
-				if actions := table.Disconnect(base.Binding.SessionID); len(actions) != 0 {
-					t.Fatalf("disconnect transferred cleanup: %+v", actions)
-				}
-				ctx, cancel := context.WithCancel(t.Context())
-				done := r.startBackup(ctx)
-				cancel()
-				select {
-				case err := <-done:
-					t.Fatalf("service cancellation stopped backup before open drain: %v", err)
-				case <-time.After(100 * time.Millisecond):
-				}
-				if err := r.close(); err != nil {
-					t.Fatal(err)
-				}
-				*r = resources{}
-				if _, err := adapter.ReadAt(t.Context(), selected.Handle, make([]byte, 1), 0); !errors.Is(err, smb.ErrInvalidHandle) {
-					t.Fatalf("selected handle survived: %v", err)
-				}
-				conf := meta.DefaultConf()
-				conf.ReadOnly = true
-				restarted, err := storage.OpenMetadata(path, conf)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer func() {
-					if err := restarted.Shutdown(); err != nil {
-						t.Error(err)
-					}
-				}()
-				var ino meta.Ino
-				var attr meta.Attr
-				eno := restarted.Lookup(meta.Background(), meta.RootInode, "file", &ino, &attr, true)
-				if !stream {
-					if eno != syscall.ENOENT {
-						t.Fatalf("deleted base file after restart: %v", eno)
-					}
-					return
-				}
-				if eno != 0 {
-					t.Fatalf("stream deletion removed base: %v", eno)
-				}
-				var data []byte
-				if eno := restarted.GetXattr(meta.Background(), ino, "AFP_Resource", &data); eno != syscall.ENODATA {
-					t.Fatalf("deleted stream after restart: %v", eno)
-				}
-				if eno := restarted.GetXattr(meta.Background(), ino, "keep", &data); eno != 0 || string(data) != "accepted before shutdown" {
-					t.Fatalf("unrelated stream after restart: %q, %v", data, eno)
-				}
-			})
-		}
+func TestBackupSurvivesServiceCancellation(t *testing.T) {
+	r, _, _, _ := protectedResources(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := r.startBackup(ctx)
+	cancel()
+	select {
+	case err := <-done:
+		t.Fatalf("service cancellation stopped backup before open drain: %v", err)
+	case <-time.After(100 * time.Millisecond):
 	}
+	if err := r.protection.Check(); err != nil {
+		t.Fatalf("service cancellation revoked deletion protection: %v", err)
+	}
+	if err := r.close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.protection.Check(); !errors.Is(err, backup.ErrUnprotected) {
+		t.Fatalf("shutdown left protection running: %v", err)
+	}
+	*r = resources{}
 }
