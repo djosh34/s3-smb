@@ -17,36 +17,17 @@ import (
 
 var errSelfTarget = errors.New("network fault proxy cannot target its own address")
 
-// Direction identifies traffic without inspecting its contents. Zero identifies
-// a manual cut or drop, which has no traffic direction.
-type Direction uint8
-
-const (
-	// ClientToServer identifies bytes forwarded to the upstream peer.
-	ClientToServer Direction = iota + 1
-	// ServerToClient identifies bytes forwarded back to the client.
-	ServerToClient
-)
-
-// Event reports forwarded bytes or a cut for one connection. Bytes is the number
-// forwarded in this event, not a cumulative count. A byte-cut event includes the
-// final forwarded bytes; manual cuts and drops have zero Direction and Bytes.
-type Event struct {
-	Connection uint64
-	Bytes      int64
-	Direction  Direction
-	Cut        bool
-}
-
-// Fault applies in both directions until SetFault replaces it. Delay precedes
-// each forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
+// Fault stays in place until SetFault replaces it. Delay, Stall and Drop apply
+// in both directions; CutAfter applies only in CutDirection. Delay precedes each
+// forwarded buffer (at most 32 KiB), not each packet. Stall pauses forwarding
 // without discarding buffered data. Drop closes current connections and rejects
 // new ones without dialing the peer. A zero Fault restores normal forwarding.
 // Changes wake pending delays and stalls; bytes already written cannot be recalled.
 // CutAfter closes each connection after exactly that many bytes are forwarded in
 // CutDirection. Zero disables byte cuts. Replacing a fault resets the count for
-// each connection. A buffer whose write already started belongs to the old fault
-// and cannot count toward or trigger the replacement's cut.
+// each connection. Bytes whose write already started belong to the old fault
+// and cannot count toward or trigger the replacement's cut. Any buffered suffix
+// is forwarded under the replacement fault without losing bytes.
 type Fault struct {
 	Delay        time.Duration
 	CutAfter     int64
@@ -180,27 +161,6 @@ func resolvePeer(ctx context.Context, upstream string) ([]net.IPAddr, uint16, er
 
 // Address returns the proxy's loopback host:port.
 func (p *Proxy) Address() string { return p.address }
-
-// Events returns a bounded, nonblocking stream. Events may be lost if the reader
-// falls behind; DroppedEvents counts every loss, including cut events. Close
-// closes the stream after all forwarding workers finish. Events contain no data.
-func (p *Proxy) Events() <-chan Event { return p.events }
-
-// DroppedEvents returns the number of events lost to a full stream buffer.
-func (p *Proxy) DroppedEvents() uint64 {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.dropped
-}
-
-// emit runs under mu, including during fault replacement and forwarding.
-func (p *Proxy) emit(event Event) {
-	select {
-	case p.events <- event:
-	default:
-		p.dropped++
-	}
-}
 
 // Close stops accepting, cancels schedules and waits for forwarding to finish.
 // Repeated calls return the same listener and connection cleanup errors. Peer
@@ -391,9 +351,6 @@ func (p *Proxy) relay(connection *link, direction Direction, src, dst net.Conn) 
 		}
 		n, readErr := src.Read(buffer)
 		if n > 0 {
-			if err := p.wait(ctx, true); err != nil {
-				return err
-			}
 			if err := p.forwardBytes(connection, direction, dst, buffer[:n]); err != nil {
 				return err
 			}
