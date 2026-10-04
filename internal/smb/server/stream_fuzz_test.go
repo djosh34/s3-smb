@@ -19,7 +19,7 @@ const streamBound = 3 * time.Second
 
 func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
-		f.Add(seed)
+		f.Add(seed.stream)
 	}
 	storage := fuzzStorage(f)
 	f.Fuzz(func(t *testing.T, stream []byte) {
@@ -37,16 +37,22 @@ func FuzzServerStream(f *testing.F) {
 	})
 }
 
-func streamSeeds(t testing.TB) [][]byte {
+type streamSeed struct {
+	name        string
+	stream      []byte
+	wantReplies int
+}
+
+func streamSeeds(t testing.TB) []streamSeed {
 	t.Helper()
 	negotiate := streamFrame(t, negotiateMessage(t, 16))
 	first := streamFrame(t, echo(t, 1))
 	second := streamFrame(t, echo(t, 2))
 	compound := streamFrame(t, echo(t, 1), echo(t, 2))
-	return [][]byte{
-		negotiate,
-		bytes.Join([][]byte{negotiate, first, second}, nil),
-		bytes.Join([][]byte{negotiate, compound}, nil),
+	return []streamSeed{
+		{name: "negotiate", stream: negotiate, wantReplies: 1},
+		{name: "echo stream", stream: bytes.Join([][]byte{negotiate, first, second}, nil), wantReplies: 3},
+		{name: "echo compound", stream: bytes.Join([][]byte{negotiate, compound}, nil), wantReplies: 3},
 	}
 }
 

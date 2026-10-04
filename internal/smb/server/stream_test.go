@@ -20,21 +20,17 @@ func TestServerStreamSeeds(t *testing.T) {
 	if err != nil || !root.Exists || root.Attr.Kind != smb.KindDirectory {
 		t.Fatalf("real adapter root: %+v, %v", root, err)
 	}
-	for index, seed := range streamSeeds(t) {
-		t.Run([]string{"negotiate", "echo stream", "echo compound"}[index], func(t *testing.T) {
+	for _, seed := range streamSeeds(t) {
+		t.Run(seed.name, func(t *testing.T) {
 			options := testOptions(t)
 			options.Storage = storage
 			server, err := New(options)
 			if err != nil {
 				t.Fatal(err)
 			}
-			replies, closed := runServerStream(t, server, seed)
-			want := 3
-			if index == 0 {
-				want = 1
-			}
-			if closed || len(replies) != want {
-				t.Fatalf("seed replies: %d, closed: %v", len(replies), closed)
+			replies, closed := runServerStream(t, server, seed.stream)
+			if closed || len(replies) != seed.wantReplies {
+				t.Fatalf("seed replies: %d, want: %d, closed: %v", len(replies), seed.wantReplies, closed)
 			}
 			for id, message := range replies {
 				if message.Header.Status != smb.StatusSuccess || message.Header.MessageID != uint64(id) {
