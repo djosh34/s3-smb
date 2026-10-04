@@ -82,12 +82,16 @@ type Attr struct {
 
 // AttrChange uses pointers to distinguish absent values from zero or Unix epoch.
 // The wire layer handles FILETIME sentinels before forming this value.
+// Size sets EOF; SizeCap only shrinks it, comparing against live EOF inside the
+// adapter's inode mutation coordinator. They are mutually exclusive. A SizeCap
+// at or above EOF changes neither length nor automatic timestamps.
 type AttrChange struct {
 	Created    *time.Time
 	Accessed   *time.Time
 	Modified   *time.Time
 	Changed    *time.Time
 	Size       *uint64
+	SizeCap    *uint64
 	Attributes *uint32
 }
 
