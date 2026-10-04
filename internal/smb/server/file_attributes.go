@@ -22,13 +22,17 @@ func normalizeFileAttributes(attributes uint32, directory bool) uint32 {
 }
 
 func setCreateAttributes(ctx context.Context, storage smb.Storage, create wire.CreateRequest, resolved smb.Resolved, action uint32) error {
-	if action == 1 || action != 0 && create.FileAttributes == 0 {
+	directory := resolved.Attr.Kind == smb.KindDirectory
+	if action == 1 || action != 0 && create.FileAttributes == 0 && (directory || resolved.Object.Stream != "") {
 		return nil
 	}
 	attributes := create.FileAttributes
 	if action == 3 {
 		attributes |= resolved.Attr.Attributes
 	}
-	attributes = normalizeFileAttributes(attributes, resolved.Attr.Kind == smb.KindDirectory)
+	if !directory && resolved.Object.Stream == "" {
+		attributes |= 0x20 // MS-FSA sets FILE_ATTRIBUTE_ARCHIVE on new or replaced data files.
+	}
+	attributes = normalizeFileAttributes(attributes, directory)
 	return storage.SetAttr(ctx, resolved.Object, smb.AttrChange{Attributes: &attributes})
 }

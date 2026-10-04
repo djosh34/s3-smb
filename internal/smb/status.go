@@ -41,6 +41,7 @@ const (
 	StatusDiskFull                         Status = 0xc000007f
 	StatusInsufficientResources            Status = 0xc000009a
 	StatusMediaWriteProtected              Status = 0xc00000a2
+	StatusBadImpersonationLevel            Status = 0xc00000a5
 	StatusFileIsADirectory                 Status = 0xc00000ba
 	StatusNotSupported                     Status = 0xc00000bb
 	StatusBadNetworkName                   Status = 0xc00000cc

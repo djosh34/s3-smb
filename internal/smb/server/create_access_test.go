@@ -9,7 +9,8 @@ func TestCreateExpandsGenericAccess(t *testing.T) {
 	}{
 		{"read", 0x80000000, 0x00120089},
 		{"write", 0x40000000, 0x00120116},
-		{"execute", 0x20000000, 0x001200a0},
+		{"execute", 0x20000000, 0x001200a1},
+		{"specific execute", fileExecute, fileExecute | fileReadData},
 		{"all", 0x10000000, fileAllAccess},
 		{"maximum", 0x02000000, fileAllAccess},
 		{"specific", fileAppendData, fileAppendData},

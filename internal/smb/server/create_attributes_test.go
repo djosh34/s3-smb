@@ -15,15 +15,15 @@ func TestCreateSupersedeReplacesAttributes(t *testing.T) {
 			request := createRequest(name, fileCreateDisposition)
 			request.FileAttributes = 0x100 // FILE_ATTRIBUTE_TEMPORARY.
 			first := createdFile(t, client.create(t, request))
-			if first.Attributes != request.FileAttributes {
+			if first.Attributes != request.FileAttributes|0x20 {
 				t.Fatalf("initial CREATE attributes %#x", first.Attributes)
 			}
 			requireIOStatus(t, client.close(t, first.ID, 0), smb.StatusSuccess)
 			request.Disposition, request.FileAttributes = fileSupersede, attributes
 			replaced := createdFile(t, client.create(t, request))
-			want := attributes
-			if want == 0 {
-				want = 0x80 // FILE_ATTRIBUTE_NORMAL.
+			want := attributes | 0x20 // FILE_ATTRIBUTE_ARCHIVE.
+			if replaced.Attributes&0x100 != 0 {
+				t.Fatal("SUPERSEDE retained FILE_ATTRIBUTE_TEMPORARY")
 			}
 			if replaced.Attributes != want {
 				t.Fatalf("SUPERSEDE attributes %#x, want %#x", replaced.Attributes, want)

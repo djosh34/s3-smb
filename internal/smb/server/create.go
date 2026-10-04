@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -32,6 +33,12 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, smb.Status) {
 	if err != nil {
 		return create, smb.StatusInvalidParameter
 	}
+	if create.ImpersonationLevel > 3 {
+		return create, smb.StatusBadImpersonationLevel
+	}
+	if strings.HasPrefix(create.Name, "\\") || strings.HasPrefix(create.Name, "/") {
+		return create, smb.StatusInvalidParameter
+	}
 	if create.Options&fileOpenByFileID != 0 {
 		return create, smb.StatusNotSupported
 	}
@@ -58,6 +65,9 @@ func expandCreateAccess(desired uint32) uint32 {
 	}
 	if desired&(genericAll|maximumAllowed) != 0 {
 		granted |= fileAllAccess
+	}
+	if granted&fileExecute != 0 {
+		granted |= fileReadData
 	}
 	return granted
 }
