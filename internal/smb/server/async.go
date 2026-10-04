@@ -36,7 +36,7 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 	if err := ctx.Err(); err != nil {
 		return reply{status: smb.StatusFromError(err)}
 	}
-	if message.Header.Flags&wire.FlagRelated != 0 && needsFileID(message.Header.Command) && previous.status != smb.StatusSuccess {
+	if message.Header.Flags&wire.FlagRelated != 0 && needsFileID(message.Header.Command) && previous.status&0xc0000000 == 0xc0000000 {
 		return reply{status: previous.status}
 	}
 	result, err := connection.dispatch(ctx, message, previous)
@@ -46,7 +46,7 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 			level, text = slog.LevelDebug, "request canceled"
 		}
 		connection.server.options.Logger.Log(ctx, level, text, "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
-		return reply{status: smb.StatusFromError(err)}
+		return reply{status: smb.StatusFromError(err), fileID: result.fileID}
 	}
 	return result
 }
@@ -131,6 +131,10 @@ func (connection *connection) complete(pending *pendingRequest) {
 	case <-connection.ctx.Done():
 		return
 	case <-pending.work.done:
+	}
+	// Both cases can be ready when late work finishes after a disconnect.
+	if connection.ctx.Err() != nil {
+		return
 	}
 	// Final success and error share this path, with identity saved at pending.
 	// They never call the credit allocator or reuse the interim buffer.
