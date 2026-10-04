@@ -28,8 +28,8 @@ type Tree struct {
 // Session and Tree are zero for commands that do not require those identities.
 // Handlers use the separate context.Context argument for cancellation. They must
 // not keep these snapshots as mutable session or tree state. Storage calls never
-// run under an open-table lock. File handlers must drain active handle users
-// before executing cleanup returned by Opens. Resolve request IDs with FileID,
+// run under an open-table lock. Cleanup drains active handle users before
+// executing actions returned by Opens. Resolve request IDs with FileID,
 // then set reply.fileID to the ID used or created so related members inherit it.
 type RequestContext struct {
 	server  *Server
@@ -54,7 +54,9 @@ func (request RequestContext) FileID(id wire.FileID) (wire.FileID, smb.Status) {
 	return id, smb.StatusSuccess
 }
 
-// Cleanup delegates open-table CloseActions to the server's shared cleanup path.
+// Cleanup drains active references, then closes and deletes transferred actions
+// even if ctx is cancelled. Callers must hold no namespace guard; cleanup
+// acquires deletion guards.
 func (request RequestContext) Cleanup(ctx context.Context, actions []state.CloseAction) error {
 	return request.server.cleanup(ctx, actions)
 }
