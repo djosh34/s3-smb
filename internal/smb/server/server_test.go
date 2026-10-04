@@ -24,8 +24,10 @@ func testOptions(t *testing.T) Options {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Options{Storage: unusedStorage{}, State: table, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: time.Now,
-		Account: auth.Account{User: "backup", Password: "password"}, ShareName: "backup", ServerName: "s3-smb", ServerGUID: [16]byte{1}}
+	return Options{
+		Storage: unusedStorage{}, State: table, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)), Now: time.Now,
+		Account: auth.Account{User: "backup", Password: "password"}, ShareName: "backup", ServerName: "s3-smb", ServerGUID: [16]byte{1},
+	}
 }
 
 func pipeClient(t *testing.T, server *Server) (*smbtest.Client, context.Context) {
@@ -55,7 +57,7 @@ func pipeClient(t *testing.T, server *Server) (*smbtest.Client, context.Context)
 	return client, ctx
 }
 
-func exchange(t *testing.T, ctx context.Context, client *smbtest.Client, messages ...wire.Message) []wire.Message {
+func exchange(ctx context.Context, t *testing.T, client *smbtest.Client, messages ...wire.Message) []wire.Message {
 	t.Helper()
 	if err := client.Send(ctx, messages); err != nil {
 		t.Fatal(err)
@@ -82,7 +84,7 @@ func TestEcho(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, ctx := pipeClient(t, server)
-	messages := exchange(t, ctx, client, echo(t, 0))
+	messages := exchange(ctx, t, client, echo(t, 0))
 	if len(messages) != 1 || messages[0].Header.Status != smb.StatusSuccess || messages[0].Header.MessageID != 0 {
 		t.Fatalf("ECHO replies: %+v", messages)
 	}

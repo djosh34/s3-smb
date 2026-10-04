@@ -30,8 +30,10 @@ func New(options Options) (*Server, error) {
 	if _, err := auth.NewAcceptor(auth.Options{Account: options.Account, ServerName: options.ServerName, Now: options.Now}); err != nil {
 		return nil, fmt.Errorf("server account: %w", err)
 	}
-	return &Server{options: options, handlers: map[wire.Command]handler{wire.Echo: handleEcho},
-		connections: make(map[*connection]struct{}), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{})}, nil
+	return &Server{
+		options: options, handlers: map[wire.Command]handler{wire.Echo: handleEcho},
+		connections: make(map[*connection]struct{}), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
+	}, nil
 }
 
 type ownedListener struct {
@@ -41,7 +43,7 @@ type ownedListener struct {
 }
 
 func (listener *ownedListener) close() error {
-	listener.once.Do(func() { listener.err = listener.Listener.Close() })
+	listener.once.Do(func() { listener.err = listener.Close() })
 	return listener.err
 }
 

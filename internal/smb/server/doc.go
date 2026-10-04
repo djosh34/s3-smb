@@ -60,13 +60,13 @@ type Options struct {
 //	func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error
 //	func (server *Server) Shutdown(ctx context.Context) error
 type Server struct {
-	options      Options
+	shutdownErr  error
 	handlers     map[wire.Command]handler
 	connections  map[*connection]struct{}
 	listeners    map[*ownedListener]struct{}
 	shutdownDone chan struct{}
-	shutdownErr  error
-	mu           sync.Mutex
+	options      Options
 	workers      sync.WaitGroup
+	mu           sync.Mutex
 	stopping     bool
 }

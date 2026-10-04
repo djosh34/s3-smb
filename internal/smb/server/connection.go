@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/crypt"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -20,18 +22,25 @@ type reply struct {
 type handler func(context.Context, wire.Message) (reply, error)
 
 type connection struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	server    *Server
-	conn      net.Conn
-	sender    *sender
-	closeErr  error
-	closeOnce sync.Once
+	conn       net.Conn
+	closeErr   error
+	ctx        context.Context
+	preauth    *crypt.Preauth
+	sender     *sender
+	server     *Server
+	cancel     context.CancelFunc
+	credits    credits
+	closeOnce  sync.Once
+	cipher     uint16
+	signing    uint16
+	clientGUID [16]byte
+	negotiated bool
+	wildcard   bool
 }
 
 func newConnection(ctx context.Context, server *Server, conn net.Conn) *connection {
 	ctx, cancel := context.WithCancel(ctx)
-	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn)}
+	return &connection{ctx: ctx, cancel: cancel, server: server, conn: conn, sender: newSender(conn), preauth: crypt.NewPreauth(), credits: newCredits()}
 }
 
 func (connection *connection) close() error {
@@ -81,6 +90,19 @@ func (connection *connection) receive() error {
 			}
 			return err
 		}
+		if bytes.HasPrefix(payload, []byte{0xff, 'S', 'M', 'B'}) {
+			if connection.wildcard || connection.negotiated {
+				return errors.New("SMB1 negotiate is not the opening request")
+			}
+			if decodeErr := wire.DecodeSMB1Negotiate(payload); decodeErr != nil {
+				return decodeErr
+			}
+			if sendErr := connection.sendWildcard(); sendErr != nil {
+				return sendErr
+			}
+			connection.wildcard = true
+			continue
+		}
 		messages, err := wire.Split(payload)
 		if err != nil {
 			return err
@@ -92,21 +114,49 @@ func (connection *connection) receive() error {
 }
 
 func (connection *connection) process(messages []wire.Message) error {
+	validationErr := validateCompound(messages)
+	if err := connection.credits.consume(messages); err != nil {
+		return err
+	}
+	if validationErr != nil {
+		connection.server.options.Logger.Info("compound refused", "reason", validationErr)
+	}
 	responses := make([]wire.Message, 0, len(messages))
+	var preceding wire.Header
 	for _, message := range messages {
-		result := reply{status: smb.StatusNotSupported}
-		if handle, exists := connection.server.handlers[message.Header.Command]; exists {
+		if message.Header.Flags&wire.FlagRelated != 0 {
+			message.Header.SessionID, message.Header.TreeID = preceding.SessionID, preceding.TreeID
+		}
+		preceding = message.Header
+		if message.Header.Command == wire.Cancel {
+			continue
+		}
+		var result reply
+		if validationErr != nil {
+			result.status = smb.StatusInvalidParameter
+		} else {
 			var err error
-			result, err = handle(connection.ctx, message)
+			result, err = connection.dispatch(message)
 			if err != nil {
-				result = reply{status: smb.StatusInvalidParameter}
+				return err
 			}
 		}
-		response, err := makeResponse(message.Header, result, 1)
+		response, err := makeResponse(message.Header, result, connection.credits.grant(message.Header))
 		if err != nil {
 			return err
 		}
 		responses = append(responses, response)
+	}
+	if len(responses) == 0 {
+		return nil
+	}
+	if len(responses) == 1 && responses[0].Header.Command == wire.Negotiate && responses[0].Header.Status == smb.StatusSuccess {
+		payload, err := wire.Join(responses)
+		if err != nil {
+			return err
+		}
+		connection.preauth.Update(payload)
+		return <-connection.sender.enqueue(payload)
 	}
 	return connection.send(responses)
 }
@@ -120,8 +170,10 @@ func (connection *connection) send(messages []wire.Message) error {
 }
 
 func makeResponse(request wire.Header, result reply, credits uint16) (wire.Message, error) {
-	header := wire.Header{MessageID: request.MessageID, SessionID: request.SessionID, ProcessID: request.ProcessID,
-		TreeID: request.TreeID, Command: request.Command, CreditCharge: request.CreditCharge, Credit: credits, Flags: wire.FlagResponse, Status: result.status}
+	header := wire.Header{
+		MessageID: request.MessageID, SessionID: request.SessionID, ProcessID: request.ProcessID,
+		TreeID: request.TreeID, Command: request.Command, CreditCharge: request.CreditCharge, Credit: credits, Flags: wire.FlagResponse | request.Flags&wire.FlagRelated, Status: result.status,
+	}
 	body := result.body
 	if result.status != smb.StatusSuccess {
 		var err error
@@ -133,9 +185,22 @@ func makeResponse(request wire.Header, result reply, credits uint16) (wire.Messa
 	return wire.Message{Header: header, Body: body}, nil
 }
 
+func (connection *connection) dispatch(message wire.Message) (reply, error) {
+	if message.Header.Command == wire.Negotiate {
+		return connection.negotiate(message)
+	}
+	if handle, exists := connection.server.handlers[message.Header.Command]; exists {
+		return handle(connection.ctx, message)
+	}
+	if message.Header.Command <= wire.OplockBreak && (message.Header.Command != wire.SessionSetup || message.Header.SessionID != 0) {
+		return reply{status: smb.StatusUserSessionDeleted}, nil
+	}
+	return reply{status: smb.StatusNotSupported}, nil
+}
+
 func handleEcho(_ context.Context, message wire.Message) (reply, error) {
-	if _, err := wire.DecodeEchoRequest(message); err != nil {
-		return reply{}, err
+	if message.Header.SessionID != 0 {
+		return reply{status: smb.StatusUserSessionDeleted}, nil
 	}
 	body, err := wire.EncodeEchoResponse(wire.EmptyResponse{})
 	return reply{body: body}, err

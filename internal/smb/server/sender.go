@@ -10,18 +10,18 @@ import (
 )
 
 type sendJob struct {
-	frame  []byte
 	result chan error
+	frame  []byte
 }
 
 // sender has one writer and a separate completion for every accepted frame.
 // Producers give it owned bytes and wait on their own result, never a shared one.
 type sender struct {
 	conn     net.Conn
-	queue    []sendJob
+	terminal error
 	wake     chan struct{}
 	done     chan struct{}
-	terminal error
+	queue    []sendJob
 	mu       sync.Mutex
 }
 
