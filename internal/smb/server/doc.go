@@ -60,6 +60,7 @@ type Options struct {
 // The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
 type Server struct {
 	shutdownErr   error
+	activeOpens   map[uint64]*openUses
 	handlers      map[wire.Command]handler
 	connections   map[*connection]struct{}
 	listeners     map[*ownedListener]struct{}
@@ -67,6 +68,7 @@ type Server struct {
 	options       Options
 	workers       sync.WaitGroup
 	mu            sync.Mutex
+	openMu        sync.Mutex
 	nextSessionID uint64
 	nextTreeID    uint32
 	stopping      bool
