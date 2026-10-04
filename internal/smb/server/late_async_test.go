@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -129,7 +130,10 @@ func TestLateAsyncCompletionDuringShutdown(t *testing.T) {
 
 func testLateAsyncShutdown(t *testing.T, deadline bool) {
 	t.Helper()
-	server, err := New(testOptions(t))
+	options := testOptions(t)
+	logs := make(asyncReplyErrors, 4)
+	options.Logger = slog.New(logs)
+	server, err := New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,10 +190,14 @@ func testLateAsyncShutdown(t *testing.T, deadline bool) {
 	if conn.writes.Load() != writes || conn.lateWrites.Load() != 0 {
 		t.Fatal("late work wrote a reply after shutdown closed the transport")
 	}
+	assertNoAsyncFailure(t, logs)
 }
 
 func TestLateAsyncCompletionAfterConnectionClose(t *testing.T) {
-	server, err := New(testOptions(t))
+	options := testOptions(t)
+	logs := make(asyncReplyErrors, 4)
+	options.Logger = slog.New(logs)
+	server, err := New(options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,5 +236,15 @@ func TestLateAsyncCompletionAfterConnectionClose(t *testing.T) {
 	}
 	if conn.writes.Load() != writes || conn.lateWrites.Load() != 0 {
 		t.Fatalf("late reply attempted a write: before %d, after %d, closed writes %d", writes, conn.writes.Load(), conn.lateWrites.Load())
+	}
+	assertNoAsyncFailure(t, logs)
+}
+
+func assertNoAsyncFailure(t *testing.T, logs asyncReplyErrors) {
+	t.Helper()
+	select {
+	case err := <-logs:
+		t.Fatalf("late result reached the stopped sender: %v", err)
+	default:
 	}
 }
