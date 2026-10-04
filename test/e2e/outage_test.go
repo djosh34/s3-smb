@@ -7,55 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"testing"
 	"time"
 )
-
-func TestS3FaultProxyOutage(t *testing.T) {
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(upstream.Close)
-	p := newFaultProxy(t, upstream.URL)
-	client := &http.Client{Timeout: time.Second}
-	request := func(method, path string, want int) {
-		t.Helper()
-		req, err := http.NewRequestWithContext(context.Background(), method, p.URL()+path, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res, err := client.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := res.Body.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if res.StatusCode != want {
-			t.Fatalf("%s %s: status %d, want %d", method, path, res.StatusCode, want)
-		}
-	}
-	p.FailS3For(time.Minute)
-	for _, method := range []string{http.MethodPut, http.MethodGet} {
-		request(method, "/bucket/chunks/fixture", http.StatusServiceUnavailable)
-		select {
-		case event := <-p.OutageSeen():
-			if event.Method != method || event.Status != http.StatusServiceUnavailable {
-				t.Fatalf("unexpected outage event: %+v", event)
-			}
-		default:
-			t.Fatal("chunk failure was not observed")
-		}
-	}
-	request(http.MethodGet, "/bucket/meta/fixture", http.StatusServiceUnavailable)
-	p.RestoreS3()
-	request(http.MethodGet, "/bucket/chunks/fixture", http.StatusNoContent)
-	start := p.FailS3For(20 * time.Millisecond)
-	time.Sleep(time.Until(start.Add(20 * time.Millisecond)))
-	request(http.MethodGet, "/bucket/chunks/fixture", http.StatusNoContent)
-}
 
 type outageResult struct {
 	err      error

@@ -30,10 +30,12 @@ type Event struct {
 
 // Fault applies to matching requests until SetFault replaces it. Empty Method
 // and PathContains match every request. HeaderDelay precedes response headers;
-// BodyDelay precedes each body read. Status injects an S3 XML error without
-// forwarding; Code defaults to ServiceUnavailable. For throttling, use status
-// 503 and code SlowDown. CutBody sends at most CutAfter bytes but leaves the
-// original Content-Length intact, so callers can detect a truncated object.
+// BodyDelay applies before every body read, not just the first byte. Total delay
+// grows with body size and depends on the reverse proxy's read buffer (currently
+// 32 KiB). Status injects an S3 XML error without forwarding; Code defaults to
+// ServiceUnavailable. For throttling, use status 503 and code SlowDown. CutBody
+// sends at most CutAfter bytes and aborts a shortened response, including chunked
+// responses. It leaves the original Content-Length intact.
 // A request snapshots its fault, so replacement affects only later requests.
 type Fault struct {
 	Method       string
@@ -161,9 +163,11 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			fault = Fault{}
 		}
 		if fault.Status != 0 {
-			if p.wait(r.Context(), fault.HeaderDelay) == nil {
-				p.writeError(w, fault.Status, fault.Code)
+			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
+				p.writeError(w, http.StatusBadGateway, "ServiceUnavailable")
+				return
 			}
+			p.writeError(w, fault.Status, fault.Code)
 			return
 		}
 		// A per-request copy avoids sharing ModifyResponse state across requests.
@@ -310,16 +314,27 @@ type faultBody struct {
 }
 
 func (body *faultBody) Read(dst []byte) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	if err := body.proxy.wait(body.ctx, body.delay); err != nil {
+		return 0, err
+	}
 	if body.cut {
 		if body.remaining == 0 {
-			return 0, io.EOF
+			// Distinguish a real end from a cut, even without Content-Length.
+			// A non-EOF error makes ReverseProxy abort instead of writing the
+			// terminating chunk that would turn the cut into a successful read.
+			var probe [1]byte
+			n, err := body.ReadCloser.Read(probe[:])
+			if n != 0 {
+				return 0, io.ErrUnexpectedEOF
+			}
+			return 0, err
 		}
 		if int64(len(dst)) > body.remaining {
 			dst = dst[:body.remaining]
 		}
-	}
-	if err := body.proxy.wait(body.ctx, body.delay); err != nil {
-		return 0, err
 	}
 	n, err := body.ReadCloser.Read(dst)
 	if body.cut {
