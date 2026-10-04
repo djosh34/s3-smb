@@ -107,6 +107,33 @@ func TestStreamAcceptsPeerClose(t *testing.T) {
 	}
 }
 
+func TestStreamRejectsTruncatedReply(t *testing.T) {
+	response := echo(t, 1)
+	response.Header.Flags = wire.FlagResponse
+	reply := streamFrame(t, response)
+	for _, test := range []struct {
+		name   string
+		length int
+	}{
+		{name: "prefix", length: 2},
+		{name: "body", length: len(reply) - 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			conn := streamPeer(t, func(peer net.Conn) error {
+				if _, err := readFrame(peer, smb.CreditUnit); err != nil {
+					return err
+				}
+				_, err := io.Copy(peer, bytes.NewReader(reply[:test.length]))
+				return err
+			})
+			_, closed, err := feedStream(conn, streamFrame(t, echo(t, 1)), streamBound)
+			if !errors.Is(err, io.ErrUnexpectedEOF) || closed {
+				t.Fatalf("truncated reply: closed %v, error %v", closed, err)
+			}
+		})
+	}
+}
+
 func TestStreamAlreadyClosedPeer(t *testing.T) {
 	local, remote := net.Pipe()
 	if err := remote.Close(); err != nil {

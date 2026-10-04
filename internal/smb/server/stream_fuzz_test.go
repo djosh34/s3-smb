@@ -186,5 +186,5 @@ func exchangeStreamFrame(conn net.Conn, frame []byte, wantReply bool) ([]wire.Me
 }
 
 func streamPeerClosed(err error) bool {
-	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed)
+	return errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed)
 }
