@@ -191,17 +191,17 @@ func validateNTLMFields(result *ntlmMessage) error {
 		}
 		// NTLMv1, empty responses and short v2 blobs are not accepted.
 		response := result.fields[1]
-		if len(response) < 16+28+4+4 {
+		if len(response) < 16+28+4 {
 			return errToken
 		}
 		result.blob = response[16:]
 		blob := result.blob
-		if blob[0] != 1 || blob[1] != 1 || !allZero(blob[len(blob)-4:]) {
+		if blob[0] != 1 || blob[1] != 1 {
 			return errToken
 		}
 		// MS-NLMP 2.2.2.7 requires ignoring Reserved1, Reserved2 and
 		// Reserved3 on receipt. They remain covered by the proof and MIC.
-		av, err := decodeAV(blob[28 : len(blob)-4])
+		av, err := decodeResponseAV(blob[28:])
 		result.av = av
 		return err
 	default:
@@ -210,6 +210,17 @@ func validateNTLMFields(result *ntlmMessage) error {
 }
 
 func decodeAV(data []byte) (map[uint16][]byte, error) {
+	return decodeAVTail(data, 0)
+}
+
+// MS-NLMP 2.2.2.7 ends AvPairs at MsvAvEOL. The response algorithm in
+// 3.3.2 adds a zero word after it. Validate either structure's exact end,
+// without stripping bytes from the blob covered by the proof and MIC.
+func decodeResponseAV(data []byte) (map[uint16][]byte, error) {
+	return decodeAVTail(data, 4)
+}
+
+func decodeAVTail(data []byte, trailer int) (map[uint16][]byte, error) {
 	pairs := make(map[uint16][]byte)
 	for len(data) >= 4 {
 		id := littleEndian.Uint16(data)
@@ -220,7 +231,7 @@ func decodeAV(data []byte) (map[uint16][]byte, error) {
 		value := data[4 : 4+length]
 		data = data[4+length:]
 		if id == avEnd {
-			if length != 0 || len(data) != 0 {
+			if length != 0 || len(data) != 0 && (len(data) != trailer || !allZero(data)) {
 				return nil, errToken
 			}
 			return pairs, nil

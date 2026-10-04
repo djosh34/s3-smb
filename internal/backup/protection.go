@@ -58,6 +58,10 @@ func (p *Protection) protect(snapshot time.Time) error {
 	if p.stopped || snapshot.After(now) || !now.Before(snapshot.Add(p.interval+p.budget)) {
 		return ErrUnprotected
 	}
+	// A late backup must not revive a window that already expired.
+	if !p.snapshot.IsZero() && (now.Before(p.snapshot) || !now.Before(p.snapshot.Add(p.interval+p.budget))) {
+		return ErrUnprotected
+	}
 	p.snapshot = snapshot
 	return nil
 }

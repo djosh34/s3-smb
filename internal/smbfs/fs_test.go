@@ -82,12 +82,18 @@ func newFixture(t *testing.T, capacity uint64) *fixture {
 
 func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool, trashDays int) *fixture {
 	t.Helper()
+	return fixtureAtMode(t, dir, capacity, initialize, trashDays, false)
+}
+
+func fixtureAtMode(t *testing.T, dir string, capacity uint64, initialize bool, trashDays int, readOnly bool) *fixture {
+	t.Helper()
 	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &testStore{ObjectStorage: blob, started: make(chan struct{}, 1), resume: make(chan struct{})}
 	mc := meta.DefaultConf()
+	mc.ReadOnly = readOnly
 	mc.NoBGJob = true
 	mc.MaxDeletes = 0
 	mc.Retries = 0
@@ -126,7 +132,7 @@ func fixtureAt(t *testing.T, dir string, capacity uint64, initialize bool, trash
 	if err != nil {
 		t.Fatal(err)
 	}
-	adapter, err := New(Options{Filesystem: native, Barrier: barrier, Capacity: capacity, MetadataPath: database, Config: config, Store: chunks})
+	adapter, err := New(Options{Filesystem: native, Barrier: barrier, Capacity: capacity, ReadOnly: readOnly, MetadataPath: database, Config: config, Store: chunks})
 	if err != nil {
 		t.Fatal(err)
 	}
