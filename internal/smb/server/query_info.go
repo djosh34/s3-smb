@@ -229,7 +229,11 @@ func encodeStreamInfo(ctx context.Context, request RequestContext, open state.Op
 		}
 	}
 	entries := []wire.FileStreamEntry{{Name: "::$DATA", Size: base.Size, AllocationSize: base.AllocationSize}}
+	negotiated := request.aaplNegotiated()
 	for _, stream := range streams {
+		if negotiated && stream.Size == 0 {
+			continue
+		}
 		entries = append(entries, wire.FileStreamEntry{Name: ":" + stream.Name + ":$DATA", Size: stream.Size, AllocationSize: stream.AllocationSize})
 	}
 	return wire.EncodeFileStreamInformation(wire.FileStreamInformation{Entries: entries})

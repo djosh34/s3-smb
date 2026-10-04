@@ -159,6 +159,9 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
+	if status = streamOpenStatus(request.aaplNegotiated(), create, resolved); status != smb.StatusSuccess {
+		return reply{status: status}, nil
+	}
 	if !resolved.Exists {
 		kind := smb.KindFile
 		if create.Options&fileDirectoryFile != 0 {
