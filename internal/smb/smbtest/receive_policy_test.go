@@ -1,6 +1,7 @@
 package smbtest_test
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -76,6 +77,38 @@ func checkNotificationProtection(t *testing.T, cipher, signing uint16, required 
 	}
 	if err != nil || got != want {
 		t.Fatalf("lease break = %+v, error = %v", got, err)
+	}
+}
+
+func TestVoluntaryGCMUnsignedNotificationExceptionIsNarrow(t *testing.T) {
+	for _, test := range []struct {
+		change func(*wire.Message)
+		name   string
+	}{
+		{func(m *wire.Message) { m.Header.Command = wire.Echo }, "command"},
+		{func(m *wire.Message) { m.Header.MessageID = 5 }, "message ID"},
+		{func(m *wire.Message) { m.Header.SessionID = reconnectSessionID }, "session ID"},
+		{func(m *wire.Message) { m.Header.Flags = 0 }, "response flag"},
+		{func(m *wire.Message) { m.Header.Flags |= wire.FlagAsync }, "async flag"},
+		{func(m *wire.Message) { m.Header.Status = smb.StatusPending }, "status"},
+		{func(m *wire.Message) { m.Body = m.Body[:3] }, "short body"},
+		{func(m *wire.Message) { m.Body = append(m.Body, 0) }, "extra body"},
+		{func(m *wire.Message) { binary.LittleEndian.PutUint16(m.Body, 36) }, "structure size"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			message, _ := breakMessage(t)
+			test.change(&message)
+			client, _ := receivePolicyClient(t, smb.CipherAES128GCM, smb.SigningGMAC, false, func(peer net.Conn, _ *crypt.Protector) error {
+				payload, err := peerEncode(message, nil, false)
+				if err != nil {
+					return err
+				}
+				return writePayload(peer, payload)
+			})
+			if _, err := client.WaitLeaseBreak(t.Context()); err == nil {
+				t.Fatal("invalid unsigned notification accepted")
+			}
+		})
 	}
 }
 

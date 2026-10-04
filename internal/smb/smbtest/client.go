@@ -48,8 +48,8 @@ type Client struct {
 	protectionMu      sync.RWMutex
 	sessionID         uint64
 	closeOnce         sync.Once
-	encrypted         bool
-	requireEncryption bool
+	encrypted         bool // Outgoing requests and their replies use GCM.
+	requireEncryption bool // SESSION_SETUP requires GCM for notifications too.
 }
 
 type pendingReply struct {
