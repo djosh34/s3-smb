@@ -42,7 +42,13 @@ if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFI
 case "$command $*" in
   'python3 '*) [[ ${PYTHONDONTWRITEBYTECODE:-} == 1 ]] ;;
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
-    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
+    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]]
+    [[ $S3_SMB_TEST_ARTIFACTS == */default ]] ;;
+  'go test -race -tags smbnext '*)
+    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb-race ]]
+    [[ $S3_SMB_TEST_ARTIFACTS == */smbnext-race ]]
+    [[ ${GORACE:-} == halt_on_error=1 ]] ;;
+  'chmod '*) /usr/bin/chmod "$@" ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\nFuzz\nFuzz日本\n'; fi
@@ -56,7 +62,7 @@ case "$command $*" in
 esac
 STUB
 chmod +x "$fixture/bin/stub"
-for command in go gofmt docker sleep python3 golangci-lint shellcheck actionlint; do
+for command in go gofmt docker sleep python3 golangci-lint shellcheck actionlint chmod; do
   ln -s stub "$fixture/bin/$command"
 done
 export PATH="$fixture/bin:$PATH"
@@ -245,26 +251,51 @@ wait "$second"
 first_id=$(grep 'network create' "$fixture/first" | awk '{print $5}')
 second_id=$(grep 'network create' "$fixture/second" | awk '{print $5}')
 [[ -n $first_id && -n $second_id && $first_id != "$second_id" ]] || fail 'parallel names collide'
-# The internal Docker step builds a normal daemon and race-tests every package.
-: > "$CHECK_TEST_COMMANDS"
+# The internal step keeps the default run and adds a race-enabled smbnext daemon.
 export S3_SMB_CHECK_MODE=gate S3_SMB_E2E_ENDPOINT=http://minio:9000
 export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
-touch "$fixture/logs/daemon.log"
-chmod 600 "$fixture/logs/daemon.log"
 export CHECK_TEST_SOURCE="$fixture/repo"
+# An inherited setting must not disable daemon race failures.
+export GORACE=halt_on_error=0
+mkdir -p "$fixture/logs/default" "$fixture/logs/smbnext-race"
+touch "$fixture/logs/default/daemon.log" "$fixture/logs/smbnext-race/daemon.log"
+chmod 600 "$fixture/logs/default/daemon.log" "$fixture/logs/smbnext-race/daemon.log"
 run_internal() {
+  : > "$CHECK_TEST_COMMANDS"
   bash -c 'cd() { builtin cd "$CHECK_TEST_SOURCE"; }; source "$1"' \
     _ "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1
 }
 run_internal
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
-[[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
-export CHECK_TEST_FAIL='go build -buildvcs=false -o /tmp/s3-smb .'
-if run_internal; then fail 'internal build failure ignored'; fi
+contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-race .'
+contains 'go [gate] test -race -tags smbnext -shuffle=on -count=1 -timeout=30m ./test/e2e'
+absent ' -run '
+for build in default smbnext-race; do
+  [[ $(stat -c %a "$fixture/logs/$build/daemon.log") == 644 ]] || fail "$build logs not made readable"
+done
+export S3_SMB_CHECK_MODE=pr
+run_internal
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=30m ./...'
+contains 'go [pr] test -race -tags smbnext -shuffle=on -count=1 -timeout=30m -run ^(TestSMBToS3Smoke|TestFilesystemOperations|TestRecovery)$ ./test/e2e'
+
+# Every build and test failure, including a daemon race, fails the internal step.
+for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
+  'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
+  'go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-race .' \
+  'go test -race -tags smbnext -shuffle=on -count=1 -timeout=30m -run ^(TestSMBToS3Smoke|TestFilesystemOperations|TestRecovery)$ ./test/e2e'; do
+  export CHECK_TEST_FAIL=$command
+  if run_internal; then fail "internal failure ignored: $command"; fi
+  if [[ $command != 'go test -race -tags smbnext '* ]]; then
+    absent 'go [pr] test -race -tags smbnext '
+  fi
+done
 unset CHECK_TEST_FAIL
-export S3_SMB_TEST_ARTIFACTS="$fixture/missing-logs"
+export CHECK_TEST_FAIL="chmod -R a+rX $fixture/logs"
 if run_internal; then fail 'log permission failure ignored'; fi
+unset CHECK_TEST_FAIL
+export S3_SMB_TEST_ARTIFACTS="$fixture/logs/default/daemon.log"
+if run_internal; then fail 'log directory creation failure ignored'; fi
 export S3_SMB_TEST_ARTIFACTS="$fixture/logs"
 for variable in S3_SMB_CHECK_MODE S3_SMB_E2E_ENDPOINT S3_SMB_TEST_ARTIFACTS; do
   if env -u "$variable" bash "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1; then
