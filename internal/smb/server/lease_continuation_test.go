@@ -82,6 +82,17 @@ func TestQueuedLeaseBreakCloseCompletesBothWaiters(t *testing.T) {
 	if status != smb.StatusSuccess {
 		t.Fatalf("created lease open: %#x", status)
 	}
+	path, pathErr := server.options.Storage.PathOf(holder.ctx, open.Object.Inode)
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	selected, lookupErr := server.options.Storage.Lookup(holder.ctx, path)
+	if lookupErr != nil {
+		t.Fatal(lookupErr)
+	}
+	if !selected.Exists || selected.Object != open.Object {
+		t.Fatalf("incoherent CLOSE fixture: open %+v, selected %+v", open.Object, selected.Object)
+	}
 	originalDone := startServerBreak(holder.ctx, server, open, 3)
 	if _, err := holder.client.WaitLeaseBreak(holder.ctx); err != nil {
 		t.Fatal(err)
