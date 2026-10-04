@@ -15,8 +15,12 @@ func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 	if !filepath.IsAbs(metadataPath) {
 		return nil, fmt.Errorf("metadata path must be absolute")
 	}
-	info, err := os.Stat(filepath.Clean(metadataPath))
+	root, err := os.OpenRoot(filepath.Dir(metadataPath))
 	if err != nil {
+		return nil, err
+	}
+	info, statErr := root.Stat(filepath.Base(metadataPath))
+	if err = errors.Join(statErr, root.Close()); err != nil {
 		return nil, err
 	}
 	if !info.Mode().IsRegular() {
@@ -26,28 +30,38 @@ func NewMetadataBarrier(metadataPath string) (MetadataBarrier, error) {
 }
 
 func (b *diskBarrier) Commit(ctx context.Context, full bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// JuiceFS commits each SQLite transaction before returning. Its connection
 	// hook enables fullfsync and checkpoint_fullfsync, including checkpoints that
 	// remove the WAL while this barrier runs. Sync WAL first, then database and
 	// directory so already committed transactions and their names are durable.
-	if err := syncPath(ctx, b.path+"-wal", full, true); err != nil {
-		return err
-	}
-	if err := syncPath(ctx, b.path, full, false); err != nil {
-		return err
-	}
-	dir, err := os.Open(filepath.Dir(b.path))
+	root, err := os.OpenRoot(filepath.Dir(b.path))
 	if err != nil {
 		return err
 	}
-	return errors.Join(dir.Sync(), dir.Close(), ctx.Err())
+	name := filepath.Base(b.path)
+	err = syncPath(ctx, root, name+"-wal", full, true)
+	if err == nil {
+		err = syncPath(ctx, root, name, full, false)
+	}
+	if err == nil {
+		dir, openErr := root.Open(".")
+		if openErr != nil {
+			err = openErr
+		} else {
+			err = errors.Join(dir.Sync(), dir.Close())
+		}
+	}
+	return errors.Join(err, root.Close(), ctx.Err())
 }
 
-func syncPath(ctx context.Context, path string, full, optional bool) error {
+func syncPath(ctx context.Context, root *os.Root, name string, full, optional bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	file, err := os.OpenFile(filepath.Clean(path), os.O_RDWR, 0)
+	file, err := root.OpenFile(name, os.O_RDWR, 0)
 	if optional && errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

@@ -103,7 +103,11 @@ func crashWriter(t *testing.T, dir string, mode smb.SyncMode) {
 	if err := f.fs.Flush(t.Context(), y, mode); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Clean(filepath.Join(dir, "flushed")), []byte("ready"), 0o600); err != nil {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = errors.Join(root.WriteFile("flushed", []byte("ready"), 0o600), root.Close()); err != nil {
 		t.Fatal(err)
 	}
 	<-t.Context().Done()
