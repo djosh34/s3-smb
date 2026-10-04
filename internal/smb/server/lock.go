@@ -15,25 +15,29 @@ const (
 	lockFailImmediately uint32 = 0x10
 )
 
-func handleLock(_ context.Context, request RequestContext, message wire.Message) (reply, error) {
+func handleLock(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {
 	body, err := wire.DecodeLockRequest(message)
 	if err != nil {
 		return reply{status: smb.StatusInvalidParameter}, nil
 	}
-	id, status := request.FileID(body.ID)
+	open, release, status := useOpen(request, body.ID)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil
 	}
-	result := reply{fileID: id}
-	open, release, status := useOpen(request, id)
+	defer release()
+	result := reply{fileID: wire.FileID(open.ID)}
+	ranges, unlock, status := lockRanges(body.Elements)
 	if status != smb.StatusSuccess {
 		result.status = status
 		return result, nil
 	}
-	defer release()
-	ranges, unlock, status := lockRanges(body.Elements)
-	if status != smb.StatusSuccess {
-		result.status = status
+	attr, err := request.Storage.GetAttr(ctx, open.Object)
+	if err != nil {
+		return result, err
+	}
+	if attr.Kind == smb.KindDirectory {
+		// MS-FSA 2.1.5.7 forbids byte-range locks on directory streams.
+		result.status = smb.StatusInvalidParameter
 		return result, nil
 	}
 	// The table keys ranges by the open's complete ObjectKey and applies the
