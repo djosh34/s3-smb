@@ -60,7 +60,7 @@ func checkLateSessionCleanup(t *testing.T, command wire.Command, cipher, signing
 	release := newAsyncGate()
 	canceled := make(chan struct{})
 	closedWhileActive := make(chan int32, 1)
-	body, err := wire.EncodeReadResponse(wire.ReadResponse{Data: []byte("late")})
+	body, err := wire.EncodeReadResponse(wire.ReadResponse{Data: []byte("L")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,7 +163,7 @@ func checkLateSessionReplies(ctx context.Context, t *testing.T, client *smbtest.
 				if err != nil {
 					t.Fatal(err)
 				}
-				if !bytes.Equal(read.Data, []byte("late")) {
+				if !bytes.Equal(read.Data, []byte("L")) {
 					t.Fatalf("late result changed: %q", read.Data)
 				}
 			}
