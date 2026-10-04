@@ -8,5 +8,6 @@ func commandHandlers() map[wire.Command]handler {
 		wire.Create:    handleCreate,
 		wire.Echo:      handleEcho,
 		wire.QueryInfo: handleQueryInfo,
+		wire.SetInfo:   handleSetInfo,
 	}
 }
