@@ -6,6 +6,8 @@ import "github.com/djosh34/s3-smb/internal/smb/wire"
 func commandHandlers() map[wire.Command]handler {
 	return map[wire.Command]handler{
 		wire.Create: handleCreate,
+		wire.Read:   handleRead,
+		wire.Write:  handleWrite,
 		wire.Echo:   handleEcho,
 	}
 }
