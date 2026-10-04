@@ -7,7 +7,8 @@
 // handlers are registered in handlers.go, one line per command. They resolve
 // request IDs with RequestContext.FileID and report the ID used or created in
 // reply.fileID. Compounds save that ID for the next related member. Handlers run
-// open-table CloseActions through RequestContext.Cleanup.
+// open-table CloseActions through RequestContext.Cleanup. A related command that
+// needs a FileId gets its failed predecessor's status without running its handler.
 // The server never closes the storage runtime. Tests use ServeConn over net.Pipe
 // without a listener or main wiring.
 package server
