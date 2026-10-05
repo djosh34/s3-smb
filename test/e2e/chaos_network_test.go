@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand/v2"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,8 +30,9 @@ func TestChaosSlowNetwork(t *testing.T) {
 	f := chaosFixture(t)
 	d := f.start()
 	proxy := f.networkProxy()
-	faults := startSchedule(t, rng, networkFaults(proxy, maxStall), clearNetworkFaults(proxy))
+	// Log in first: a long stall would outlast the login timeout.
 	share, disconnect := f.chaosShare(proxy.Address())
+	faults := startSchedule(t, rng, networkFaults(proxy, maxStall), clearNetworkFaults(proxy))
 	files := chaosFiles(rng, "slow-network", count, 2<<20)
 	writeFiles(t, share, files)
 	verifyFiles(t, share, files)
@@ -73,11 +75,15 @@ func cutWrite(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, n
 	}
 	cutAt := rng.IntN(len(data) / piece)
 	reached, acknowledged := make(chan struct{}), make(chan int, 1)
+	reach := sync.OnceFunc(func() { close(reached) })
 	go func() {
+		// A WRITE that fails before the cut point must not leave the test
+		// waiting.
+		defer reach()
 		written := 0
 		for ; written < len(data); written += piece {
 			if written == cutAt*piece {
-				close(reached)
+				reach()
 			}
 			if _, writeErr := file.WriteAt(data[written:written+piece], int64(written)); writeErr != nil {
 				break
@@ -88,13 +94,16 @@ func cutWrite(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, n
 	<-reached
 	cut(t, proxy, rng)
 	written := <-acknowledged
+	if written < cutAt*piece {
+		t.Fatalf("WRITE failed at %d before the cut", written)
+	}
 	share, disconnect := f.chaosShare(proxy.Address())
 	defer disconnect()
 	got, err := share.ReadFile(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) < written || !bytes.Equal(got, data[:len(got)]) {
+	if len(got) < written || len(got) > len(data) || !bytes.Equal(got, data[:len(got)]) {
 		t.Fatalf("after a cut at %d of %d acknowledged bytes the file holds %d bytes, not a prefix of the written data", cutAt*piece, written, len(got))
 	}
 	writeFile(t, share, name, data)
@@ -111,27 +120,36 @@ func cutRead(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, na
 		t.Fatal(err)
 	}
 	cutAt := rng.IntN(len(data) / piece)
-	reached, wrong := make(chan struct{}), make(chan error, 1)
+	reached, ended := make(chan struct{}), make(chan error, 1)
+	reach := sync.OnceFunc(func() { close(reached) })
 	go func() {
+		defer reach()
 		got := make([]byte, piece)
 		for offset := 0; offset < len(data); offset += piece {
 			if offset == cutAt*piece {
-				close(reached)
+				reach()
 			}
 			n, err := file.ReadAt(got, int64(offset))
 			if !bytes.Equal(got[:n], data[offset:offset+n]) {
-				wrong <- fmt.Errorf("READ at %d returned wrong bytes", offset)
+				ended <- fmt.Errorf("READ at %d returned wrong bytes", offset)
 				return
 			}
 			if err != nil && !errors.Is(err, io.EOF) {
-				break
+				// An error after the cut point is the cut.
+				if offset < cutAt*piece {
+					err = fmt.Errorf("READ at %d failed before the cut: %w", offset, err)
+				} else {
+					err = nil
+				}
+				ended <- err
+				return
 			}
 		}
-		wrong <- nil
+		ended <- nil
 	}()
 	<-reached
 	cut(t, proxy, rng)
-	if err := <-wrong; err != nil {
+	if err := <-ended; err != nil {
 		t.Fatal(err)
 	}
 	share, disconnect := f.chaosShare(proxy.Address())

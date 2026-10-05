@@ -18,6 +18,8 @@ func TestChaosS3Faults(t *testing.T) {
 		count = 24
 	}
 	f := chaosFixture(t)
+	// Startup stops on some S3 errors, and launchd starts it again.
+	f.keepAlive, f.startupTimeout = true, 2*time.Minute
 	proxy := f.newFaultProxy()
 	d := f.start()
 	faults := startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))

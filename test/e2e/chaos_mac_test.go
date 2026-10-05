@@ -144,8 +144,10 @@ func (m *rawMac) close(ctx context.Context, id wire.FileID) error {
 // TestChaosDurableReconnect cuts the Mac's connection at a random point of
 // writing a band with a durable handle. Inside the reconnect window, up to 30
 // seconds in the gate, the Mac reclaims the open and finishes the band. When
-// the outage outlasts the durable timeout, the reclaim fails and every
-// acknowledged write is still in the file.
+// the outage outlasts the window, the reclaim fails: every acknowledged write
+// is still in the file, earlier bands are intact and the next backup writes
+// the band. The server side of a lost window is an expired durable handle; the
+// macOS client's own 30 second limit needs a Mac.
 func TestChaosDurableReconnect(t *testing.T) {
 	rng := chaosRand(t)
 	rounds, window := 2, 3*time.Second
@@ -155,20 +157,22 @@ func TestChaosDurableReconnect(t *testing.T) {
 	f := chaosFixture(t)
 	d := f.start()
 	proxy := f.networkProxy()
+	bands := make(map[string][]byte)
 	for round := range rounds {
 		name := fmt.Sprintf("band-%d", round)
-		durableCut(t, f, proxy, rng, name+"-inside", 0, between(rng, 0, window))
+		durableCut(t, f, proxy, rng, bands, name+"-inside", 0, between(rng, 0, window))
 		// The Mac asks for a 2 second timeout, so the test need not wait out
 		// the default 2 minutes. The server expires opens every second.
-		durableCut(t, f, proxy, rng, name+"-beyond", 2000, between(rng, 4*time.Second, 6*time.Second))
+		durableCut(t, f, proxy, rng, bands, name+"-beyond", 2000, between(rng, 4*time.Second, 6*time.Second))
 	}
 	d.alive()
 }
 
 // durableCut writes a band through a durable handle with a timeout of timeout
 // milliseconds, zero for the default, cuts the connection after a random
-// number of pieces and reconnects after outage.
-func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, name string, timeout uint32, outage time.Duration) {
+// number of pieces and reconnects after outage. It checks and adds to bands,
+// the bands written so far.
+func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, bands map[string][]byte, name string, timeout uint32, outage time.Duration) {
 	t.Helper()
 	ctx := t.Context()
 	mac, err := f.rawLogin(proxy.Address(), 0)
@@ -185,11 +189,15 @@ func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand,
 	}
 	cutAt := rng.IntN(len(data) / piece)
 	reached, acknowledged := make(chan struct{}), make(chan int, 1)
+	reach := sync.OnceFunc(func() { close(reached) })
 	go func() {
+		// A WRITE that fails before the cut point must not leave the test
+		// waiting.
+		defer reach()
 		written := 0
 		for ; written < len(data); written += piece {
 			if written == cutAt*piece {
-				close(reached)
+				reach()
 			}
 			if mac.write(ctx, created.Reply.ID, written, data[written:written+piece]) != nil {
 				break
@@ -202,6 +210,9 @@ func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand,
 		t.Fatal(err)
 	}
 	written := <-acknowledged
+	if written < cutAt*piece {
+		t.Fatalf("WRITE failed at %d before the cut", written)
+	}
 	time.Sleep(outage)
 	proxy.Restore()
 
@@ -224,9 +235,14 @@ func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand,
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(got) < written || !bytes.Equal(got, data[:len(got)]) {
+		if len(got) < written || len(got) > len(data) || !bytes.Equal(got, data[:len(got)]) {
 			t.Fatalf("after the durable timeout the file holds %d bytes, not a prefix of the %d acknowledged bytes", len(got), written)
 		}
+		verifyFiles(t, share, bands)
+		// The next backup writes the band again.
+		writeFile(t, share, name, data)
+		bands[name] = data
+		verifyFiles(t, share, bands)
 		return
 	}
 	if status != smbproto.StatusSuccess {
@@ -241,7 +257,8 @@ func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand,
 	if err := errors.Join(resumed.flush(ctx, id), resumed.close(ctx, id)); err != nil {
 		t.Fatal(err)
 	}
-	verifyFiles(t, share, map[string][]byte{name: data})
+	bands[name] = data
+	verifyFiles(t, share, bands)
 }
 
 // TestChaosBadConnections opens connections that send garbage, stop in the
@@ -260,8 +277,11 @@ func TestChaosBadConnections(t *testing.T) {
 	writeFile(t, share, "readable.bin", chaosData(rng, 4<<20))
 	backedUp := make(chan struct{})
 	var bad sync.WaitGroup
+	// The bad connections end when the backup does, also when it fails.
+	defer bad.Wait()
+	defer close(backedUp)
 	for range count {
-		kind, garbage, delay := rng.IntN(4), chaosData(rng, 1+rng.IntN(8<<10)), between(rng, 0, 3*time.Second)
+		kind, garbage, delay := rng.IntN(4), chaosData(rng, 1+rng.IntN(8<<10)), between(rng, 0, time.Second)
 		bad.Go(func() {
 			time.Sleep(delay)
 			if err := misbehave(f, kind, garbage, backedUp); err != nil {
@@ -272,8 +292,6 @@ func TestChaosBadConnections(t *testing.T) {
 	files := chaosFiles(rng, "bad-connections", count, 4<<20)
 	writeFiles(t, share, files)
 	verifyFiles(t, share, files)
-	close(backedUp)
-	bad.Wait()
 	d.alive()
 }
 

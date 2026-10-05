@@ -168,8 +168,9 @@ nothing needs privileges. The gate runs more rounds and longer faults.
 `test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
 and file comes from that seed, so a run replays with
 `S3_SMB_CHAOS_SEED=<seed> scripts/check.sh`, or in CI with
-`gh workflow run check.yml -f chaos_seed=<seed>`. Timing still differs between
-runs. Restarts under S3 faults model launchd KeepAlive: startup stops on some
+`gh workflow run check.yml -f chaos_seed=<seed>`. Add `--gate` or
+`-f gate=true` to replay a gate run, which draws more rounds. Timing still
+differs between runs. Restarts under S3 faults model launchd KeepAlive: startup stops on some
 S3 errors, and the test starts the daemon again after a second.
 
 The script prints the directory that holds each daemon's stdout, stderr and

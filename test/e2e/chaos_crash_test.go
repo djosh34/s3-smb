@@ -15,7 +15,8 @@ import (
 
 // TestChaosKillRestart kills the daemon at a random point of a backup while
 // S3 and the network misbehave, and starts it again under the same faults.
-// Every flushed file must survive each kill. After the run, cold recovery on
+// Until the kill the backup must succeed, and every flushed file must survive
+// each kill. After the run, cold recovery on
 // a new Mac returns every file of the last metadata backup.
 func TestChaosKillRestart(t *testing.T) {
 	rng := chaosRand(t)
@@ -31,20 +32,33 @@ func TestChaosKillRestart(t *testing.T) {
 	network := f.networkProxy()
 	s3Schedule := startSchedule(t, rng, s3Faults(t, s3), clearS3Faults(t, s3))
 	networkSchedule := startSchedule(t, rng, networkFaults(network, 3*time.Second), clearNetworkFaults(network))
-	flushed := make(map[string][]byte)
+	share, disconnect := f.chaosShare(network.Address())
+	flushed := chaosFiles(rng, "baseline", 3, 1<<20)
+	writeFiles(t, share, flushed)
+	disconnect()
 	for round := range rounds {
 		// The kill ends this connection, so it is never logged off.
-		share, _ := f.chaosShare(network.Address())
-		files := chaosFiles(rng, fmt.Sprintf("kill-%d", round), 8, 4<<20)
-		synced := make(chan map[string][]byte, 1)
-		go func() { synced <- writeUntilKilled(share, files) }()
-		time.Sleep(between(rng, 500*time.Millisecond, 5*time.Second))
+		share, _ = f.chaosShare(network.Address())
+		files := chaosFiles(rng, fmt.Sprintf("kill-%d", round), 8, 2<<20)
+		ended := make(chan killedBackup, 1)
+		go func() { ended <- writeUntilFailure(share, files) }()
+		var backup killedBackup
+		select {
+		case backup = <-ended:
+			// Only the kill may stop the backup.
+			if backup.err != nil {
+				t.Fatalf("backup failed before the kill: %v", backup.err)
+			}
+		case <-time.After(between(rng, time.Second, 8*time.Second)):
+		}
 		sigkill(t, d)
-		done := <-synced
-		t.Logf("round %d: %d of %d files flushed before the kill", round, len(done), len(files))
-		maps.Copy(flushed, done)
+		if backup.synced == nil {
+			backup = <-ended
+		}
+		t.Logf("round %d: %d of %d files flushed before the kill", round, len(backup.synced), len(files))
+		maps.Copy(flushed, backup.synced)
 		d = f.start()
-		share, disconnect := f.chaosShare(network.Address())
+		share, disconnect = f.chaosShare(network.Address())
 		verifyFiles(t, share, flushed)
 		disconnect()
 	}
@@ -60,24 +74,32 @@ func TestChaosKillRestart(t *testing.T) {
 	recoverTwice(t, f, flushed)
 }
 
-// writeUntilKilled writes and flushes files in name order until a request
-// fails, and returns the files whose flush succeeded.
-func writeUntilKilled(share *smb.Share, files map[string][]byte) map[string][]byte {
-	synced := make(map[string][]byte)
+// killedBackup is what a backup flushed before it ended, and the error that
+// ended it.
+type killedBackup struct {
+	err    error
+	synced map[string][]byte
+}
+
+// writeUntilFailure writes and flushes files in name order until a request
+// fails.
+func writeUntilFailure(share *smb.Share, files map[string][]byte) killedBackup {
+	backup := killedBackup{synced: make(map[string][]byte)}
 	for _, name := range slices.Sorted(maps.Keys(files)) {
 		file, err := share.Create(name)
 		if err != nil {
-			return synced
+			backup.err = err
+			return backup
 		}
 		if _, err = file.Write(files[name]); err == nil {
 			err = file.Sync()
 		}
 		if err == nil {
-			synced[name] = files[name]
+			backup.synced[name] = files[name]
 		}
-		if errors.Join(err, file.Close()) != nil {
-			return synced
+		if backup.err = errors.Join(err, file.Close()); backup.err != nil {
+			return backup
 		}
 	}
-	return synced
+	return backup
 }

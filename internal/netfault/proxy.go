@@ -85,8 +85,9 @@ func (p *Proxy) SetShape(shape Shape) {
 	p.shape = shape
 }
 
-// Stall holds all forwarded data until duration has passed, without closing
-// connections. Calling it again replaces the deadline.
+// Stall holds data that arrives from now on until duration has passed,
+// without closing connections. Calling it again replaces the deadline for
+// later data; data already held keeps waiting.
 func (p *Proxy) Stall(duration time.Duration) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
