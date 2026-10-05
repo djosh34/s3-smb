@@ -14,7 +14,8 @@
   becomes the default.
 - `internal/juicefs`, `internal/smb-old/smb2`, `internal/thirdparty`: patched upstream
   code, described in [vendored source](vendored.md).
-- `internal/netfault`, `internal/s3fault`: TCP and S3 fault proxies for tests.
+- `internal/netfault`, `internal/s3fault`: TCP and S3 fault proxies for tests,
+  which cut, slow, stall and fail traffic.
 - `test/e2e`: tests that run the built binary against MinIO over SMB.
 - `test/macos`: the Time Machine test for GitHub's Mac runners.
 
@@ -152,6 +153,29 @@ and encryption, then each test in `test/e2e/smbtorture.allowlist` runs on its
 own, with a five-minute limit, and must report success. Every Samba connection
 uses the same client GUID, because the new server lets one client in at a
 time.
+
+That run also gets the chaos tests, `TestChaos*`, which skip without
+`S3_SMB_CHAOS_SEED`. They back up through S3 errors, throttling and slow or
+cut responses, a 5-minute S3 outage (10 seconds in PR mode), a slow, unsteady
+and stalling network, connections cut during reads and writes, durable
+reconnects inside and beyond the reconnect window, kills and restarts under
+faults with a cold recovery after them, and misbehaving connections next to
+the Mac. They check exactly the promises of "What survives which failure",
+"S3 outage a backup must survive" and "What reconnect promises". Network
+faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
+nothing needs privileges. The gate runs more rounds and longer faults.
+
+In gate mode the Docker step gives the old-server suite 60 minutes and the
+new server's `test/e2e` run 120 minutes, and the CI job 300 minutes, since
+each fuzz target also runs for a minute. PR mode keeps 30 and 60 minutes.
+
+`test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
+and file comes from that seed, so a run replays with
+`S3_SMB_CHAOS_SEED=<seed> scripts/check.sh`, or in CI with
+`gh workflow run check.yml -f chaos_seed=<seed>`. Add `--gate` or
+`-f gate=true` to replay a gate run, which draws more rounds. Timing still
+differs between runs. Restarts under S3 faults model launchd KeepAlive: startup stops on some
+S3 errors, and the test starts the daemon again after a second.
 
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker

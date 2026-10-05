@@ -1447,16 +1447,18 @@ func (m *baseMeta) GetAttr(ctx Context, inode Ino, attr *Attr) syscall.Errno {
 	defer m.timeit("GetAttr", time.Now())
 	var err syscall.Errno
 	if inode == RootInode || inode == TrashInode {
-		// doGetAttr could overwrite the `attr` after timeout
+		// doGetAttr could overwrite `a` and its result after timeout, so it
+		// writes neither `attr` nor `err`.
 		var a Attr
 		e := utils.WithTimeout(ctx, func(context.Context) error {
-			err = m.en.doGetAttr(ctx, inode, &a)
+			if st := m.en.doGetAttr(ctx, inode, &a); st != 0 {
+				return st
+			}
 			return nil
 		}, time.Millisecond*300)
-		if e == nil && err == 0 {
+		if e == nil {
 			*attr = a
 		} else {
-			err = 0
 			attr.Typ = TypeDirectory
 			attr.Mode = 0777
 			attr.Nlink = 2

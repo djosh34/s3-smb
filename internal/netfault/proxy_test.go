@@ -115,3 +115,34 @@ func TestDropAndRestore(t *testing.T) {
 		t.Fatalf("new connection after restore: %v", err)
 	}
 }
+
+func TestShapeSlowsBothDirections(t *testing.T) {
+	proxy := newProxy(t)
+	conn := dial(t, proxy)
+	proxy.SetShape(netfault.Shape{Delay: 100 * time.Millisecond, Rate: 40})
+	start := time.Now()
+	if err := echo(conn); err != nil {
+		t.Fatal(err)
+	}
+	// Each direction waits 100 ms plus 4 bytes at 40 bytes per second.
+	if took := time.Since(start); took < 400*time.Millisecond {
+		t.Fatalf("shaped echo took %v", took)
+	}
+	proxy.SetShape(netfault.Shape{})
+	if err := echo(conn); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStallHoldsDataWithoutCutting(t *testing.T) {
+	proxy := newProxy(t)
+	conn := dial(t, proxy)
+	start := time.Now()
+	proxy.Stall(300 * time.Millisecond)
+	if err := echo(conn); err != nil {
+		t.Fatalf("echo during a stall: %v", err)
+	}
+	if took := time.Since(start); took < 300*time.Millisecond {
+		t.Fatalf("stalled echo took %v", took)
+	}
+}

@@ -137,7 +137,7 @@ docker create --name "$id-runner" --network "$id" \
   -v "$root:/src:ro" -v "$logs:/artifacts" \
   -v s3-smb-test-gomod:/go/pkg/mod -v s3-smb-test-gobuild:/root/.cache/go-build \
   -e S3_SMB_E2E_ENDPOINT=http://minio:9000 -e S3_SMB_TEST_ARTIFACTS=/artifacts \
-  -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" \
+  -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" -e S3_SMB_CHAOS_SEED \
   "$image" bash /src/test/run-linux.sh >/dev/null
 containers=("$id-runner" "${containers[@]}")
 if ! docker start -a "$id-runner"; then

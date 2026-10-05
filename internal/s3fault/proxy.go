@@ -11,10 +11,12 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,11 +32,16 @@ type Event struct {
 
 // Fault applies to requests with a matching Method (empty matches all) until
 // SetFault replaces it. HeaderDelay holds the response headers. Status, if
-// set, answers with an S3 XML error after the delay without forwarding.
+// set, answers with an S3 XML error after the delay without forwarding; Code
+// is its S3 error code, ServiceUnavailable when empty. Cut forwards the
+// request, then sends the headers and half the body of the response and
+// closes the connection, or closes it at once when the body is empty.
 type Fault struct {
 	Method      string
+	Code        string
 	HeaderDelay time.Duration
 	Status      int
+	Cut         bool
 }
 
 type heldResponse struct {
@@ -48,6 +55,7 @@ type heldResponse struct {
 // also ends delays and holds.
 type Proxy struct {
 	server       *http.Server
+	target       *url.URL
 	transport    *http.Transport
 	next         *heldResponse
 	active       *heldResponse
@@ -80,7 +88,7 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("listen for fault proxy: %w", err)
 	}
 	p := &Proxy{
-		transport:    &http.Transport{Proxy: nil},
+		target: target, transport: &http.Transport{Proxy: nil},
 		metadataSeen: make(chan Event, 32), outageSeen: make(chan Event, 32),
 		done: make(chan struct{}), served: make(chan error, 1),
 		address: "http://" + listener.Addr().String(),
@@ -90,7 +98,7 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	proxy.Transport = p.transport
 	proxy.ErrorLog = log.New(io.Discard, "", 0)
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
-		writeError(w, http.StatusBadGateway)
+		writeError(w, http.StatusBadGateway, "")
 	}
 	p.server = &http.Server{Handler: p.handler(proxy), ReadHeaderTimeout: 5 * time.Second}
 	go func() { p.served <- p.server.Serve(listener) }()
@@ -121,6 +129,12 @@ func (p *Proxy) SetFault(fault Fault) error {
 	if fault.HeaderDelay < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
 		return errors.New("invalid S3 fault delay or error status")
 	}
+	if fault.Cut && fault.Status != 0 {
+		return errors.New("an S3 fault cannot both cut and answer with an error")
+	}
+	if fault.Code != "" && fault.Status == 0 {
+		return errors.New("an S3 error code needs an error status")
+	}
 	p.mu.Lock()
 	p.fault = fault
 	p.mu.Unlock()
@@ -138,12 +152,12 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			if meta {
 				notify(p.metadataSeen, r)
 			}
-			writeError(w, http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "")
 			return
 		}
 		if p.metadataFail.Load() && meta && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
 			notify(p.metadataSeen, r)
-			writeError(w, http.StatusServiceUnavailable)
+			writeError(w, http.StatusServiceUnavailable, "")
 			return
 		}
 		p.mu.Lock()
@@ -154,10 +168,17 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 		}
 		if fault.Status != 0 {
 			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
-				writeError(w, http.StatusBadGateway)
+				writeError(w, http.StatusBadGateway, "")
 				return
 			}
-			writeError(w, fault.Status)
+			writeError(w, fault.Status, fault.Code)
+			return
+		}
+		if fault.Cut {
+			if err := p.cut(w, r, fault.HeaderDelay); err != nil {
+				// The caller sees the cut either way.
+				log.Printf("s3 fault proxy: cut response: %v", err)
+			}
 			return
 		}
 		// A per-request copy avoids sharing ModifyResponse state across requests.
@@ -173,19 +194,58 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	})
 }
 
-// writeError answers with an S3 XML error with code ServiceUnavailable.
-func writeError(w http.ResponseWriter, status int) {
+// writeError answers with an S3 XML error with code, ServiceUnavailable when
+// empty.
+func writeError(w http.ResponseWriter, status int, code string) {
+	if code == "" {
+		code = "ServiceUnavailable"
+	}
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 	body := struct {
 		XMLName xml.Name `xml:"Error"`
 		Code    string   `xml:"Code"`
 		Message string   `xml:"Message"`
-	}{Code: "ServiceUnavailable", Message: "Injected S3 fault"}
+	}{Code: code, Message: "Injected S3 fault"}
 	if err := xml.NewEncoder(w).Encode(body); err != nil {
 		// Encoding only strings fails only when the client stops reading.
 		log.Printf("s3 fault proxy: write injected error: %v", err)
 	}
+}
+
+// cut forwards r and lets half of the response through after delay. It always
+// ends by closing the connection.
+func (p *Proxy) cut(w http.ResponseWriter, r *http.Request, delay time.Duration) error {
+	err := p.forwardHalf(w, r, delay)
+	conn, _, hijackErr := http.NewResponseController(w).Hijack()
+	if hijackErr != nil {
+		return errors.Join(err, hijackErr)
+	}
+	return errors.Join(err, conn.Close())
+}
+
+func (p *Proxy) forwardHalf(w http.ResponseWriter, r *http.Request, delay time.Duration) error {
+	out := r.Clone(r.Context())
+	out.RequestURI = ""
+	out.URL.Scheme, out.URL.Host = p.target.Scheme, p.target.Host
+	res, err := p.transport.RoundTrip(out)
+	if err != nil {
+		return err
+	}
+	body, err := io.ReadAll(res.Body)
+	if err = errors.Join(err, res.Body.Close(), p.wait(r.Context(), delay)); err != nil {
+		return err
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	maps.Copy(w.Header(), res.Header)
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(res.StatusCode)
+	if _, err = w.Write(body[:len(body)/2]); err != nil {
+		return err
+	}
+	return http.NewResponseController(w).Flush()
 }
 
 // notify never blocks, so observation cannot stall an S3 caller.
