@@ -43,6 +43,9 @@ func TestSambaInterop(t *testing.T) {
 		"//" + host + "/TimeMachine", "-p", port, "-A", auth,
 		"--use-kerberos=off", "--client-protection=encrypt",
 		"--option=client min protocol=SMB3_11", "--option=client max protocol=SMB3_11",
+		// The server lets one client in at a time. Every connection uses the
+		// same client GUID, like the connections of one Mac.
+		"--option=libsmb:client_guid=4d616300-0000-0000-0000-000000000000",
 	}
 	// quit authenticates and connects to the share, then sends no file requests.
 	if _, err := samba(t, "smbclient", args, "-c", "quit"); err != nil {
