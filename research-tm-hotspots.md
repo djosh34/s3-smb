@@ -245,7 +245,7 @@ Bytes in scratch at the same moment (MiB). p99 is over time: the level that is e
 | inc5 | 90 | 64 | 90 | 64 | 19:41:54 |
 | harness, between backups | 56 | 0 | 56 | 0 | 19:43:08 |
 
-- **The peak is the bulk copy of the first backup.** From 19:19:39 to 19:20:06 macOS wrote 1,140 MiB to bands without any band FLUSH, about 42 MiB/s for 27 seconds. Then it FLUSHed the bands one at a time, 2 to 5 seconds apart, so the later bands waited longer. At the peak, 7 bands (`bands/6` to `bands/c`) held 141 dirty chunks, all with real data. **M** for the writes and FLUSHes, **C** for the bytes.
+- **The peak is the bulk copy of the first backup.** From 19:19:39 to 19:20:06 macOS wrote 1,140 MiB to bands without any band FLUSH, about 42 MiB/s for 27 seconds. Then it FLUSHed the bands one at a time, 2 to 5 seconds apart, so the later bands waited longer. At the peak, 7 bands (`bands/6` to `bands/c`) held about 150 dirty chunks, almost all with real data. **M** for the writes and FLUSHes, **C** for the bytes.
 - **Sparse zeros only help during the APFS erase.** There it cuts the peak from 248 MiB to 22 MiB. In the copy phase all dirty chunks hold data, so it saves 8 MiB.
 - **In incrementals, scratch stays under 360 MiB.** The largest is inc2, which copied 500 MiB of new files. Hot-spot chunks add little, because they are FLUSHed within seconds.
 - **The peak follows the data written between FLUSHes, not the tree size.** Here that was 27 seconds at 42 MiB/s. A faster link or disk, or a client that FLUSHes less often, would give a higher peak. A first backup of a real Mac may write for longer between FLUSHes. This run does not show an upper limit. **I**
