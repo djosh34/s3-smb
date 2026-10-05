@@ -35,7 +35,8 @@ The proof is limited. All runs came from one GitHub runner, against one region (
 | [37371925322](https://github.com/djosh34/s3-smb/actions/runs/37371925322) | all | 22,910 | 13,021 | 0 | 11m55s |
 | [37373418723](https://github.com/djosh34/s3-smb/actions/runs/37373418723) | `newest_copy`, `delete_overwritten` ×1000 with a version check, `if_none_match` | 8,966 | 4,601 | 0 | 6m20s |
 | [37374220252](https://github.com/djosh34/s3-smb/actions/runs/37374220252) | `versions_paging` | 48 | 1 | 0 | under 1m |
-| **Total** | | **31,924** | **17,623** | **0** | |
+| [37376054883](https://github.com/djosh34/s3-smb/actions/runs/37376054883) | `conditional_full`, see [Conditional requests](#conditional-requests) | 267 | 1 | 0 | under 1m |
+| **Total** | | **32,191** | **17,624** | **0** | |
 
 Requests count every HTTP attempt, retries included. No request failed in any run, and no retry happened (**measured**).
 
@@ -83,12 +84,79 @@ So B2 marks the first entry of a key on each page as latest. The delete markers 
 
 ## For the record
 
-- **Conditional writes** (**measured**): `PutObject` with `If-None-Match: *` returns `501 NotImplemented`, on a new key, an existing key and a deleted key. `If-Match` with the right or a wrong ETag also returns `501`. The object is not written: in all 10 tries the key did not exist after the conditional PUT. B2 rejects these headers instead of ignoring them. This fits [#578](https://github.com/djosh34/s3-smb/issues/578): the design uses no conditional writes. Backblaze's PutObject page does not list these headers (**documented**).
+- **Conditional writes** (**measured**): `PutObject` with `If-None-Match: *` returns `501 NotImplemented`, on a new key, an existing key and a deleted key. `If-Match` with the right or a wrong ETag also returns `501`. The object is not written: in all 10 tries the key did not exist after the conditional PUT. B2 rejects these headers instead of ignoring them. This fits [#578](https://github.com/djosh34/s3-smb/issues/578): the design uses no conditional writes. Backblaze's PutObject page does not list these headers (**documented**). The full test is in [Conditional requests](#conditional-requests).
 - **Parallel PUTs to one key** (**measured**): all reads agreed on one body in 50 of 50 rounds. The winner was the PUT whose reply reached the client last in only 9 of 50 rounds. The client cannot tell which parallel PUT wins. The engine never uploads one key twice at a time ([#572](https://github.com/djosh34/s3-smb/issues/572) write path), so this is fine.
 - **LastModified on late copies**: in 20 of 40 late cases the older copy had the later LastModified, and in 20 it had the same or an earlier one (**measured**). The plain PUT case must give the later time, so the open multipart upload likely got its time from the start of the upload (**inferred**). Either way, the engine must sort copies by name, never by time, as [#589](https://github.com/djosh34/s3-smb/issues/589) already says.
 - **DELETE without a version ID only hides** (**documented**, [DeleteObject](https://www.backblaze.com/apidocs/s3-delete-object)): it adds a delete marker and keeps the bytes. Run 1 showed 2,246 keys with hidden versions (**measured**).
 - **Lifecycle rule** (**documented**, [lifecycle rules](https://www.backblaze.com/docs/cloud-storage-lifecycle-rules)): "Keep only the last version" sets `daysFromHidingToDeleting: 1`. Rules run once a day, so a hidden version goes 1 to 2 days after it is hidden. Hidden versions stay stored and billed until then (**inferred**: billing is per stored byte, and the docs do not say hidden versions are free).
 - **Latency** from a GitHub `ubuntu-24.04-arm` runner (**measured**, run 1): PUT p50 270 ms, p99 870 ms, max 12.6 s. GET p50 56 ms, p99 188 ms, max 7.3 s. HEAD p50 48 ms. LIST p50 96 ms, p99 210 ms. Multipart copy of 6 MiB p50 1.0 s. The worst cases were slow but came with no errors.
+
+## Conditional requests
+
+Garage is dropped, and B2 is now the production target. So run 4 ([37376054883](https://github.com/djosh34/s3-smb/actions/runs/37376054883)) tested every conditional request the S3 API has on B2. The program is `testConditionalFull` in [`research/b2consistency/conditional.go`](research/b2consistency/conditional.go). Each case ran 3 times on fresh keys. All 3 tries gave the same result every time (**measured**).
+
+"Object after" is read back with a GET after the call. "Unchanged" means the old body is still there. "Absent" means the key still does not exist. ETags are sent quoted. The wrong ETag is 32 zeros.
+
+### Writes (all measured)
+
+| Request | Condition | Status | Object after |
+|---|---|---|---|
+| PutObject | `If-None-Match: *`, key absent | 501 NotImplemented | absent |
+| PutObject | `If-None-Match: *`, key exists | 501 NotImplemented | unchanged |
+| PutObject | `If-None-Match: *`, key deleted (hidden) | 501 NotImplemented | absent |
+| PutObject | `If-Match`, right ETag | 501 NotImplemented | unchanged |
+| PutObject | `If-Match`, wrong ETag | 501 NotImplemented | unchanged |
+| PutObject | `If-Match`, key absent | 501 NotImplemented | absent |
+| CompleteMultipartUpload | `If-None-Match: *`, key absent | 501 NotImplemented | absent, upload still open |
+| CompleteMultipartUpload | `If-None-Match: *`, key exists | 501 NotImplemented | unchanged, upload still open |
+| CompleteMultipartUpload | `If-Match`, right ETag | 501 NotImplemented | unchanged, upload still open |
+| CompleteMultipartUpload | `If-Match`, wrong ETag | 501 NotImplemented | unchanged, upload still open |
+| CopyObject | destination `If-None-Match: *`, absent | 501 NotImplemented | absent |
+| CopyObject | destination `If-None-Match: *`, exists | 501 NotImplemented | unchanged |
+| CopyObject | destination `If-Match`, right ETag | 501 NotImplemented | unchanged |
+| CopyObject | destination `If-Match`, wrong ETag | 501 NotImplemented | unchanged |
+| CopyObject | source `x-amz-copy-source-if-match`, right ETag | 200 | copied |
+| CopyObject | source `x-amz-copy-source-if-match`, wrong ETag | 412 PreconditionFailed | unchanged |
+| CopyObject | source `x-amz-copy-source-if-none-match`, right ETag | 412 PreconditionFailed | unchanged |
+| DeleteObject | `If-Match`, right ETag | 501 NotImplemented | still there |
+| DeleteObject | `If-Match`, wrong ETag | 501 NotImplemented | still there |
+
+"Upload still open": after the refused complete, AbortMultipartUpload returned 204, so the upload and its parts were still there. A client that gets 501 must abort the upload, or the parts stay stored (**measured**). The end of the run found 0 open uploads, and 0 versions were left.
+
+### Reads (all measured)
+
+The object was read back 3 s after its upload, so "last modified + 1 s" lies in the past. GET and HEAD gave the same status in every case. GET returned the right body on every 200 and no body otherwise.
+
+| Condition | GET and HEAD status |
+|---|---|
+| `If-Match`, right ETag | 200 |
+| `If-Match`, wrong ETag | 412 PreconditionFailed |
+| `If-None-Match`, right ETag | 304 NotModified |
+| `If-None-Match`, wrong ETag | 200 |
+| `If-None-Match: *` | 304 NotModified |
+| `If-Modified-Since`, 1 h before last modified | 200 |
+| `If-Modified-Since`, 1 s after last modified | 304 NotModified |
+| `If-Unmodified-Since`, 1 h before last modified | 412 PreconditionFailed |
+| `If-Unmodified-Since`, 1 s after last modified | 200 |
+
+### What this means
+
+- B2 has no conditional write in its S3 API. Every write with `If-Match` or `If-None-Match` is refused with 501 and changes nothing. B2 never ignores the header and writes anyway, so a client that tries a conditional write fails safe (**measured**).
+- Conditions on reads and on the copy source work as in AWS S3 (**measured**). They check what is read, not what is written, so they cannot build a lock or a create-only write (**inferred**).
+- The design already uses no conditional writes ([#578](https://github.com/djosh34/s3-smb/issues/578)) and keeps the best-effort lock with a heartbeat ([#584](https://github.com/djosh34/s3-smb/issues/584), [#600](https://github.com/djosh34/s3-smb/issues/600)). B2 changes nothing there (**inferred**).
+- The test used the typed SDK fields, so the headers went on the wire as AWS defines them. MinIO in a local dry run returned 412 for the PutObject and CompleteMultipartUpload cases, so the program sends them right (**measured**, locally).
+
+### The native B2 API (documented, from the docs only)
+
+No call in the native API has a compare-and-swap or create-only option. The docs list every parameter, and none is a precondition:
+
+- [`b2_upload_file`](https://www.backblaze.com/apidocs/b2-upload-file): name, content type, length, SHA1, file info, Object Lock settings, encryption, custom upload time. No if-match, if-none-match or expected file ID.
+- [`b2_start_large_file`](https://www.backblaze.com/apidocs/b2-start-large-file) and [`b2_finish_large_file`](https://www.backblaze.com/apidocs/b2-finish-large-file): no precondition. Finish takes only the file ID and the part SHA1s. Retrying a finish that already succeeded returns 400.
+- [`b2_copy_file`](https://www.backblaze.com/apidocs/b2-copy-file): source file ID, destination name and metadata. No check on the destination.
+- [`b2_hide_file`](https://www.backblaze.com/apidocs/b2-hide-file): bucket and name only.
+- [`b2_delete_file_version`](https://www.backblaze.com/apidocs/b2-delete-file-version): name and file ID, plus `bypassGovernance` for Object Lock. It deletes one exact version, but has no condition.
+
+An upload to an existing name adds a new version and never fails because the name exists (**documented**, [file versions](https://www.backblaze.com/docs/cloud-storage-file-versions)). Each upload returns its own file ID. A scheme like "upload, then list versions, and the oldest wins" is not atomic, because two writers can each list before the other's upload shows up (**inferred**). We did not test it, and the design does not need it.
 
 ## What the docs must say for B2
 
@@ -96,7 +164,7 @@ So B2 marks the first entry of a key on each page as latest. The delete markers 
 - Set the lifecycle rule **"Keep only the last version of the file"**. A DELETE on B2 only hides the object. Without the rule, every deleted chunk and copy stays stored and billed forever. With it, deleted data is really gone 1 to 2 days after the engine deletes it, on top of the engine's own wait of about 75 minutes.
 - Use an application key limited to that one bucket, with read and write.
 - The endpoint is `https://s3.<region>.backblazeb2.com`, and the region is the middle part, for example `us-west-001`.
-- B2 rejects conditional writes with `501`. The engine does not use them.
+- B2 rejects every conditional write with `501`: PUT, multipart complete, copy destination and delete. The engine does not use them. A refused multipart complete leaves the upload open, so the client must abort it.
 
 ## What this does not prove
 
