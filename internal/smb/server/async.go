@@ -38,9 +38,11 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 	if message.Header.Flags&wire.FlagRelated != 0 && needsFileID(message.Header.Command) && previous.status&0xc0000000 == 0xc0000000 {
 		return reply{status: previous.status}
 	}
+	started := time.Now()
 	result, err := connection.dispatch(ctx, message, previous)
 	if err != nil {
 		status := smb.StatusFromError(err)
+		connection.trace(ctx, message, result, status, started)
 		level, text := slog.LevelDebug, "request refused"
 		if errors.Is(err, context.Canceled) {
 			text = "request canceled"
@@ -50,6 +52,7 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 		connection.server.options.Logger.Log(ctx, level, text, "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
 		return reply{status: status, fileID: result.fileID}
 	}
+	connection.trace(ctx, message, result, result.status, started)
 	return result
 }
 

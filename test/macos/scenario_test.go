@@ -47,6 +47,9 @@ func (h *harness) baseline() result {
 		h.t.Log("share-features-passed")
 	}
 	h.destinationSetup()
+	// Temporary for #528: can the harness turn on "Encrypt backups"?
+	h.try(2*time.Minute, "/bin/sh", "-c", "/usr/bin/tmutil help setdestination 2>&1; MANPAGER=cat /usr/bin/man tmutil | /usr/bin/col -b")
+	h.try(2*time.Minute, "/usr/bin/defaults", "read", "/Library/Preferences/com.apple.TimeMachine")
 	h.createTree()
 	h.checkExclusions()
 	h.startBackup("baseline")
