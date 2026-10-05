@@ -74,7 +74,7 @@ func reconnectCreate(ctx context.Context, request RequestContext, create wire.Cr
 		return reply{}, err
 	}
 	response.ID = wire.FileID(open.ID)
-	if err = appendCreateContexts(request, open, state.Lease{}, &response); err != nil {
+	if err = appendCreateContexts(request, open, state.Lease{}, false, &response); err != nil {
 		return reply{}, err
 	}
 	body, err := wire.EncodeCreateResponse(response)

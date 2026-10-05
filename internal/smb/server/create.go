@@ -260,7 +260,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	committed = true
 	response.ID = wire.FileID(created.ID)
 	response.Contexts = contexts.aapl
-	if err = appendCreateContexts(request, created, lease, &response); err != nil {
+	if err = appendCreateContexts(request, created, lease, true, &response); err != nil {
 		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
 	}
 	body, err := wire.EncodeCreateResponse(response)

@@ -163,7 +163,9 @@ func reserveCreate(request RequestContext, open state.OpenRequest, lease state.L
 // appendCreateContexts adds the lease and durable contexts for open from a
 // fresh snapshot, so the reply shows a break that started after the grant.
 // A requested lease that was not granted is answered with lease state none.
-func appendCreateContexts(request RequestContext, open state.Open, requested state.Lease, response *wire.CreateResponse) error {
+// Only a new open gets a DH2Q reply. macOS fails a durable reconnect whose
+// reply has one, as MS-SMB2 3.3.5.9.12 sends none.
+func appendCreateContexts(request RequestContext, open state.Open, requested state.Lease, newOpen bool, response *wire.CreateResponse) error {
 	open, lease, status := request.Opens.LeaseForOpen(open.ID, request.Binding())
 	if status != smb.StatusSuccess {
 		return fmt.Errorf("find created open: status %#x", status)
@@ -189,7 +191,7 @@ func appendCreateContexts(request RequestContext, open state.Open, requested sta
 	if open.LeaseKey != (state.GUID{}) {
 		response.OplockLevel = leaseOplockLevel
 	}
-	if open.Durable {
+	if newOpen && open.Durable {
 		timeout := uint32(open.DurableTimeout.Milliseconds()) //nolint:gosec // Durable timeouts are at most 16 minutes.
 		context, err := wire.EncodeDurableReply(wire.DurableReply{Timeout: timeout})
 		if err != nil {
