@@ -36,9 +36,9 @@ fi
 if [[ ${CHECK_TEST_FAIL:-} == "$command $*" ]]; then exit 17; fi
 if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFIX"* ]]; then exit 17; fi
 case "$command $*" in
-  'go test -race -shuffle=on -count=1 -timeout=30m ./...')
+  'go test -race -shuffle=on -count=1 -timeout=30m ./...' | 'go test -race -shuffle=on -count=1 -timeout=60m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && -z ${S3_SMB_CHAOS_SEED:-} ]] ;;
-  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e')
+  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e' | 'go test -race -shuffle=on -count=1 -timeout=120m ./test/e2e')
     [[ ${S3_SMB_SAMBA:-} == 1 && ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 &&
       ${S3_SMB_CHAOS_SEED:-} =~ ^[0-9]+$ ]]
     printf 'chaos seed %s\n' "$S3_SMB_CHAOS_SEED" >> "$CHECK_TEST_COMMANDS" ;;
@@ -189,18 +189,21 @@ run_internal() {
 }
 run_internal || fail 'run-linux.sh failed'
 contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
-contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=60m ./...'
 contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
 contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
-contains 'go [gate] test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=120m ./test/e2e'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 contains 'chaos seed '
+S3_SMB_CHECK_MODE='pr' run_internal || fail 'run-linux.sh failed in PR mode'
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=30m ./...'
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'
 S3_SMB_CHAOS_SEED=42 run_internal || fail 'run-linux.sh failed with a chaos seed'
 contains 'chaos seed 42'
 grep -F 'replay with S3_SMB_CHAOS_SEED=42' "$fixture/internal-output" >/dev/null || fail 'chaos seed not printed'
 for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
-  'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
-  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'; do
+  'go test -race -shuffle=on -count=1 -timeout=60m ./...' \
+  'go test -race -shuffle=on -count=1 -timeout=120m ./test/e2e'; do
   export CHECK_TEST_FAIL=$command
   if run_internal; then fail "run-linux.sh ignored a failure: $command"; fi
 done

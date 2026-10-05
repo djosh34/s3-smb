@@ -165,6 +165,10 @@ the Mac. They check exactly the promises of "What survives which failure",
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
 nothing needs privileges. The gate runs more rounds and longer faults.
 
+In gate mode the Docker step gives the old-server suite 60 minutes and the
+new server's `test/e2e` run 120 minutes, and the CI job 300 minutes, since
+each fuzz target also runs for a minute. PR mode keeps 30 and 60 minutes.
+
 `test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
 and file comes from that seed, so a run replays with
 `S3_SMB_CHAOS_SEED=<seed> scripts/check.sh`, or in CI with
