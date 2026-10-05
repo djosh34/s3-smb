@@ -38,7 +38,7 @@ jobs:
         with:
           go-version: '1.26.3'
       - id: check
-        run: scripts/check.sh unit
+        run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} unit
       - if: failure() && steps.check.outputs.fuzz_failed == 'true'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
