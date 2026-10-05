@@ -226,9 +226,6 @@ func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exce
 		}
 	}
 	connection.sessionMu.Unlock()
-	for _, operation := range holders {
-		operation.cancel()
-	}
 	connection.pendingMu.Lock()
 	var stopped []*pendingRequest
 	for _, pending := range connection.pending {
@@ -238,15 +235,27 @@ func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exce
 	}
 	connection.pendingMu.Unlock()
 	// A related member waits for the one before it, which has a lower message
-	// ID. Cancel it first, so it cannot start when that one finishes and then
-	// find its session gone.
-	slices.SortFunc(stopped, func(a, b *pendingRequest) int { return cmp.Compare(b.header.MessageID, a.header.MessageID) })
+	// ID. Cancel from the highest ID down, running and pending alike, so a
+	// member cannot start when the one before it finishes and then find its
+	// session gone.
+	type cancellation struct {
+		cancel    context.CancelFunc
+		messageID uint64
+	}
+	var cancellations []cancellation
+	for _, operation := range holders {
+		cancellations = append(cancellations, cancellation{operation.cancel, operation.header.MessageID})
+	}
 	var work []*work
 	for _, pending := range stopped {
-		pending.work.cancel()
+		cancellations = append(cancellations, cancellation{pending.work.cancel, pending.header.MessageID})
 		if pending.header.Command != wire.Logoff && pending.header.Command != wire.TreeDisconnect {
 			work = append(work, pending.work)
 		}
+	}
+	slices.SortFunc(cancellations, func(a, b cancellation) int { return cmp.Compare(b.messageID, a.messageID) })
+	for _, c := range cancellations {
+		c.cancel()
 	}
 	for _, operation := range holders {
 		if operation.header.Command != wire.Logoff && operation.header.Command != wire.TreeDisconnect {
