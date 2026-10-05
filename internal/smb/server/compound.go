@@ -111,9 +111,11 @@ type compoundReplies struct {
 // pending answers a member that did not complete in time.
 func (replies *compoundReplies) pending(index int, header wire.Header, operation *work) error {
 	if replies.first != nil {
-		// Without an interim, CANCEL names the member by message ID.
+		// Without an interim, CANCEL names the member by message ID, or the
+		// whole rest of the compound by the first member's async ID.
 		replies.connection.pendingMu.Lock()
 		replies.connection.pending[header.MessageID] = &pendingRequest{work: operation, header: header}
+		replies.first.held = append(replies.first.held, operation)
 		replies.connection.pendingMu.Unlock()
 		replies.held = append(replies.held, heldReply{work: operation, header: header, credits: replies.connection.credits.grant(header)})
 		return nil

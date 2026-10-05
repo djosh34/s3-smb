@@ -150,6 +150,37 @@ func TestCancelWaitingRelatedRequest(t *testing.T) {
 	client.noExtraReplies(t)
 }
 
+// The client has only the async ID of an async first member, so CANCEL with it
+// also stops the rest of the compound, even after that first member finished.
+func TestCancelFirstMemberStopsHeldRest(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	flushing := make(chan struct{})
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Flush = func(ctx context.Context, _ smb.Handle, _ smb.SyncMode) error {
+			close(flushing)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	})
+	entered, release := srv.holdWrites()
+	write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+	flush := related(message(t, client, wire.Flush, wire.EncodeFlushRequest, wire.FlushRequest{ID: placeholder}))
+	if err := client.raw.Send(t.Context(), []wire.Message{write, flush}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	interim := client.interim(t, write.Header)
+	close(release)
+	<-flushing
+	client.cancelAsync(t, interim)
+	if statuses := finalStatuses(t, client, []wire.Message{write, flush}); statuses[0] != smb.StatusSuccess || statuses[1] != smb.StatusCancelled {
+		t.Fatalf("WRITE and FLUSH statuses %#x", statuses)
+	}
+	client.noExtraReplies(t)
+}
+
 // When the first member of a compound goes async, only it gets an interim
 // reply. Its final reply and those of the rest follow in one chain, which is
 // how macOS reads a compound reply until one has come back split.

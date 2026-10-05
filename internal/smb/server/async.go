@@ -22,7 +22,11 @@ type work struct {
 }
 
 type pendingRequest struct {
-	work    *work
+	work *work
+	// held is the rest of the compound after an async first member. The
+	// client has only the first member's async ID, so CANCEL with it stops
+	// them too. Guarded by pendingMu.
+	held    []*work
 	header  wire.Header
 	asyncID uint64
 }
@@ -212,5 +216,8 @@ func (connection *connection) cancelPending(header wire.Header) {
 	}
 	if pending != nil && pending.header.SessionID == header.SessionID {
 		pending.work.cancel()
+		for _, held := range pending.held {
+			held.cancel()
+		}
 	}
 }
