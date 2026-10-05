@@ -40,6 +40,11 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 	}
 	result, err := connection.dispatch(ctx, message, previous)
 	if err != nil {
+		// JuiceFS reports a cancelled context as an I/O error. A cancelled
+		// request still answers STATUS_CANCELLED.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = errors.Join(ctxErr, err)
+		}
 		status := smb.StatusFromError(err)
 		level, text := slog.LevelDebug, "request refused"
 		if errors.Is(err, context.Canceled) {

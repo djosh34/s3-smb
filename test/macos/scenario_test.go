@@ -46,6 +46,8 @@ func (h *harness) baseline() result {
 		h.shareFeatures()
 		h.t.Log("share-features-passed")
 	}
+	// The server lets one client in at a time. Unmount before tmutil connects.
+	h.must(h.detachShares())
 	h.destinationSetup()
 	h.createTree()
 	h.checkExclusions()
