@@ -155,11 +155,9 @@ bucket layout are in [recovery](docs/recovery.md).
 `scripts/check.sh` runs the same checks locally and in CI, including race tests
 and MinIO integration tests in Docker. `scripts/check.sh --gate` is the release
 gate, with full-length outage tests and fuzzing. [Development](docs/development.md)
-describes the code, the tests and the Time Machine workflow. A new SMB server is
-in progress; build with `-tags smbnext` to use it, as described in
-[the SMB server design](docs/smb-design.md).
-[Vendored source](docs/vendored.md) lists the patches to JuiceFS and the SMB
-server.
+describes the code, the tests and the Time Machine workflow.
+[The SMB server design](docs/smb-design.md) describes the SMB server.
+[Vendored source](docs/vendored.md) lists the patches to JuiceFS.
 
 ## Licence
 

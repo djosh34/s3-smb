@@ -1,9 +1,7 @@
-# New SMB server design
+# SMB server design
 
-The new SMB server serves one share to one Mac running Time Machine. It speaks
-SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption. It is built
-with `-tags smbnext`; without the tag, s3-smb still uses the server in
-`internal/smb-old`. There is no runtime setting to choose a server.
+The SMB server serves one share to one Mac running Time Machine. It speaks
+SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption.
 
 ## Packages
 
@@ -21,9 +19,7 @@ with `-tags smbnext`; without the tag, s3-smb still uses the server in
 - `internal/smb/smbtest`: a raw SMB test client and fixtures that serve a real
   JuiceFS adapter.
 
-`internal/app` constructs the new server in files built with `smbnext` and the
-old one in files built with `!smbnext`. No new package imports
-`internal/smb-old`.
+`internal/app` constructs the server in `smb.go`.
 
 ## Storage access
 
@@ -131,15 +127,23 @@ replenishes credits before a valid synchronous compound can use up the
 client's balance.
 
 When a related compound member goes async, the rest of the compound runs
-asynchronously too. Each dependent request gets its own pending reply and async
-ID and waits for its predecessor, including CLOSE. The server carries the
+asynchronously too, and each dependent request waits for its predecessor,
+including CLOSE. If the first member goes async, only it gets a pending reply.
+The final replies of the whole compound then follow in one chain, with the
+first member's async ID: until a compound reply has come back split, macOS
+reads each packet as the reply to one whole compound, and a split reply there
+stalled a mount for two minutes in a Mac run. If a later member goes async,
+the replies before it are sent first, and it and each dependent request get
+their own pending reply, async ID and final reply. The server carries the
 session, tree and FileId from the preceding operation, also when that
 operation used an existing handle. Handlers report the FileId they used or
 created even on error; members that report none leave the saved ID unchanged.
 An error from a predecessor fails a following related FileId command with the
 same status; warnings do not. Completed replies are sent once. Unrelated
-members need not wait on S3. CANCEL has no reply and cancels only the named
-pending request. Byte-range lock requests never wait.
+members need not wait on S3. CANCEL has no reply. It cancels the named pending
+request; a member without a pending reply is named by its MessageId, and the
+first member's async ID also cancels the rest of its compound. Byte-range lock
+requests never wait.
 
 ## Protection and reconnect
 

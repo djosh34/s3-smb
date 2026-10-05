@@ -71,6 +71,51 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+// A storage call that fails because its request was cancelled, as JuiceFS does
+// with EINTR, still answers STATUS_CANCELLED. WRITE returns the error;
+// SET_INFO turns it into a status itself.
+func TestCancelledStorageErrorAnswersCancelled(t *testing.T) {
+	for _, test := range []struct {
+		hook func(hooks *storageHooks, fail func(context.Context) error)
+		send func(t *testing.T, client *testClient, id wire.FileID) wire.Header
+		name string
+	}{
+		{func(hooks *storageHooks, fail func(context.Context) error) {
+			hooks.WriteAt = func(ctx context.Context, _ smb.Handle, _ []byte, _ uint64) (int, error) { return 0, fail(ctx) }
+		}, func(t *testing.T, client *testClient, id wire.FileID) wire.Header {
+			return client.send(t, wire.Write, encode(t, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")}), 1)
+		}, "WRITE"},
+		{func(hooks *storageHooks, fail func(context.Context) error) {
+			hooks.PathOf = func(ctx context.Context, _ smb.Inode) (string, error) { return "", fail(ctx) }
+		}, func(t *testing.T, client *testClient, id wire.FileID) wire.Header {
+			rename := encode(t, wire.EncodeFileRenameInformation, wire.FileRenameInformation{Name: "moved"})
+			body := encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileRename), Input: rename})
+			return client.send(t, wire.SetInfo, body, 1)
+		}, "SET_INFO rename"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			client := srv.connect(t)
+			id := client.open(t, "file")
+			entered := make(chan struct{})
+			srv.faults.set(func(hooks *storageHooks) {
+				test.hook(hooks, func(ctx context.Context) error {
+					close(entered)
+					<-ctx.Done()
+					return smb.ErrIO
+				})
+			})
+			request := test.send(t, client, id)
+			<-entered
+			client.cancelAsync(t, client.interim(t, request))
+			if status := client.receive(t, request).Header.Status; status != smb.StatusCancelled {
+				t.Fatalf("status %#x", status)
+			}
+			client.noExtraReplies(t)
+		})
+	}
+}
+
 // Cancelling a related member that waits for the one before it leaves that
 // one running.
 func TestCancelWaitingRelatedRequest(t *testing.T) {
@@ -91,13 +136,80 @@ func TestCancelWaitingRelatedRequest(t *testing.T) {
 	}
 	<-entered
 	client.interim(t, write.Header)
-	client.cancelAsync(t, client.interim(t, flush.Header))
-	if status := client.receive(t, flush.Header).Header.Status; status != smb.StatusCancelled {
-		t.Fatalf("FLUSH status %#x", status)
+	// FLUSH has no interim of its own, so CANCEL names it by message ID.
+	cancel := wire.Header{Command: wire.Cancel, SessionID: client.session.SessionID, MessageID: flush.Header.MessageID}
+	if err := client.raw.Send(t.Context(), []wire.Message{{Header: cancel, Body: encode(t, wire.EncodeCancelRequest, wire.EmptyRequest{})}}); err != nil {
+		t.Fatal(err)
 	}
+	client.echo(t) // The server takes requests in order, so it has handled CANCEL.
 	close(release)
-	if status := client.receive(t, write.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("WRITE status %#x", status)
+	if statuses := finalStatuses(t, client, []wire.Message{write, flush}); statuses[0] != smb.StatusSuccess || statuses[1] != smb.StatusCancelled {
+		t.Fatalf("WRITE and FLUSH statuses %#x", statuses)
+	}
+	srv.expectContent(t, map[string]string{"file": "data"})
+	client.noExtraReplies(t)
+}
+
+// The client has only the async ID of an async first member, so CANCEL with it
+// also stops the rest of the compound, even after that first member finished.
+func TestCancelFirstMemberStopsHeldRest(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	flushing := make(chan struct{})
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Flush = func(ctx context.Context, _ smb.Handle, _ smb.SyncMode) error {
+			close(flushing)
+			<-ctx.Done()
+			return ctx.Err()
+		}
+	})
+	entered, release := srv.holdWrites()
+	write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+	flush := related(message(t, client, wire.Flush, wire.EncodeFlushRequest, wire.FlushRequest{ID: placeholder}))
+	if err := client.raw.Send(t.Context(), []wire.Message{write, flush}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	interim := client.interim(t, write.Header)
+	close(release)
+	<-flushing
+	client.cancelAsync(t, interim)
+	if statuses := finalStatuses(t, client, []wire.Message{write, flush}); statuses[0] != smb.StatusSuccess || statuses[1] != smb.StatusCancelled {
+		t.Fatalf("WRITE and FLUSH statuses %#x", statuses)
+	}
+	client.noExtraReplies(t)
+}
+
+// When the first member of a compound goes async, only it gets an interim
+// reply. Its final reply and those of the rest follow in one chain, which is
+// how macOS reads a compound reply until one has come back split.
+func TestAsyncFirstMemberRepliesInOneChain(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	entered, release := srv.holdWrites()
+	write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+	closing := related(closeMessage(t, client, placeholder))
+	if err := client.raw.Send(t.Context(), []wire.Message{write, closing}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	interim := client.interim(t, write.Header)
+	close(release)
+	reply, err := client.raw.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Messages) != 2 || reply.Messages[0].Header.MessageID != write.Header.MessageID || reply.Messages[1].Header.MessageID != closing.Header.MessageID {
+		t.Fatalf("reply %+v, want the WRITE and CLOSE replies in one chain", reply.Messages)
+	}
+	final, closed := reply.Messages[0].Header, reply.Messages[1].Header
+	if final.Status != smb.StatusSuccess || final.Flags&wire.FlagAsync == 0 || final.AsyncID != interim.AsyncID || final.Credit != 0 {
+		t.Fatalf("WRITE reply %+v after interim %+v", final, interim)
+	}
+	if closed.Status != smb.StatusSuccess || closed.Flags&wire.FlagAsync != 0 || closed.Credit == 0 {
+		t.Fatalf("CLOSE reply %+v", closed)
 	}
 	srv.expectContent(t, map[string]string{"file": "data"})
 	client.noExtraReplies(t)
@@ -160,7 +272,6 @@ func TestCleanupWaitsForRunningRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			client.interim(t, write.Header)
-			client.interim(t, flush.Header)
 			if test.cut != nil {
 				test.cut(t, srv, client)
 				// The connection is gone; nothing came after the interim replies.

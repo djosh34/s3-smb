@@ -9,7 +9,7 @@ import (
 // Status is an NTSTATUS value carried in an SMB response header.
 type Status uint32
 
-// Status codes used by the new server, from MS-ERREF. Unsupported operations
+// Status codes used by the server, from MS-ERREF. Unsupported operations
 // return a status and keep the connection; invalid framing or authentication
 // of a packet is handled by the connection layer, not this map.
 const (

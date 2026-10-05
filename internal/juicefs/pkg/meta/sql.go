@@ -1234,17 +1234,7 @@ func (m *dbMeta) shouldRetry(err error) bool {
 }
 
 func (m *dbMeta) txn(f func(s *xorm.Session) error, inodes ...Ino) error {
-	return m.transaction(false, f, inodes...)
-}
-
-// lockTxn changes only this authority's local advisory-lock rows, not file
-// metadata or remote objects. Read-only clients still need meaningful locks.
-func (m *dbMeta) lockTxn(f func(s *xorm.Session) error, inodes ...Ino) error {
-	return m.transaction(true, f, inodes...)
-}
-
-func (m *dbMeta) transaction(localLock bool, f func(s *xorm.Session) error, inodes ...Ino) error {
-	if m.conf.ReadOnly && !localLock {
+	if m.conf.ReadOnly {
 		return syscall.EROFS
 	}
 	start := time.Now()

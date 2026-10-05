@@ -91,15 +91,14 @@ func inspectSnapshot(ctx context.Context, path string) (format *meta.Format, err
 }
 
 // expireSnapshotSessions marks every session in the staged copy as expired, so
-// JuiceFS cleans them, and removes locks of read-only clients. Those use SID
-// zero and have no session row.
+// JuiceFS cleans them with their locks and open unlinked files.
 func expireSnapshotSessions(ctx context.Context, path string) (err error) {
 	db, err := openSnapshotDB(path, "rw")
 	if err != nil {
 		return err
 	}
 	defer func() { err = errors.Join(err, db.Close()) }()
-	_, err = db.ExecContext(ctx, "UPDATE jfs_session2 SET expire=0; DELETE FROM jfs_flock WHERE sid=0; DELETE FROM jfs_plock WHERE sid=0")
+	_, err = db.ExecContext(ctx, "UPDATE jfs_session2 SET expire=0")
 	return err
 }
 

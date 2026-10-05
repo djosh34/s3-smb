@@ -14,17 +14,6 @@ import (
 // build builds s3-smb from this checkout, MinIO from the commit pinned in
 // test/Dockerfile and the fullsync probe, and saves their versions as evidence.
 func (h *harness) build() {
-	var tags string
-	switch os.Getenv("MAC_SERVER") {
-	case "default":
-	case "smbnext":
-		tags = "smbnext"
-	default:
-		h.t.Fatal("MAC_SERVER must be default or smbnext")
-	}
-	if os.Getenv("MAC_PHASE") == "features" && tags != "smbnext" {
-		h.t.Fatal("the features phase requires MAC_SERVER=smbnext")
-	}
 	root, err := filepath.Abs("../..")
 	h.must(err)
 	dockerfile, err := os.ReadFile("../../test/Dockerfile")
@@ -43,7 +32,7 @@ func (h *harness) build() {
 	}
 	h.must(os.Mkdir(h.bin, 0o700))
 	revision := h.run(time.Minute, "git", "-C", root, "rev-parse", "HEAD")
-	for name, value := range map[string]string{"application-revision": revision, "harness-revision": revision, "build-tags": tags + "\n", "minio-release": release + "\n", "minio-revision": commit + "\n"} {
+	for name, value := range map[string]string{"application-revision": revision, "harness-revision": revision, "minio-release": release + "\n", "minio-revision": commit + "\n"} {
 		h.must(h.evidenceDir.WriteFile(name, []byte(value), 0o600))
 	}
 	for _, args := range [][]string{{"/usr/bin/sw_vers"}, {"uname", "-a"}, {"go", "version"}, {"xcodebuild", "-version"}, {"xcrun", "--show-sdk-path"}, {"/bin/df", "-k"}, {"/usr/sbin/diskutil", "list"}, {"/usr/sbin/diskutil", "apfs", "list"}} {
@@ -62,7 +51,7 @@ func (h *harness) build() {
 	application := filepath.Join(h.bin, "s3-smb")
 	h.download("go", "-C", root, "mod", "download")
 	for _, args := range [][]string{
-		{"go", "-C", root, "build", "-p", "2", "-tags", tags, "-o", application, "."},
+		{"go", "-C", root, "build", "-p", "2", "-o", application, "."},
 		{application, "help"},
 		{application, "version"},
 		{"git", "-C", source, "init"},

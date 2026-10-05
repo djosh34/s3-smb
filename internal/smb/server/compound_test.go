@@ -39,8 +39,6 @@ func TestCompoundRelatedFileID(t *testing.T) {
 				t.Fatal(err)
 			}
 			<-entered
-			client.interim(t, messages[1].Header)
-			client.interim(t, messages[2].Header)
 			close(release)
 			statuses = finalStatuses(t, client, messages)
 		} else {

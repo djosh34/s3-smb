@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,9 +21,6 @@ import (
 // Mac, including Time Machine and restore mounts, connects through a fault
 // proxy that cuts the connection during a backup.
 func (h *harness) networkScenario(name string) result {
-	if os.Getenv("MAC_SERVER") != "smbnext" {
-		h.t.Fatal("network scenarios require MAC_SERVER=smbnext")
-	}
 	// Keep forwarding alive for detach after a stage timeout. finish closes it.
 	proxy, err := netfault.New(context.WithoutCancel(h.ctx), "127.0.0.1:1445")
 	h.must(err)
@@ -72,11 +68,14 @@ func (h *harness) networkScenario(name string) result {
 
 func (h *harness) networkOutage(outcome result) result {
 	attempt, updated, commandErr := h.dropBackup(1, true)
+	if commandErr != nil {
+		h.t.Log("interrupted-backup-exit", commandErr)
+	}
 	h.save("network-outage-result.json", attempt)
 	h.stopClient()
 	h.mount()
 	latest := h.remoteBackup("after-outage", "")
-	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, commandErr, filepath.Base(latest), outcome.Baseline))
+	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, attempt.Log, filepath.Base(latest), outcome.Baseline))
 	outcome.BaselineRestore = h.restore(latest, h.reference(), "restore-baseline")
 	h.must(h.detach())
 	latest = h.resumeBackup(outcome.Baseline, true)
@@ -104,22 +103,23 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 		if h.backup.exited() {
 			return false, errors.New("backup ended before the connection cut")
 		}
+		older := previous
 		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready := helpers.BandWriteReady(previous, current)
 		previous = current
-		if !ready {
+		if !helpers.BandWriteReady(older, current) {
 			return false, nil
 		}
-		// Prove this attempt uploaded chunks, then resample immediately before cutting.
+		// Prove this attempt uploaded chunks, then resample immediately before
+		// cutting. tmutil updates its byte count only every few seconds, so the
+		// resample is compared with the older sample, not the one just taken.
 		after := h.objects("s3-smb/chunks/")
 		if err := helpers.CheckRemoteChange(before, after); err != nil {
 			h.t.Log("waiting for remote band data", err)
 			return false, nil
 		}
 		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready = helpers.BandWriteReady(previous, current)
 		previous = current
-		return ready, nil
+		return helpers.BandWriteReady(older, current), nil
 	}))
 	attempt := helpers.DropAttempt{StatusAtCut: current, CutAt: time.Now().UTC()}
 	h.must(h.proxy.Drop())
@@ -127,12 +127,12 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	if long {
 		h.pause(45 * time.Second)
 		// Do not stopbackup or kill the client. Its own failure must end this run.
-		h.must(h.waitFor("visible failure during outage", 10*time.Minute, time.Second, func() (bool, error) {
+		// The proxy refuses reconnects at once, so macOS keeps retrying, and the
+		// backup fails when DiskImages gives up: 10 min 20 s in run 37305839289.
+		// tmutil exits 0 then too; CheckOutage reads the failure from the log.
+		h.must(h.waitFor("backup end during outage", 20*time.Minute, time.Second, func() (bool, error) {
 			return h.backup.exited(), nil
 		}))
-		if h.backup.err == nil {
-			h.t.Fatal("long outage ended without a visible tmutil failure")
-		}
 	} else {
 		h.pause(5 * time.Second)
 	}
@@ -143,7 +143,9 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	if commandErr != nil {
 		attempt.CommandError = commandErr.Error()
 	}
-	attempt.Log = h.dropLog(started, time.Now().UTC())
+	// The Mac's wall clock moves during a run, so the log can show the backup
+	// start a moment before started. The previous backup began minutes earlier.
+	attempt.Log = h.dropLog(started.Add(-30*time.Second), time.Now().UTC())
 	h.save(label+"-result.json", attempt)
 	return attempt, updated, commandErr
 }
@@ -179,7 +181,10 @@ func (h *harness) restoreSMBLogging() error {
 
 func (h *harness) dropLog(start, end time.Time) helpers.DropLog {
 	format := "2006-01-02 15:04:05-0700"
-	h.run(2*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", `process == "backupd" OR senderImagePath CONTAINS "smbfs"`)
+	// During an outage smbfs logs hundreds of thousands of reconnect attempts,
+	// so read only the lines ParseDropLog needs. log show still scans them all.
+	predicate := `process == "backupd" OR (senderImagePath CONTAINS "smbfs" AND (eventMessage CONTAINS "Non idempotent requests found" OR eventMessage CONTAINS "Reconnect completed successfully"))`
+	h.run(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", predicate)
 	// try leaves log show output on disk rather than returning it.
 	data, err := h.evidenceDir.ReadFile(fmt.Sprintf("%04d-log.log", h.serial))
 	h.must(err)

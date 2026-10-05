@@ -153,7 +153,8 @@ func TestDuplicateCreateGUIDChangesNothing(t *testing.T) {
 
 // The Mac can come back on a new connection before the server notices that
 // the old one died. Its new session replaces the old one, which detaches the
-// durable open, and DH2C hands it back with its lease and byte ranges.
+// durable open, and DH2C hands it back with its lease and byte ranges. The reply
+// has no DH2Q: macOS fails the reconnect when it gets one.
 func TestReconnectWhileOldConnectionLives(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
@@ -168,7 +169,7 @@ func TestReconnectWhileOldConnectionLives(t *testing.T) {
 	reopened := mustCreate(t, resumed, reclaimCreate(options, created))
 	id := reopened.Reply.ID
 	if id.Persistent != created.Reply.ID.Persistent || id.Volatile == created.Reply.ID.Volatile || reopened.Reply.Action != 1 ||
-		reopened.Durable == nil || *reopened.Lease != *created.Lease {
+		reopened.Durable != nil || *reopened.Lease != *created.Lease {
 		t.Fatalf("DH2C = %+v, lease %+v; created %+v, lease %+v", reopened.Reply, reopened.Lease, created.Reply, created.Lease)
 	}
 	if _, status := resumed.read(t, wire.ReadRequest{ID: created.Reply.ID, Length: 1}); status != smb.StatusFileClosed {

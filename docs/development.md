@@ -7,13 +7,10 @@
 - `internal/storage`: S3 connection, volume identity, encryption key, JuiceFS setup.
 - `internal/backup`: scheduled metadata backups, delete protection, recovery.
 - `internal/logging`: `log/slog` setup, secret removal, bridges for JuiceFS logs.
-- `internal/smb`, `internal/smbfs`: the new SMB server and its JuiceFS
-  filesystem, built with `-tags smbnext`.
-- `internal/smb-old`: the current default SMB server, with its filesystem
-  interface in `internal/smb-old/smbfs`. It is removed when the new server
-  becomes the default.
-- `internal/juicefs`, `internal/smb-old/smb2`, `internal/thirdparty`: patched upstream
-  code, described in [vendored source](vendored.md).
+- `internal/smb`, `internal/smbfs`: the SMB server and its JuiceFS
+  filesystem, described in [the SMB server design](smb-design.md).
+- `internal/juicefs`, `internal/thirdparty`: patched upstream code, described
+  in [vendored source](vendored.md).
 - `internal/netfault`, `internal/s3fault`: TCP and S3 fault proxies for tests,
   which cut, slow, stall and fail traffic.
 - `test/e2e`: tests that run the built binary against MinIO over SMB.
@@ -32,17 +29,14 @@
    metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
    must match the volume identity in the bucket.
 4. Recover the chosen backup into a new SQLite file, or open the existing one.
-5. The default server clears only native lock rows with session ID zero, left
-   by an earlier read-only process. The `smbnext` server keeps byte-range locks
-   in memory and neither reads nor clears JuiceFS locks, so its locks end with
-   the process.
-6. Take a metadata backup, or reuse the last one if it is younger than
+5. Take a metadata backup, or reuse the last one if it is younger than
    `backup.interval` and its object in S3 still matches. If this fails, SMB does
    not start.
-7. Open the JuiceFS filesystem and session, then listen for SMB and start the
+6. Open the JuiceFS filesystem and session, then listen for SMB and start the
    backup schedule.
 
-Read-only mode skips the backups and never deletes data.
+Read-only mode skips the backups and never deletes data. The SMB server keeps
+byte-range locks in memory, so they end with the process.
 
 ## Shutdown
 
@@ -73,21 +67,26 @@ the writer.
 ## Tests
 
 ```sh
-scripts/check.sh         # PR checks, including fuzz seed replay
-scripts/check.sh --gate  # release gate: full-length outage tests and fuzzing
+scripts/check.sh               # PR checks, including fuzz seed replay
+scripts/check.sh --gate        # release gate: full-length outage tests and fuzzing
+scripts/check.sh unit          # one part: lint, unit, fuzz or integration
+scripts/check.sh --gate fuzz 2/6  # every sixth fuzz target, from the second on
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
-Python 3 for the MinIO publisher tests, and a C compiler. In order they run:
+Python 3 for the MinIO publisher tests, and a C compiler. Without a part they
+run, in order:
 
-1. golangci-lint and `go vet`, with and without `-tags smbnext`, and for the
-   Mac test with `GOOS=darwin` and `-tags macos`; shellcheck over our shell
-   scripts; actionlint over every workflow; `go mod tidy -diff`; gofmt; and the
-   shell tests in `test/`.
-2. `go test -count=1 ./...`, which also replays the fuzz seeds and the saved
-   inputs in `testdata/fuzz`. In gate mode, every fuzz target then runs for one
-   minute with two workers.
-3. The Docker integration step, described below.
+1. `lint`: golangci-lint and `go vet`, also for the Mac test with
+   `GOOS=darwin` and `-tags macos`; shellcheck over our shell scripts;
+   actionlint over every workflow; `go mod tidy -diff`; gofmt; and the shell
+   tests in `test/`.
+2. `unit`: `go test -race -shuffle=on -count=1 ./...`, which also replays the
+   fuzz seeds and the saved inputs in `testdata/fuzz`. Tests that need MinIO
+   skip here.
+3. `fuzz`, in gate mode only: every fuzz target runs for one minute with two
+   workers.
+4. `integration`: the Docker step, described below.
 
 Tests receive `S3_SMB_CHECK_MODE=pr` or `gate`, also inside Docker, so they can
 choose short or full-length outage tests. The script leaves `GOMAXPROCS` and
@@ -107,27 +106,25 @@ shell. To update a tool, change its version and both archive hashes in the
 installer.
 
 `.golangci.yml` enables the strict Go linters and the gofumpt and goimports
-formatters. It excludes only JuiceFS in `internal/juicefs`, the other vendored
-code under `internal/thirdparty`, and `internal/smb-old`; every other file gets
-all checks. The formatters skip the same directories.
+formatters. It excludes only JuiceFS in `internal/juicefs` and the other
+vendored code under `internal/thirdparty`; every other file gets all checks. The
+formatters skip the same directories.
 
 Fix lint findings rather than suppressing them. nolintlint requires any
 `//nolint` to name the linter and give a reason. Panic, recover and fatal
 logging are banned; `fmt.Print*` is allowed in tests. `os.Exit` is allowed only
 in the root `main.go`, `cmd/<command>/main.go` and `test/macos/fullsync/main.go`.
 
-`test/lint_config_test.sh` checks the exclusions, both build selections and the
-suppression rules in a throwaway module. `test/lint_tools_test.sh` checks the
-installer with mock downloads.
+`test/lint_config_test.sh` checks the exclusions and the suppression rules in a
+throwaway module. `test/lint_tools_test.sh` checks the installer with mock
+downloads.
 
 ### Docker integration
 
 The Docker step mounts the source read-only and starts MinIO and a test runner
-in their own containers and network. It builds the binary without the race
-detector, then runs every package with `-race -shuffle=on` and MinIO available,
-including `test/e2e` and the storage integration tests. It also runs
-`go test -race -shuffle=on -tags smbnext ./internal/app/...` for the new
-server's startup, shutdown and wiring.
+in their own containers and network. It builds the binary with the race
+detector, then runs the storage integration tests and `test/e2e` with
+`-race -shuffle=on`, MinIO available and `GORACE=halt_on_error=1`.
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
 write files over signed SMB. They cover authentication, read-only mode, file
@@ -145,16 +142,13 @@ checks peak daemon memory and elapsed time and writes
 runs too. See the measured costs in
 [recovery](recovery.md#measured-snapshot-costs-and-limits).
 
-Last, the step builds the new server with `-race -tags smbnext` and runs all
-of `test/e2e` against it with `GORACE=halt_on_error=1`, including
-`TestSambaInterop`. That test refuses a daemon without `-race` and `smbnext` in
-its build information. Samba's smbclient connects to the share with SMB 3.1.1
+`TestSambaInterop` refuses a daemon without `-race` in its build information.
+Samba's smbclient connects to the share with SMB 3.1.1
 and encryption, then each test in `test/e2e/smbtorture.allowlist` runs on its
 own, with a five-minute limit, and must report success. Every Samba connection
-uses the same client GUID, because the new server lets one client in at a
-time.
+uses the same client GUID, because the server lets one client in at a time.
 
-That run also gets the chaos tests, `TestChaos*`, which skip without
+The run also gets the chaos tests, `TestChaos*`, which skip without
 `S3_SMB_CHAOS_SEED`. They back up through S3 errors, throttling and slow or
 cut responses, a 5-minute S3 outage (10 seconds in PR mode), a slow, unsteady
 and stalling network, connections cut during reads and writes, durable
@@ -165,9 +159,7 @@ the Mac. They check exactly the promises of "What survives which failure",
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
 nothing needs privileges. The gate runs more rounds and longer faults.
 
-In gate mode the Docker step gives the old-server suite 60 minutes and the
-new server's `test/e2e` run 120 minutes, and the CI job 300 minutes, since
-each fuzz target also runs for a minute. PR mode keeps 30 and 60 minutes.
+The Docker tests get 120 minutes in gate mode and 60 minutes in PR mode.
 
 `test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
 and file comes from that seed, so a run replays with
@@ -196,30 +188,31 @@ changes the pin.
 
 ### CI
 
-GitHub's `check` job runs `scripts/check.sh` on every pull request, on `main`
-and for merge queue groups. Dispatch it with `gate=true` for a gate run. The
-job name `check` is fixed because branch protection requires it. Failed runs
-upload daemon logs; test or fuzz failures also upload any `testdata/fuzz` inputs.
+The `check` workflow runs on every pull request, on `main` and for merge queue
+groups. Each part of `scripts/check.sh` runs as its own job, in parallel: lint,
+unit tests and the integration. Dispatch it with `gate=true` for a gate run,
+which adds six fuzzing jobs, one per shard, so a gate run takes about as long as
+its slowest job. A last job named `check` passes only when every part passed;
+the name is fixed because branch protection requires it. A failed integration
+uploads daemon logs; test or fuzz failures upload any `testdata/fuzz` inputs.
 
 ## Time Machine end-to-end test
 
 `.github/workflows/macos.yml` runs only when dispatched by hand:
 
 ```sh
-gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance -f server=default
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance
 ```
 
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
-MinIO locally. `server=default` builds without tags; `server=smbnext` builds with
-`-tags smbnext`. The `features` mode and the network scenarios always build
-`smbnext`. [test/macos/README.md](../test/macos/README.md) describes the layout
+MinIO locally. [test/macos/README.md](../test/macos/README.md) describes the layout
 and the `features` mode. `test/macos/run.sh` runs `go test -tags macos` as
 root, which Apple's administrative commands need. The test stops itself at
 least ten minutes before its Go timeout and keeps a separate seven-minute
 cleanup budget; the workflow leaves time for uploads before the job timeout.
 
 Evidence includes `mac-harness.log`, numbered command logs, application logs,
-the application and harness revisions, the build tags and `go version -m`
+the application and harness revisions and `go version -m`
 output. It is uploaded also after a failure, timeout or cancellation. Transfer
 artifact names use the run ID, not the attempt, so a rerun of a failed recovery
 job can use an earlier successful backup job.
@@ -265,30 +258,34 @@ reconnect, and the backup must restore the changed tree. A drop measured above
 requests, the attempt is repeated, up to three times; three refusals end the
 job as `not tested` in `network-drop-result.json`, which is not a pass. Other
 failures do not retry. `network-outage` holds the drop for at least 45 seconds
-and until the client fails on its own, then requires a visible failure, no new
-completed backup, the earlier backup restored intact, and a successful next
-backup and restore. The server keeps running in both scenarios.
+and until the client fails on its own, at most 20 minutes, then requires a
+visible failure (backupd logs "Backup failed"; `tmutil startbackup --block`
+exits 0 either way), no new completed backup, the earlier backup restored intact,
+and a successful next backup and restore. The proxy refuses reconnects at once,
+so macOS keeps retrying, and the backup fails when DiskImages gives up on the
+image, after about ten minutes. The server keeps running in both scenarios.
 
-The drop log samples in `test/macos/helpers/testdata/drop` are written from
-Apple's SMBClient source, not recorded on a Mac.
+Of the drop log samples in `test/macos/helpers/testdata/drop`, the reconnect
+success is recorded on a Mac; the refusal and failure are written from Apple's
+SMBClient source.
 
 ```sh
-gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios -f server=smbnext \
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios \
   -f 'scenarios=["network-drop","network-outage"]'
 ```
 
 To run just one scenario:
 
 ```sh
-gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios -f server=default \
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios \
   -f 'scenarios=["server-kill-cold"]'
 ```
 
-The `discover` mode builds the selected server, lists directories to exclude
+The `discover` mode builds s3-smb, lists directories to exclude
 and checks the literal exclusion list without running a backup:
 
 ```sh
-gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=default
+gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover
 ```
 
 ## Releasing
@@ -297,7 +294,7 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover -f server=defau
 2. Tag the commit as a release candidate, `vX.Y.Z-rc.N`, and push the tag.
 3. Run `scripts/check-public-install.sh vX.Y.Z-rc.N` on Linux and on a Mac. It
    installs the version from the Go proxy with empty caches.
-4. Run the Time Machine workflow with `--ref vX.Y.Z-rc.N -f server=default`.
+4. Run the Time Machine workflow with `--ref vX.Y.Z-rc.N`.
    It builds the tagged code; the public proxy install is checked separately.
 5. If it passes, tag the same commit `vX.Y.Z`.
 

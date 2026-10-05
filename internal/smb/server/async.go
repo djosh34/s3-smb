@@ -22,7 +22,11 @@ type work struct {
 }
 
 type pendingRequest struct {
-	work    *work
+	work *work
+	// held is the rest of the compound after an async first member. The
+	// client has only the first member's async ID, so CANCEL with it stops
+	// them too. Guarded by pendingMu.
+	held    []*work
 	header  wire.Header
 	asyncID uint64
 }
@@ -39,6 +43,12 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 		return reply{status: previous.status}
 	}
 	result, err := connection.dispatch(ctx, message, previous)
+	// JuiceFS fails a cancelled call with an errno such as EINTR, which the
+	// adapter maps to ErrIO and a handler may turn into a status. A cancelled
+	// request that fails answers STATUS_CANCELLED.
+	if ctxErr := ctx.Err(); ctxErr != nil && (err != nil || result.status&0xc0000000 == 0xc0000000) {
+		err = errors.Join(ctxErr, err)
+	}
 	if err != nil {
 		status := smb.StatusFromError(err)
 		level, text := slog.LevelDebug, "request refused"
@@ -108,7 +118,9 @@ func asyncResponse(request wire.Header, result reply, asyncID uint64, credits ui
 	return message, nil
 }
 
-func (connection *connection) sendPending(header wire.Header, operation *work) error {
+// sendPending registers operation for CANCEL and sends its interim reply. The
+// caller starts the goroutine that sends the final reply.
+func (connection *connection) sendPending(header wire.Header, operation *work) (*pendingRequest, error) {
 	pending := &pendingRequest{work: operation, header: header, asyncID: connection.nextAsyncID}
 	connection.nextAsyncID++
 	connection.pendingMu.Lock()
@@ -116,27 +128,50 @@ func (connection *connection) sendPending(header wire.Header, operation *work) e
 	connection.pendingMu.Unlock()
 	message, err := asyncResponse(header, reply{status: smb.StatusPending}, pending.asyncID, connection.credits.grant(header))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if err := connection.send([]wire.Message{message}); err != nil {
-		return err
+		return nil, err
 	}
 	connection.workers.Add(1)
-	go connection.complete(pending)
-	return nil
+	return pending, nil
 }
 
-func (connection *connection) complete(pending *pendingRequest) {
+// heldReply is a compound member answered in the chain after an async first
+// member: a response, or work still running and the credits already granted.
+type heldReply struct {
+	response *wire.Message
+	work     *work
+	header   wire.Header
+	credits  uint16
+}
+
+// complete sends the final reply of pending, followed in one chain by the
+// replies of the rest of its compound.
+func (connection *connection) complete(pending *pendingRequest, held []heldReply) {
 	defer connection.workers.Done()
 	defer func() {
 		connection.pendingMu.Lock()
 		delete(connection.pending, pending.header.MessageID)
+		for _, member := range held {
+			if member.work != nil {
+				delete(connection.pending, member.header.MessageID)
+			}
+		}
 		connection.pendingMu.Unlock()
 	}()
-	select {
-	case <-connection.ctx.Done():
-		return
-	case <-pending.work.done:
+	works := []*work{pending.work}
+	for _, member := range held {
+		if member.work != nil {
+			works = append(works, member.work)
+		}
+	}
+	for _, operation := range works {
+		select {
+		case <-connection.ctx.Done():
+			return
+		case <-operation.done:
+		}
 	}
 	// Both cases can be ready when late work finishes after a disconnect.
 	if connection.ctx.Err() != nil {
@@ -145,8 +180,20 @@ func (connection *connection) complete(pending *pendingRequest) {
 	// Final success and error share this path, with identity saved at pending.
 	// They never call the credit allocator or reuse the interim buffer.
 	message, err := asyncResponse(pending.header, pending.work.result, pending.asyncID, 0)
+	messages := []wire.Message{message}
+	for _, member := range held {
+		if err != nil {
+			break
+		}
+		if member.response != nil {
+			messages = append(messages, *member.response)
+			continue
+		}
+		message, err = makeResponse(member.header, member.work.result, member.credits)
+		messages = append(messages, message)
+	}
 	if err == nil {
-		err = connection.send([]wire.Message{message})
+		err = connection.send(messages)
 	}
 	if err != nil {
 		connection.server.options.Logger.Error("async reply failed", "error", errors.Join(err, connection.close()))
@@ -169,5 +216,8 @@ func (connection *connection) cancelPending(header wire.Header) {
 	}
 	if pending != nil && pending.header.SessionID == header.SessionID {
 		pending.work.cancel()
+		for _, held := range pending.held {
+			held.cancel()
+		}
 	}
 }

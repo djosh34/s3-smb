@@ -1,10 +1,12 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -224,20 +226,37 @@ func (connection *connection) stopRequests(sessionID uint64, treeID uint32, exce
 		}
 	}
 	connection.sessionMu.Unlock()
-	for _, operation := range holders {
-		operation.cancel()
-	}
 	connection.pendingMu.Lock()
-	var work []*work
+	var stopped []*pendingRequest
 	for _, pending := range connection.pending {
 		if pending.header.MessageID != exceptMessageID && pending.header.SessionID == sessionID && (treeID == 0 || pending.header.TreeID == treeID) {
-			pending.work.cancel()
-			if pending.header.Command != wire.Logoff && pending.header.Command != wire.TreeDisconnect {
-				work = append(work, pending.work)
-			}
+			stopped = append(stopped, pending)
 		}
 	}
 	connection.pendingMu.Unlock()
+	// A related member waits for the one before it, which has a lower message
+	// ID. Cancel from the highest ID down, running and pending alike, so a
+	// member cannot start when the one before it finishes and then find its
+	// session gone.
+	type cancellation struct {
+		cancel    context.CancelFunc
+		messageID uint64
+	}
+	var cancellations []cancellation
+	for _, operation := range holders {
+		cancellations = append(cancellations, cancellation{operation.cancel, operation.header.MessageID})
+	}
+	var work []*work
+	for _, pending := range stopped {
+		cancellations = append(cancellations, cancellation{pending.work.cancel, pending.header.MessageID})
+		if pending.header.Command != wire.Logoff && pending.header.Command != wire.TreeDisconnect {
+			work = append(work, pending.work)
+		}
+	}
+	slices.SortFunc(cancellations, func(a, b cancellation) int { return cmp.Compare(b.messageID, a.messageID) })
+	for _, c := range cancellations {
+		c.cancel()
+	}
 	for _, operation := range holders {
 		if operation.header.Command != wire.Logoff && operation.header.Command != wire.TreeDisconnect {
 			<-operation.done

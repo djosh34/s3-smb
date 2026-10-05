@@ -16,20 +16,16 @@ import (
 	"time"
 )
 
-// smbtortureTests lists the smbtorture tests the new server must pass.
+// smbtortureTests lists the smbtorture tests the server must pass.
 //
 //go:embed smbtorture.allowlist
 var smbtortureTests string
 
 // TestSambaInterop connects with Samba's smbclient over encrypted SMB 3.1.1
-// and runs the listed smbtorture tests. test/run-linux.sh runs it against a
-// race build of the new server.
+// and runs the listed smbtorture tests against a race build of the server.
 func TestSambaInterop(t *testing.T) {
-	if os.Getenv("S3_SMB_SAMBA") == "" {
-		t.Skip("needs Samba and the new server: run scripts/check.sh")
-	}
-	requireRaceSmbnextBuild(t)
 	f := newFixture(t, false)
+	requireRaceBuild(t)
 	f.start()
 	auth := t.TempDir() + "/samba.auth"
 	if err := os.WriteFile(auth, []byte("username = backup\npassword = "+f.password+"\n"), 0o600); err != nil {
@@ -64,26 +60,20 @@ func TestSambaInterop(t *testing.T) {
 	}
 }
 
-// requireRaceSmbnextBuild checks that the daemon under test is the new server
-// built with the race detector, so the old server cannot pass by mistake.
-func requireRaceSmbnextBuild(t *testing.T) {
+// requireRaceBuild checks that the daemon under test is built with the race
+// detector.
+func requireRaceBuild(t *testing.T) {
 	t.Helper()
 	info, err := buildinfo.ReadFile(daemonBinary)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var race, tags string
 	for _, setting := range info.Settings {
-		switch setting.Key {
-		case "-race":
-			race = setting.Value
-		case "-tags":
-			tags = setting.Value
+		if setting.Key == "-race" && setting.Value == "true" {
+			return
 		}
 	}
-	if race != "true" || !slices.Contains(strings.Split(tags, ","), "smbnext") {
-		t.Fatalf("Samba checks need a -race -tags smbnext daemon; got -race=%q -tags=%q", race, tags)
-	}
+	t.Fatal("Samba checks need a daemon built with -race")
 }
 
 // samba runs smbclient or smbtorture with the connection args and test args

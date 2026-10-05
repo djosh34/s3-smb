@@ -1,4 +1,4 @@
-# smbtorture tests the new server must pass, one full test ID per line, as
+# smbtorture tests the server must pass, one full test ID per line, as
 # printed by `smbtorture --list` from the Samba version pinned in test/Dockerfile.
 #
 # Left out on purpose:

@@ -12,9 +12,12 @@ import (
 
 // DropLog is what the macOS log shows around one connection cut.
 type DropLog struct {
+	BackupStarts int  `json:"backup_starts"`
 	Refused      bool `json:"refused_non_idempotent"`
 	Reconnected  bool `json:"reconnected"`
-	BackupStarts int  `json:"backup_starts"`
+	// Failed is backupd's "Backup failed" line, the failure a user sees.
+	// tmutil startbackup --block exits 0 also when the backup fails.
+	Failed bool `json:"backup_failed"`
 }
 
 // ParseDropLog reads `log show --style json` output. It matches the exact
@@ -35,8 +38,14 @@ func ParseDropLog(data []byte) (DropLog, error) {
 			result.Refused = result.Refused || strings.Contains(record.Message, "Non idempotent requests found, failing reconnect")
 			result.Reconnected = result.Reconnected || strings.Contains(record.Message, "Reconnect completed successfully.")
 		}
-		if strings.HasSuffix(record.Process, "/backupd") && (strings.HasPrefix(record.Message, "Starting manual backup") || strings.HasPrefix(record.Message, "Starting automatic backup")) {
+		// macOS 15.7 logs `Starting backup with mode "manual backup"`.
+		if strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Starting backup with mode ") {
 			result.BackupStarts++
+		}
+		// The window opens before the attempt, so an earlier backup's end can
+		// be in it. Only a failure after this attempt's start counts.
+		if result.BackupStarts > 0 && strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Backup failed") {
+			result.Failed = true
 		}
 	}
 	return result, nil
@@ -86,7 +95,7 @@ func RunDropAttempts(attempt func(int) DropAttempt) (DropReport, error) {
 		if result.Log.Refused {
 			continue
 		}
-		if !result.Completed || !result.Log.Reconnected || result.Log.BackupStarts != 1 {
+		if !result.Completed || !result.Log.Reconnected || result.Log.BackupStarts != 1 || result.Log.Failed {
 			return report, errors.New("same backup did not complete after reconnect")
 		}
 		report.Status = "passed"
@@ -97,12 +106,12 @@ func RunDropAttempts(attempt func(int) DropAttempt) (DropReport, error) {
 }
 
 // CheckOutage requires an outage longer than the Mac reconnect window, a
-// visible command failure and no completed backup from the interrupted attempt.
-func CheckOutage(cut, restored time.Time, commandErr error, latest, baseline string) error {
+// visible backup failure and no completed backup from the interrupted attempt.
+func CheckOutage(cut, restored time.Time, log DropLog, latest, baseline string) error {
 	if restored.Sub(cut) <= 30*time.Second {
 		return errors.New("outage did not exceed 30 seconds")
 	}
-	if commandErr == nil {
+	if !log.Failed {
 		return errors.New("long outage did not fail visibly")
 	}
 	if latest != baseline {

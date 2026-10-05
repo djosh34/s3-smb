@@ -73,15 +73,14 @@ linters:
       - path: '^internal/(config/secret\.go|(app|backup|logging)/[^/]+_test\.go)$'
         linters: [gosec]
         text: 'G204'
-      # Opening the JuiceFS database, cache and old SMB adapter takes no
-      # context: JuiceFS and xorm create their own deep inside.
+      # Opening the JuiceFS database and cache takes no context: JuiceFS and
+      # xorm create their own deep inside.
       - path: '^internal/(app/serve|backup/recovery)\.go$'
         linters: [contextcheck]
         text: 'should pass the context parameter'
     paths: &old-code
       - '^internal/juicefs/'
       - '^internal/thirdparty/'
-      - '^internal/smb-old/'
 
 formatters:
   enable:

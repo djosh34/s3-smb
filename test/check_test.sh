@@ -7,7 +7,7 @@ fixture=$(mktemp -d)
 trap 'rm -rf "$fixture"' EXIT
 mkdir -p "$fixture/repo/scripts" "$fixture/repo/test/minio" "$fixture/bin" "$fixture/logs" \
   "$fixture/repo/.github/workflows"
-for directory in .git internal/juicefs internal/thirdparty internal/smb-old; do
+for directory in .git internal/juicefs internal/thirdparty; do
   mkdir -p "$fixture/repo/$directory"
   touch "$fixture/repo/$directory/ignored.go"
 done
@@ -36,11 +36,8 @@ fi
 if [[ ${CHECK_TEST_FAIL:-} == "$command $*" ]]; then exit 17; fi
 if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFIX"* ]]; then exit 17; fi
 case "$command $*" in
-  'go test -race -shuffle=on -count=1 -timeout=30m ./...' | 'go test -race -shuffle=on -count=1 -timeout=60m ./...')
-    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && -z ${S3_SMB_CHAOS_SEED:-} ]] ;;
-  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e' | 'go test -race -shuffle=on -count=1 -timeout=120m ./test/e2e')
-    [[ ${S3_SMB_SAMBA:-} == 1 && ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 &&
-      ${S3_SMB_CHAOS_SEED:-} =~ ^[0-9]+$ ]]
+  'go test -race -shuffle=on -count=1 -timeout='*' ./internal/storage ./test/e2e')
+    [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && ${GORACE:-} == halt_on_error=1 && ${S3_SMB_CHAOS_SEED:-} =~ ^[0-9]+$ ]]
     printf 'chaos seed %s\n' "$S3_SMB_CHAOS_SEED" >> "$CHECK_TEST_COMMANDS" ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
@@ -85,20 +82,18 @@ run_check
 succeeds
 contains 'golangci-lint [pr] config verify'
 contains 'golangci-lint [pr] run ./...'
-contains 'golangci-lint [pr] run --build-tags smbnext ./...'
 contains 'darwin golangci-lint run --build-tags macos ./test/macos/...'
 contains 'shellcheck [pr] '
 contains "actionlint [pr] -shellcheck $fixture/bin/shellcheck -pyflakes "
 contains 'go [pr] mod tidy -diff'
 contains 'go [pr] vet ./...'
-contains 'go [pr] vet -tags smbnext ./...'
 contains 'darwin go vet -tags macos ./test/macos/...'
 contains 'gofmt [pr] -l ./our file.go'
 absent 'ignored.go'
 for script in check_test.sh lint_tools_test.sh lint_config_test.sh publish_test.sh; do
   contains "$script"
 done
-contains 'go [pr] test -count=1 ./...'
+contains 'go [pr] test -race -shuffle=on -count=1 ./...'
 absent '-fuzz '
 contains 'docker [pr] build -f test/Dockerfile -t s3-smb-test:'
 contains '-e S3_SMB_CHECK_MODE=pr -e S3_SMB_CHAOS_SEED '
@@ -119,11 +114,44 @@ succeeds
 absent ' -fuzz '
 unset CHECK_TEST_TARGETS
 
+# Each part runs alone. A fuzz shard takes every SHARDS-th target from SHARD on.
+run_check lint
+succeeds
+contains 'golangci-lint [pr] run ./...'
+absent 'go [pr] test '
+absent 'docker '
+run_check unit
+succeeds
+contains 'go [pr] test -race -shuffle=on -count=1 ./...'
+absent 'golangci-lint'
+absent 'docker '
+run_check --gate integration
+succeeds
+contains '-e S3_SMB_CHECK_MODE=gate'
+absent 'golangci-lint'
+absent 'go [gate] test '
+run_check fuzz
+succeeds
+contains 'go [pr] test -run ^$ -fuzz ^FuzzFirst$'
+contains 'go [pr] test -run ^$ -fuzz ^FuzzOther$'
+absent 'golangci-lint'
+absent 'docker '
+run_check --gate fuzz 2/2
+succeeds
+contains 'go [gate] test -run ^$ -fuzz ^FuzzSecond$'
+absent '^FuzzFirst$'
+absent '^FuzzOther$'
+run_check fuzz 1/2
+succeeds
+contains '^FuzzFirst$'
+contains '^FuzzOther$'
+absent '^FuzzSecond$'
+
 # A failure stops later stages. Test and fuzz failures request fuzz artifacts.
-for command in 'golangci-lint run ./...' 'golangci-lint run --build-tags smbnext ./...' \
+for command in 'golangci-lint run ./...' \
   'golangci-lint run --build-tags macos ./test/macos/...' 'go mod tidy -diff' \
-  'go vet ./...' 'go vet -tags smbnext ./...' 'go vet -tags macos ./test/macos/...' \
-  'go test -count=1 ./...' \
+  'go vet ./...' 'go vet -tags macos ./test/macos/...' \
+  'go test -race -shuffle=on -count=1 ./...' \
   'go test -run ^$ -fuzz ^FuzzOther$ -fuzztime 1m -parallel 2 example/two'; do
   export CHECK_TEST_FAIL=$command
   run_check --gate
@@ -164,20 +192,19 @@ unset CHECK_TEST_FAIL_PREFIX
 export CHECK_TEST_CONTAINER_EXIT=17
 run_check
 fails
-grep -Fx 'fuzz_failed=true' "$GITHUB_OUTPUT" >/dev/null || fail 'integration failure did not request fuzz artifacts'
 contains 'docker [pr] rm -f'
 unset CHECK_TEST_CONTAINER_EXIT
 
-for argument in --help --pr nonsense ''; do
-  run_check "$argument"
-  [[ $result == 2 ]] || fail "argument $argument accepted"
-  [[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid argument ran commands'
+for arguments in --help --pr nonsense '' '--gate --gate' 'lint unit' 'unit 1/2' 'fuzz 0/2' 'fuzz 3/2' \
+  'fuzz 1/2 lint' 'fuzz 1-2' 'lint --gate'; do
+  if [[ -z $arguments ]]; then run_check ''; else read -ra words <<< "$arguments"; run_check "${words[@]}"; fi
+  [[ $result == 2 ]] || fail "arguments $arguments accepted"
+  [[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid arguments ran commands'
 done
 
-# run-linux.sh runs the old-server suite, the tagged app tests, and the
-# integration, Samba and chaos checks against a race build of the new server,
-# and leaves the logs readable. The chaos tests get a new seed unless one is
-# given, and only the new server's run sees it.
+# run-linux.sh runs the MinIO, integration, Samba and chaos tests against a
+# race build and leaves the logs readable. The chaos tests get a new seed
+# unless one is given.
 export S3_SMB_E2E_ENDPOINT=http://minio:9000 S3_SMB_TEST_ARTIFACTS="$fixture/logs"
 touch "$fixture/logs/daemon.log"
 chmod 600 "$fixture/logs/daemon.log"
@@ -188,22 +215,17 @@ run_internal() {
     _ "$root/test/run-linux.sh" > "$fixture/internal-output" 2>&1
 }
 run_internal || fail 'run-linux.sh failed'
-contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
-contains 'go [gate] test -race -shuffle=on -count=1 -timeout=60m ./...'
-contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
-contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
-contains 'go [gate] test -race -shuffle=on -count=1 -timeout=120m ./test/e2e'
+contains 'go [gate] build -race -buildvcs=false -o /tmp/s3-smb .'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=120m ./internal/storage ./test/e2e'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 contains 'chaos seed '
 S3_SMB_CHECK_MODE='pr' run_internal || fail 'run-linux.sh failed in PR mode'
-contains 'go [pr] test -race -shuffle=on -count=1 -timeout=30m ./...'
-contains 'go [pr] test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'
+contains 'go [pr] test -race -shuffle=on -count=1 -timeout=60m ./internal/storage ./test/e2e'
 S3_SMB_CHAOS_SEED=42 run_internal || fail 'run-linux.sh failed with a chaos seed'
 contains 'chaos seed 42'
 grep -F 'replay with S3_SMB_CHAOS_SEED=42' "$fixture/internal-output" >/dev/null || fail 'chaos seed not printed'
-for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
-  'go test -race -shuffle=on -count=1 -timeout=60m ./...' \
-  'go test -race -shuffle=on -count=1 -timeout=120m ./test/e2e'; do
+for command in 'go build -race -buildvcs=false -o /tmp/s3-smb .' \
+  'go test -race -shuffle=on -count=1 -timeout=120m ./internal/storage ./test/e2e'; do
   export CHECK_TEST_FAIL=$command
   if run_internal; then fail "run-linux.sh ignored a failure: $command"; fi
 done

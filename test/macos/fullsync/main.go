@@ -1,17 +1,14 @@
-//go:build darwin
-
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Command fullsync creates the file full-sync in a directory on the mounted
-// share, writes to it and requires fcntl(F_FULLFSYNC) on it to succeed.
+// share, writes to it and requires fcntl(F_FULLFSYNC) on it to succeed. Only
+// Darwin has F_FULLFSYNC; elsewhere the probe fails.
 package main
 
 import (
 	"errors"
 	"fmt"
 	"os"
-
-	"golang.org/x/sys/unix"
 )
 
 func main() {
@@ -36,7 +33,7 @@ func run(directory string) error {
 	}
 	_, err = file.WriteString("F_FULLFSYNC acceptance\n")
 	if err == nil {
-		if _, syncErr := unix.FcntlInt(file.Fd(), unix.F_FULLFSYNC, 0); syncErr != nil {
+		if syncErr := fullSync(file); syncErr != nil {
 			err = fmt.Errorf("F_FULLFSYNC: %w", syncErr)
 		}
 	}
