@@ -34,9 +34,10 @@ func TestParseDropLog(t *testing.T) {
 		}
 	}
 	got, err := ParseDropLog([]byte(`[
-		{"processImagePath":"/System/Library/CoreServices/backupd","eventMessage":"Starting manual backup"},
-		{"processImagePath":"/System/Library/CoreServices/backupd","eventMessage":"Starting automatic backup"},
-		{"processImagePath":"/other","eventMessage":"Starting manual backup"}
+		{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":"Starting backup with mode \"manual backup\""},
+		{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":"Starting backup with mode \"automatic backup\""},
+		{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":"Starting query at qos 0x15"},
+		{"processImagePath":"/other","eventMessage":"Starting backup with mode \"manual backup\""}
 	]`))
 	if err != nil || got.BackupStarts != 2 {
 		t.Fatal(got, err)

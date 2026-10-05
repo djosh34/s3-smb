@@ -35,7 +35,8 @@ func ParseDropLog(data []byte) (DropLog, error) {
 			result.Refused = result.Refused || strings.Contains(record.Message, "Non idempotent requests found, failing reconnect")
 			result.Reconnected = result.Reconnected || strings.Contains(record.Message, "Reconnect completed successfully.")
 		}
-		if strings.HasSuffix(record.Process, "/backupd") && (strings.HasPrefix(record.Message, "Starting manual backup") || strings.HasPrefix(record.Message, "Starting automatic backup")) {
+		// macOS 15.7 logs `Starting backup with mode "manual backup"`.
+		if strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Starting backup with mode ") {
 			result.BackupStarts++
 		}
 	}
