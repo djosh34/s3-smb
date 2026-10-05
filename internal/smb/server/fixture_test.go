@@ -92,18 +92,24 @@ func (s *testServer) expire(t *testing.T) {
 	s.server.scavengerCleanup.Wait()
 }
 
-// connect logs a new client in with AES-128-GCM and a random client GUID.
+// connect logs the Mac in on a new connection with AES-128-GCM.
 func (s *testServer) connect(t *testing.T) *testClient {
 	t.Helper()
 	return s.dial(t, smbtest.LoginOptions{Cipher: smb.CipherAES128GCM, Signing: smb.SigningGMAC})
 }
 
+// macGUID is the client GUID of the one Mac the tests play.
+var macGUID = [16]byte{0x4d, 0x61, 0x63}
+
 // dial logs a new client in over its own TCP connection. Share and Account
 // are filled in; Cipher 0 gives a signed plaintext session and a zero
-// ClientGUID a random one. Dial from the test goroutine only.
+// ClientGUID is macGUID. Dial from the test goroutine only.
 func (s *testServer) dial(t *testing.T, login smbtest.LoginOptions) *testClient {
 	t.Helper()
 	login.Share, login.Account = s.server.options.ShareName, s.server.options.Account
+	if login.ClientGUID == [16]byte{} {
+		login.ClientGUID = macGUID
+	}
 	client := s.accept(t)
 	client.login = login
 	var err error

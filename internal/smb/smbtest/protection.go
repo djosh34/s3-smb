@@ -92,6 +92,11 @@ func (client *Client) verifyPlaintextReply(message wire.Message) error {
 		_, err := wire.DecodeLeaseBreakNotification(message)
 		return err
 	}
+	// A refused login has no session to sign its reply with.
+	if message.Header.Command == wire.SessionSetup && message.Header.Flags&wire.FlagSigned == 0 &&
+		message.Header.Status != smb.StatusSuccess && message.Header.Status != smb.StatusMoreProcessingRequired {
+		return nil
+	}
 	if client.encrypted && message.Header.Command != wire.SessionSetup {
 		return errors.New("smbtest: encrypted request received plaintext reply")
 	}

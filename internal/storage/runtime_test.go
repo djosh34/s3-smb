@@ -196,7 +196,7 @@ func TestFilesystemRestart(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "metadata.db")
 	runtime := openRuntime(t, path, raw, f, true)
-	if runtime.Config.Format.UUID != f.UUID || runtime.Config.Chunk.CacheSize != 0 || runtime.Config.Meta.Retries != filesystemRetries {
+	if runtime.Config.Format.UUID != f.UUID || runtime.Config.Chunk.CacheSize != 0 || runtime.Config.Meta.Retries != FilesystemRetries {
 		t.Fatal("runtime did not expose its I/O settings")
 	}
 	ctx := meta.NewContext(1, 0, []uint32{0})

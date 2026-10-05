@@ -23,7 +23,8 @@ func handleRead(ctx context.Context, request RequestContext, message wire.Messag
 	}
 	defer release()
 	result := reply{fileID: wire.FileID(open.ID)}
-	if open.GrantedAccess&fileReadData == 0 {
+	// Execute access reads too (MS-SMB2 3.3.5.12).
+	if open.GrantedAccess&(fileReadData|fileExecute) == 0 {
 		result.status = smb.StatusAccessDenied
 		return result, nil
 	}

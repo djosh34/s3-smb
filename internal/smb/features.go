@@ -20,23 +20,26 @@ const (
 	SessionEncryptData      uint16 = 0x0004
 )
 
-// NEGOTIATE capabilities. Leasing (0x2) is not advertised, so macOS requests
-// neither leases nor durable handles. SMB 3.1.1 negotiates GCM through its
-// encryption context, not SMB2_GLOBAL_CAP_ENCRYPTION. No DFS, multichannel,
-// persistent handles, directory leases, compression or RDMA.
+// NEGOTIATE capabilities. macOS asks for leases and durable handles only when
+// leasing is advertised. SMB 3.1.1 negotiates GCM through its encryption
+// context, not SMB2_GLOBAL_CAP_ENCRYPTION. No DFS, multichannel, persistent
+// handles, directory leases, compression or RDMA.
 const (
+	CapabilityLeasing      uint32 = 0x00000002
 	CapabilityLargeMTU     uint32 = 0x00000004
-	AdvertisedCapabilities        = CapabilityLargeMTU
+	AdvertisedCapabilities        = CapabilityLeasing | CapabilityLargeMTU
 )
 
-// FileFsAttributeInformation and AAPL masks. Storage is case-sensitive and
-// preserves spelling. ACLs, object IDs, sparse files, hard links, open-by-ID,
-// quotas, reparse points, named streams and server-side copy are not advertised.
+// FileFsAttributeInformation and AAPL masks. Storage is case-sensitive,
+// preserves spelling and has named streams, which macOS uses for extended
+// attributes. ACLs, object IDs, sparse files, hard links, open-by-ID, quotas,
+// reparse points and server-side copy are not advertised.
 const (
 	FileCaseSensitiveSearch        uint32 = 0x00000001
 	FileCasePreservedNames         uint32 = 0x00000002
 	FileUnicodeOnDisk              uint32 = 0x00000004
-	AdvertisedFilesystemAttributes        = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk
+	FileNamedStreams               uint32 = 0x00040000
+	AdvertisedFilesystemAttributes        = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk | FileNamedStreams
 	AAPLServerCapabilities         uint64 = 0
 	AAPLCaseSensitive              uint64 = 0x00000002
 	AAPLFullSync                   uint64 = 0x00000004

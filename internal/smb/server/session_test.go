@@ -4,8 +4,10 @@ import (
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -30,7 +32,8 @@ func TestNegotiate(t *testing.T) {
 		t.Fatalf("SMB 3.0.2 NEGOTIATE status %#x", status)
 	}
 	response := client.negotiate(t)
-	if response.Dialect != smb.Dialect311 || response.SecurityMode != smb.AdvertisedSecurityMode || response.ServerGUID != srv.server.options.ServerGUID ||
+	// Leasing and large MTU, nothing else.
+	if response.Dialect != smb.Dialect311 || response.SecurityMode != smb.AdvertisedSecurityMode || response.ServerGUID != srv.server.options.ServerGUID || response.Capabilities != 0x06 ||
 		response.MaxRead != smb.MaxReadSize || response.MaxWrite != smb.MaxWriteSize || response.MaxTransact != smb.MaxTransactSize || len(response.Token) == 0 {
 		t.Fatalf("NEGOTIATE reply %+v", response)
 	}
@@ -225,6 +228,35 @@ func TestLoginRefusals(t *testing.T) {
 	client.echo(t)
 }
 
+// Another client is refused while the Mac is connected and while a durable
+// open of the Mac waits for it to come back. More connections of the Mac
+// itself are let in, so it can reconnect before its old connection is dead.
+func TestOneClientAtATime(t *testing.T) {
+	srv := newTestServer(t)
+	mac, again := srv.connect(t), srv.connect(t)
+	again.echo(t)
+	other := smbtest.LoginOptions{Share: "backup", Account: srv.server.options.Account, Signing: smb.SigningGMAC, ClientGUID: [16]byte{2}}
+	refused := func(when string) {
+		t.Helper()
+		client := srv.accept(t)
+		_, err := client.raw.Login(t.Context(), other)
+		if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%#x", smb.StatusRequestNotAccepted)) {
+			t.Fatalf("other client logged in %s: %v", when, err)
+		}
+		if err = client.ended(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refused("while the Mac is connected")
+	mustCreate(t, mac, durableCreate("file", 1))
+	mac.drop(t)
+	again.drop(t)
+	refused("while a durable open waits")
+	srv.clock.advance(smb.DefaultDurableTimeout)
+	srv.expire(t)
+	srv.dial(t, other).echo(t)
+}
+
 // A connection keeps at most 64 logins going at a time.
 func TestIncompleteLoginsAreBounded(t *testing.T) {
 	client := newTestServer(t).accept(t)
@@ -254,9 +286,14 @@ func TestTreeConnect(t *testing.T) {
 		{`\\host\backup\dir`, smb.StatusInvalidParameter},
 		{`\\host\BACKUP`, smb.StatusSuccess},
 	} {
-		header := client.call(t, wire.TreeConnect, encode(t, wire.EncodeTreeConnectRequest, wire.TreeConnectRequest{Path: test.path}), 1).Header
+		response := client.call(t, wire.TreeConnect, encode(t, wire.EncodeTreeConnectRequest, wire.TreeConnectRequest{Path: test.path}), 1)
+		header := response.Header
 		if header.Status != test.want || test.want == smb.StatusSuccess && (header.TreeID == 0 || header.TreeID == client.session.TreeID) {
 			t.Errorf("%s: status %#x, tree %d", test.path, header.Status, header.TreeID)
+		}
+		// A disk share without DFS, continuous availability or other share capabilities.
+		if tree, err := wire.DecodeTreeConnectResponse(response); test.want == smb.StatusSuccess && (err != nil || tree.ShareType != 1 || tree.Flags != 0 || tree.Capabilities != 0) {
+			t.Errorf("%s: tree connect reply %+v, %v", test.path, tree, err)
 		}
 	}
 }

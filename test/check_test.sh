@@ -38,7 +38,7 @@ if [[ -n ${CHECK_TEST_FAIL_PREFIX:-} && "$command $*" == "$CHECK_TEST_FAIL_PREFI
 case "$command $*" in
   'go test -race -shuffle=on -count=1 -timeout=30m ./...')
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb ]] ;;
-  "go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e")
+  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e')
     [[ ${S3_SMB_SAMBA:-} == 1 && ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb-next && ${GORACE:-} == halt_on_error=1 ]] ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
   "go test -list ^Fuzz example/one")
@@ -172,8 +172,9 @@ for argument in --help --pr nonsense ''; do
   [[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid argument ran commands'
 done
 
-# run-linux.sh runs the old-server suite, the tagged app tests and the Samba
-# check against a race build of the new server, and leaves the logs readable.
+# run-linux.sh runs the old-server suite, the tagged app tests, and the
+# integration and Samba checks against a race build of the new server, and
+# leaves the logs readable.
 export S3_SMB_E2E_ENDPOINT=http://minio:9000 S3_SMB_TEST_ARTIFACTS="$fixture/logs"
 touch "$fixture/logs/daemon.log"
 chmod 600 "$fixture/logs/daemon.log"
@@ -188,11 +189,11 @@ contains 'go [gate] build -buildvcs=false -o /tmp/s3-smb .'
 contains 'go [gate] test -race -shuffle=on -count=1 -timeout=30m ./...'
 contains 'go [gate] test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...'
 contains 'go [gate] build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .'
-contains 'go [gate] test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'
+contains 'go [gate] test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'
 [[ $(stat -c %a "$fixture/logs/daemon.log") == 644 ]] || fail 'logs not made readable'
 for command in 'go build -buildvcs=false -o /tmp/s3-smb .' \
   'go test -race -shuffle=on -count=1 -timeout=30m ./...' \
-  'go test -race -shuffle=on -count=1 -timeout=10m -run ^TestSambaInterop$ ./test/e2e'; do
+  'go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e'; do
   export CHECK_TEST_FAIL=$command
   if run_internal; then fail "run-linux.sh ignored a failure: $command"; fi
 done

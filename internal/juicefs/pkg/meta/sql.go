@@ -1082,7 +1082,7 @@ func (m *dbMeta) batchUpdateChunkRefs(s *xorm.Session, chunkRefDeltas map[uint64
 }
 
 func (m *dbMeta) genLog(ctx Context, s *xorm.Session, ns int64, op string, args ...any) {
-	if !m.fmt.ChangeLog {
+	if !m.getFormat().ChangeLog {
 		return
 	}
 	op = fmt.Sprintf(op, args...)

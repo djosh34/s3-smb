@@ -1,5 +1,65 @@
 # smbtorture tests the new server must pass, one full test ID per line, as
 # printed by `smbtorture --list` from the Samba version pinned in test/Dockerfile.
 #
-# None yet. The smb2.credits tests expect 8192 credits, which is Samba's own
-# policy; this server targets 256.
+# Left out on purpose:
+# - smb2.credits: expects Samba's 8192 credits; this server grants 256.
+# - smb2.lease and smb2.durable-v2-open: open one file from several clients,
+#   or need oplocks, V1 leases, persistent handles or a 300 s durable cap.
+# - smb2.dir.modify: names files in another case; this share is case-sensitive.
+# - smb2.rename.rename_dir_openfile: expects renaming a directory with an open
+#   file to fail; opens here follow the inode, so the rename is allowed.
+# - smb2.compound.invalid1, invalid2 and invalid4: send a first request marked
+#   related, a session that differs from the encryption header, or an unknown
+#   command; the server ends the connection instead of answering.
+# - smb2.rw.invalid: expects Windows' 16 TB file size limit and DISK_FULL.
+# - smb2.dir.large-files, smb2.dir.sorted and
+#   smb2.compound_find.compound_find_close: create 2000 to 5000 files and run
+#   for minutes; smb2.dir.many covers large listings.
+smb2.getinfo.granted.granted
+smb2.read.eof.eof
+smb2.read.dir.dir
+smb2.read.access.access
+smb2.dir.find.find
+smb2.dir.fixed.fixed
+smb2.dir.many.many
+smb2.compound.related1.related1
+smb2.compound.related2.related2
+smb2.compound.related5.related5
+smb2.compound.unrelated1.unrelated1
+smb2.compound.invalid3.invalid3
+smb2.compound.create-write-close.create-write-close
+smb2.compound_find.compound_find_related.compound_find_related
+smb2.compound_find.compound_find_unrelated.compound_find_unrelated
+smb2.compound_async.flush_close.flush_close
+smb2.compound_async.flush_flush.flush_flush
+smb2.rename.simple.simple
+smb2.rename.simple_nodelete.simple_nodelete
+smb2.rename.no_sharing.no_sharing
+smb2.rename.msword.msword
+smb2.rename.rename_dir_bench.rename_dir_bench
+smb2.rename.close-full-information.close-full-information
+smb2.rw.rw1.rw1
+smb2.rw.rw2.rw2
+smb2.sharemode.sharemode-access.sharemode-access
+smb2.sharemode.access-sharemode.access-sharemode
+smb2.create.multi.multi
+smb2.create.open.open
+smb2.create.delete.delete
+smb2.create.mkdir-dup.mkdir-dup
+smb2.create.dir-alloc-size.dir-alloc-size
+smb2.create.dosattr_tmp_dir.dosattr_tmp_dir
+smb2.create.bench-path-contention-shared.bench-path-contention-shared
+smb2.create.brlocked.brlocked
+smb2.lock.rw-shared.rw-shared
+smb2.lock.rw-exclusive.rw-exclusive
+smb2.lock.auto-unlock.auto-unlock
+smb2.lock.lock.lock
+smb2.lock.errorcode.errorcode
+smb2.lock.zerobytelength.zerobytelength
+smb2.lock.unlock.unlock
+smb2.lock.stacking.stacking
+smb2.lock.contend.contend
+smb2.lock.context.context
+smb2.lock.range.range
+smb2.lock.overlap.overlap
+smb2.lock.truncate.truncate

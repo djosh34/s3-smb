@@ -98,6 +98,12 @@ func (m *countedMetadata) Readdir(ctx meta.Context, ino meta.Ino, plus uint8, en
 	return m.Meta.Readdir(ctx, ino, plus, entries)
 }
 
+// GetPaths reads each parent directory whole.
+func (m *countedMetadata) GetPaths(ctx meta.Context, ino meta.Ino) []string {
+	m.directories.Add(1)
+	return m.Meta.GetPaths(ctx, ino)
+}
+
 type testBarrier struct {
 	commit func(context.Context, bool) error
 }

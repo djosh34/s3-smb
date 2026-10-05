@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/djosh34/s3-smb/internal/smb/auth"
+	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
 // New validates the supplied modules and server identity. It does not own storage.
@@ -31,7 +32,7 @@ func New(options Options) (*Server, error) {
 	}
 	return &Server{
 		options: options, handlers: commandHandlers(), activeOpens: make(map[uint64]*openUses),
-		connections: make(map[*connection]struct{}), sessions: make(map[uint64]*connection), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
+		connections: make(map[*connection]struct{}), clients: make(map[*connection][16]byte), sessions: make(map[uint64]*connection), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }
 
@@ -120,8 +121,28 @@ func (server *Server) runConnection(ctx context.Context, connection *connection)
 	err := connection.serve(ctx)
 	server.mu.Lock()
 	delete(server.connections, connection)
+	delete(server.clients, connection)
 	server.mu.Unlock()
 	return err
+}
+
+// claimClient lets the connection's client in when no other client is
+// connected and no other client's durable open waits for a reconnect. Any
+// number of connections of the same client may log in, so a reconnecting Mac
+// is let in before its old connection is known to be dead.
+func (server *Server) claimClient(connection *connection) bool {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	for other, guid := range server.clients {
+		if other != connection && guid != connection.clientGUID {
+			return false
+		}
+	}
+	if server.options.State.OtherClient(state.GUID(connection.clientGUID)) {
+		return false
+	}
+	server.clients[connection] = connection.clientGUID
+	return true
 }
 
 // Shutdown stops transport work, waits for it, then closes all shared opens.
