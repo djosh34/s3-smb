@@ -130,6 +130,7 @@ func run() error {
 		{"parallel_same_key", r.testParallelSameKey},
 		{"if_none_match", r.testConditional},
 		{"versions_paging", r.testVersionsPaging},
+		{"conditional_full", r.testConditionalFull},
 	}
 	durations := map[string]string{}
 	only := os.Getenv("B2C_ONLY")
@@ -170,7 +171,7 @@ func run() error {
 	for _, n := range r.checks {
 		total += n
 	}
-	if total < 1000 {
+	if only == "" && total < 1000 {
 		return fmt.Errorf("only %d checks ran; see request_errors", total)
 	}
 	if leftover != 0 {
@@ -1101,6 +1102,7 @@ func (r *runner) hiddenVersions(ctx context.Context) {
 // cleanup deletes every version and delete marker under the prefix and
 // returns how many are left.
 func (r *runner) cleanup(ctx context.Context) int {
+	r.abortUploads(ctx)
 	for attempt := range 3 {
 		vs, err := r.versions(ctx, r.prefix)
 		if err != nil {
