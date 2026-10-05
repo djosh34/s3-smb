@@ -136,14 +136,18 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 	<-proxy.OutageSeen()
 	client.echo(t)
 	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
+	// The cached READ came after any final reply sent so far. While S3 is
+	// down, there must be none.
+	for _, request := range requests {
+		if len(client.replies[request.MessageID]) != 0 && time.Since(start) < outage {
+			t.Fatalf("%v finished during the outage", request.Command)
+		}
+	}
 	finals := make([]wire.Message, len(requests))
 	for i, request := range requests {
 		if finals[i] = client.receive(t, request); finals[i].Header.Status != smb.StatusSuccess {
 			t.Fatalf("%v final status %#x", request.Command, finals[i].Header.Status)
 		}
-	}
-	if time.Since(start) < outage {
-		t.Fatal("finished before S3 returned")
 	}
 	if response, err := wire.DecodeReadResponse(finals[0]); err != nil || !bytes.Equal(response.Data, stored[offset:offset+64]) {
 		t.Fatalf("READ = %q, %v", response.Data, err)
