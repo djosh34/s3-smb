@@ -181,7 +181,10 @@ func (h *harness) restoreSMBLogging() error {
 
 func (h *harness) dropLog(start, end time.Time) helpers.DropLog {
 	format := "2006-01-02 15:04:05-0700"
-	h.run(2*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", `process == "backupd" OR senderImagePath CONTAINS "smbfs"`)
+	// During an outage smbfs logs hundreds of thousands of reconnect attempts,
+	// so read only the lines ParseDropLog needs. log show still scans them all.
+	predicate := `process == "backupd" OR (senderImagePath CONTAINS "smbfs" AND (eventMessage CONTAINS "Non idempotent requests found" OR eventMessage CONTAINS "Reconnect completed successfully"))`
+	h.run(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", predicate)
 	// try leaves log show output on disk rather than returning it.
 	data, err := h.evidenceDir.ReadFile(fmt.Sprintf("%04d-log.log", h.serial))
 	h.must(err)
