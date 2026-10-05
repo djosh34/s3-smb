@@ -25,7 +25,7 @@ func setRenameInfo(ctx context.Context, request RequestContext, open state.Open,
 	}
 	// A leading SMB separator names a destination relative to the share root.
 	path := strings.TrimPrefix(info.Name, "\\")
-	for {
+	for range nameTries {
 		if err := ctx.Err(); err != nil {
 			return smb.StatusFromError(err)
 		}
@@ -53,6 +53,7 @@ func setRenameInfo(ctx context.Context, request RequestContext, open state.Open,
 			return status
 		}
 	}
+	return smb.StatusFromError(smb.ErrIdentityChanged)
 }
 
 func renameSource(ctx context.Context, request RequestContext, inode smb.Inode) (string, smb.Resolved, error) {
@@ -106,7 +107,7 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 	if !info.DeletePending {
 		return request.Opens.SetDelete(open.ID, request.Binding(), smb.Name{}, false)
 	}
-	for {
+	for range nameTries {
 		if err := ctx.Err(); err != nil {
 			return smb.StatusFromError(err)
 		}
@@ -128,6 +129,7 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 			return status
 		}
 	}
+	return smb.StatusFromError(smb.ErrIdentityChanged)
 }
 
 func dispositionUnderGuard(ctx context.Context, request RequestContext, open state.Open, path string, discovered smb.Resolved) (smb.Status, bool) {

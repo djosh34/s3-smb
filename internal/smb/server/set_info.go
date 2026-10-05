@@ -107,11 +107,7 @@ func setEndOfFileInfo(ctx context.Context, request RequestContext, open state.Op
 	if info.EndOfFile >= 1<<63 {
 		return smb.StatusInvalidParameter
 	}
-	attr, err := request.Storage.GetAttr(ctx, open.Object)
-	if err != nil {
-		return setInfoStorageStatus(ctx, request, err)
-	}
-	if attr.Kind == smb.KindDirectory {
+	if open.Kind == smb.KindDirectory {
 		return smb.StatusInvalidParameter
 	}
 	return setInfoStorageStatus(ctx, request, request.Storage.SetAttr(ctx, open.Object, smb.AttrChange{Size: &info.EndOfFile}))

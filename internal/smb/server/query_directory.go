@@ -36,11 +36,7 @@ func handleQueryDirectory(ctx context.Context, request RequestContext, message w
 	}
 	defer release()
 	result := reply{fileID: id}
-	attr, err := request.Storage.GetAttr(ctx, open.Object)
-	if err != nil {
-		return result, err
-	}
-	if attr.Kind != smb.KindDirectory {
+	if open.Kind != smb.KindDirectory {
 		result.status = smb.StatusInvalidParameter
 		return result, nil
 	}

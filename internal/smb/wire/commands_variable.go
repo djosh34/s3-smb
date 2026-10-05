@@ -561,39 +561,6 @@ func EncodeIOCTLRequest(v IOCTLRequest) ([]byte, error) {
 	return b.finish()
 }
 
-// EncodeIOCTLResponse writes the command body without an SMB header.
-func EncodeIOCTLResponse(v IOCTLResponse) ([]byte, error) {
-	outputOffset := 112 + len(v.Input)
-	if len(v.Output) > 0 {
-		outputOffset += (8 - outputOffset%8) % 8
-	}
-	b := builder{}
-	b.u16(49)
-	b.zero(2)
-	b.u32(v.ControlCode)
-	b.id(v.ID)
-	if len(v.Input) > 0 {
-		b.u32(112)
-	} else {
-		b.u32(0)
-	}
-	b.length32(len(v.Input))
-	if len(v.Output) > 0 {
-		b.length32(outputOffset)
-	} else {
-		b.u32(0)
-	}
-	b.length32(len(v.Output))
-	b.u32(v.Flags)
-	b.u32(0)
-	b.bytes(v.Input)
-	if len(v.Output) > 0 {
-		b.align8()
-	}
-	b.bytes(v.Output)
-	return b.finish()
-}
-
 // DecodeErrorResponse validates fixed fields and variable buffers.
 func DecodeErrorResponse(m Message) (ErrorResponse, error) {
 	r := body(m, m.Header.Command, true, 9, 8)

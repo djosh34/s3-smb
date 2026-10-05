@@ -74,15 +74,6 @@ type QueryResponse struct {
 	Data []byte
 }
 
-// IOCTLResponse carries a validated control reply; unsupported codes use ErrorResponse.
-type IOCTLResponse struct {
-	Input       []byte
-	Output      []byte
-	ID          FileID
-	ControlCode uint32
-	Flags       uint32
-}
-
 // LeaseBreakNotification is the server's V2 break message, not an acknowledgement.
 // CurrentState, NewState and AckRequired are captured by state when the break starts.
 // Epoch is the notification's new lease epoch. Flags contains the ack-required bit.
