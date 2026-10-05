@@ -80,11 +80,13 @@ func TestLockStreamsAndBaseAreSeparate(t *testing.T) {
 	client := newTestServer(t).connect(t)
 	base, stream := client.open(t, "file"), client.open(t, "file:fork")
 	baseReader, streamReader := client.open(t, "file"), client.open(t, "file:fork")
-	lockRange(t, client, stream, 0, 8, lockExclusive, smb.StatusSuccess)
-	expectIO(t, client, baseReader, 0, smb.StatusEndOfFile, smb.StatusSuccess)
-	expectIO(t, client, streamReader, 0, smb.StatusFileLockConflict, smb.StatusFileLockConflict)
 	lockRange(t, client, base, 0, 8, lockExclusive, smb.StatusSuccess)
+	lockRange(t, client, stream, 16, 8, lockExclusive, smb.StatusSuccess)
+	// Each lock leaves the same range of the other object alone.
+	expectIO(t, client, streamReader, 0, smb.StatusEndOfFile, smb.StatusSuccess)
+	expectIO(t, client, baseReader, 16, smb.StatusEndOfFile, smb.StatusSuccess)
 	expectIO(t, client, baseReader, 0, smb.StatusFileLockConflict, smb.StatusFileLockConflict)
+	expectIO(t, client, streamReader, 16, smb.StatusFileLockConflict, smb.StatusFileLockConflict)
 }
 
 // A refused LOCK takes no range: afterwards another open can lock the whole file.

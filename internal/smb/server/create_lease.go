@@ -144,7 +144,7 @@ func reserveCreate(request RequestContext, open state.OpenRequest, lease state.L
 	reservation, status := request.Opens.Reserve(open)
 	if status == smb.StatusSharingViolation {
 		if object, found := request.Opens.SharingLease(open, lease.ClientGUID, lease.Key); found {
-			return 0, &leaseBreak{object: object, client: lease.ClientGUID, key: lease.Key, target: target &^ smb.LeaseHandle}, status, nil
+			return 0, &leaseBreak{object: object, target: target &^ smb.LeaseHandle}, status, nil
 		}
 	}
 	if status != smb.StatusSuccess {

@@ -477,7 +477,9 @@ func (f *fixture) connect(user, password string) (*smb.Share, func(), error) {
 		}
 	})
 	dialer := smb.Dialer{
-		Negotiator: smb.Negotiator{RequireMessageSigning: true},
+		// The new server lets one client in at a time, so every connection
+		// uses the same client GUID, like the connections of one Mac.
+		Negotiator: smb.Negotiator{RequireMessageSigning: true, ClientGuid: [16]byte{0x4d, 0x61, 0x63}},
 		Initiator:  &smb.NTLMInitiator{User: user, Password: password},
 	}
 	session, err := dialer.DialContext(ctx, conn)

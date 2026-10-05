@@ -193,27 +193,25 @@ func TestReconnectRefusesMismatches(t *testing.T) {
 	resumed := client.reconnect(t)
 	for _, test := range []struct {
 		modify func(*smbtest.CreateOptions)
-		client *testClient
 		name   string
 		want   smb.Status
 	}{
-		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.ID.Volatile++ }, client: resumed, name: "file ID", want: smb.StatusObjectNameNotFound},
-		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.CreateGUID[0]++ }, client: resumed, name: "CREATE GUID", want: smb.StatusObjectNameNotFound},
-		{modify: func(o *smbtest.CreateOptions) { o.Lease.Key[0]++ }, client: resumed, name: "lease key", want: smb.StatusObjectNameNotFound},
-		{modify: func(o *smbtest.CreateOptions) { o.Lease = nil }, client: resumed, name: "no lease", want: smb.StatusObjectNameNotFound},
+		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.ID.Volatile++ }, name: "file ID", want: smb.StatusObjectNameNotFound},
+		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.CreateGUID[0]++ }, name: "CREATE GUID", want: smb.StatusObjectNameNotFound},
+		{modify: func(o *smbtest.CreateOptions) { o.Lease.Key[0]++ }, name: "lease key", want: smb.StatusObjectNameNotFound},
+		{modify: func(o *smbtest.CreateOptions) { o.Lease = nil }, name: "no lease", want: smb.StatusObjectNameNotFound},
 		{modify: func(o *smbtest.CreateOptions) {
 			o.Reconnect = nil
 			o.Request.Contexts = []wire.CreateContext{{Name: "DHnC", Data: make([]byte, 16)}}
-		}, client: resumed, name: "durable v1", want: smb.StatusObjectNameNotFound},
-		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.Flags = 2 }, client: resumed, name: "persistent", want: smb.StatusInvalidParameter},
-		{modify: func(*smbtest.CreateOptions) {}, client: srv.connect(t), name: "another client", want: smb.StatusObjectNameNotFound},
+		}, name: "durable v1", want: smb.StatusObjectNameNotFound},
+		{modify: func(o *smbtest.CreateOptions) { o.Reconnect.Flags = 2 }, name: "persistent", want: smb.StatusInvalidParameter},
 	} {
 		bad := good
 		lease, reconnect := *good.Lease, *good.Reconnect
 		bad.Lease, bad.Reconnect = &lease, &reconnect
 		test.modify(&bad)
 		bad.Request.Name = "must-not-exist"
-		if _, status := test.client.create(t, bad); status != test.want {
+		if _, status := resumed.create(t, bad); status != test.want {
 			t.Fatalf("%s: status %#x, want %#x", test.name, status, test.want)
 		}
 		if srv.exists(t, bad.Request.Name) {

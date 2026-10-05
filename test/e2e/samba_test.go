@@ -93,9 +93,14 @@ func samba(t *testing.T, tool string, args []string, test ...string) (string, er
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "smbtorture")
-	if tool == "smbclient" {
+	var cmd *exec.Cmd
+	switch tool {
+	case "smbclient":
 		cmd = exec.CommandContext(ctx, "smbclient")
+	case "smbtorture":
+		cmd = exec.CommandContext(ctx, "smbtorture")
+	default:
+		return "", fmt.Errorf("unknown Samba tool %q", tool)
 	}
 	cmd.Args = append(append(cmd.Args, args...), test...)
 	cmd.Dir = t.TempDir()
