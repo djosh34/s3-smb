@@ -295,7 +295,8 @@ There are no release candidates.
 1. Pick the latest `main` commit. On it, every workflow passes: `check` in gate
    mode (`gh workflow run check.yml --ref main -f gate=true`), the Time Machine
    workflow (`gh workflow run macos.yml --ref main -f mode=acceptance`) and
-   `Publish MinIO`.
+   `Publish MinIO` (`gh workflow run minio.yml --ref main`, which never
+   overwrites a published image).
 2. Install that exact commit from the Go proxy with empty caches:
    `scripts/check-public-install.sh <pseudo-version>`.
    `go list -m github.com/djosh34/s3-smb@<sha>` prints the pseudo-version. If
