@@ -18,6 +18,7 @@ import (
 	"os"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -130,7 +131,11 @@ func run() error {
 		{"if_none_match", r.testConditional},
 	}
 	durations := map[string]string{}
+	only := os.Getenv("B2C_ONLY")
 	for _, t := range tests {
+		if only != "" && !slices.Contains(strings.Split(only, ","), t.name) {
+			continue
+		}
 		if r.attempts.Load() > budget {
 			fmt.Printf("skip %s: request budget reached\n", t.name)
 			r.note("skipped_"+t.name, true)
@@ -723,7 +728,11 @@ func (r *runner) testDelete(ctx context.Context) {
 // A key with an older hidden version: after DELETE, no read may fall back to
 // the older version.
 func (r *runner) testDeleteOverwritten(ctx context.Context) {
-	forEach(300, 8, func(i int) {
+	n, versionCheck := 300, os.Getenv("B2C_VERSION_CHECK") != ""
+	if v, err := strconv.Atoi(os.Getenv("B2C_DELOW_N")); err == nil {
+		n = v
+	}
+	forEach(n, 8, func(i int) {
 		key := fmt.Sprintf("%sdelow/%05d", r.prefix, i)
 		if _, err := r.put(ctx, key, randBody(100+i)); err != nil {
 			return
@@ -734,7 +743,36 @@ func (r *runner) testDeleteOverwritten(ctx context.Context) {
 		if r.del(ctx, key) != nil {
 			return
 		}
-		r.verifyGone(ctx, "delete_overwritten", key, time.Now(), i)
+		deleted := time.Now()
+		r.verifyGone(ctx, "delete_overwritten", key, deleted, i)
+		if !versionCheck {
+			return
+		}
+		// ListObjectVersions must mark exactly one entry as latest: the marker.
+		chk := func() (bool, string) {
+			vs, err := r.versions(ctx, key)
+			if err != nil {
+				return true, ""
+			}
+			latest, markerLatest := 0, false
+			var all []string
+			for _, v := range vs {
+				if v.key != key {
+					continue
+				}
+				all = append(all, v.String())
+				if v.latest {
+					latest++
+					markerLatest = v.marker
+				}
+			}
+			if latest != 1 || !markerLatest || len(all) != 3 {
+				return false, strings.Join(all, "; ")
+			}
+			return true, ""
+		}
+		ok, d := chk()
+		r.check("delete_overwritten", "versions_latest_is_marker", key, deleted, ok, d, func() bool { ok, _ := chk(); return ok })
 	})
 }
 
@@ -855,12 +893,13 @@ func (r *runner) testParallelSameKey(ctx context.Context) {
 // For the record only: what If-None-Match and If-Match do on PutObject.
 func (r *runner) testConditional(ctx context.Context) {
 	results := map[string]map[string]int{}
-	rec := func(what string, err error) {
+	recS := func(what, outcome string) {
 		if results[what] == nil {
 			results[what] = map[string]int{}
 		}
-		results[what][status(err)]++
+		results[what][outcome]++
 	}
+	rec := func(what string, err error) { recS(what, status(err)) }
 	for i := range 10 {
 		key := fmt.Sprintf("%scond/%02d", r.prefix, i)
 		put := func(body []byte, inm, im string) (*s3.PutObjectOutput, error) {
@@ -881,11 +920,11 @@ func (r *runner) testConditional(ctx context.Context) {
 		b, found, _ := r.get(ctx, key)
 		switch {
 		case !found:
-			rec("existing_key_after_conditional", errors.New("missing"))
+			recS("existing_key_after_conditional", "missing")
 		case bytes.Equal(b, first):
-			rec("existing_key_after_conditional", nil) // first body kept
+			recS("existing_key_after_conditional", "first body kept")
 		default:
-			rec("existing_key_after_conditional", errors.New("overwritten"))
+			recS("existing_key_after_conditional", "overwritten")
 		}
 		h, _ := r.head(ctx, key)
 		_, err = put(randBody(102), "", `"`+h.etag+`"`)
@@ -902,24 +941,33 @@ func (r *runner) testConditional(ctx context.Context) {
 // ---- end checks and cleanup ----
 
 type version struct {
-	key, id string
-	marker  bool
-	latest  bool
+	key, id  string
+	marker   bool
+	latest   bool
+	modified time.Time
 }
 
-func (r *runner) versions(ctx context.Context) ([]version, error) {
+func (v version) String() string {
+	kind := "version"
+	if v.marker {
+		kind = "marker"
+	}
+	return fmt.Sprintf("%s latest=%v modified=%s id=%s", kind, v.latest, v.modified.Format("15:04:05.000"), v.id)
+}
+
+func (r *runner) versions(ctx context.Context, prefix string) ([]version, error) {
 	var vs []version
-	p := s3.NewListObjectVersionsPaginator(r.w, &s3.ListObjectVersionsInput{Bucket: &r.bucket, Prefix: &r.prefix})
+	p := s3.NewListObjectVersionsPaginator(r.w, &s3.ListObjectVersionsInput{Bucket: &r.bucket, Prefix: &prefix})
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
 		if r.failed("list_versions", err) {
 			return nil, err
 		}
 		for _, v := range page.Versions {
-			vs = append(vs, version{aws.ToString(v.Key), aws.ToString(v.VersionId), false, aws.ToBool(v.IsLatest)})
+			vs = append(vs, version{aws.ToString(v.Key), aws.ToString(v.VersionId), false, aws.ToBool(v.IsLatest), aws.ToTime(v.LastModified)})
 		}
 		for _, m := range page.DeleteMarkers {
-			vs = append(vs, version{aws.ToString(m.Key), aws.ToString(m.VersionId), true, aws.ToBool(m.IsLatest)})
+			vs = append(vs, version{aws.ToString(m.Key), aws.ToString(m.VersionId), true, aws.ToBool(m.IsLatest), aws.ToTime(m.LastModified)})
 		}
 	}
 	return vs, nil
@@ -929,7 +977,7 @@ func (r *runner) versions(ctx context.Context) ([]version, error) {
 // prefix: ListObjectsV2 must show exactly the keys whose latest version is not
 // a delete marker.
 func (r *runner) hiddenVersions(ctx context.Context) {
-	vs, err := r.versions(ctx)
+	vs, err := r.versions(ctx, r.prefix)
 	if err != nil {
 		return
 	}
@@ -971,6 +1019,18 @@ func (r *runner) hiddenVersions(ctx context.Context) {
 	r.note("delete_markers_total", nmark)
 	r.note("keys_with_hidden_versions", hidden)
 	r.note("listobjectsv2_keys", len(objs))
+	details := map[string][]string{}
+	for _, k := range slices.Concat(extra, missing) {
+		if len(details) == 10 {
+			break
+		}
+		for _, v := range byKey[r.prefix+k] {
+			details[k] = append(details[k], v.String())
+		}
+	}
+	if len(details) > 0 {
+		r.note("hidden_versions_mismatch_details", details)
+	}
 	if len(extra) > 10 {
 		extra = extra[:10]
 	}
@@ -985,7 +1045,7 @@ func (r *runner) hiddenVersions(ctx context.Context) {
 // returns how many are left.
 func (r *runner) cleanup(ctx context.Context) int {
 	for attempt := range 3 {
-		vs, err := r.versions(ctx)
+		vs, err := r.versions(ctx, r.prefix)
 		if err != nil {
 			continue
 		}
@@ -1013,7 +1073,7 @@ func (r *runner) cleanup(ctx context.Context) int {
 			})
 		}
 	}
-	vs, err := r.versions(ctx)
+	vs, err := r.versions(ctx, r.prefix)
 	if err != nil {
 		return -1
 	}
