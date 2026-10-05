@@ -71,6 +71,51 @@ func TestCancel(t *testing.T) {
 	}
 }
 
+// A storage call that fails because its request was cancelled, as JuiceFS does
+// with EINTR, still answers STATUS_CANCELLED. WRITE returns the error;
+// SET_INFO turns it into a status itself.
+func TestCancelledStorageErrorAnswersCancelled(t *testing.T) {
+	for _, test := range []struct {
+		hook func(hooks *storageHooks, fail func(context.Context) error)
+		send func(t *testing.T, client *testClient, id wire.FileID) wire.Header
+		name string
+	}{
+		{func(hooks *storageHooks, fail func(context.Context) error) {
+			hooks.WriteAt = func(ctx context.Context, _ smb.Handle, _ []byte, _ uint64) (int, error) { return 0, fail(ctx) }
+		}, func(t *testing.T, client *testClient, id wire.FileID) wire.Header {
+			return client.send(t, wire.Write, encode(t, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")}), 1)
+		}, "WRITE"},
+		{func(hooks *storageHooks, fail func(context.Context) error) {
+			hooks.PathOf = func(ctx context.Context, _ smb.Inode) (string, error) { return "", fail(ctx) }
+		}, func(t *testing.T, client *testClient, id wire.FileID) wire.Header {
+			rename := encode(t, wire.EncodeFileRenameInformation, wire.FileRenameInformation{Name: "moved"})
+			body := encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileRename), Input: rename})
+			return client.send(t, wire.SetInfo, body, 1)
+		}, "SET_INFO rename"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			client := srv.connect(t)
+			id := client.open(t, "file")
+			entered := make(chan struct{})
+			srv.faults.set(func(hooks *storageHooks) {
+				test.hook(hooks, func(ctx context.Context) error {
+					close(entered)
+					<-ctx.Done()
+					return smb.ErrIO
+				})
+			})
+			request := test.send(t, client, id)
+			<-entered
+			client.cancelAsync(t, client.interim(t, request))
+			if status := client.receive(t, request).Header.Status; status != smb.StatusCancelled {
+				t.Fatalf("status %#x", status)
+			}
+			client.noExtraReplies(t)
+		})
+	}
+}
+
 // Cancelling a related member that waits for the one before it leaves that
 // one running.
 func TestCancelWaitingRelatedRequest(t *testing.T) {

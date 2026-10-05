@@ -39,12 +39,13 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 		return reply{status: previous.status}
 	}
 	result, err := connection.dispatch(ctx, message, previous)
+	// JuiceFS fails a cancelled call with an errno such as EINTR, which the
+	// adapter maps to ErrIO and a handler may turn into a status. A cancelled
+	// request that fails answers STATUS_CANCELLED.
+	if ctxErr := ctx.Err(); ctxErr != nil && (err != nil || result.status&0xc0000000 == 0xc0000000) {
+		err = errors.Join(ctxErr, err)
+	}
 	if err != nil {
-		// JuiceFS reports a cancelled context as an I/O error. A cancelled
-		// request still answers STATUS_CANCELLED.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			err = errors.Join(ctxErr, err)
-		}
 		status := smb.StatusFromError(err)
 		level, text := slog.LevelDebug, "request refused"
 		if errors.Is(err, context.Canceled) {
