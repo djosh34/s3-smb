@@ -100,22 +100,23 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 		if h.backup.exited() {
 			return false, errors.New("backup ended before the connection cut")
 		}
+		older := previous
 		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready := helpers.BandWriteReady(previous, current)
 		previous = current
-		if !ready {
+		if !helpers.BandWriteReady(older, current) {
 			return false, nil
 		}
-		// Prove this attempt uploaded chunks, then resample immediately before cutting.
+		// Prove this attempt uploaded chunks, then resample immediately before
+		// cutting. tmutil updates its byte count only every few seconds, so the
+		// resample is compared with the older sample, not the one just taken.
 		after := h.objects("s3-smb/chunks/")
 		if err := helpers.CheckRemoteChange(before, after); err != nil {
 			h.t.Log("waiting for remote band data", err)
 			return false, nil
 		}
 		current = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		ready = helpers.BandWriteReady(previous, current)
 		previous = current
-		return ready, nil
+		return helpers.BandWriteReady(older, current), nil
 	}))
 	attempt := helpers.DropAttempt{StatusAtCut: current, CutAt: time.Now().UTC()}
 	h.must(h.proxy.Drop())
