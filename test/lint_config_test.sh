@@ -23,8 +23,8 @@ lint_fails() {
     grep -F "$finding" "$fixture/output" >/dev/null || fail "missing $finding"
   done
 }
-# Vendored and frozen trees are excluded recursively, even with deliberate errors.
-for directory in internal/juicefs/probe internal/thirdparty/probe internal/smb-old/probe; do
+# Vendored trees are excluded recursively, even with deliberate errors.
+for directory in internal/juicefs/probe internal/thirdparty/probe; do
   mkdir -p "$directory"
   cat > "$directory/probe.go" <<'GO'
 package probe
@@ -35,7 +35,7 @@ GO
 done
 lint_passes
 
-# Our code, including the root package, gets the full config in both builds.
+# Our code, including the root package, gets the full config.
 mkdir -p internal/smb
 cat > internal/smb/probe.go <<'GO'
 // Package smb tests the lint configuration.
@@ -50,12 +50,6 @@ func Probe() {
 func marker() {}
 GO
 lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
-if "$tools/golangci-lint" run --build-tags smbnext ./... > "$fixture/tagged" 2>&1; then
-  fail 'tagged lint accepted invalid code'
-fi
-for finding in errcheck forbidigo nolintlint; do
-  grep -F "($finding)" "$fixture/tagged" >/dev/null || fail "tagged lint missed $finding"
-done
 mv internal/smb internal/app
 lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
 rm -rf internal/app

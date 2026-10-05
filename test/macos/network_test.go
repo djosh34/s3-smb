@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -22,9 +21,6 @@ import (
 // Mac, including Time Machine and restore mounts, connects through a fault
 // proxy that cuts the connection during a backup.
 func (h *harness) networkScenario(name string) result {
-	if os.Getenv("MAC_SERVER") != "smbnext" {
-		h.t.Fatal("network scenarios require MAC_SERVER=smbnext")
-	}
 	// Keep forwarding alive for detach after a stage timeout. finish closes it.
 	proxy, err := netfault.New(context.WithoutCancel(h.ctx), "127.0.0.1:1445")
 	h.must(err)

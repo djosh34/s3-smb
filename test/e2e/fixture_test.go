@@ -506,7 +506,7 @@ func (f *fixture) connectAt(addr, user, password string) (*smb.Share, func(), er
 		}
 	})
 	dialer := smb.Dialer{
-		// The new server lets one client in at a time, so every connection
+		// The server lets one client in at a time, so every connection
 		// uses the same client GUID, like the connections of one Mac.
 		Negotiator: smb.Negotiator{RequireMessageSigning: true, ClientGuid: macGUID},
 		Initiator:  &smb.NTLMInitiator{User: user, Password: password},

@@ -18,17 +18,65 @@ on:
 permissions:
   contents: read
 jobs:
-  check:
-    name: check
+  lint:
+    name: lint
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: ${{ inputs.gate && 300 || 60 }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+      - run: scripts/check.sh lint
+  unit:
+    name: unit tests
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.26.3'
       - id: check
-        run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }}
+        run: scripts/check.sh unit
+      - if: failure() && steps.check.outputs.fuzz_failed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-corpus-unit
+          path: '**/testdata/fuzz/**'
+          retention-days: 7
+  fuzz:
+    name: fuzzing ${{ matrix.shard }}/6
+    if: inputs.gate
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6]
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+      - id: check
+        run: scripts/check.sh --gate fuzz ${{ matrix.shard }}/6
+      - if: failure() && steps.check.outputs.fuzz_failed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: fuzz-corpus-${{ matrix.shard }}
+          path: '**/testdata/fuzz/**'
+          retention-days: 7
+  integration:
+    name: integration, smbtorture and chaos
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: ${{ inputs.gate && 150 || 75 }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+      - run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} integration
         env:
           S3_SMB_TEST_LOGS: ${{ runner.temp }}/s3-smb-logs
           S3_SMB_CHAOS_SEED: ${{ inputs.chaos_seed }}
@@ -46,9 +94,21 @@ jobs:
           name: daemon-logs
           path: ${{ runner.temp }}/s3-smb-logs
           retention-days: 7
-      - if: failure() && steps.check.outputs.fuzz_failed == 'true'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: fuzz-corpus
-          path: '**/testdata/fuzz/**'
-          retention-days: 7
+  # Branch protection requires this one job. Fuzzing is skipped outside the gate.
+  check:
+    name: check
+    if: always()
+    needs: [lint, unit, fuzz, integration]
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 5
+    steps:
+      - env:
+          LINT: ${{ needs.lint.result }}
+          UNIT: ${{ needs.unit.result }}
+          FUZZ: ${{ needs.fuzz.result }}
+          INTEGRATION: ${{ needs.integration.result }}
+          GATE: ${{ inputs.gate }}
+        run: |
+          echo "lint $LINT, unit $UNIT, fuzz $FUZZ, integration $INTEGRATION"
+          [[ $LINT == success && $UNIT == success && $INTEGRATION == success ]]
+          [[ $FUZZ == success || ($FUZZ == skipped && $GATE != true) ]]

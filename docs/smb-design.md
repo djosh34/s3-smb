@@ -1,9 +1,7 @@
-# New SMB server design
+# SMB server design
 
-The new SMB server serves one share to one Mac running Time Machine. It speaks
-SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption. It is built
-with `-tags smbnext`; without the tag, s3-smb still uses the server in
-`internal/smb-old`. There is no runtime setting to choose a server.
+The SMB server serves one share to one Mac running Time Machine. It speaks
+SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption.
 
 ## Packages
 
@@ -21,9 +19,7 @@ with `-tags smbnext`; without the tag, s3-smb still uses the server in
 - `internal/smb/smbtest`: a raw SMB test client and fixtures that serve a real
   JuiceFS adapter.
 
-`internal/app` constructs the new server in files built with `smbnext` and the
-old one in files built with `!smbnext`. No new package imports
-`internal/smb-old`.
+`internal/app` constructs the server in `smb.go`.
 
 ## Storage access
 

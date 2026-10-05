@@ -28,13 +28,13 @@ import (
 // backup must survive" (#264) and "What reconnect promises" (#266).
 
 // chaosRand returns the random source of a chaos test, or skips the test when
-// S3_SMB_CHAOS_SEED is unset. test/run-linux.sh sets it for the new server and
-// prints it; the same seed replays the same faults at the same points.
+// S3_SMB_CHAOS_SEED is unset. test/run-linux.sh sets it and prints it; the same
+// seed replays the same faults at the same points.
 func chaosRand(t *testing.T) *rand.Rand {
 	t.Helper()
 	value := os.Getenv("S3_SMB_CHAOS_SEED")
 	if value == "" {
-		t.Skip("needs the new server: run scripts/check.sh")
+		t.Skip("needs S3_SMB_CHAOS_SEED: run scripts/check.sh")
 	}
 	seed, err := strconv.ParseUint(value, 10, 64)
 	if err != nil {

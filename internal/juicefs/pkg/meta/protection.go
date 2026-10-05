@@ -2,7 +2,6 @@
 package meta
 
 import (
-	"errors"
 	"net/url"
 	"path/filepath"
 
@@ -26,25 +25,6 @@ func NewSQLite(path string, conf *Config) (Meta, error) {
 	// here would introduce SQLITE_LOCKED between native readers and writers.
 	uri := url.URL{Scheme: "file", Path: abs, RawQuery: "cache=private"}
 	return newSQLMeta("sqlite3", uri.String(), conf)
-}
-
-// ClearOrphanLocks removes only unregistered SID-zero advisory locks left by
-// a previous read-only authority. The caller MUST hold the exclusive application
-// state lock, after metadata Load/Init and before NewSession or client access.
-// Call for both writable and read-only startup. Registered native sessions keep
-// their ordinary native cleanup; no file metadata or object reference is changed.
-func ClearOrphanLocks(m Meta) error {
-	db, ok := m.(*dbMeta)
-	if !ok || db.Name() != "sqlite3" {
-		return errors.New("orphan lock cleanup requires native SQLite")
-	}
-	return db.lockTxn(func(s *xorm.Session) error {
-		if _, err := s.Where("sid = ?", uint64(0)).Delete(&flock{}); err != nil {
-			return err
-		}
-		_, err := s.Where("sid = ?", uint64(0)).Delete(&plock{})
-		return err
-	})
 }
 
 func (m *baseMeta) checkMaintenance() error {

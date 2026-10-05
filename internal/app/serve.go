@@ -123,9 +123,6 @@ func (r *resources) open(ctx context.Context, c *config.Resolved) error {
 			return fmt.Errorf("clean abandoned recovery staging: %w", err)
 		}
 	}
-	if err = r.prepareSMBMetadata(); err != nil {
-		return err
-	}
 	if !c.SMB.ReadOnly {
 		if err = r.startManager(ctx, c, blob, dbPath, !v.fresh && !recovered); err != nil {
 			return err

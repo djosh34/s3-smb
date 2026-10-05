@@ -1,5 +1,5 @@
 // Package smb defines the storage seam, status codes and feature policy for the
-// new server. It must not decode packets, keep opens or call JuiceFS.
+// server. It must not decode packets, keep opens or call JuiceFS.
 package smb
 
 import (

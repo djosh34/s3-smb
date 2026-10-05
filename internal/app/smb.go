@@ -1,5 +1,3 @@
-//go:build smbnext
-
 // SPDX-License-Identifier: AGPL-3.0-only
 package app
 
@@ -16,10 +14,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smbfs"
 	"github.com/djosh34/s3-smb/internal/storage"
 )
-
-// The new server keeps locks only in its in-memory open table. Native lock
-// rows are neither consulted nor cleared at startup.
-func (*resources) prepareSMBMetadata() error { return nil }
 
 func newSMBServer(runtime *storage.Runtime, c config.SMBConfig, metadataPath string) (smbServer, smbAdapter, error) {
 	barrier, err := smbfs.NewMetadataBarrier(metadataPath)

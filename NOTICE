@@ -9,11 +9,10 @@ This distribution incorporates modified copies of:
   Copyright Juicedata Inc.; Apache-2.0 (internal/juicefs/LICENSE).
 * macos-fuse-t/go-smb2, commit 277a9300411249a881a05f7a910f5a83ae3395f2
   https://github.com/macos-fuse-t/go-smb2
-  AGPL-3.0; see internal/smb-old/smb2/LICENSE and internal/smb-old/smb2/Attributions.txt
+  The NTLMv2 code in internal/smb/auth is ported from it.
+  AGPL-3.0; see internal/smb/auth/LICENSE and internal/smb/auth/Attributions.txt
   for original author and incorporated BSD/MIT/Apache notices.
-  The reviewed NTLMv2 port in internal/smb/auth also preserves these notices
-  in internal/smb/auth/LICENSE and internal/smb/auth/Attributions.txt.
-* AES-CMAC in internal/smb/crypt/cmac.go, ported from the go-smb2 copy above.
+* AES-CMAC in internal/smb/crypt/cmac.go, ported from go-smb2 above.
   Copyright 2009 The Go Authors; portions Copyright 2016 Hiroshi Ioka.
   BSD-3-Clause; the full notice is retained in that file.
 * Customized mpb, juicedata/mpb v7.0.4-0.20231024073412-2b8d31be510b

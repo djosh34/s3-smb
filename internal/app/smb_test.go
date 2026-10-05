@@ -1,5 +1,3 @@
-//go:build smbnext
-
 // SPDX-License-Identifier: AGPL-3.0-only
 package app
 
@@ -60,7 +58,7 @@ func negotiateWithoutGCM(ctx context.Context, t *testing.T, address string) smb.
 
 // The configured encryption policy reaches the server: without GCM a client
 // is refused only when encryption is required.
-func TestSMBNextStartsAndStops(t *testing.T) {
+func TestSMBStartsAndStops(t *testing.T) {
 	for _, encryption := range []bool{true, false} {
 		t.Run(fmt.Sprintf("encryption=%t", encryption), func(t *testing.T) {
 			r, path := serverResources(t)
@@ -72,7 +70,7 @@ func TestSMBNextStartsAndStops(t *testing.T) {
 				t.Fatal(err)
 			}
 			if _, ok := r.server.(*server.Server); !ok {
-				t.Fatalf("smbnext server type %T", r.server)
+				t.Fatalf("server type %T", r.server)
 			}
 			want := smb.StatusSuccess
 			if encryption {
@@ -93,7 +91,7 @@ func TestSMBNextStartsAndStops(t *testing.T) {
 }
 
 // A rejected configuration leaves nothing open.
-func TestSMBNextConstructorFailureReleasesAdapter(t *testing.T) {
+func TestSMBConstructorFailureReleasesAdapter(t *testing.T) {
 	r, path := serverResources(t)
 	c := serverConfig()
 	c.Share = "IPC$"
@@ -105,7 +103,7 @@ func TestSMBNextConstructorFailureReleasesAdapter(t *testing.T) {
 	}
 }
 
-func TestSMBNextAdapterConfig(t *testing.T) {
+func TestSMBAdapterConfig(t *testing.T) {
 	for _, readOnly := range []bool{false, true} {
 		r, path := serverResources(t)
 		c := serverConfig()
@@ -115,7 +113,7 @@ func TestSMBNextAdapterConfig(t *testing.T) {
 		}
 		adapter, ok := r.adapter.(*smbfs.FS)
 		if !ok {
-			t.Fatalf("smbnext adapter type %T", r.adapter)
+			t.Fatalf("adapter type %T", r.adapter)
 		}
 		space, err := adapter.StatFS(t.Context())
 		if err != nil || space.Capacity != r.runtime.Config.Format.Capacity {

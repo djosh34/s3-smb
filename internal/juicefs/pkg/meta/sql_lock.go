@@ -17,8 +17,6 @@
  * limitations under the License.
  */
 
-// Modified for s3-smb, 2026. See docs/vendored.md.
-
 package meta
 
 import (
@@ -34,7 +32,7 @@ import (
 func (m *dbMeta) Flock(ctx Context, inode Ino, owner_ uint64, ltype uint32, block bool) syscall.Errno {
 	owner := int64(owner_)
 	if ltype == F_UNLCK {
-		return errno(m.lockTxn(func(s *xorm.Session) error {
+		return errno(m.txn(func(s *xorm.Session) error {
 			_, err := s.MustCols("inode", "owner", "sid").Delete(&flock{Inode: inode, Owner: owner, Sid: m.sid})
 			if err == nil {
 				m.genLog(ctx, s, time.Now().UnixNano(), "FLOCK(%d,%d,U)", inode, owner_)
@@ -44,7 +42,7 @@ func (m *dbMeta) Flock(ctx Context, inode Ino, owner_ uint64, ltype uint32, bloc
 	}
 	var err syscall.Errno
 	for {
-		err = errno(m.lockTxn(func(s *xorm.Session) error {
+		err = errno(m.txn(func(s *xorm.Session) error {
 			if exists, err := s.ForUpdate().Get(&node{Inode: inode}); err != nil || !exists {
 				if err == nil && !exists {
 					err = syscall.ENOENT
@@ -169,7 +167,7 @@ func (m *dbMeta) Setlk(ctx Context, inode Ino, owner_ uint64, block bool, ltype 
 	lock := plockRecord{ltype, pid, start, end}
 	owner := int64(owner_)
 	for {
-		err = errno(m.lockTxn(func(s *xorm.Session) error {
+		err = errno(m.txn(func(s *xorm.Session) error {
 			if exists, err := s.ForUpdate().Get(&node{Inode: inode}); err != nil || !exists {
 				if err == nil && !exists {
 					err = syscall.ENOENT

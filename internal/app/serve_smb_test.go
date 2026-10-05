@@ -1,5 +1,3 @@
-//go:build smbnext
-
 // SPDX-License-Identifier: AGPL-3.0-only
 package app
 
@@ -13,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
-	"syscall"
 	"testing"
 	"time"
 
@@ -39,7 +36,7 @@ func (h servingHandler) Handle(ctx context.Context, record slog.Record) error {
 	return h.Handler.Handle(ctx, record)
 }
 
-func TestSMBNextServeCancellation(t *testing.T) {
+func TestSMBServeCancellation(t *testing.T) {
 	stateDir := t.TempDir()
 	format, err := storage.NewFormat(storage.VolumeName, false, 0)
 	if err != nil {
@@ -51,13 +48,6 @@ func TestSMBNextServeCancellation(t *testing.T) {
 	}
 	if err = m.Init(format, false); err != nil {
 		t.Fatal(err)
-	}
-	// SID-zero rows from the old adapter are unrelated to the new server.
-	if eno := m.Setlk(meta.WrapContext(t.Context()), meta.RootInode, 1, false, syscall.F_WRLCK, 0, 11, 1); eno != 0 {
-		t.Fatal(eno)
-	}
-	if eno := m.Flock(meta.WrapContext(t.Context()), meta.RootInode, 1, syscall.F_WRLCK, false); eno != 0 {
-		t.Fatal(eno)
 	}
 	if err = m.Shutdown(); err != nil {
 		t.Fatal(err)
@@ -128,19 +118,6 @@ func TestSMBNextServeCancellation(t *testing.T) {
 	}
 	if conn, e := new(net.Dialer).DialContext(t.Context(), "tcp", address); e == nil {
 		t.Fatal(errors.Join(errors.New("serve left its listener open"), conn.Close()))
-	}
-	conf := meta.DefaultConf()
-	conf.ReadOnly = true
-	m, err = storage.OpenMetadata(filepath.Join(stateDir, "metadata.db"), conf)
-	if err != nil {
-		t.Fatal(err)
-	}
-	plocks, flocks, listErr := m.ListLocks(t.Context(), meta.RootInode)
-	if closeErr := m.Shutdown(); listErr != nil || closeErr != nil {
-		t.Fatalf("inspect native locks: %v, %v", listErr, closeErr)
-	}
-	if len(plocks) != 1 || len(flocks) != 1 {
-		t.Fatalf("new server changed native locks: plocks=%v, flocks=%v", plocks, flocks)
 	}
 	lock, err := lockState(stateDir)
 	if err != nil {
