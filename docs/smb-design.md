@@ -127,8 +127,15 @@ replenishes credits before a valid synchronous compound can use up the
 client's balance.
 
 When a related compound member goes async, the rest of the compound runs
-asynchronously too. Each dependent request gets its own pending reply and async
-ID and waits for its predecessor, including CLOSE. The server carries the
+asynchronously too, and each dependent request waits for its predecessor,
+including CLOSE. If the first member goes async, only it gets a pending reply.
+The final replies of the whole compound then follow in one chain, with the
+first member's async ID: until a compound reply has come back split, macOS
+reads each packet as the reply to one whole compound, and a split reply there
+stalled a mount for two minutes in a Mac run. If a later member goes async, the
+replies before it are sent first, and it and each dependent request get their
+own pending reply, async ID and final reply. A member without a pending reply
+is cancelled by its MessageId. The server carries the
 session, tree and FileId from the preceding operation, also when that
 operation used an existing handle. Handlers report the FileId they used or
 created even on error; members that report none leave the saved ID unchanged.

@@ -136,13 +136,49 @@ func TestCancelWaitingRelatedRequest(t *testing.T) {
 	}
 	<-entered
 	client.interim(t, write.Header)
-	client.cancelAsync(t, client.interim(t, flush.Header))
-	if status := client.receive(t, flush.Header).Header.Status; status != smb.StatusCancelled {
-		t.Fatalf("FLUSH status %#x", status)
+	// FLUSH has no interim of its own, so CANCEL names it by message ID.
+	cancel := wire.Header{Command: wire.Cancel, SessionID: client.session.SessionID, MessageID: flush.Header.MessageID}
+	if err := client.raw.Send(t.Context(), []wire.Message{{Header: cancel, Body: encode(t, wire.EncodeCancelRequest, wire.EmptyRequest{})}}); err != nil {
+		t.Fatal(err)
 	}
+	client.echo(t) // The server takes requests in order, so it has handled CANCEL.
 	close(release)
-	if status := client.receive(t, write.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("WRITE status %#x", status)
+	if statuses := finalStatuses(t, client, []wire.Message{write, flush}); statuses[0] != smb.StatusSuccess || statuses[1] != smb.StatusCancelled {
+		t.Fatalf("WRITE and FLUSH statuses %#x", statuses)
+	}
+	srv.expectContent(t, map[string]string{"file": "data"})
+	client.noExtraReplies(t)
+}
+
+// When the first member of a compound goes async, only it gets an interim
+// reply. Its final reply and those of the rest follow in one chain, which is
+// how macOS reads a compound reply until one has come back split.
+func TestAsyncFirstMemberRepliesInOneChain(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	entered, release := srv.holdWrites()
+	write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+	closing := related(closeMessage(t, client, placeholder))
+	if err := client.raw.Send(t.Context(), []wire.Message{write, closing}); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	interim := client.interim(t, write.Header)
+	close(release)
+	reply, err := client.raw.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reply.Messages) != 2 || reply.Messages[0].Header.MessageID != write.Header.MessageID || reply.Messages[1].Header.MessageID != closing.Header.MessageID {
+		t.Fatalf("reply %+v, want the WRITE and CLOSE replies in one chain", reply.Messages)
+	}
+	final, closed := reply.Messages[0].Header, reply.Messages[1].Header
+	if final.Status != smb.StatusSuccess || final.Flags&wire.FlagAsync == 0 || final.AsyncID != interim.AsyncID || final.Credit != 0 {
+		t.Fatalf("WRITE reply %+v after interim %+v", final, interim)
+	}
+	if closed.Status != smb.StatusSuccess || closed.Flags&wire.FlagAsync != 0 || closed.Credit == 0 {
+		t.Fatalf("CLOSE reply %+v", closed)
 	}
 	srv.expectContent(t, map[string]string{"file": "data"})
 	client.noExtraReplies(t)
@@ -205,7 +241,6 @@ func TestCleanupWaitsForRunningRequests(t *testing.T) {
 				t.Fatal(err)
 			}
 			client.interim(t, write.Header)
-			client.interim(t, flush.Header)
 			if test.cut != nil {
 				test.cut(t, srv, client)
 				// The connection is gone; nothing came after the interim replies.

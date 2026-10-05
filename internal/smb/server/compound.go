@@ -46,7 +46,8 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 	if denied {
 		rejection = smb.StatusAccessDenied
 	}
-	var responses []wire.Message
+	replies := compoundReplies{connection: connection}
+	defer replies.startHeld()
 	var preceding wire.Header
 	var prerequisite *work
 	var previous compoundState
@@ -76,12 +77,8 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 			return err
 		}
 		if !completed {
-			if sendErr := connection.send(responses); sendErr != nil {
-				return sendErr
-			}
-			responses = nil
-			if sendErr := connection.sendPending(message.Header, operation); sendErr != nil {
-				return sendErr
+			if err = replies.pending(index, message.Header, operation); err != nil {
+				return err
 			}
 			prerequisite = operation
 			continue
@@ -93,9 +90,64 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 			return err
 		}
 		preceding = response.Header
-		responses = append(responses, response)
+		replies.add(response)
 	}
-	return connection.send(responses)
+	return connection.send(replies.responses)
+}
+
+// compoundReplies collects the replies of one compound. When the first member
+// goes async, macOS takes the other replies only in one chain after its final
+// reply: until a compound reply has come back split, it reads each packet as
+// the reply to a whole compound. So the rest get no interim of their own and
+// are held for that chain. A later member that goes async splits the replies,
+// and each member after it is answered on its own.
+type compoundReplies struct {
+	connection *connection
+	first      *pendingRequest
+	responses  []wire.Message
+	held       []heldReply
+}
+
+// pending answers a member that did not complete in time.
+func (replies *compoundReplies) pending(index int, header wire.Header, operation *work) error {
+	if replies.first != nil {
+		// Without an interim, CANCEL names the member by message ID.
+		replies.connection.pendingMu.Lock()
+		replies.connection.pending[header.MessageID] = &pendingRequest{work: operation, header: header}
+		replies.connection.pendingMu.Unlock()
+		replies.held = append(replies.held, heldReply{work: operation, header: header, credits: replies.connection.credits.grant(header)})
+		return nil
+	}
+	if err := replies.connection.send(replies.responses); err != nil {
+		return err
+	}
+	replies.responses = nil
+	pending, err := replies.connection.sendPending(header, operation)
+	if err != nil {
+		return err
+	}
+	if index == 0 {
+		replies.first = pending
+	} else {
+		go replies.connection.complete(pending, nil)
+	}
+	return nil
+}
+
+func (replies *compoundReplies) add(response wire.Message) {
+	if replies.first != nil {
+		replies.held = append(replies.held, heldReply{response: &response})
+		return
+	}
+	replies.responses = append(replies.responses, response)
+}
+
+// startHeld sends the chain after an async first member once its work ends.
+// sendPending counted a worker for it, so process calls this on every return.
+func (replies *compoundReplies) startHeld() {
+	if replies.first != nil {
+		go replies.connection.complete(replies.first, replies.held)
+	}
 }
 
 func (connection *connection) runMember(ctx context.Context, message wire.Message, rejection smb.Status, dependency *work, previous compoundState) (*work, bool, error) {
