@@ -49,13 +49,6 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 // Address returns the proxy's loopback host:port.
 func (p *Proxy) Address() string { return p.listener.Addr().String() }
 
-// Cut closes all current connections. New connections are still forwarded.
-func (p *Proxy) Cut() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.cut()
-}
-
 // Drop cuts all current connections and refuses new ones until Restore.
 func (p *Proxy) Drop() error {
 	p.mu.Lock()

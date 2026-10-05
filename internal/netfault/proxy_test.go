@@ -99,21 +99,6 @@ func assertClosed(t *testing.T, conn net.Conn) {
 	}
 }
 
-func TestCut(t *testing.T) {
-	proxy := newProxy(t)
-	before := dial(t, proxy)
-	if err := echo(before); err != nil {
-		t.Fatal(err)
-	}
-	if err := proxy.Cut(); err != nil {
-		t.Fatal(err)
-	}
-	assertClosed(t, before)
-	if err := echo(dial(t, proxy)); err != nil {
-		t.Fatalf("new connection after a cut: %v", err)
-	}
-}
-
 func TestDropAndRestore(t *testing.T) {
 	proxy := newProxy(t)
 	before := dial(t, proxy)

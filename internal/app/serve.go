@@ -346,7 +346,7 @@ func (r *resources) openMetadata(ctx context.Context, c *config.Resolved, blob o
 // startManager creates the backup manager. SMB starts only once a metadata
 // backup of the current database exists: a reused recent one or a new one.
 func (r *resources) startManager(ctx context.Context, c *config.Resolved, blob object.ObjectStorage, dbPath string, reuse bool) error {
-	manager, err := backup.New(r.metadata, blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Protection: r.protection})
+	manager, err := backup.New(blob, backup.Options{StateDir: c.Storage.StateDir, DatabasePath: dbPath, Interval: c.Backup.Interval, Timeout: c.Backup.Interval, Protection: r.protection})
 	if err != nil {
 		return err
 	}

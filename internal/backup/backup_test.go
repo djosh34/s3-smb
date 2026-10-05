@@ -135,7 +135,7 @@ func newManager(t *testing.T, m *testMetadata, s object.ObjectStorage, dir strin
 		t.Fatal(err)
 	}
 	p.now = now
-	mgr, err := New(m, s, Options{StateDir: dir, DatabasePath: m.path, Interval: time.Hour, Timeout: timeout, Protection: p})
+	mgr, err := New(s, Options{StateDir: dir, DatabasePath: m.path, Interval: time.Hour, Timeout: timeout, Protection: p})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
@@ -48,9 +47,9 @@ type Manager struct {
 }
 
 // New prepares the state directory and returns a Manager. The Manager reads
-// metadata from opts.DatabasePath, not through m.
-func New(m meta.Meta, blob object.ObjectStorage, opts Options) (*Manager, error) {
-	if m == nil || blob == nil || opts.StateDir == "" || opts.DatabasePath == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Protection == nil {
+// metadata from opts.DatabasePath.
+func New(blob object.ObjectStorage, opts Options) (*Manager, error) {
+	if blob == nil || opts.StateDir == "" || opts.DatabasePath == "" || opts.Interval <= 0 || opts.Timeout <= 0 || opts.Protection == nil {
 		return nil, errors.New("invalid metadata backup options")
 	}
 	if opts.Protection.interval != opts.Interval || opts.Timeout > opts.Protection.budget {

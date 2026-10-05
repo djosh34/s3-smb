@@ -69,7 +69,7 @@ func protectedResources(t *testing.T, dir string) (*resources, *smbfs.FS, *state
 	if r.raw, err = object.CreateStorage("file", remote, "", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	r.manager, err = backup.New(r.metadata, startupStore{r.raw, remote}, backup.Options{
+	r.manager, err = backup.New(startupStore{r.raw, remote}, backup.Options{
 		StateDir: dir, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Protection: p,
 	})
 	if err != nil {

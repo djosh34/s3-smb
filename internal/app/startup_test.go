@@ -68,7 +68,7 @@ func TestMissingMarkerRequiresValidatedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := backup.New(m, blob, backup.Options{StateDir: state, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Protection: p})
+	manager, err := backup.New(blob, backup.Options{StateDir: state, DatabasePath: path, Interval: time.Hour, Timeout: time.Minute, Protection: p})
 	if err != nil {
 		t.Fatal(err)
 	}
