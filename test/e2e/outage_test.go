@@ -40,7 +40,11 @@ func testDataPathOutage(t *testing.T, operation string, outage time.Duration) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closeOnCleanup(t, file)
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}()
 	if operation == "FLUSH" {
 		// Leave the data unflushed until the outage.
 		if n, err := file.Write(data); err != nil || n != len(data) {

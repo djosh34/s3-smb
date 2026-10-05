@@ -34,7 +34,11 @@ func TestScheduledMetadataBackupS3Outage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closeOnCleanup(t, file)
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}()
 	t.Cleanup(proxy.RestoreS3)
 	// The interval covers the outage and the capped retry delay.
 	baseline := f.receipt()

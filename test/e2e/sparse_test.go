@@ -38,7 +38,11 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	closeOnCleanup(t, file)
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}()
 	before := chunkUsage(t, f, proxy)
 	const logicalSize int64 = 256 << 20
 	if err = file.Truncate(logicalSize); err != nil {
