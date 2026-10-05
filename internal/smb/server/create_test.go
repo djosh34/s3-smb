@@ -299,7 +299,7 @@ func TestCreateRefusals(t *testing.T) {
 // stable file IDs to give, so it answers the CREATE without one.
 func TestCreateIgnoresFileIDQuery(t *testing.T) {
 	client := newTestServer(t).connect(t)
-	query := createContext(t, wire.EncodeFileIDQuery, wire.FileIDQuery{})
+	query := wire.CreateContext{Name: "QFid"}
 	for _, request := range []wire.CreateRequest{fullAccess("file", fileOpenIf), {DesiredAccess: fileGenericRead, ShareAccess: 7, Disposition: fileOpen, Options: fileDirectoryFile}} {
 		request.Contexts = []wire.CreateContext{query}
 		if reply := mustOpen(t, client, request); len(reply.Contexts) != 0 {

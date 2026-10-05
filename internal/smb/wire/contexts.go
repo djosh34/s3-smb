@@ -40,9 +40,6 @@ type AAPLReply struct {
 	VolumeCapabilities uint64
 }
 
-// FileIDQuery requests QFid, without a request payload. The server ignores it.
-type FileIDQuery struct{}
-
 // DurableRequest is DH2Q. Timeout is milliseconds; flags retain a persistent
 // request so the handler can refuse it, never silently echo unsupported flags.
 type DurableRequest struct {

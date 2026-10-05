@@ -54,6 +54,10 @@ func decodeCreate(message wire.Message) (wire.CreateRequest, createContexts, smb
 	if err != nil {
 		return create, contexts, smb.StatusInvalidParameter
 	}
+	contexts.aapl, err = createAAPLContexts(create.Contexts)
+	if err != nil {
+		return create, contexts, smb.StatusInvalidParameter
+	}
 	return create, contexts, smb.StatusSuccess
 }
 
@@ -185,11 +189,7 @@ func createOnce(ctx context.Context, request RequestContext, create wire.CreateR
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, resolved smb.Resolved, granted uint32) (result reply, conflict *leaseBreak, resultErr error) {
-	aapl, err := createAAPLContexts(create.Contexts)
-	if err != nil {
-		return reply{status: smb.StatusInvalidParameter}, nil, nil
-	}
-	aaplQuery := len(aapl) != 0
+	aaplQuery := len(contexts.aapl) != 0
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
@@ -198,16 +198,22 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 		return reply{status: status}, nil, nil
 	}
 	if !resolved.Exists {
-		kind := smb.KindFile
+		resolved.Attr.Kind = smb.KindFile
 		if create.Options&fileDirectoryFile != 0 {
-			kind = smb.KindDirectory
+			resolved.Attr.Kind = smb.KindDirectory
 		}
-		resolved, err = request.Storage.Create(ctx, resolved.Name, kind)
+	}
+	lease := contexts.leaseRequest(request, create, resolved)
+	if request.Opens.LeaseKeyElsewhere(resolved.Object, lease.ClientGUID, lease.Key) {
+		return reply{status: smb.StatusInvalidParameter}, nil, nil
+	}
+	if !resolved.Exists {
+		var err error
+		resolved, err = request.Storage.Create(ctx, resolved.Name, resolved.Attr.Kind)
 		if err != nil {
 			return reply{}, nil, err
 		}
 	}
-	lease := contexts.leaseRequest(request, create, resolved)
 	open := openRequestForCreate(request, create, contexts, resolved.Object, granted)
 	reservation, conflict, status, err := reserveCreate(request, open, lease, createLeaseTarget(create, granted))
 	if conflict != nil || status != smb.StatusSuccess || err != nil {
@@ -248,7 +254,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	}
 	created, status := request.Opens.Commit(reservation, state.Grant{
 		Handle: handle, DeleteName: resolved.Name, Lease: lease, DurableTimeout: contexts.durableTimeout(resolved),
-		CreateAction: action, DeleteOnClose: create.Options&fileDeleteOnClose != 0, WriteThrough: create.Options&fileWriteThrough != 0,
+		DeleteOnClose: create.Options&fileDeleteOnClose != 0, WriteThrough: create.Options&fileWriteThrough != 0,
 		Kind: attr.Kind,
 	})
 	if status != smb.StatusSuccess {
@@ -256,7 +262,7 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	}
 	committed = true
 	response.ID = wire.FileID(created.ID)
-	response.Contexts = aapl
+	response.Contexts = contexts.aapl
 	if err = appendCreateContexts(request, created, lease, &response); err != nil {
 		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
 	}

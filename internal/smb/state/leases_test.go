@@ -17,8 +17,9 @@ const (
 // Breaks in these tests come from an opener with client and key {9}.
 var opener = state.GUID{9}
 
-func leaseGrant(req state.OpenRequest, key byte, leaseState uint32) state.Grant {
-	return state.Grant{Lease: state.Lease{ClientGUID: req.ClientGUID, Key: state.GUID{key}, State: leaseState, Epoch: 7}}
+// leaseGrant asks for a lease with key {3}.
+func leaseGrant(req state.OpenRequest, leaseState uint32) state.Grant {
+	return state.Grant{Lease: state.Lease{ClientGUID: req.ClientGUID, Key: state.GUID{3}, State: leaseState, Epoch: 7}}
 }
 
 func leaseOf(t *testing.T, table *state.Table, open state.Open) state.Lease {
@@ -28,41 +29,26 @@ func leaseOf(t *testing.T, table *state.Table, open state.Open) state.Lease {
 	return lease
 }
 
-func TestLeaseGrant(t *testing.T) {
+// Commit refuses a key that another file took after the CREATE checked it.
+func TestCommitRefusesLeaseKeyOfAnotherFile(t *testing.T) {
 	table := newTable(t)
-	plain := commit(t, table, request(1), state.Grant{})
 	req := request(1)
-	first := commit(t, table, req, leaseGrant(req, 3, leaseRWH))
-	if lease := leaseOf(t, table, first); lease.State != leaseRH || lease.Epoch != 8 {
-		t.Fatalf("lease beside another open = %+v, want RH at epoch 8", lease)
-	}
-	closeOpen(t, table, plain)
-	upgraded := commit(t, table, req, leaseGrant(req, 3, leaseRWH))
-	if lease := leaseOf(t, table, upgraded); lease.State != leaseRWH || lease.Epoch != 9 || upgraded.LeaseKey != first.LeaseKey {
-		t.Fatalf("upgraded lease = %+v, want RWH at epoch 9", lease)
-	}
-	joined := commit(t, table, req, leaseGrant(req, 3, leaseR))
-	if lease := leaseOf(t, table, joined); lease.State != leaseRWH || lease.Epoch != 9 {
-		t.Fatalf("a smaller request changed the lease: %+v", lease)
-	}
-	other := commit(t, table, req, leaseGrant(req, 4, leaseRWH))
-	if other.LeaseKey != (state.GUID{}) {
-		t.Fatalf("a second lease key on the file got a lease: %+v", other)
-	}
-	grant := leaseGrant(req, 3, leaseR)
+	reservation := reserve(t, table, request(2))
+	commit(t, table, req, leaseGrant(req, leaseR))
+	grant := leaseGrant(req, leaseR)
 	grant.Handle = &handle{key: smb.ObjectKey{Inode: 2}}
-	_, status := table.Commit(reserve(t, table, request(2)), grant)
+	_, status := table.Commit(reservation, grant)
 	statusIs(t, status, smb.StatusInvalidParameter)
 }
 
 func TestLeaseBreakWaitsForAcknowledgment(t *testing.T) {
 	table := newTable(t)
 	req := request(1)
-	commit(t, table, req, leaseGrant(req, 3, leaseRWH))
-	breaks, actions := table.BreakLease(req.Object, opener, opener, leaseRH)
+	commit(t, table, req, leaseGrant(req, leaseRWH))
+	notification, notify, actions := table.BreakLease(req.Object, opener, opener, leaseRH)
 	want := state.Break{Binding: binding, ClientGUID: req.ClientGUID, LeaseKey: state.GUID{3}, CurrentState: leaseRWH, NewState: leaseRH, Epoch: 9, AckRequired: true}
-	if len(breaks) != 1 || breaks[0] != want || len(actions) != 0 {
-		t.Fatalf("break = %+v, %+v; want %+v", breaks, actions, want)
+	if !notify || notification != want || len(actions) != 0 {
+		t.Fatalf("break = %+v, %v, %+v; want %+v", notification, notify, actions, want)
 	}
 	if !table.LeaseBreaking(req.Object, opener, opener) || !table.LeaseNeedsBreak(req.Object, opener, opener, leaseRH) {
 		t.Fatal("pending break not reported")
@@ -70,7 +56,7 @@ func TestLeaseBreakWaitsForAcknowledgment(t *testing.T) {
 	if table.LeaseNeedsBreak(req.Object, req.ClientGUID, state.GUID{3}, 0) {
 		t.Fatal("the holder's own open would break its lease")
 	}
-	if again, _ := table.BreakLease(req.Object, opener, opener, 0); len(again) != 0 {
+	if again, restarted, _ := table.BreakLease(req.Object, opener, opener, 0); restarted {
 		t.Fatalf("pending break restarted: %+v", again)
 	}
 	_, status := table.AckBreak(req.ClientGUID, state.GUID{4}, leaseR)
@@ -84,10 +70,10 @@ func TestLeaseBreakWaitsForAcknowledgment(t *testing.T) {
 	if table.LeaseBreaking(req.Object, opener, opener) || table.LeaseNeedsBreak(req.Object, opener, opener, leaseRH) {
 		t.Fatal("acknowledged break still pending")
 	}
-	breaks, _ = table.BreakLease(req.Object, opener, opener, 0)
+	notification, notify, _ = table.BreakLease(req.Object, opener, opener, 0)
 	want = state.Break{Binding: binding, ClientGUID: req.ClientGUID, LeaseKey: state.GUID{3}, CurrentState: leaseR, Epoch: 10}
-	if len(breaks) != 1 || breaks[0] != want || table.LeaseBreaking(req.Object, opener, opener) {
-		t.Fatalf("losing R = %+v, want %+v without waiting", breaks, want)
+	if !notify || notification != want || table.LeaseBreaking(req.Object, opener, opener) {
+		t.Fatalf("losing R = %+v, want %+v without waiting", notification, want)
 	}
 }
 
@@ -100,9 +86,9 @@ func TestLeaseBreakTimeoutRevokesWholeLease(t *testing.T) {
 	attached := commit(t, table, firstReq, grant)
 	detached := commit(t, table, secondReq, grant)
 	table.Disconnect(2)
-	breaks, actions := table.BreakLease(attached.Object, opener, opener, leaseRH)
-	if len(breaks) != 1 || breaks[0].Binding != binding || len(actions) != 0 {
-		t.Fatalf("break = %+v, %+v", breaks, actions)
+	notification, notify, actions := table.BreakLease(attached.Object, opener, opener, leaseRH)
+	if !notify || notification.Binding != binding || len(actions) != 0 {
+		t.Fatalf("break = %+v, %v, %+v", notification, notify, actions)
 	}
 	*now = now.Add(state.LeaseBreakTimeout - time.Nanosecond)
 	if actions := table.ExpireBreaks(); len(actions) != 0 {
@@ -124,8 +110,8 @@ func TestLosingHandleEndsDurability(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
 	open := commit(t, table, req, durableGrant(req))
-	if breaks, _ := table.BreakLease(req.Object, opener, opener, leaseR); len(breaks) != 1 {
-		t.Fatalf("break = %+v", breaks)
+	if notification, notify, _ := table.BreakLease(req.Object, opener, opener, leaseR); !notify {
+		t.Fatalf("break = %+v", notification)
 	}
 	if found, _ := table.Find(open.ID, binding); found.Durable {
 		t.Fatal("open stayed durable while losing H")
@@ -151,9 +137,9 @@ func TestDetachedLeaseDropsWithoutNotification(t *testing.T) {
 			grant.Lease.State = leaseRWH
 			open := commit(t, table, req, grant)
 			table.Disconnect(binding.SessionID)
-			breaks, actions := table.BreakLease(req.Object, opener, opener, test.target)
-			if len(breaks) != 0 || (len(actions) == 1) != test.closed {
-				t.Fatalf("detached break = %+v, %+v", breaks, actions)
+			_, notify, actions := table.BreakLease(req.Object, opener, opener, test.target)
+			if notify || (len(actions) == 1) != test.closed {
+				t.Fatalf("detached break notified %v, %+v", notify, actions)
 			}
 			reattached, status := table.Reconnect(reconnectRequest(open))
 			if test.closed {
@@ -172,7 +158,7 @@ func TestSharingLeaseFindsHandleHolder(t *testing.T) {
 	table := newTable(t)
 	req := request(1)
 	req.SharingIntent, req.Sharing = state.RightRead, state.ShareMode(state.RightRead)
-	open := commit(t, table, req, leaseGrant(req, 3, leaseRH))
+	open := commit(t, table, req, leaseGrant(req, leaseRH))
 	writer := request(1)
 	writer.ClientGUID, writer.SharingIntent = state.GUID{2}, state.RightWrite
 	_, status := table.Reserve(writer)

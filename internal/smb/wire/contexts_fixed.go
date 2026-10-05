@@ -1,10 +1,5 @@
 package wire
 
-// EncodeFileIDQuery returns an empty QFid context.
-func EncodeFileIDQuery(FileIDQuery) (CreateContext, error) {
-	return CreateContext{Name: "QFid"}, nil
-}
-
 // DecodeDurableRequest checks the DH2Q tag and payload.
 func DecodeDurableRequest(c CreateContext) (DurableRequest, error) {
 	var v DurableRequest

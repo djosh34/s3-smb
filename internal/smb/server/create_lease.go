@@ -16,11 +16,13 @@ const (
 	leaseParentKeySet    uint32 = 0x04
 )
 
-// createContexts holds the lease and durable handle contexts of one CREATE.
+// createContexts holds the lease and durable handle contexts of one CREATE,
+// and the replies to its AAPL query.
 type createContexts struct {
 	lease           *wire.LeaseContext
 	durable         *wire.DurableRequest
 	reconnect       *wire.DurableReconnect
+	aapl            []wire.CreateContext
 	legacyRequest   bool
 	legacyReconnect bool
 }

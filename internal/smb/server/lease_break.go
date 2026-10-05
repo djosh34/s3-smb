@@ -15,12 +15,12 @@ import (
 // revokes the lease after LeaseBreakTimeout. Cancellation ends the wait, not
 // the break.
 func (server *Server) breakLease(ctx context.Context, pending leaseBreak) error {
-	notifications, actions := server.options.State.BreakLease(pending.object, pending.client, pending.key, pending.target)
+	notification, notify, actions := server.options.State.BreakLease(pending.object, pending.client, pending.key, pending.target)
 	if err := server.cleanup(ctx, actions); err != nil {
 		return err
 	}
 	var sent <-chan error
-	for _, notification := range notifications {
+	if notify {
 		sent = server.sendLeaseBreak(notification)
 	}
 	for {

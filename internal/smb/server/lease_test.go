@@ -101,6 +101,9 @@ func TestLeaseOnlyOnePerFile(t *testing.T) {
 	if upgraded.Lease.State != leaseRWH || upgraded.Lease.Epoch != 2 {
 		t.Fatalf("upgraded lease = %+v, want RWH at epoch 2", upgraded.Lease)
 	}
+	if joined := mustCreate(t, client, leasedCreate("file", 1, leaseR)); joined.Lease.State != leaseRWH || joined.Lease.Epoch != 2 {
+		t.Fatalf("a smaller request changed the lease: %+v", joined.Lease)
+	}
 	// Only reading attributes, so that the open breaks nothing.
 	attributes := leasedCreate("file", 2, leaseRWH)
 	attributes.Request.DesiredAccess = 0x80
@@ -110,6 +113,34 @@ func TestLeaseOnlyOnePerFile(t *testing.T) {
 	}
 	if _, status := client.create(t, leasedCreate("other", 1, leaseRH)); status != smb.StatusInvalidParameter {
 		t.Fatalf("lease key moved to another file: status %#x", status)
+	}
+}
+
+// A lease key that names another file fails the CREATE before it changes
+// anything.
+func TestLeaseKeyOfAnotherFileChangesNothing(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	mustCreate(t, client, leasedCreate("a", 1, leaseRH))
+	data := client.open(t, "b")
+	if status := client.write(t, wire.WriteRequest{ID: data, Data: []byte("data")}); status != smb.StatusSuccess {
+		t.Fatalf("WRITE status %#x", status)
+	}
+	overwrite := leasedCreate("b", 1, leaseRH)
+	overwrite.Request.Disposition = fileOverwriteIf
+	if _, status := client.create(t, overwrite); status != smb.StatusInvalidParameter {
+		t.Fatalf("OVERWRITE_IF with the key of another file: status %#x", status)
+	}
+	if attr, err := srv.adapter.GetAttr(t.Context(), srv.object(t, "b")); err != nil || attr.Size != 4 {
+		t.Fatalf("size after the refused overwrite = %d, %v", attr.Size, err)
+	}
+	created := leasedCreate("c", 1, leaseRH)
+	created.Request.Disposition = fileCreateDisposition
+	if _, status := client.create(t, created); status != smb.StatusInvalidParameter {
+		t.Fatalf("FILE_CREATE with the key of another file: status %#x", status)
+	}
+	if resolved, err := srv.adapter.Lookup(t.Context(), "c"); err != nil || resolved.Exists {
+		t.Fatalf("refused FILE_CREATE left %+v, %v", resolved, err)
 	}
 }
 
@@ -197,7 +228,9 @@ func TestReadLeaseBreakNeedsNoAcknowledgment(t *testing.T) {
 }
 
 // An open that conflicts with the sharing of a cached handle breaks H, so
-// the client can close the handle, and checks sharing once more.
+// the client can close the handle, and checks sharing once more. A Mac does
+// this on one connection, which must answer the CLOSE or ACK while the CREATE
+// waits.
 func TestSharingConflictBreaksHandleLease(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -210,29 +243,28 @@ func TestSharingConflictBreaksHandleLease(t *testing.T) {
 		{name: "no H", lease: leaseR, want: smb.StatusSharingViolation},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			srv := newTestServer(t)
-			holder, opener := srv.connect(t), srv.connect(t)
+			client := newTestServer(t).connect(t)
 			options := leasedCreate("file", 1, test.lease)
 			options.Request.ShareAccess = 1
-			held := mustCreate(t, holder, options)
-			request := opener.sendCreate(t, writerCreate(fileOpen))
+			held := mustCreate(t, client, options)
+			request := client.sendCreate(t, writerCreate(fileOpen))
 			if test.lease == leaseRH {
-				notification := holder.leaseBreak(t)
+				notification := client.leaseBreak(t)
 				if notification.CurrentState != leaseRH || notification.NewState != leaseR || notification.Flags != 1 {
 					t.Fatalf("break = %+v", notification)
 				}
-				opener.interim(t, request)
+				client.interim(t, request)
 				status := smb.Status(0)
 				if test.close {
-					status = holder.close(t, held.Reply.ID)
+					status = client.close(t, held.Reply.ID)
 				} else {
-					status = holder.ackLease(t, notification.Key, leaseR)
+					status = client.ackLease(t, notification.Key, leaseR)
 				}
 				if status != smb.StatusSuccess {
 					t.Fatalf("holder status %#x", status)
 				}
 			}
-			if _, status := opener.created(t, request); status != test.want {
+			if _, status := client.created(t, request); status != test.want {
 				t.Fatalf("CREATE status %#x, want %#x", status, test.want)
 			}
 		})

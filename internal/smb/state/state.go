@@ -79,7 +79,6 @@ type Open struct {
 	LeaseKey        GUID
 	DurableTimeout  time.Duration
 	GrantedAccess   uint32
-	CreateAction    uint32
 	SharingIntent   Rights
 	Sharing         ShareMode
 	DeleteOnClose   bool
@@ -179,7 +178,6 @@ type Grant struct {
 	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
-	CreateAction   uint32
 	DeleteOnClose  bool
 	WriteThrough   bool
 	Kind           smb.Kind
