@@ -221,7 +221,7 @@ jobs:
     name: ${{ matrix.scenario }}
     if: inputs.mode == 'acceptance' || inputs.mode == 'scenarios'
     runs-on: macos-15-intel
-    timeout-minutes: 210
+    timeout-minutes: 355
     strategy:
       fail-fast: false
       matrix:
@@ -245,6 +245,22 @@ jobs:
         with:
           go-version: '1.26.3'
           cache: false
+      # Temporary for #598: make room for a large tree.
+      - name: Free runner disk
+        if: matrix.scenario == 'hotspots-large'
+        run: |
+          df -k /
+          keep=$(cd "$(xcode-select -p)/../.." && pwd -P)
+          echo "keeping $keep"
+          for x in /Applications/Xcode*.app; do
+            if [ "$(cd "$x" && pwd -P)" != "$keep" ]; then sudo rm -rf "$x" & fi
+          done
+          for d in "$HOME/Library/Android" /usr/local/lib/android /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/.ghcup" /Library/Developer/CoreSimulator/Profiles/Runtimes "$HOME/Library/Developer/CoreSimulator"; do
+            sudo rm -rf "$d" &
+          done
+          wait
+          xcode-select -p
+          df -k /
       - name: Failed backup and recovery
         run: bash test/macos/run.sh
       - name: Make transfer files readable

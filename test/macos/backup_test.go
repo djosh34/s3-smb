@@ -76,10 +76,10 @@ func (h *harness) startBackup(label string) {
 }
 
 func (h *harness) completeBackup(label string) (time.Time, error) {
-	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
+	deadline, next := time.Now().Add(150*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
-			h.t.Fatal("full backup exceeded 90 minute stage budget")
+			h.t.Fatal("full backup exceeded 150 minute stage budget")
 		}
 		if time.Now().After(next) {
 			var stat syscall.Statfs_t
@@ -90,6 +90,9 @@ func (h *harness) completeBackup(label string) (time.Time, error) {
 				h.t.Fatal("free space below 20 GiB")
 			}
 			next = time.Now().Add(time.Minute)
+			if h.hotspots != nil && h.hotspots.large {
+				h.hotspotDisk(label)
+			}
 		}
 		h.pause(time.Second)
 	}

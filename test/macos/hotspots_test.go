@@ -14,6 +14,7 @@ import (
 	"path"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -44,11 +45,20 @@ type hotspotTree struct {
 	rng   *mathrand.Rand
 	files map[string]int64
 	next  int
+	large bool
+}
+
+func (h *harness) newHotspotTree() *hotspotTree {
+	return &hotspotTree{h: h, rng: mathrand.New(mathrand.NewPCG(598, 1)), files: map[string]int64{}}
+}
+
+func topDir(name string) string {
+	return strings.SplitN(name, "/", 2)[0]
 }
 
 // bigTree adds about 4.4 GiB of random data in files of mixed sizes.
 func (h *harness) bigTree() *hotspotTree {
-	tree := &hotspotTree{h: h, rng: mathrand.New(mathrand.NewPCG(598, 1)), files: map[string]int64{}}
+	tree := h.newHotspotTree()
 	for _, group := range []struct {
 		dir   string
 		count int
@@ -110,7 +120,7 @@ func (t *hotspotTree) remove(name string) {
 func (t *hotspotTree) pick(dir string, n int) []string {
 	var names []string
 	for name := range t.files {
-		if dir == "" || filepath.Dir(filepath.Dir(name)) == dir {
+		if dir == "" || topDir(name) == dir {
 			names = append(names, name)
 		}
 	}
@@ -162,6 +172,12 @@ func (t *hotspotTree) change(step int) hotspotChange {
 			t.remove(name)
 		}
 	}
+	if t.large {
+		t.largeChange(step, &c, addN, edit, drop)
+		c.TreeFiles, c.TreeBytes = t.totals()
+		c.PrepareFinish = time.Now().UTC()
+		return c
+	}
 	switch step {
 	case 1:
 		c.Description = "typical: edit 2% of notes and code, grow 5 photos, add 100 code files and one 128 MiB file, delete 1% of notes and 2 photos"
@@ -205,6 +221,7 @@ func (t *hotspotTree) change(step int) hotspotChange {
 // hotspotScenario runs the first backup of the big tree, then five changed
 // incremental backups back to back. Every backup is listed, not restored.
 func (h *harness) hotspotScenario() result {
+	large := h.hotspots != nil && h.hotspots.large
 	start := time.Now().UTC()
 	outcome := h.baseline()
 	files, bytes := h.hotspots.totals()
@@ -212,6 +229,13 @@ func (h *harness) hotspotScenario() result {
 	previous := outcome.Baseline
 	for step := 1; step <= 5; step++ {
 		label := fmt.Sprintf("inc%d", step)
+		if large {
+			h.hotspotDisk("before-" + label)
+			if free := h.freeBytes(); free < 45<<30 {
+				h.t.Log("hotspots-stop-low-disk", label, free)
+				break
+			}
+		}
 		change := h.hotspots.change(step)
 		change.Backup = label
 		h.t.Log("hotspots-change", label, change.Description)
@@ -235,6 +259,9 @@ func (h *harness) hotspotScenario() result {
 		h.save("hotspots-changes-"+label+".json", changes)
 	}
 	h.save("hotspots-changes.json", changes)
+	if large {
+		h.hotspotDisk("end")
+	}
 	outcome.Scenario, outcome.Resumed = "hotspots", previous
 	return outcome
 }

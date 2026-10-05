@@ -118,7 +118,7 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", minioUser)
 	t.Setenv("MINIO_ROOT_PASSWORD", minioPassword)
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "features": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 190 * time.Minute}
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "features": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 335 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
 		t.Fatal("MAC_PHASE must be discover, backup, features, recover or scenario")

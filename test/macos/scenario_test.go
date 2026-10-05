@@ -54,8 +54,17 @@ func (h *harness) baseline() result {
 	h.destinationSetup()
 	h.try(2*time.Minute, "/usr/bin/defaults", "read", "/Library/Preferences/com.apple.TimeMachine")
 	h.createTree()
-	if os.Getenv("MAC_SCENARIO") == "hotspots" {
+	switch os.Getenv("MAC_SCENARIO") {
+	case "hotspots":
 		h.hotspots = h.bigTree()
+	case "hotspots-large":
+		// Disk use was about 6 times the tree plus 26 GB in the first run.
+		free := h.freeBytes()
+		scale := min(1.4, max(0.25, float64(free-(55<<30))/6.5/float64(28<<30)))
+		h.t.Log("hotspots-large-scale", "free_bytes", free, "scale", scale)
+		h.hotspots = h.largeTree(scale)
+	}
+	if h.hotspots != nil {
 		h.hotspotStart = time.Now().UTC()
 		h.t.Log("hotspots-backup-start", "baseline", h.hotspotStart.Format(time.RFC3339Nano))
 	}
@@ -145,7 +154,7 @@ func (h *harness) scenario(name string) result {
 		return h.networkScenario(name)
 	case "trace-streams", "trace-nostreams":
 		return h.traceScenario(name)
-	case "hotspots":
+	case "hotspots", "hotspots-large":
 		return h.hotspotScenario()
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
