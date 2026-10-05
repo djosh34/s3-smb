@@ -173,7 +173,7 @@ def main(paths):
     print("band flushes per minute", sorted(bm.items()))
 
     print("\n## handles")
-    po = max(rows, key=lambda r: r["opens"]); pf = max(rows, key=lambda r: r["files"])
+    po = max(rows, key=lambda r: r.get("opens", 0)); pf = max(rows, key=lambda r: r.get("files", 0))
     print("peak opens", po["opens"], po["t"], "peak distinct files", pf["files"], pf["t"])
     print("open-band peaks: max concurrent band fids", end=" ")
     openb = set(); peak = 0

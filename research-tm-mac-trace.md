@@ -235,3 +235,125 @@ Usage: tmutil setdestination [-a]  mount_point
 - `internal/smb/server/trace.go`, `internal/smb/state/trace.go`, two lines in `async.go`: the temporary logging.
 - `test/macos/scenario_test.go`: unmount before `setdestination`, save tmutil usage and the TM preferences.
 - `research-tm-mac-trace/`: the analysis scripts. Input: `application-1-initialize.log` from the `mac-backup-*` artifact of run 37289256176.
+
+# Part 2: without streams and locks (#535)
+
+Ticket: [#535](https://github.com/djosh34/s3-smb/issues/535). Question: does Time Machine still work, with leases and durable handles in use, when the server advertises no named streams and refuses byte-range locks? Does an incremental backup differ?
+
+## Run 3
+
+[Run 37292764662](https://github.com/djosh34/s3-smb/actions/runs/37292764662), commit 37713cf, `mode=scenarios`, two jobs on the same commit, both passed:
+
+| Job | Server | Result |
+|---|---|---|
+| `trace-streams` | as run 2: FILE_NAMED_STREAMS on, LOCK handled | passed |
+| `trace-nostreams` | `S3SMB_TRACE_NOSTREAMS=1`: no FILE_NAMED_STREAMS (FsAttribute 0x7 instead of 0x40007), stream CREATE returns OBJECT_NAME_INVALID, LOCK returns NOT_SUPPORTED | passed |
+
+Each job:
+
+1. Runs the run 2 first backup.
+2. Restores the first backup and checks it: 8 files, 3 directories, 4,000,030 bytes, no differences.
+3. Adds a 256 MiB random file, changes one file, and runs an incremental backup.
+4. Restores the incremental backup and checks it: 9 files, 4 directories, 272,435,483 bytes, no differences.
+
+The harness uses `mode=scenarios` with two new scenario names, so both variants run side by side from one commit. `acceptance` mode would also have run the 8 failure scenarios, which this question does not need. The trace now also logs:
+
+- the CREATE context names
+- the lease state asked for and granted
+- the DH2Q timeout and whether a durable handle was granted
+- reconnect CREATEs
+- lease break notifications sent
+
+## Leases in run 2 (O)
+
+Run 2's trace did not record CREATE contexts. So it cannot count lease or DH2Q requests or grants. What it does show:
+
+- 0 OPLOCK_BREAK requests, so no lease break acknowledgements.
+- No "send lease break" log lines.
+- Every new session started with 0 open handles. So no durable handle was left to reconnect, and there were 0 reconnects.
+
+Run 3's `trace-streams` job repeats run 2's server and first backup. Its first-backup phase has 5,100 requests against run 2's 5,209, with the same commands and classes. So its lease numbers below stand in for run 2.
+
+## Leases and durable handles (O)
+
+The two variants match within one or two requests:
+
+| | streams | no streams |
+|---|---:|---:|
+| CREATE with a lease context (RqLs, always V2) | 213 | 214 |
+| lease state asked: RWH / RH / none | 100 / 67 / 46 | 101 / 67 / 46 |
+| leases granted: RWH / RH | 69 / 56 | 70 / 56 |
+| CREATE with DH2Q | 167 | 168 |
+| durable handles granted | 125 | 126 |
+| reconnect CREATEs (DH2C or DHnC) | 0 | 0 |
+| lease breaks sent / acknowledged | 1 / 0 | 1 / 0 |
+| LOCK requests | 0 | 0 |
+
+- **DH2Q timeouts.** Time Machine sessions ask for a 30,000 ms timeout. The harness's own mounts ask for 0 (the server default). DH2Q always comes with a lease context, and with MxAc on Time Machine opens.
+- **Durable probe.** In both variants, Time Machine's setup creates `.com.apple.timemachine.supported-<uuid>` with DH2Q and RqLs, gets a durable handle, then deletes the file. This is the `kReadSettings` durable v2 probe from #510.
+- **Which files get durable handles.** Bands (38), `mapped/` files (20), `token` (14 to 15), `Info.plist` (11), the plists, and `lock`.
+- **Lease asked for nothing.** The CREATEs with lease state 0 open files for DELETE access, before a delete or rename.
+- **The one lease break.** It came in each incremental:
+  - The incremental deleted band `180`.
+  - smbfs renamed the still-open `mapped/180` to `mapped/.smbdeleteAAA<hex>.4`, then deleted it.
+  - That broke an RH lease on `mapped/180` to R. The client did not send an ack. It closed its handle 6 ms later, which ends the break.
+- **No reconnects.** Every session ended with LOGOFF and 0 open handles. The run had no network drops.
+- **No byte-range locks.** No LOCK request came in either variant. So no client action reached the NOT_SUPPORTED path.
+
+## Streams off: what changed (O)
+
+| Phase | Requests (streams / no streams) | CREATE | QUERY_DIRECTORY | QUERY_INFO | Stream info queries | Stream CREATEs |
+|---|---|---|---|---|---|---|
+| first backup | 5,100 / 3,736 | 348 / 402 | 127 / 195 | 146 / 127 | 14 / 0 | 5 / 0 |
+| incremental | 1,453 / 1,381 | 166 / 194 | 55 / 84 | 88 / 74 | 25 / 0 | 3 / 0 |
+| whole job | 19,348 / 17,848 | 753 / 815 | 294 / 406 | 368 / 289 | 82 / 0 | 13 / 0 |
+
+- **No stream requests.** With streams off, macOS sends no stream opens and no FileStreamInformation queries. The `AFP_AfpInfo` and `com.apple.quarantine` probes are gone. The server's refusal of stream opens was never hit.
+- **More lookups.** macOS looks up names one by one instead. There are more single-name QUERY_DIRECTORY lookups (192 NO_SUCH_FILE against 102) and about 60 more CREATEs. This fits SMBClient turning off its directory cache and bulk attributes without named streams (see Source check).
+- **Same data.**
+  - The first backup wrote 971.5 MB in both variants, 904 MB of it zeros, to the same bands (`0`, `5`, `6`, `180`, `746a`, `e8d4`).
+  - The difference in WRITE counts (3,703 against 2,179) is the size of the zero-fill writes: 256 KiB against 512 KiB. Bytes and bands are the same.
+  - FLUSH (351 / 349), SET_INFO EOF (95 / 95), renames (8 / 8), deletes (15 / 15) and peak open handles (15 / 15) match.
+
+## Incremental against first backup (O)
+
+These hold in both variants:
+
+- **No zero fill.** The incremental wrote about 324 MB of real data to bands `0`, `5`, `6` and the new band `7`. Zero bytes: 0 with streams, 3.7 MB without. The first backup's erase wrote 904 MB of zeros.
+- **Bigger writes.** Data writes are larger: 1 MiB (189 to 276), 512 KiB, 256 KiB.
+- **Band delete.** It deletes band `180` and its `mapped/180`. This is the first band delete seen outside the APFS erase. `mapped/180` goes through smbfs's `.smbdelete` rename because a handle was still open, which caused the one lease break.
+- **Rename and delete pattern.** Same as the first backup: plist `.tmp` renames with ReplaceIfExists 0, after deleting the old target. 6 renames and 8 deletes.
+- **More handles.** Peak 18 open handles against 15.
+- **Lease use.** Same pattern as the first backup: 61 RqLs, 38 DH2Q, 28 durable grants. No locks, no reconnects.
+
+## Source check: Apple SMBClient (D)
+
+Source: [apple-oss-distributions/SMBClient](https://github.com/apple-oss-distributions/SMBClient), tag SMBClient-538.100.12 (April 2026). macOS 15.7.9 ships an older build, so line numbers may differ.
+
+- **Leasing is not gated by streams.** smbfs asks for leases when the server sets `SMB2_GLOBAL_CAP_LEASING` and the dialect is 2.1 or later. Examples: `smbfs_smb_2.c:6336` and `smbfs_node.c:4509`. Named-stream opens never ask for a lease (`smbfs_smb_2.c:6340`).
+- **Durable v2 is not gated by streams.** smbfs asks for it under the same leasing check (`smbfs_node.c:4709`). Time Machine's `smbfsTimeMachineFSCTL` `kReadSettings` (`smbfs_vnops.c:10321`) checks only two things:
+  - `kAAPL_SUPPORTS_FULL_SYNC` or continuous availability, giving `kSMBFullFSyncSupported`
+  - a durable v2 probe CREATE, giving `kSMBDurableHandleV2Supported`
+- **Time Machine itself is not gated by streams.** No Time Machine path (`SMBV_MNT_TIME_MACHINE`, `SMBFS_MNT_TIME_MACHINE`) checks FILE_NAMED_STREAMS.
+- **What FILE_NAMED_STREAMS does gate:**
+  - xattrs, Finder info and resource forks
+  - `getattrlistbulk` and `readdirattr`, with the directory cache and its compound attribute queries: `smbfs_vnops.c:16178`, `smbfs_attrlist.c:1309`, `smbfs_vnops.c:11419` and `14957`
+  - high-fidelity mounts: `smbfs_vfsops.c:1408`, `smbfs_node.c:3888`
+  - `_PC_XATTR_SIZE_BITS` and `va_total_size`
+  - the xattr copy in server-side copyfile
+  - NTFS subtype detection
+- **SMB LOCK.** smbfs sends it only for `flock()` and `fcntl` byte-range locks. `O_EXLOCK` and `O_SHLOCK` use share deny modes and lockFID handles, not LOCK. Time Machine sent no LOCK in any run.
+
+## Unknowns after part 2
+
+1. Durable reconnects. No run dropped the connection, so the DH2C path was not used. The `network-drop` scenarios cover it, and they were not run here.
+2. Whether Finder or `copyfile` with xattrs would fail against the no-streams server. Only Time Machine was tested.
+3. Longer and larger incrementals, and thinning.
+4. Whether DiskImages' choice of 256 KiB or 512 KiB zero writes depends on anything in the server. It differed between the two jobs, but the bytes were the same.
+
+## Files (part 2)
+
+- `internal/smb/server/trace.go`: CREATE context and lease logging, and the `S3SMB_TRACE_NOSTREAMS` switch.
+- `fs_info.go`, `create.go`, `lock.go`, `lease_break.go`: one guarded line each.
+- `test/macos/scenario_test.go`: the `trace-streams` and `trace-nostreams` scenarios.
+- `research-tm-mac-trace/leases.py`: lease, durable, stream and lock counts per phase. Example: `python3 leases.py application-1-initialize.log setup=10:12:00 first=10:12:34 verify1=10:13:56 incremental=10:18:40 verify2=10:19:16`. These are run 3's `trace-streams` phase starts. For `trace-nostreams` they are 10:10:30, 10:11:12, 10:12:31, 10:17:20 and 10:18:10.

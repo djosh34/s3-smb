@@ -10,7 +10,7 @@ for name, a, b in phases:
     print(name, len(ph), dict(c.most_common()))
     print("   classes", dict(collections.Counter((r["cmd"][:2] + str(r.get("type", "")), cls(r)) for r in ph if r["cmd"] in ("QUERY_INFO", "SET_INFO", "QUERY_DIRECTORY")).most_common()))
     print("   write bytes", sum(r["len"] for r in ph if r["cmd"] == "WRITE"), "read bytes req", sum(r["len"] for r in ph if r["cmd"] == "READ"), "flush", collections.Counter(r["flush"] for r in ph if r["cmd"] == "FLUSH"))
-    print("   peak opens", max((r["opens"] for r in ph), default=0), "peak files", max((r["files"] for r in ph), default=0))
+    print("   peak opens", max((r.get("opens", 0) for r in ph), default=0), "peak files", max((r.get("files", 0) for r in ph), default=0))
 print("\nfailed CREATEs")
 for k, n in collections.Counter((kind(r["path"]) if band(r["path"]) is None else "bands/<hex>", r.get("stream"), f'{r["status"]:#x}') for r in rows if r["cmd"] == "CREATE" and r["status"]).most_common(): print(" ", k, n)
 print("Stream-info queries on", collections.Counter(kind(r["path"]) or "<root>" for r in rows if r["cmd"] == "QUERY_INFO" and r.get("class") == 22 and r.get("type") == 1))
