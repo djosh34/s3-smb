@@ -28,7 +28,10 @@ func TestChaosS3Faults(t *testing.T) {
 	writeFiles(t, share, files)
 	verifyFiles(t, share, files)
 	disconnect()
+	// Stop cleanly, then start again under new faults.
+	faults.stop()
 	d.stop()
+	faults = startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))
 	d = f.start()
 	share, disconnect = f.chaosShare(f.addr)
 	verifyFiles(t, share, files)

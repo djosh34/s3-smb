@@ -37,8 +37,8 @@ type rawMac struct {
 
 // rawLogin connects to addr and logs in as the Mac, replacing the session
 // previous when it is not zero. Cleanup closes the connection.
-func (f *fixture) rawLogin(addr string, previous uint64) (*rawMac, error) {
-	conn, err := (&net.Dialer{}).DialContext(f.t.Context(), "tcp", addr)
+func (f *fixture) rawLogin(ctx context.Context, addr string, previous uint64) (*rawMac, error) {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return nil, err
 	}
@@ -51,7 +51,7 @@ func (f *fixture) rawLogin(addr string, previous uint64) (*rawMac, error) {
 			f.t.Error(closeErr)
 		}
 	})
-	session, err := client.Login(f.t.Context(), smbtest.LoginOptions{
+	session, err := client.Login(ctx, smbtest.LoginOptions{
 		Share: "TimeMachine", Account: auth.Account{User: "backup", Password: f.password},
 		ClientGUID: macGUID, PreviousSessionID: previous,
 		Cipher: smbproto.CipherAES128GCM, Signing: smbproto.SigningGMAC,
@@ -175,7 +175,7 @@ func TestChaosDurableReconnect(t *testing.T) {
 func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand, bands map[string][]byte, name string, timeout uint32, outage time.Duration) {
 	t.Helper()
 	ctx := t.Context()
-	mac, err := f.rawLogin(proxy.Address(), 0)
+	mac, err := f.rawLogin(ctx, proxy.Address(), 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -216,7 +216,7 @@ func durableCut(t *testing.T, f *fixture, proxy *netfault.Proxy, rng *rand.Rand,
 	time.Sleep(outage)
 	proxy.Restore()
 
-	resumed, err := f.rawLogin(proxy.Address(), mac.session.SessionID)
+	resumed, err := f.rawLogin(ctx, proxy.Address(), mac.session.SessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -278,13 +278,21 @@ func TestChaosBadConnections(t *testing.T) {
 	backedUp := make(chan struct{})
 	var bad sync.WaitGroup
 	// The bad connections end when the backup does, also when it fails.
-	defer bad.Wait()
-	defer close(backedUp)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	defer func() {
+		close(backedUp)
+		// After a failed backup, stuck bad connections end too.
+		if t.Failed() {
+			cancel()
+		}
+		bad.Wait()
+	}()
 	for range count {
 		kind, garbage, delay := rng.IntN(4), chaosData(rng, 1+rng.IntN(8<<10)), between(rng, 0, time.Second)
 		bad.Go(func() {
 			time.Sleep(delay)
-			if err := misbehave(f, kind, garbage, backedUp); err != nil {
+			if err := misbehave(ctx, f, kind, garbage, backedUp); err != nil {
 				t.Error(err)
 			}
 		})
@@ -297,11 +305,11 @@ func TestChaosBadConnections(t *testing.T) {
 
 // misbehave opens one bad connection of the given kind. Connections that hold
 // stay open until backedUp closes.
-func misbehave(f *fixture, kind int, garbage []byte, backedUp <-chan struct{}) error {
+func misbehave(ctx context.Context, f *fixture, kind int, garbage []byte, backedUp <-chan struct{}) error {
 	if kind == 3 {
-		return unreadReplies(f, backedUp)
+		return unreadReplies(ctx, f, backedUp)
 	}
-	conn, err := (&net.Dialer{}).DialContext(f.t.Context(), "tcp", f.addr)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", f.addr)
 	if err != nil {
 		return err
 	}
@@ -327,9 +335,8 @@ func misbehave(f *fixture, kind int, garbage []byte, backedUp <-chan struct{}) e
 
 // unreadReplies logs in as the Mac on another connection, asks for more READ
 // replies than the socket buffers hold and never reads them.
-func unreadReplies(f *fixture, backedUp <-chan struct{}) error {
-	ctx := f.t.Context()
-	mac, err := f.rawLogin(f.addr, 0)
+func unreadReplies(ctx context.Context, f *fixture, backedUp <-chan struct{}) error {
+	mac, err := f.rawLogin(ctx, f.addr, 0)
 	if err != nil {
 		return err
 	}
