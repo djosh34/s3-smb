@@ -124,7 +124,9 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	if long {
 		h.pause(45 * time.Second)
 		// Do not stopbackup or kill the client. Its own failure must end this run.
-		h.must(h.waitFor("visible failure during outage", 10*time.Minute, time.Second, func() (bool, error) {
+		// The proxy refuses reconnects at once, so macOS keeps retrying, and the
+		// backup fails when DiskImages gives up: 10 min 20 s in run 37305839289.
+		h.must(h.waitFor("visible failure during outage", 20*time.Minute, time.Second, func() (bool, error) {
 			return h.backup.exited(), nil
 		}))
 		if h.backup.err == nil {

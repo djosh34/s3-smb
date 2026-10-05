@@ -258,12 +258,15 @@ reconnect, and the backup must restore the changed tree. A drop measured above
 requests, the attempt is repeated, up to three times; three refusals end the
 job as `not tested` in `network-drop-result.json`, which is not a pass. Other
 failures do not retry. `network-outage` holds the drop for at least 45 seconds
-and until the client fails on its own, then requires a visible failure, no new
-completed backup, the earlier backup restored intact, and a successful next
-backup and restore. The server keeps running in both scenarios.
+and until the client fails on its own, at most 20 minutes, then requires a
+visible failure, no new completed backup, the earlier backup restored intact,
+and a successful next backup and restore. The proxy refuses reconnects at once,
+so macOS keeps retrying, and the backup fails when DiskImages gives up on the
+image, after about ten minutes. The server keeps running in both scenarios.
 
-The drop log samples in `test/macos/helpers/testdata/drop` are written from
-Apple's SMBClient source, not recorded on a Mac.
+Of the drop log samples in `test/macos/helpers/testdata/drop`, the reconnect
+success is recorded on a Mac; the refusal and failure are written from Apple's
+SMBClient source.
 
 ```sh
 gh workflow run macos.yml --ref <branch-or-tag> -f mode=scenarios \

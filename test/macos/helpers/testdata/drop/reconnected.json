@@ -1,7 +1,11 @@
 [
   {
-    "senderImagePath": "/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs",
+    "messageType": "Error",
+    "formatString": "%s: id %d: Reconnect completed successfully. \n",
     "processImagePath": "/kernel",
-    "eventMessage": "smb_iod_reconnect: id 1: Reconnect completed successfully. "
+    "senderImagePath": "/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs",
+    "timestamp": "2026-10-05 12:07:42.419795+0000",
+    "eventMessage": "smb_iod_reconnect: id 4: Reconnect completed successfully.",
+    "processID": 0
   }
 ]
