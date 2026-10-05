@@ -137,6 +137,8 @@ func (h *harness) scenario(name string) result {
 	switch name {
 	case "network-drop", "network-outage":
 		return h.networkScenario(name)
+	case "trace-streams", "trace-nostreams":
+		return h.traceScenario(name)
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
@@ -332,4 +334,26 @@ func (h *harness) finish() {
 		}
 	}
 	h.t.Log("cleanup finished")
+}
+
+// traceScenario is temporary for #535: a first backup, then an incremental
+// backup of a changed tree, each restored and checked. trace-nostreams starts
+// the server without named streams and byte-range locks.
+func (h *harness) traceScenario(name string) result {
+	if name == "trace-nostreams" {
+		h.must(os.Setenv("S3SMB_TRACE_NOSTREAMS", "1"))
+	}
+	outcome := h.baseline()
+	h.t.Log("trace-incremental-start")
+	h.randomFile("later.bin", 256<<20)
+	h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed after the baseline\n"), 0o600))
+	updated, _ := h.manifest(h.proof, h.evidenceDir, "updated-tree.json")
+	h.mount()
+	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-check", outcome.Baseline), h.reference(), "restore-baseline")
+	h.must(h.detach())
+	latest := h.resumeBackup(outcome.Baseline, true)
+	outcome.Scenario, outcome.Resumed = name, filepath.Base(latest)
+	outcome.ResumedRestore = h.restore(latest, updated, "restore-incremental")
+	h.must(h.detach())
+	return outcome
 }

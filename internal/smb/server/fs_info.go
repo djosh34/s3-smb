@@ -82,7 +82,7 @@ func encodeFilesystemInfo(class wire.FilesystemInfoClass, label string, space sm
 		})
 	case wire.ClassFilesystemAttribute:
 		return wire.EncodeFilesystemAttributeInformation(wire.FilesystemAttributeInformation{
-			Name: "s3-smb", Attributes: smb.AdvertisedFilesystemAttributes, MaxComponentLength: 255,
+			Name: "s3-smb", Attributes: traceFSAttributes(), MaxComponentLength: 255,
 		})
 	default:
 		return nil, smb.ErrNotSupported

@@ -21,6 +21,7 @@ func (server *Server) breakLease(ctx context.Context, pending leaseBreak) error 
 	}
 	var sent <-chan error
 	if notify {
+		server.options.Logger.Info("smb trace", "cmd", "LEASE_BREAK_SENT", "status", 0, "current", notification.CurrentState, "new", notification.NewState, "ack", notification.AckRequired)
 		sent = server.sendLeaseBreak(notification)
 	}
 	for {

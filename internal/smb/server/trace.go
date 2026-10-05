@@ -4,6 +4,7 @@ package server
 
 import (
 	"context"
+	"os"
 	"encoding/binary"
 	"encoding/hex"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
@@ -22,6 +24,10 @@ var traceCommands = map[wire.Command]string{
 	wire.IOCTL: "IOCTL", wire.Cancel: "CANCEL", wire.Echo: "ECHO", wire.QueryDirectory: "QUERY_DIRECTORY",
 	wire.ChangeNotify: "CHANGE_NOTIFY", wire.QueryInfo: "QUERY_INFO", wire.SetInfo: "SET_INFO", wire.OplockBreak: "OPLOCK_BREAK",
 }
+
+// traceNoStreams is the #535 variant: no FILE_NAMED_STREAMS, stream opens
+// fail and LOCK returns STATUS_NOT_SUPPORTED.
+var traceNoStreams = os.Getenv("S3SMB_TRACE_NOSTREAMS") != ""
 
 // traceNames maps open file IDs to the name used in CREATE or the last rename.
 var traceNames sync.Map
@@ -73,6 +79,7 @@ func (connection *connection) trace(ctx context.Context, message wire.Message, r
 			if status == smb.StatusSuccess && id != (wire.FileID{}) {
 				traceNames.Store(id, create.Name)
 			}
+			attrs = append(attrs, traceCreateContexts(connection, message, create, result, status)...)
 		}
 	case wire.Close:
 		if request, err := wire.DecodeCloseRequest(message); err == nil {
@@ -124,6 +131,9 @@ func (connection *connection) trace(ctx context.Context, message wire.Message, r
 		if query, err := wire.DecodeQueryInfoRequest(message); err == nil {
 			path(query.ID)
 			attrs = append(attrs, "type", uint8(query.InfoType), "class", query.InfoClass)
+			if query.InfoType == wire.InfoFilesystem && query.InfoClass == 5 {
+				attrs = append(attrs, "fsattr", traceFSAttributes())
+			}
 		}
 	case wire.SetInfo:
 		if info, err := wire.DecodeSetInfoRequest(message); err == nil {
@@ -162,4 +172,39 @@ func traceSetInfo(info wire.SetInfoRequest, id wire.FileID, status smb.Status) [
 		}
 	}
 	return nil
+}
+
+// traceCreateContexts logs the CREATE contexts asked for and the lease and
+// durable handle granted (#535).
+func traceCreateContexts(connection *connection, message wire.Message, create wire.CreateRequest, result reply, status smb.Status) []any {
+	names := make([]string, 0, len(create.Contexts))
+	for _, c := range create.Contexts {
+		names = append(names, c.Name)
+	}
+	attrs := []any{"ctx", strings.Join(names, ","), "oplock", create.OplockLevel}
+	if contexts, err := decodeCreateContexts(create); err == nil {
+		if contexts.lease != nil {
+			attrs = append(attrs, "lease_req", contexts.lease.State, "lease_ver", contexts.lease.Version)
+		}
+		if contexts.durable != nil {
+			attrs = append(attrs, "dh2q_timeout", contexts.durable.Timeout, "dh2q_flags", contexts.durable.Flags)
+		}
+		if contexts.reconnect != nil || contexts.legacyReconnect {
+			attrs = append(attrs, "reconnect", true)
+		}
+	}
+	if status == smb.StatusSuccess && result.fileID != (wire.FileID{}) {
+		binding := state.Binding{SessionID: message.Header.SessionID, TreeID: message.Header.TreeID}
+		if open, lease, found := connection.server.options.State.LeaseForOpen(state.FileID(result.fileID), binding); found == smb.StatusSuccess {
+			attrs = append(attrs, "lease_granted", lease.State, "durable", open.Durable)
+		}
+	}
+	return attrs
+}
+
+func traceFSAttributes() uint32 {
+	if traceNoStreams {
+		return smb.AdvertisedFilesystemAttributes &^ smb.FileNamedStreams
+	}
+	return smb.AdvertisedFilesystemAttributes
 }

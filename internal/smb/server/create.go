@@ -191,6 +191,9 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
 	}
+	if traceNoStreams && resolved.Name.Stream != "" {
+		return reply{status: smb.StatusObjectNameInvalid}, nil, nil
+	}
 	if status = streamOpenStatus(request.aaplNegotiated() || aaplQuery, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
 	}

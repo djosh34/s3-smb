@@ -20,6 +20,9 @@ const (
 // client asked to wait, so a single-range lock without FAIL_IMMEDIATELY acts
 // as if it had the flag.
 func handleLock(_ context.Context, request RequestContext, message wire.Message) (reply, error) {
+	if traceNoStreams {
+		return reply{status: smb.StatusNotSupported}, nil
+	}
 	body, err := wire.DecodeLockRequest(message)
 	if err != nil {
 		return reply{status: smb.StatusInvalidParameter}, nil
