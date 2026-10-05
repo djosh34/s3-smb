@@ -89,7 +89,7 @@ TREE_DISCONNECT closes every open of the tree, including durable opens.
 contains only features whose handlers work. The share is case-sensitive and
 supports named streams up to 64 KiB. The AAPL volume capabilities are
 case-sensitive and full sync (0x06). The NEGOTIATE reply does not advertise
-leasing yet. Hard links, open by file ID, sparse files, change notification,
+leasing. Hard links, open by file ID, sparse files, change notification,
 classic oplocks, directory leases, durable v1 and persistent handles are not
 granted.
 

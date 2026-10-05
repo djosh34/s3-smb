@@ -194,7 +194,7 @@ database, the cache and backup staging files are not encrypted.
 ## Server selection
 
 The default build uses the current SMB server. Build with
-`go build -tags smbnext` to use the new one, which is not finished yet; see
+`go build -tags smbnext` to use the new one, described in
 [the SMB server design](smb-design.md). There is no runtime setting to choose a
 server.
 

@@ -106,12 +106,9 @@ shell. To update a tool, change its version and both archive hashes in the
 installer.
 
 `.golangci.yml` enables the strict Go linters and the gofumpt and goimports
-formatters. It excludes vendored code and `internal/smb-old`, and, until they
-are rewritten, the files of `internal/app`, `internal/backup`,
-`internal/config`, `internal/logging`, `internal/storage`, the root `main.go`
-and `packaging_test.go`. The list matches files, so new packages, also under
-those directories, get all checks. gofmt skips the same vendored code and
-`internal/smb-old`.
+formatters. It excludes only JuiceFS in `internal/juicefs`, the other vendored
+code under `internal/thirdparty`, and `internal/smb-old`; every other file gets
+all checks. The formatters skip the same directories.
 
 Fix lint findings rather than suppressing them. nolintlint requires any
 `//nolint` to name the linter and give a reason. Panic, recover and fatal

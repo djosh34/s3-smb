@@ -137,8 +137,8 @@ func TestOpenBelongsToItsBinding(t *testing.T) {
 	}
 }
 
-// A replayed durable CREATE finds its open only with the same user, share,
-// client and create GUID, and not while the first CREATE is still pending.
+// LookupCreate matches an open only on the full identity: user, share, client
+// GUID and CreateGuid. It reports a reserved CREATE as a duplicate.
 func TestLookupCreateMatchesTheWholeIdentity(t *testing.T) {
 	table := newTable(t)
 	req := durableRequest(1, 2)
