@@ -4,6 +4,7 @@ application log and harness log from the `mac-hotspots-*` artifact.
 ```sh
 python3 hotspots.py s3-smb-mac-evidence/application-1-initialize.log mac-harness.log out.json
 python3 report.py out.json
+python3 scratch.py s3-smb-mac-evidence/application-1-initialize.log mac-harness.log
 ```
 
 `hotspots.py` replays the SMB trace into a chunk table at 8 MiB, 1 MiB,
@@ -12,3 +13,6 @@ rows per backup as JSON. The backup windows come from the
 `hotspots-backup-start` and `hotspots-backup-end` lines in the harness log.
 For older traces, pass `label=START,END` pairs instead. `report.py` prints the
 Markdown tables used in the report.
+
+`scratch.py` gives the bytes that would wait in a local scratch folder until
+each file's FLUSH, at 8 MiB chunks, with and without sparse all-zero chunks.

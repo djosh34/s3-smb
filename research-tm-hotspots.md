@@ -227,6 +227,29 @@ Live chunk rows after inc5, over the 61 non-empty files in the bundle (bands, `m
 
 The per-TB numbers scale linearly and match the estimates in #592.
 
+### 6. Local scratch until FLUSH, 8 MiB chunks (C)
+
+Asked after the first report. Model (`research-tm-hotspots/scratch.py`): every dirty chunk waits in a local scratch folder until its file gets a FLUSH or CLOSE. Then it is uploaded and leaves scratch at once. A dirty chunk takes min(8 MiB, file size minus chunk start), even if only 4 KiB of it was written. "Sparse" counts a chunk as 0 bytes while it holds only zeros (all its writes were zeros, and it never had nonzero data).
+
+Bytes in scratch at the same moment (MiB). p99 is over time: the level that is exceeded only 1% of the time. Same run and trace as above.
+
+| Phase | Peak | p99 | Peak, sparse zeros | p99, sparse zeros | Peak at (UTC) |
+|---|---:|---:|---:|---:|---|
+| whole run | 1,232 | 953 | 1,224 | 951 | 19:20:06, first backup |
+| first backup, APFS erase | 248 | 248 | 22 | 22 | 19:19:17 |
+| first backup, copy | 1,232 | 1,217 | 1,224 | 1,209 | 19:20:06 |
+| inc1 | 128 | 64 | 128 | 64 | 19:24:48 |
+| inc2 (500 MiB added) | 353 | 345 | 353 | 345 | 19:26:58 |
+| inc3 | 152 | 115 | 152 | 115 | 19:33:22 |
+| inc4 | 112 | 48 | 112 | 48 | 19:37:12 |
+| inc5 | 90 | 64 | 90 | 64 | 19:41:54 |
+| harness, between backups | 56 | 0 | 56 | 0 | 19:43:08 |
+
+- **The peak is the bulk copy of the first backup.** From 19:19:39 to 19:20:06 macOS wrote 1,140 MiB to bands without any band FLUSH, about 42 MiB/s for 27 seconds. Then it FLUSHed the bands one at a time, 2 to 5 seconds apart, so the later bands waited longer. At the peak, 7 bands (`bands/6` to `bands/c`) held 141 dirty chunks, all with real data. **M** for the writes and FLUSHes, **C** for the bytes.
+- **Sparse zeros only help during the APFS erase.** There it cuts the peak from 248 MiB to 22 MiB. In the copy phase all dirty chunks hold data, so it saves 8 MiB.
+- **In incrementals, scratch stays under 360 MiB.** The largest is inc2, which copied 500 MiB of new files. Hot-spot chunks add little, because they are FLUSHed within seconds.
+- **The peak follows the data written between FLUSHes, not the tree size.** Here that was 27 seconds at 42 MiB/s. A faster link or disk, or a client that FLUSHes less often, would give a higher peak. A first backup of a real Mac may write for longer between FLUSHes. This run does not show an upper limit. **I**
+
 ## Limits
 
 - **Back to back, not hourly.** The 6 backups ran 1 to 2 minutes apart. The hourly numbers move the measured events onto an hourly grid. macOS might write a bit differently after an hour of idle time.
@@ -243,5 +266,6 @@ The per-TB numbers scale linearly and match the estimates in #592.
 - `test/macos/hotspots_test.go`, and small changes in `scenario_test.go`, `harness_test.go`, `run.sh` and `.github/workflows/macos.yml`: the `hotspots` scenario and longer budgets.
 - `research-tm-hotspots/hotspots.py`: replays the trace into chunk tables and writes JSON.
 - `research-tm-hotspots/report.py`: prints the tables from that JSON.
+- `research-tm-hotspots/scratch.py`: bytes waiting in local scratch until FLUSH (section 6).
 - `research-tm-hotspots/out.json`: the output for run 37361509487.
 - Input: `application-1-initialize.log` and `mac-harness.log` from the `mac-hotspots-*` artifact of run 37361509487 (kept 14 days).
