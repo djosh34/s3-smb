@@ -140,7 +140,9 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	if commandErr != nil {
 		attempt.CommandError = commandErr.Error()
 	}
-	attempt.Log = h.dropLog(started, time.Now().UTC())
+	// The Mac's wall clock moves during a run, so the log can show the backup
+	// start a moment before started. The previous backup began minutes earlier.
+	attempt.Log = h.dropLog(started.Add(-30*time.Second), time.Now().UTC())
 	h.save(label+"-result.json", attempt)
 	return attempt, updated, commandErr
 }
