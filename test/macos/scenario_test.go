@@ -54,10 +54,16 @@ func (h *harness) baseline() result {
 	h.destinationSetup()
 	h.try(2*time.Minute, "/usr/bin/defaults", "read", "/Library/Preferences/com.apple.TimeMachine")
 	h.createTree()
+	if os.Getenv("MAC_SCENARIO") == "hotspots" {
+		h.hotspots = h.bigTree()
+		h.hotspotStart = time.Now().UTC()
+		h.t.Log("hotspots-backup-start", "baseline", h.hotspotStart.Format(time.RFC3339Nano))
+	}
 	h.checkExclusions()
 	h.startBackup("baseline")
 	completed, err := h.completeBackup("baseline")
 	h.must(err)
+	h.t.Log("hotspots-backup-end", "baseline", time.Now().UTC().Format(time.RFC3339Nano))
 	h.must(h.detach())
 	h.mount()
 	selected := h.remoteBackup("baseline", "")
@@ -139,6 +145,8 @@ func (h *harness) scenario(name string) result {
 		return h.networkScenario(name)
 	case "trace-streams", "trace-nostreams":
 		return h.traceScenario(name)
+	case "hotspots":
+		return h.hotspotScenario()
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
