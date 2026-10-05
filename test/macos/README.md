@@ -42,4 +42,5 @@ GOOS=darwin go vet -tags macos ./test/macos/...
 ```
 
 The tests cover `helpers` and the `fullsync` failure outside Darwin. The vet
-commands compile `fullsync` and the harness for Darwin. Only a Mac run shows that the server works with macOS.
+commands compile `fullsync` and the harness for Darwin. Only a Mac run shows
+that the server works with macOS.

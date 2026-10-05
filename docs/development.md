@@ -106,16 +106,18 @@ shell. To update a tool, change its version and both archive hashes in the
 installer.
 
 `.golangci.yml` enables the strict Go linters and the gofumpt and goimports
-formatters. It excludes only JuiceFS in `internal/juicefs` and the other vendored
-code under `internal/thirdparty`; every other file gets all checks. The formatters skip the same directories.
+formatters. It excludes only JuiceFS in `internal/juicefs` and the other
+vendored code under `internal/thirdparty`; every other file gets all checks. The
+formatters skip the same directories.
 
 Fix lint findings rather than suppressing them. nolintlint requires any
 `//nolint` to name the linter and give a reason. Panic, recover and fatal
 logging are banned; `fmt.Print*` is allowed in tests. `os.Exit` is allowed only
 in the root `main.go`, `cmd/<command>/main.go` and `test/macos/fullsync/main.go`.
 
-`test/lint_config_test.sh` checks the exclusions and the suppression rules in a throwaway module. `test/lint_tools_test.sh` checks the
-installer with mock downloads.
+`test/lint_config_test.sh` checks the exclusions and the suppression rules in a
+throwaway module. `test/lint_tools_test.sh` checks the installer with mock
+downloads.
 
 ### Docker integration
 
