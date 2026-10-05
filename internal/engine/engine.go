@@ -129,8 +129,8 @@ var _ smb.Storage = (*Engine)(nil)
 
 // Open runs the start sequence: take the bucket lock, waiting while another
 // server holds it; list the copies; keep the local database or restore the
-// newest copy; start a new timeline; upload the start copy. It returns once
-// the engine can serve.
+// newest copy; start a new timeline; upload the start copy, numbered two
+// above the highest sequence seen. It returns once the engine can serve.
 func Open(ctx context.Context, options Options) (*Engine, error) {
 	if options.Bucket == nil {
 		return nil, errors.New("a bucket is required")
@@ -181,17 +181,22 @@ func (e *Engine) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	var highest int64
-	for _, c := range copies {
-		highest = max(highest, c.seq)
-	}
-	e.captureSeq = highest
 	if err = e.prepareDatabase(ctx, copies); err != nil {
 		return err
 	}
 	if e.db, err = openDatabase(ctx, e.dir); err != nil {
 		return fmt.Errorf("open the database: %w", err)
 	}
+	// Highest seen counts the attempts this database recorded too, so an
+	// attempt that may still land never shares the start copy's sequence.
+	var highest int64
+	if err = e.db.QueryRowContext(ctx, `SELECT coalesce(max(seq), 0) FROM copies`).Scan(&highest); err != nil {
+		return storageError(err)
+	}
+	for _, c := range copies {
+		highest = max(highest, c.seq)
+	}
+	e.captureSeq = highest
 	if err = e.newTimeline(ctx, highest); err != nil {
 		return err
 	}
