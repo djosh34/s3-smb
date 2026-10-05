@@ -1,0 +1,2507 @@
+{
+ "windows": [
+  {
+   "label": "baseline",
+   "start": "2026-10-05T19:18:56.691708+00:00",
+   "end": "2026-10-05T19:22:21.992467+00:00",
+   "seconds": 205.3
+  },
+  {
+   "label": "inc1",
+   "start": "2026-10-05T19:23:24.925610+00:00",
+   "end": "2026-10-05T19:24:52.204605+00:00",
+   "seconds": 87.3
+  },
+  {
+   "label": "inc2",
+   "start": "2026-10-05T19:26:09.610184+00:00",
+   "end": "2026-10-05T19:27:16.041977+00:00",
+   "seconds": 66.4
+  },
+  {
+   "label": "inc3",
+   "start": "2026-10-05T19:29:04.917201+00:00",
+   "end": "2026-10-05T19:33:53.275823+00:00",
+   "seconds": 288.4
+  },
+  {
+   "label": "inc4",
+   "start": "2026-10-05T19:35:05.685031+00:00",
+   "end": "2026-10-05T19:39:58.918531+00:00",
+   "seconds": 293.2
+  },
+  {
+   "label": "inc5",
+   "start": "2026-10-05T19:41:40.353245+00:00",
+   "end": "2026-10-05T19:43:07.726275+00:00",
+   "seconds": 87.4
+  }
+ ],
+ "commits": {
+  "flush": 1407
+ },
+ "writes": {
+  "baseline": {
+   "writes": 9650,
+   "bytes": 6792789945,
+   "zero_bytes": 940851200,
+   "band_bytes": 6791684096
+  },
+  "inc1": {
+   "writes": 1039,
+   "bytes": 233349629,
+   "zero_bytes": 0,
+   "band_bytes": 232656896
+  },
+  "inc2": {
+   "writes": 1019,
+   "bytes": 597668893,
+   "zero_bytes": 0,
+   "band_bytes": 597434368
+  },
+  "inc3": {
+   "writes": 2305,
+   "bytes": 260142710,
+   "zero_bytes": 0,
+   "band_bytes": 259547136
+  },
+  "inc4": {
+   "writes": 2443,
+   "bytes": 144443660,
+   "zero_bytes": 0,
+   "band_bytes": 143585280
+  },
+  "inc5": {
+   "writes": 430,
+   "bytes": 57948963,
+   "zero_bytes": 0,
+   "band_bytes": 57761792
+  },
+  "other": {
+   "writes": 262,
+   "bytes": 2863104,
+   "zero_bytes": 0,
+   "band_bytes": 2617344
+  }
+ },
+ "uploads": {
+  "8M": {
+   "baseline": {
+    "versions": 1156,
+    "bytes": 8155561913,
+    "band_versions": 1007,
+    "band_bytes": 8154456064
+   },
+   "inc1": {
+    "versions": 291,
+    "bytes": 1636684285,
+    "band_versions": 200,
+    "band_bytes": 1635991552
+   },
+   "inc2": {
+    "versions": 158,
+    "bytes": 1008915485,
+    "band_versions": 123,
+    "band_bytes": 1008680960
+   },
+   "inc3": {
+    "versions": 324,
+    "bytes": 1987724918,
+    "band_versions": 245,
+    "band_bytes": 1987129344
+   },
+   "inc4": {
+    "versions": 476,
+    "bytes": 2940164364,
+    "band_versions": 365,
+    "band_bytes": 2939305984
+   },
+   "inc5": {
+    "versions": 129,
+    "bytes": 832449315,
+    "band_versions": 100,
+    "band_bytes": 832262144
+   },
+   "other": {
+    "versions": 136,
+    "bytes": 849403904,
+    "band_versions": 106,
+    "band_bytes": 849158144
+   }
+  },
+  "1M": {
+   "baseline": {
+    "versions": 6917,
+    "bytes": 7047217081,
+    "band_versions": 6768,
+    "band_bytes": 7046111232
+   },
+   "inc1": {
+    "versions": 579,
+    "bytes": 500060669,
+    "band_versions": 488,
+    "band_bytes": 499367936
+   },
+   "inc2": {
+    "versions": 686,
+    "bytes": 678507549,
+    "band_versions": 651,
+    "band_bytes": 678273024
+   },
+   "inc3": {
+    "versions": 685,
+    "bytes": 618157686,
+    "band_versions": 606,
+    "band_bytes": 617562112
+   },
+   "inc4": {
+    "versions": 816,
+    "bytes": 723732748,
+    "band_versions": 705,
+    "band_bytes": 722874368
+   },
+   "inc5": {
+    "versions": 216,
+    "bytes": 195963683,
+    "band_versions": 187,
+    "band_bytes": 195776512
+   },
+   "other": {
+    "versions": 184,
+    "bytes": 154198016,
+    "band_versions": 154,
+    "band_bytes": 153952256
+   }
+  },
+  "256K": {
+   "baseline": {
+    "versions": 26362,
+    "bytes": 6859259833,
+    "band_versions": 26213,
+    "band_bytes": 6858153984
+   },
+   "inc1": {
+    "versions": 1291,
+    "bytes": 313119229,
+    "band_versions": 1200,
+    "band_bytes": 312426496
+   },
+   "inc2": {
+    "versions": 2409,
+    "bytes": 622232605,
+    "band_versions": 2374,
+    "band_bytes": 621998080
+   },
+   "inc3": {
+    "versions": 1583,
+    "bytes": 390542966,
+    "band_versions": 1504,
+    "band_bytes": 389947392
+   },
+   "inc4": {
+    "versions": 1459,
+    "bytes": 350722316,
+    "band_versions": 1348,
+    "band_bytes": 349863936
+   },
+   "inc5": {
+    "versions": 424,
+    "bytes": 103688995,
+    "band_versions": 395,
+    "band_bytes": 103501824
+   },
+   "other": {
+    "versions": 209,
+    "bytes": 46002176,
+    "band_versions": 179,
+    "band_bytes": 45756416
+   }
+  },
+  "4K": {
+   "baseline": {
+    "versions": 1658399,
+    "bytes": 6792748985,
+    "band_versions": 1658116,
+    "band_bytes": 6791643136
+   },
+   "inc1": {
+    "versions": 56976,
+    "bytes": 233349629,
+    "band_versions": 56801,
+    "band_bytes": 232656896
+   },
+   "inc2": {
+    "versions": 145921,
+    "bytes": 597668893,
+    "band_versions": 145858,
+    "band_bytes": 597434368
+   },
+   "inc3": {
+    "versions": 63517,
+    "bytes": 260142710,
+    "band_versions": 63366,
+    "band_bytes": 259547136
+   },
+   "inc4": {
+    "versions": 35270,
+    "bytes": 144443660,
+    "band_versions": 35055,
+    "band_bytes": 143585280
+   },
+   "inc5": {
+    "versions": 14153,
+    "bytes": 57948963,
+    "band_versions": 14102,
+    "band_bytes": 57761792
+   },
+   "other": {
+    "versions": 699,
+    "bytes": 2863104,
+    "band_versions": 639,
+    "band_bytes": 2617344
+   }
+  }
+ },
+ "trash": {
+  "8M": {
+   "baseline": {
+    "A_versions": 380,
+    "A_bytes": 1896288936,
+    "B_ci_bytes": {
+     "mean": 7112338.4,
+     "min": 0,
+     "max": 40390876
+    },
+    "B_hourly_bytes": {
+     "mean": 7112338.4,
+     "min": 0,
+     "max": 40390876
+    },
+    "B_ci_versions": {
+     "mean": 1.8666666666666667,
+     "min": 0,
+     "max": 10
+    },
+    "B_hourly_versions": {
+     "mean": 1.8666666666666667,
+     "min": 0,
+     "max": 10
+    },
+    "A_drop_bytes": 529257128,
+    "A_hot_bytes": 1261539328,
+    "A_rewrite_bytes": 1367031808
+   },
+   "inc1": {
+    "A_versions": 274,
+    "A_bytes": 1500881206,
+    "B_ci_bytes": {
+     "mean": 69537094.26666667,
+     "min": 0,
+     "max": 320163089
+    },
+    "B_hourly_bytes": {
+     "mean": 324167367.26666665,
+     "min": 320163089,
+     "max": 380227263
+    },
+    "B_ci_versions": {
+     "mean": 11.4,
+     "min": 0,
+     "max": 54
+    },
+    "B_hourly_versions": {
+     "mean": 54.86666666666667,
+     "min": 54,
+     "max": 67
+    },
+    "A_drop_bytes": 4406,
+    "A_rewrite_bytes": 1500876800,
+    "A_hot_bytes": 912142336
+   },
+   "inc2": {
+    "A_versions": 91,
+    "A_bytes": 465871759,
+    "B_ci_bytes": {
+     "mean": 19401276.266666666,
+     "min": 0,
+     "max": 112106968
+    },
+    "B_hourly_bytes": {
+     "mean": 113763705.53333333,
+     "min": 112106968,
+     "max": 136958031
+    },
+    "B_ci_versions": {
+     "mean": 4.266666666666667,
+     "min": 0,
+     "max": 24
+    },
+    "B_hourly_versions": {
+     "mean": 24.4,
+     "min": 24,
+     "max": 30
+    },
+    "A_drop_bytes": 5007,
+    "A_rewrite_bytes": 465866752,
+    "A_hot_bytes": 264876032
+   },
+   "inc3": {
+    "A_versions": 301,
+    "A_bytes": 1796695471,
+    "B_ci_bytes": {
+     "mean": 147468883.86666667,
+     "min": 0,
+     "max": 302861926
+    },
+    "B_hourly_bytes": {
+     "mean": 339884526.53333336,
+     "min": 302861926,
+     "max": 484565414
+    },
+    "B_ci_versions": {
+     "mean": 22.533333333333335,
+     "min": 0,
+     "max": 50
+    },
+    "B_hourly_versions": {
+     "mean": 55.6,
+     "min": 50,
+     "max": 77
+    },
+    "A_rewrite_bytes": 1796689920,
+    "A_drop_bytes": 5551,
+    "A_hot_bytes": 1066606592
+   },
+   "inc4": {
+    "A_versions": 466,
+    "A_bytes": 2869737480,
+    "B_ci_bytes": {
+     "mean": 149438185.86666667,
+     "min": 8388608,
+     "max": 351330093
+    },
+    "B_hourly_bytes": {
+     "mean": 403269286.8666667,
+     "min": 351330093,
+     "max": 589488950
+    },
+    "B_ci_versions": {
+     "mean": 22.8,
+     "min": 1,
+     "max": 55
+    },
+    "B_hourly_versions": {
+     "mean": 62.53333333333333,
+     "min": 55,
+     "max": 88
+    },
+    "A_rewrite_bytes": 2869731328,
+    "A_drop_bytes": 6152,
+    "A_hot_bytes": 1981067264
+   },
+   "inc5": {
+    "A_versions": 127,
+    "A_bytes": 816007838,
+    "B_ci_bytes": {
+     "mean": 61392364.733333334,
+     "min": 0,
+     "max": 211886129
+    },
+    "B_hourly_bytes": {
+     "mean": 219157430.46666667,
+     "min": 211886129,
+     "max": 320955651
+    },
+    "B_ci_versions": {
+     "mean": 10.2,
+     "min": 0,
+     "max": 36
+    },
+    "B_hourly_versions": {
+     "mean": 37.06666666666667,
+     "min": 36,
+     "max": 52
+    },
+    "A_drop_bytes": 6814,
+    "A_rewrite_bytes": 816001024,
+    "A_hot_bytes": 201342976
+   },
+   "other": {
+    "A_versions": 136,
+    "A_bytes": 848986112,
+    "B_ci_bytes": {
+     "mean": 5047910.4,
+     "min": 0,
+     "max": 50495488
+    },
+    "B_hourly_bytes": {
+     "mean": 1129403.7333333334,
+     "min": 8192,
+     "max": 16801792
+    },
+    "B_ci_versions": {
+     "mean": 1.4,
+     "min": 0,
+     "max": 11
+    },
+    "B_hourly_versions": {
+     "mean": 1.4666666666666666,
+     "min": 1,
+     "max": 5
+    },
+    "A_rewrite_bytes": 848986112,
+    "A_hot_bytes": 675635200
+   }
+  },
+  "1M": {
+   "baseline": {
+    "A_versions": 918,
+    "A_bytes": 787944104,
+    "B_ci_bytes": {
+     "mean": 2079173.6,
+     "min": 0,
+     "max": 13402332
+    },
+    "B_hourly_bytes": {
+     "mean": 2079173.6,
+     "min": 0,
+     "max": 13402332
+    },
+    "B_ci_versions": {
+     "mean": 3.2,
+     "min": 0,
+     "max": 19
+    },
+    "B_hourly_versions": {
+     "mean": 3.2,
+     "min": 0,
+     "max": 19
+    },
+    "A_drop_bytes": 529257128,
+    "A_hot_bytes": 243810304,
+    "A_rewrite_bytes": 258686976
+   },
+   "inc1": {
+    "A_versions": 448,
+    "A_bytes": 364257590,
+    "B_ci_bytes": {
+     "mean": 34654466.0,
+     "min": 0,
+     "max": 146099473
+    },
+    "B_hourly_bytes": {
+     "mean": 146748308.06666666,
+     "min": 146099473,
+     "max": 155831999
+    },
+    "B_ci_versions": {
+     "mean": 36.13333333333333,
+     "min": 0,
+     "max": 155
+    },
+    "B_hourly_versions": {
+     "mean": 156.0,
+     "min": 155,
+     "max": 170
+    },
+    "A_rewrite_bytes": 364253184,
+    "A_drop_bytes": 4406,
+    "A_hot_bytes": 172929024
+   },
+   "inc2": {
+    "A_versions": 166,
+    "A_bytes": 135463823,
+    "B_ci_bytes": {
+     "mean": 13599155.733333332,
+     "min": 0,
+     "max": 69115352
+    },
+    "B_hourly_bytes": {
+     "mean": 69443893.26666667,
+     "min": 69115352,
+     "max": 74043471
+    },
+    "B_ci_versions": {
+     "mean": 15.0,
+     "min": 0,
+     "max": 77
+    },
+    "B_hourly_versions": {
+     "mean": 77.53333333333333,
+     "min": 77,
+     "max": 85
+    },
+    "A_rewrite_bytes": 135458816,
+    "A_drop_bytes": 5007,
+    "A_hot_bytes": 35409920
+   },
+   "inc3": {
+    "A_versions": 502,
+    "A_bytes": 427128239,
+    "B_ci_bytes": {
+     "mean": 61136126.53333333,
+     "min": 0,
+     "max": 125652582
+    },
+    "B_hourly_bytes": {
+     "mean": 133454864.66666667,
+     "min": 125652582,
+     "max": 167895462
+    },
+    "B_ci_versions": {
+     "mean": 63.333333333333336,
+     "min": 0,
+     "max": 134
+    },
+    "B_hourly_versions": {
+     "mean": 142.73333333333332,
+     "min": 134,
+     "max": 180
+    },
+    "A_rewrite_bytes": 427122688,
+    "A_drop_bytes": 5551,
+    "A_hot_bytes": 146878464
+   },
+   "inc4": {
+    "A_versions": 748,
+    "A_bytes": 653305864,
+    "B_ci_bytes": {
+     "mean": 58281978.93333333,
+     "min": 3145728,
+     "max": 136372013
+    },
+    "B_hourly_bytes": {
+     "mean": 150214857.0,
+     "min": 136372013,
+     "max": 197350198
+    },
+    "B_ci_versions": {
+     "mean": 60.666666666666664,
+     "min": 3,
+     "max": 144
+    },
+    "B_hourly_versions": {
+     "mean": 158.53333333333333,
+     "min": 144,
+     "max": 207
+    },
+    "A_rewrite_bytes": 653299712,
+    "A_drop_bytes": 6152,
+    "A_hot_bytes": 329105408
+   },
+   "inc5": {
+    "A_versions": 201,
+    "A_bytes": 179522206,
+    "B_ci_bytes": {
+     "mean": 28467078.333333332,
+     "min": 1048576,
+     "max": 87105585
+    },
+    "B_hourly_bytes": {
+     "mean": 88295145.66666667,
+     "min": 87105585,
+     "max": 104948995
+    },
+    "B_ci_versions": {
+     "mean": 30.066666666666666,
+     "min": 1,
+     "max": 94
+    },
+    "B_hourly_versions": {
+     "mean": 95.33333333333333,
+     "min": 94,
+     "max": 114
+    },
+    "A_rewrite_bytes": 179515392,
+    "A_drop_bytes": 6814,
+    "A_hot_bytes": 26230784
+   },
+   "other": {
+    "A_versions": 184,
+    "A_bytes": 153780224,
+    "B_ci_bytes": {
+     "mean": 2391517.8666666667,
+     "min": 0,
+     "max": 13795328
+    },
+    "B_hourly_bytes": {
+     "mean": 3785796.2666666666,
+     "min": 3153920,
+     "max": 10510336
+    },
+    "B_ci_versions": {
+     "mean": 3.066666666666667,
+     "min": 0,
+     "max": 18
+    },
+    "B_hourly_versions": {
+     "mean": 4.933333333333334,
+     "min": 4,
+     "max": 13
+    },
+    "A_rewrite_bytes": 153780224,
+    "A_hot_bytes": 86667264
+   }
+  },
+  "256K": {
+   "baseline": {
+    "A_versions": 2456,
+    "A_bytes": 599986856,
+    "B_ci_bytes": {
+     "mean": 1537409.3333333333,
+     "min": 0,
+     "max": 10518748
+    },
+    "B_hourly_bytes": {
+     "mean": 1537409.3333333333,
+     "min": 0,
+     "max": 10518748
+    },
+    "B_ci_versions": {
+     "mean": 7.0,
+     "min": 0,
+     "max": 46
+    },
+    "B_hourly_versions": {
+     "mean": 7.0,
+     "min": 0,
+     "max": 46
+    },
+    "A_drop_bytes": 529257128,
+    "A_hot_bytes": 64061440,
+    "A_rewrite_bytes": 70729728
+   },
+   "inc1": {
+    "A_versions": 772,
+    "A_bytes": 177316150,
+    "B_ci_bytes": {
+     "mean": 29079536.933333334,
+     "min": 0,
+     "max": 118312209
+    },
+    "B_hourly_bytes": {
+     "mean": 118526321.93333334,
+     "min": 118312209,
+     "max": 121523903
+    },
+    "B_ci_versions": {
+     "mean": 114.0,
+     "min": 0,
+     "max": 467
+    },
+    "B_hourly_versions": {
+     "mean": 468.2,
+     "min": 467,
+     "max": 485
+    },
+    "A_rewrite_bytes": 177311744,
+    "A_drop_bytes": 4406,
+    "A_hot_bytes": 35782656
+   },
+   "inc2": {
+    "A_versions": 335,
+    "A_bytes": 79188879,
+    "B_ci_bytes": {
+     "mean": 12337314.666666666,
+     "min": 0,
+     "max": 61844952
+    },
+    "B_hourly_bytes": {
+     "mean": 61933467.666666664,
+     "min": 61844952,
+     "max": 63172687
+    },
+    "B_ci_versions": {
+     "mean": 48.93333333333333,
+     "min": 0,
+     "max": 246
+    },
+    "B_hourly_versions": {
+     "mean": 246.53333333333333,
+     "min": 246,
+     "max": 254
+    },
+    "A_rewrite_bytes": 79183872,
+    "A_drop_bytes": 5007,
+    "A_hot_bytes": 5857280
+   },
+   "inc3": {
+    "A_versions": 853,
+    "A_bytes": 199513519,
+    "B_ci_bytes": {
+     "mean": 45722059.333333336,
+     "min": 0,
+     "max": 95506022
+    },
+    "B_hourly_bytes": {
+     "mean": 99050103.06666666,
+     "min": 95506022,
+     "max": 118133158
+    },
+    "B_ci_versions": {
+     "mean": 179.26666666666668,
+     "min": 0,
+     "max": 378
+    },
+    "B_hourly_versions": {
+     "mean": 392.73333333333335,
+     "min": 378,
+     "max": 470
+    },
+    "A_rewrite_bytes": 199507968,
+    "A_hot_bytes": 18219008,
+    "A_drop_bytes": 5551
+   },
+   "inc4": {
+    "A_versions": 1190,
+    "A_bytes": 280295432,
+    "B_ci_bytes": {
+     "mean": 46555404.0,
+     "min": 3145728,
+     "max": 105176877
+    },
+    "B_hourly_bytes": {
+     "mean": 113640853.8,
+     "min": 105176877,
+     "max": 146522934
+    },
+    "B_ci_versions": {
+     "mean": 182.6,
+     "min": 12,
+     "max": 415
+    },
+    "B_hourly_versions": {
+     "mean": 448.53333333333336,
+     "min": 415,
+     "max": 577
+    },
+    "A_rewrite_bytes": 280289280,
+    "A_drop_bytes": 6152,
+    "A_hot_bytes": 39223296
+   },
+   "inc5": {
+    "A_versions": 362,
+    "A_bytes": 87247518,
+    "B_ci_bytes": {
+     "mean": 22839720.466666665,
+     "min": 1048576,
+     "max": 63250481
+    },
+    "B_hourly_bytes": {
+     "mean": 63566228.333333336,
+     "min": 63250481,
+     "max": 67986691
+    },
+    "B_ci_versions": {
+     "mean": 90.0,
+     "min": 4,
+     "max": 252
+    },
+    "B_hourly_versions": {
+     "mean": 253.4,
+     "min": 252,
+     "max": 273
+    },
+    "A_rewrite_bytes": 87240704,
+    "A_hot_bytes": 5783552,
+    "A_drop_bytes": 6814
+   },
+   "other": {
+    "A_versions": 208,
+    "A_bytes": 45584384,
+    "B_ci_bytes": {
+     "mean": 2167876.2666666666,
+     "min": 262144,
+     "max": 7434240
+    },
+    "B_hourly_bytes": {
+     "mean": 5149218.133333334,
+     "min": 4919296,
+     "max": 6508544
+    },
+    "B_ci_versions": {
+     "mean": 9.066666666666666,
+     "min": 1,
+     "max": 33
+    },
+    "B_hourly_versions": {
+     "mean": 21.2,
+     "min": 20,
+     "max": 28
+    },
+    "A_rewrite_bytes": 45584384,
+    "A_hot_bytes": 8216576
+   }
+  },
+  "4K": {
+   "baseline": {
+    "A_versions": 130252,
+    "A_bytes": 533476008,
+    "B_ci_bytes": {
+     "mean": 1234578.4,
+     "min": 0,
+     "max": 8999132
+    },
+    "B_hourly_bytes": {
+     "mean": 1234578.4,
+     "min": 0,
+     "max": 8999132
+    },
+    "B_ci_versions": {
+     "mean": 301.6,
+     "min": 0,
+     "max": 2198
+    },
+    "B_hourly_versions": {
+     "mean": 301.6,
+     "min": 0,
+     "max": 2198
+    },
+    "A_drop_bytes": 529257128,
+    "A_hot_bytes": 778240,
+    "A_rewrite_bytes": 4218880
+   },
+   "inc1": {
+    "A_versions": 23821,
+    "A_bytes": 97546550,
+    "B_ci_bytes": {
+     "mean": 25100955.6,
+     "min": 0,
+     "max": 96828689
+    },
+    "B_hourly_bytes": {
+     "mean": 96837728.86666666,
+     "min": 96828689,
+     "max": 96964287
+    },
+    "B_ci_versions": {
+     "mean": 6129.066666666667,
+     "min": 0,
+     "max": 23644
+    },
+    "B_hourly_versions": {
+     "mean": 23646.266666666666,
+     "min": 23644,
+     "max": 23678
+    },
+    "A_rewrite_bytes": 97542144,
+    "A_drop_bytes": 4406,
+    "A_hot_bytes": 393216
+   },
+   "inc2": {
+    "A_versions": 13342,
+    "A_bytes": 54625167,
+    "B_ci_bytes": {
+     "mean": 11125171.733333332,
+     "min": 0,
+     "max": 54451672
+    },
+    "B_hourly_bytes": {
+     "mean": 54452806.333333336,
+     "min": 54451672,
+     "max": 54468687
+    },
+    "B_ci_versions": {
+     "mean": 2716.9333333333334,
+     "min": 0,
+     "max": 13298
+    },
+    "B_hourly_versions": {
+     "mean": 13298.333333333334,
+     "min": 13298,
+     "max": 13303
+    },
+    "A_rewrite_bytes": 54620160,
+    "A_drop_bytes": 5007,
+    "A_hot_bytes": 90112
+   },
+   "inc3": {
+    "A_versions": 16879,
+    "A_bytes": 69113263,
+    "B_ci_bytes": {
+     "mean": 32240211.866666667,
+     "min": 0,
+     "max": 68591206
+    },
+    "B_hourly_bytes": {
+     "mean": 68597981.46666667,
+     "min": 68591206,
+     "max": 68624806
+    },
+    "B_ci_versions": {
+     "mean": 7872.266666666666,
+     "min": 0,
+     "max": 16750
+    },
+    "B_hourly_versions": {
+     "mean": 16751.866666666665,
+     "min": 16750,
+     "max": 16759
+    },
+    "A_rewrite_bytes": 69107712,
+    "A_drop_bytes": 5551,
+    "A_hot_bytes": 393216
+   },
+   "inc4": {
+    "A_versions": 18076,
+    "A_bytes": 74016776,
+    "B_ci_bytes": {
+     "mean": 30394226.4,
+     "min": 3403776,
+     "max": 66256685
+    },
+    "B_hourly_bytes": {
+     "mean": 68101252.73333333,
+     "min": 66256685,
+     "max": 73253686
+    },
+    "B_ci_versions": {
+     "mean": 7422.133333333333,
+     "min": 831,
+     "max": 16180
+    },
+    "B_hourly_versions": {
+     "mean": 16630.533333333333,
+     "min": 16180,
+     "max": 17889
+    },
+    "A_rewrite_bytes": 74010624,
+    "A_drop_bytes": 6152,
+    "A_hot_bytes": 696320
+   },
+   "inc5": {
+    "A_versions": 10139,
+    "A_bytes": 41507486,
+    "B_ci_bytes": {
+     "mean": 17218643.133333333,
+     "min": 696320,
+     "max": 41365553
+    },
+    "B_hourly_bytes": {
+     "mean": 41366727.53333333,
+     "min": 41365553,
+     "max": 41383171
+    },
+    "B_ci_versions": {
+     "mean": 4205.133333333333,
+     "min": 170,
+     "max": 10103
+    },
+    "B_hourly_versions": {
+     "mean": 10103.333333333334,
+     "min": 10103,
+     "max": 10108
+    },
+    "A_rewrite_bytes": 41500672,
+    "A_drop_bytes": 6814,
+    "A_hot_bytes": 16384
+   },
+   "other": {
+    "A_versions": 597,
+    "A_bytes": 2445312,
+    "B_ci_bytes": {
+     "mean": 1172548.2666666666,
+     "min": 483328,
+     "max": 1691648
+    },
+    "B_hourly_bytes": {
+     "mean": 1830638.9333333333,
+     "min": 1748992,
+     "max": 2109440
+    },
+    "B_ci_versions": {
+     "mean": 286.26666666666665,
+     "min": 118,
+     "max": 413
+    },
+    "B_hourly_versions": {
+     "mean": 446.93333333333334,
+     "min": 427,
+     "max": 515
+    },
+    "A_rewrite_bytes": 2445312,
+    "A_hot_bytes": 163840
+   }
+  }
+ },
+ "short_wait": {
+  "8M": {
+   "ci_peak": {
+    "mean": 9345482690.0,
+    "min": 9345482690,
+    "max": 9345482690
+   },
+   "ci_peak_incrementals": {
+    "mean": 7449193754.0,
+    "min": 7449193754,
+    "max": 7449193754
+   },
+   "hourly_peak": {
+    "mean": 4492055398.266666,
+    "min": 3685905401,
+    "max": 4666432951
+   },
+   "hourly_peak_incrementals": {
+    "mean": 4492055398.266666,
+    "min": 3685905401,
+    "max": 4666432951
+   }
+  },
+  "1M": {
+   "ci_peak": {
+    "mean": 2547621826.0,
+    "min": 2547621826,
+    "max": 2547621826
+   },
+   "ci_peak_incrementals": {
+    "mean": 1759677722.0,
+    "min": 1759677722,
+    "max": 1759677722
+   },
+   "hourly_peak": {
+    "mean": 1143096560.8666666,
+    "min": 1015624697,
+    "max": 1152201694
+   },
+   "hourly_peak_incrementals": {
+    "mean": 1043165781.2,
+    "min": 857105401,
+    "max": 1080434103
+   }
+  },
+  "256K": {
+   "ci_peak": {
+    "mean": 1423548354.0,
+    "min": 1423548354,
+    "max": 1423548354
+   },
+   "ci_peak_incrementals": {
+    "mean": 823561498.0,
+    "min": 823561498,
+    "max": 823561498
+   },
+   "hourly_peak": {
+    "mean": 773272114.6666666,
+    "min": 716839636,
+    "max": 777303006
+   },
+   "hourly_peak_incrementals": {
+    "mean": 464107707.6,
+    "min": 381858809,
+    "max": 479808951
+   }
+  },
+  "4K": {
+   "ci_peak": {
+    "mean": 870285250.0,
+    "min": 870285250,
+    "max": 870285250
+   },
+   "ci_peak_incrementals": {
+    "mean": 336809242.0,
+    "min": 336809242,
+    "max": 336809242
+   },
+   "hourly_peak": {
+    "mean": 629826644.8,
+    "min": 613083860,
+    "max": 631022558
+   },
+   "hourly_peak_incrementals": {
+    "mean": 152145594.73333332,
+    "min": 151779883,
+    "max": 152171717
+   }
+  }
+ },
+ "juicefs": {
+  "baseline": {
+   "written": 6792789945,
+   "unique": 6792748985
+  },
+  "inc1": {
+   "written": 233349629,
+   "unique": 233349629
+  },
+  "inc2": {
+   "written": 597668893,
+   "unique": 597668893
+  },
+  "inc3": {
+   "written": 260142710,
+   "unique": 260142710
+  },
+  "inc4": {
+   "written": 144443660,
+   "unique": 144443660
+  },
+  "inc5": {
+   "written": 57948963,
+   "unique": 57948963
+  },
+  "other": {
+   "written": 2863104,
+   "unique": 2863104
+  }
+ },
+ "rows": {
+  "8M": {
+   "live_rows": 895,
+   "rows_if_every_chunk_in_eof": 895,
+   "live_bytes": 7216435382,
+   "files": 61
+  },
+  "1M": {
+   "live_rows": 6916,
+   "rows_if_every_chunk_in_eof": 6916,
+   "live_bytes": 7216435382,
+   "files": 61
+  },
+  "256K": {
+   "live_rows": 27561,
+   "rows_if_every_chunk_in_eof": 27561,
+   "live_bytes": 7216435382,
+   "files": 61
+  },
+  "4K": {
+   "live_rows": 1761829,
+   "rows_if_every_chunk_in_eof": 1761829,
+   "live_bytes": 7216435382,
+   "files": 61
+  }
+ },
+ "hot": {
+  "8M": [
+   {
+    "file": "bands/0",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 89,
+     "inc1": 51,
+     "inc2": 20,
+     "inc3": 46,
+     "inc4": 60,
+     "inc5": 18,
+     "other": 42
+    }
+   },
+   {
+    "file": "mapped/0",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 49,
+     "inc1": 36,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 42,
+     "inc5": 9,
+     "other": 18
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 14,
+    "offset": 117440512,
+    "per_backup": {
+     "baseline": 47,
+     "inc1": 36,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 42,
+     "inc5": 9,
+     "other": 18
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 30,
+    "offset": 251658240,
+    "per_backup": {
+     "baseline": 37,
+     "inc1": 24,
+     "inc2": 3,
+     "inc3": 20,
+     "inc4": 31,
+     "inc5": 8,
+     "other": 15
+    }
+   },
+   {
+    "file": "bands/a",
+    "chunk": 6,
+    "offset": 50331648,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 6,
+     "inc2": 7,
+     "inc3": 15,
+     "inc4": 30,
+     "inc5": 7,
+     "other": 10
+    }
+   },
+   {
+    "file": "bands/e",
+    "chunk": 7,
+    "offset": 58720256,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 8,
+     "inc2": 0,
+     "inc3": 11,
+     "inc4": 22,
+     "inc5": 5,
+     "other": 4
+    }
+   },
+   {
+    "file": "mapped/5",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 35,
+     "inc1": 7,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 3
+    }
+   },
+   {
+    "file": "bands/6",
+    "chunk": 4,
+    "offset": 33554432,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 7,
+     "inc2": 6,
+     "inc3": 10,
+     "inc4": 16,
+     "inc5": 1,
+     "other": 1
+    }
+   },
+   {
+    "file": "mapped/1f",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 31,
+     "inc5": 6,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 12,
+     "inc2": 0,
+     "inc3": 10,
+     "inc4": 9,
+     "inc5": 3,
+     "other": 2
+    }
+   },
+   {
+    "file": "bands/e",
+    "chunk": 8,
+    "offset": 67108864,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 5,
+     "inc2": 0,
+     "inc3": 7,
+     "inc4": 12,
+     "inc5": 6,
+     "other": 1
+    }
+   },
+   {
+    "file": "bands/1c",
+    "chunk": 11,
+    "offset": 92274688,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 4,
+     "inc2": 1,
+     "inc3": 5,
+     "inc4": 15,
+     "inc5": 4,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/1e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 1,
+     "inc3": 12,
+     "inc4": 12,
+     "inc5": 2,
+     "other": 1
+    }
+   },
+   {
+    "file": "mapped/12",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 9,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 3,
+     "inc5": 2,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/12",
+    "chunk": 8,
+    "offset": 67108864,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 5,
+     "inc2": 0,
+     "inc3": 8,
+     "inc4": 6,
+     "inc5": 3,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/a",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 6,
+     "inc2": 6,
+     "inc3": 3,
+     "inc4": 5,
+     "inc5": 0,
+     "other": 2
+    }
+   },
+   {
+    "file": "bands/12",
+    "chunk": 9,
+    "offset": 75497472,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 4,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 7,
+     "inc5": 3,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/1e",
+    "chunk": 19,
+    "offset": 159383552,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 9,
+     "inc4": 9,
+     "inc5": 3,
+     "other": 2
+    }
+   },
+   {
+    "file": "com.apple.TimeMachine.SnapshotHistory.plist",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 3,
+     "inc2": 3,
+     "inc3": 3,
+     "inc4": 3,
+     "inc5": 3,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/6",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 4,
+     "inc2": 5,
+     "inc3": 5,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/1f",
+    "chunk": 2,
+    "offset": 16777216,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 7,
+     "inc5": 4,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 1,
+    "offset": 8388608,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 5,
+     "inc5": 9,
+     "other": 6
+    }
+   },
+   {
+    "file": "mapped/18",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 14,
+     "inc1": 1,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/1b",
+    "chunk": 27,
+    "offset": 226492416,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 3,
+     "inc2": 1,
+     "inc3": 4,
+     "inc4": 3,
+     "inc5": 1,
+     "other": 2
+    }
+   },
+   {
+    "file": "bands/18",
+    "chunk": 13,
+    "offset": 109051904,
+    "per_backup": {
+     "baseline": 2,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 3,
+     "inc4": 4,
+     "inc5": 1,
+     "other": 0
+    }
+   }
+  ],
+  "8M_top10": {
+   "baseline": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "bands/5@30",
+    "mapped/5@0",
+    "mapped/18@0",
+    "Info.plist@0",
+    "Info.bckup@0",
+    "mapped/6@0",
+    "mapped/1b@0"
+   ],
+   "inc1": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "bands/5@30",
+    "mapped/e@0",
+    "mapped/12@0",
+    "bands/e@7",
+    "mapped/5@0",
+    "bands/6@4",
+    "mapped/a@0"
+   ],
+   "inc2": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "bands/a@6",
+    "mapped/a@0",
+    "bands/6@4",
+    "mapped/6@0",
+    "mapped/1c@0",
+    "com.apple.TimeMachine.SnapshotHistory.plist@0",
+    "bands/5@30"
+   ],
+   "inc3": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "bands/5@30",
+    "bands/a@6",
+    "mapped/1e@0",
+    "bands/e@7",
+    "mapped/e@0",
+    "bands/6@4",
+    "bands/1e@19"
+   ],
+   "inc4": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "mapped/1f@0",
+    "bands/5@30",
+    "bands/a@6",
+    "bands/e@7",
+    "bands/6@4",
+    "bands/1c@11",
+    "mapped/1e@0"
+   ],
+   "inc5": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@14",
+    "bands/0@1",
+    "bands/5@30",
+    "bands/a@6",
+    "mapped/1f@0",
+    "bands/e@8",
+    "bands/e@7",
+    "bands/1f@8"
+   ]
+  },
+  "8M_hot_count": {
+   "baseline": 6,
+   "inc1": 5,
+   "inc2": 3,
+   "inc3": 9,
+   "inc4": 13,
+   "inc5": 1,
+   "other": 5
+  },
+  "8M_versions_in_hot": {
+   "baseline": 271,
+   "inc1": 159,
+   "inc2": 42,
+   "inc3": 180,
+   "inc4": 334,
+   "inc5": 18,
+   "other": 103
+  },
+  "256K": [
+   {
+    "file": "mapped/0",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 49,
+     "inc1": 36,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 42,
+     "inc5": 9,
+     "other": 18
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 68,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 43,
+     "inc5": 0,
+     "other": 9
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 1,
+    "offset": 262144,
+    "per_backup": {
+     "baseline": 24,
+     "inc1": 23,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 18,
+     "other": 15
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 457,
+    "offset": 119799808,
+    "per_backup": {
+     "baseline": 36,
+     "inc1": 26,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 3
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 458,
+    "offset": 120061952,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 10,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 6,
+     "inc5": 0,
+     "other": 9
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 3,
+    "offset": 786432,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 0,
+     "inc2": 9,
+     "inc3": 41,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 6
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 975,
+    "offset": 255590400,
+    "per_backup": {
+     "baseline": 15,
+     "inc1": 10,
+     "inc2": 2,
+     "inc3": 9,
+     "inc4": 10,
+     "inc5": 7,
+     "other": 6
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 475,
+    "offset": 124518400,
+    "per_backup": {
+     "baseline": 18,
+     "inc1": 11,
+     "inc2": 3,
+     "inc3": 4,
+     "inc4": 7,
+     "inc5": 7,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 972,
+    "offset": 254803968,
+    "per_backup": {
+     "baseline": 15,
+     "inc1": 13,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 13,
+     "inc5": 2,
+     "other": 3
+    }
+   },
+   {
+    "file": "mapped/5",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 35,
+     "inc1": 7,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 3
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 974,
+    "offset": 255328256,
+    "per_backup": {
+     "baseline": 16,
+     "inc1": 10,
+     "inc2": 1,
+     "inc3": 8,
+     "inc4": 7,
+     "inc5": 3,
+     "other": 5
+    }
+   },
+   {
+    "file": "mapped/1f",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 31,
+     "inc5": 6,
+     "other": 2
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 2,
+    "offset": 524288,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 28,
+     "inc2": 11,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 6
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 459,
+    "offset": 120324096,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 0,
+     "inc4": 37,
+     "inc5": 2,
+     "other": 3
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 476,
+    "offset": 124780544,
+    "per_backup": {
+     "baseline": 12,
+     "inc1": 7,
+     "inc2": 3,
+     "inc3": 7,
+     "inc4": 6,
+     "inc5": 1,
+     "other": 3
+    }
+   },
+   {
+    "file": "mapped/e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 12,
+     "inc2": 0,
+     "inc3": 10,
+     "inc4": 9,
+     "inc5": 3,
+     "other": 2
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 4,
+    "offset": 1048576,
+    "per_backup": {
+     "baseline": 10,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 5,
+     "inc4": 18,
+     "inc5": 0,
+     "other": 6
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 477,
+    "offset": 125042688,
+    "per_backup": {
+     "baseline": 11,
+     "inc1": 6,
+     "inc2": 3,
+     "inc3": 5,
+     "inc4": 7,
+     "inc5": 0,
+     "other": 5
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 474,
+    "offset": 124256256,
+    "per_backup": {
+     "baseline": 8,
+     "inc1": 8,
+     "inc2": 5,
+     "inc3": 0,
+     "inc4": 4,
+     "inc5": 3,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 973,
+    "offset": 255066112,
+    "per_backup": {
+     "baseline": 9,
+     "inc1": 6,
+     "inc2": 1,
+     "inc3": 4,
+     "inc4": 6,
+     "inc5": 2,
+     "other": 8
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 976,
+    "offset": 255852544,
+    "per_backup": {
+     "baseline": 4,
+     "inc1": 5,
+     "inc2": 1,
+     "inc3": 6,
+     "inc4": 11,
+     "inc5": 0,
+     "other": 7
+    }
+   },
+   {
+    "file": "mapped/1e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 1,
+     "inc3": 12,
+     "inc4": 12,
+     "inc5": 2,
+     "other": 1
+    }
+   },
+   {
+    "file": "bands/a",
+    "chunk": 207,
+    "offset": 54263808,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 2,
+     "inc2": 2,
+     "inc3": 7,
+     "inc4": 13,
+     "inc5": 1,
+     "other": 1
+    }
+   },
+   {
+    "file": "mapped/12",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 9,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 3,
+     "inc5": 2,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/0",
+    "chunk": 478,
+    "offset": 125304832,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 7,
+     "inc2": 0,
+     "inc3": 7,
+     "inc4": 9,
+     "inc5": 0,
+     "other": 5
+    }
+   }
+  ],
+  "256K_top10": {
+   "baseline": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@457",
+    "mapped/5@0",
+    "bands/0@1",
+    "bands/0@5",
+    "bands/0@475",
+    "bands/0@6",
+    "bands/5@974",
+    "bands/5@975"
+   ],
+   "inc1": [
+    "mapped/0@0",
+    "bands/0@2",
+    "bands/0@457",
+    "bands/0@1",
+    "bands/5@972",
+    "mapped/e@0",
+    "bands/0@475",
+    "bands/5@975",
+    "bands/5@974",
+    "bands/0@458"
+   ],
+   "inc2": [
+    "mapped/0@0",
+    "bands/0@458",
+    "bands/0@2",
+    "bands/0@3",
+    "mapped/a@0",
+    "mapped/6@0",
+    "bands/a@215",
+    "bands/0@474",
+    "bands/0@15",
+    "bands/0@16"
+   ],
+   "inc3": [
+    "bands/0@3",
+    "mapped/0@0",
+    "bands/0@458",
+    "mapped/1e@0",
+    "mapped/e@0",
+    "bands/5@975",
+    "bands/0@479",
+    "bands/5@974",
+    "bands/a@207",
+    "bands/0@478"
+   ],
+   "inc4": [
+    "bands/0@0",
+    "mapped/0@0",
+    "bands/0@459",
+    "mapped/1f@0",
+    "bands/0@4",
+    "bands/a@207",
+    "bands/5@972",
+    "mapped/1e@0",
+    "bands/5@976",
+    "bands/0@479"
+   ],
+   "inc5": [
+    "bands/0@1",
+    "mapped/0@0",
+    "bands/5@975",
+    "bands/0@475",
+    "bands/0@456",
+    "mapped/1f@0",
+    "bands/0@35",
+    "bands/0@34",
+    "bands/e@264",
+    "mapped/e@0"
+   ]
+  },
+  "256K_hot_count": {
+   "baseline": 17,
+   "inc1": 11,
+   "inc2": 3,
+   "inc3": 5,
+   "inc4": 11,
+   "inc5": 1,
+   "other": 2
+  },
+  "256K_versions_in_hot": {
+   "baseline": 383,
+   "inc1": 189,
+   "inc2": 33,
+   "inc3": 119,
+   "inc4": 241,
+   "inc5": 18,
+   "other": 33
+  },
+  "4K": [
+   {
+    "file": "mapped/0",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 49,
+     "inc1": 36,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 42,
+     "inc5": 9,
+     "other": 18
+    }
+   },
+   {
+    "file": "mapped/0",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 49,
+     "inc1": 36,
+     "inc2": 11,
+     "inc3": 28,
+     "inc4": 42,
+     "inc5": 9,
+     "other": 18
+    }
+   },
+   {
+    "file": "mapped/5",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 35,
+     "inc1": 7,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 3
+    }
+   },
+   {
+    "file": "mapped/5",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 35,
+     "inc1": 7,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 3
+    }
+   },
+   {
+    "file": "mapped/1f",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 31,
+     "inc5": 6,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/1f",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 31,
+     "inc5": 6,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 12,
+     "inc2": 0,
+     "inc3": 10,
+     "inc4": 9,
+     "inc5": 3,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/e",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 12,
+     "inc2": 0,
+     "inc3": 10,
+     "inc4": 9,
+     "inc5": 3,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/1e",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 1,
+     "inc3": 12,
+     "inc4": 12,
+     "inc5": 2,
+     "other": 1
+    }
+   },
+   {
+    "file": "mapped/1e",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 0,
+     "inc2": 1,
+     "inc3": 12,
+     "inc4": 12,
+     "inc5": 2,
+     "other": 1
+    }
+   },
+   {
+    "file": "mapped/12",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 9,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 3,
+     "inc5": 2,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/12",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 9,
+     "inc2": 0,
+     "inc3": 6,
+     "inc4": 3,
+     "inc5": 2,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/a",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 6,
+     "inc2": 6,
+     "inc3": 3,
+     "inc4": 5,
+     "inc5": 0,
+     "other": 2
+    }
+   },
+   {
+    "file": "mapped/a",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 1,
+     "inc1": 6,
+     "inc2": 6,
+     "inc3": 3,
+     "inc4": 5,
+     "inc5": 0,
+     "other": 2
+    }
+   },
+   {
+    "file": "com.apple.TimeMachine.SnapshotHistory.plist",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 3,
+     "inc2": 3,
+     "inc3": 3,
+     "inc4": 3,
+     "inc5": 3,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/6",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 4,
+     "inc2": 5,
+     "inc3": 5,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/6",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 4,
+     "inc2": 5,
+     "inc3": 5,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/18",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 14,
+     "inc1": 1,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/18",
+    "chunk": 1,
+    "offset": 4096,
+    "per_backup": {
+     "baseline": 14,
+     "inc1": 1,
+     "inc2": 0,
+     "inc3": 0,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 62316,
+    "offset": 255246336,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 4,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 1,
+     "other": 6
+    }
+   },
+   {
+    "file": "Info.bckup",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 4,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 1,
+     "other": 0
+    }
+   },
+   {
+    "file": "Info.plist",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 4,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 1,
+     "other": 0
+    }
+   },
+   {
+    "file": "com.apple.TimeMachine.MachineID.plist",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 3,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 1,
+     "other": 0
+    }
+   },
+   {
+    "file": "bands/5",
+    "chunk": 62347,
+    "offset": 255373312,
+    "per_backup": {
+     "baseline": 4,
+     "inc1": 1,
+     "inc2": 1,
+     "inc3": 1,
+     "inc4": 1,
+     "inc5": 0,
+     "other": 0
+    }
+   },
+   {
+    "file": "mapped/1c",
+    "chunk": 0,
+    "offset": 0,
+    "per_backup": {
+     "baseline": 0,
+     "inc1": 4,
+     "inc2": 3,
+     "inc3": 1,
+     "inc4": 0,
+     "inc5": 0,
+     "other": 1
+    }
+   }
+  ],
+  "4K_top10": {
+   "baseline": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/5@1",
+    "mapped/5@0",
+    "mapped/18@1",
+    "mapped/18@0",
+    "bands/0@0",
+    "bands/5@62347",
+    "bands/5@62322",
+    "bands/5@62321"
+   ],
+   "inc1": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/e@1",
+    "mapped/e@0",
+    "mapped/12@1",
+    "mapped/12@0",
+    "mapped/5@1",
+    "mapped/5@0",
+    "mapped/a@1",
+    "mapped/a@0"
+   ],
+   "inc2": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/a@1",
+    "mapped/a@0",
+    "mapped/6@1",
+    "mapped/6@0",
+    "mapped/1c@1",
+    "mapped/1c@0",
+    "com.apple.TimeMachine.SnapshotHistory.plist@0",
+    "mapped/5@1"
+   ],
+   "inc3": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/1e@1",
+    "mapped/1e@0",
+    "mapped/e@1",
+    "mapped/e@0",
+    "mapped/1f@1",
+    "mapped/1f@0",
+    "mapped/12@1",
+    "mapped/12@0"
+   ],
+   "inc4": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/1f@1",
+    "mapped/1f@0",
+    "mapped/1e@1",
+    "mapped/1e@0",
+    "mapped/e@1",
+    "mapped/e@0",
+    "mapped/a@1",
+    "mapped/a@0"
+   ],
+   "inc5": [
+    "mapped/0@1",
+    "mapped/0@0",
+    "mapped/1f@1",
+    "mapped/1f@0",
+    "mapped/e@1",
+    "mapped/e@0",
+    "com.apple.TimeMachine.SnapshotHistory.plist@0",
+    "mapped/1e@1",
+    "mapped/1e@0",
+    "mapped/12@1"
+   ]
+  },
+  "4K_hot_count": {
+   "baseline": 6,
+   "inc1": 4,
+   "inc2": 2,
+   "inc3": 6,
+   "inc4": 6,
+   "inc5": 0,
+   "other": 2
+  },
+  "4K_versions_in_hot": {
+   "baseline": 196,
+   "inc1": 96,
+   "inc2": 22,
+   "inc3": 100,
+   "inc4": 170,
+   "inc5": 0,
+   "other": 36
+  }
+ }
+}
