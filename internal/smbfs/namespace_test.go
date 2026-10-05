@@ -262,10 +262,15 @@ func TestPathOfSearchesByInode(t *testing.T) {
 	}
 	dir := f.create(t, "dir", smb.KindDirectory)
 	file := f.create(t, "dir/file", smb.KindFile)
+	counted := &countedMetadata{Meta: f.metadata}
+	f.fs.metadata = counted
 	if path, err := f.fs.PathOf(t.Context(), file.Object.Inode); err != nil || path != "dir/file" {
 		t.Fatalf("path = %q, %v", path, err)
 	}
 	if path, err := f.fs.PathOf(t.Context(), dir.Object.Inode); err != nil || path != "dir" {
 		t.Fatalf("directory path = %q, %v", path, err)
+	}
+	if n := counted.directories.Load(); n != 0 {
+		t.Fatalf("PathOf read %d whole directories", n)
 	}
 }

@@ -136,20 +136,36 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 	<-proxy.OutageSeen()
 	client.echo(t)
 	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
-	// The cached READ came after any final reply sent so far. While S3 is
-	// down, there must be none.
+	// Every final reply must come after S3 is back. Replies sent before the
+	// cached READ's reply are buffered already; the rest are timed as they
+	// arrive.
+	finals := make(map[uint64]wire.Message)
 	for _, request := range requests {
-		if len(client.replies[request.MessageID]) != 0 && time.Since(start) < outage {
-			t.Fatalf("%v finished during the outage", request.Command)
+		if buffered := client.replies[request.MessageID]; len(buffered) != 0 {
+			if time.Since(start) < outage {
+				t.Fatalf("%v finished during the outage", request.Command)
+			}
+			finals[request.MessageID] = buffered[0]
 		}
 	}
-	finals := make([]wire.Message, len(requests))
-	for i, request := range requests {
-		if finals[i] = client.receive(t, request); finals[i].Header.Status != smb.StatusSuccess {
-			t.Fatalf("%v final status %#x", request.Command, finals[i].Header.Status)
+	for len(finals) < len(requests) {
+		reply, err := client.raw.Receive(t.Context())
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range reply.Messages {
+			if time.Since(start) < outage {
+				t.Fatalf("%v finished during the outage", message.Header.Command)
+			}
+			finals[message.Header.MessageID] = message
 		}
 	}
-	if response, err := wire.DecodeReadResponse(finals[0]); err != nil || !bytes.Equal(response.Data, stored[offset:offset+64]) {
+	for _, request := range requests {
+		if status := finals[request.MessageID].Header.Status; status != smb.StatusSuccess {
+			t.Fatalf("%v final status %#x", request.Command, status)
+		}
+	}
+	if response, err := wire.DecodeReadResponse(finals[requests[0].MessageID]); err != nil || !bytes.Equal(response.Data, stored[offset:offset+64]) {
 		t.Fatalf("READ = %q, %v", response.Data, err)
 	}
 	srv.expectContent(t, map[string]string{"write": string(written), "flush": string(flushed)})
