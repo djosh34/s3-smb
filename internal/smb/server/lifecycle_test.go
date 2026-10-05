@@ -46,16 +46,19 @@ func TestNewRejectsInvalidOptions(t *testing.T) {
 	}
 }
 
-// Serve owns its listener: Shutdown closes it with every connection, and the
-// server takes no connection after that.
+// Serve owns its listener. Canceling its context shuts the server down: the
+// listener and every connection close, a failed cleanup of a connection's
+// opens is part of Serve's result, and the server takes no connection after.
 func TestServeAndShutdown(t *testing.T) {
 	srv := newTestServer(t)
 	listener, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
 	served := make(chan error, 1)
-	go func() { served <- srv.server.Serve(t.Context(), listener) }()
+	go func() { served <- srv.server.Serve(ctx, listener) }()
 	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -65,18 +68,39 @@ func TestServeAndShutdown(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
-			t.Error(err)
+		if closeErr := client.Close(); closeErr != nil {
+			t.Error(closeErr)
 		}
 	})
-	if _, err := client.Login(t.Context(), smbtest.LoginOptions{Share: "backup", Account: srv.server.options.Account, Signing: smb.SigningGMAC}); err != nil {
+	session, err := client.Login(t.Context(), smbtest.LoginOptions{Share: "backup", Account: srv.server.options.Account, Signing: smb.SigningGMAC})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.server.Shutdown(t.Context()); err != nil {
+	header := wire.Header{MessageID: session.NextMessageID, SessionID: session.SessionID, TreeID: session.TreeID, CreditCharge: 1, Credit: 1}
+	request := wire.CreateRequest{Name: "file", DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: fileOpenIf}
+	if err = client.SendCreate(t.Context(), header, smbtest.CreateOptions{Request: request}); err != nil {
 		t.Fatal(err)
 	}
-	if err := <-served; err != nil {
+	reply, err := client.Receive(t.Context())
+	if err == nil && reply.Messages[0].Header.Status == smb.StatusPending {
+		reply, err = client.Receive(t.Context())
+	}
+	if err != nil {
 		t.Fatal(err)
+	}
+	if status := reply.Messages[0].Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("create status %#x", status)
+	}
+	failure := errors.New("close failed")
+	srv.shutdownErr = failure
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
+			return errors.Join(srv.adapter.Close(ctx, handle), failure)
+		}
+	})
+	cancel()
+	if err := <-served; !errors.Is(err, failure) {
+		t.Fatalf("serve error %v, want %v", err, failure)
 	}
 	if _, err := client.Receive(t.Context()); !errors.Is(err, io.EOF) {
 		t.Fatalf("connection after shutdown: %v", err)

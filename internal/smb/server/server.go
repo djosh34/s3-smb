@@ -74,7 +74,9 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		// Registration happens before starting the goroutine, so Shutdown cannot
 		// finish while an accepted connection is still waiting to be registered.
-		connCtx, cancel := context.WithCancel(ctx)
+		// Canceling ctx only closes the listener: connections end in Shutdown,
+		// so their cleanup failures count in its result.
+		connCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		connection, err := server.addConnection(connCtx, cancel, conn)
 		if err != nil {
 			acceptErr = err
