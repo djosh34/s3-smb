@@ -68,11 +68,14 @@ func (h *harness) networkScenario(name string) result {
 
 func (h *harness) networkOutage(outcome result) result {
 	attempt, updated, commandErr := h.dropBackup(1, true)
+	if commandErr != nil {
+		h.t.Log("interrupted-backup-exit", commandErr)
+	}
 	h.save("network-outage-result.json", attempt)
 	h.stopClient()
 	h.mount()
 	latest := h.remoteBackup("after-outage", "")
-	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, commandErr, filepath.Base(latest), outcome.Baseline))
+	h.must(helpers.CheckOutage(attempt.CutAt, attempt.RestoredAt, attempt.Log, filepath.Base(latest), outcome.Baseline))
 	outcome.BaselineRestore = h.restore(latest, h.reference(), "restore-baseline")
 	h.must(h.detach())
 	latest = h.resumeBackup(outcome.Baseline, true)
@@ -126,12 +129,10 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 		// Do not stopbackup or kill the client. Its own failure must end this run.
 		// The proxy refuses reconnects at once, so macOS keeps retrying, and the
 		// backup fails when DiskImages gives up: 10 min 20 s in run 37305839289.
-		h.must(h.waitFor("visible failure during outage", 20*time.Minute, time.Second, func() (bool, error) {
+		// tmutil exits 0 then too; CheckOutage reads the failure from the log.
+		h.must(h.waitFor("backup end during outage", 20*time.Minute, time.Second, func() (bool, error) {
 			return h.backup.exited(), nil
 		}))
-		if h.backup.err == nil {
-			h.t.Fatal("long outage ended without a visible tmutil failure")
-		}
 	} else {
 		h.pause(5 * time.Second)
 	}

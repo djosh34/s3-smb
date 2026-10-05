@@ -259,7 +259,8 @@ requests, the attempt is repeated, up to three times; three refusals end the
 job as `not tested` in `network-drop-result.json`, which is not a pass. Other
 failures do not retry. `network-outage` holds the drop for at least 45 seconds
 and until the client fails on its own, at most 20 minutes, then requires a
-visible failure, no new completed backup, the earlier backup restored intact,
+visible failure (backupd logs "Backup failed"; `tmutil startbackup --block`
+exits 0 either way), no new completed backup, the earlier backup restored intact,
 and a successful next backup and restore. The proxy refuses reconnects at once,
 so macOS keeps retrying, and the backup fails when DiskImages gives up on the
 image, after about ten minutes. The server keeps running in both scenarios.
