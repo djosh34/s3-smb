@@ -99,59 +99,56 @@ func TestSlowS3UploadRepliesAsync(t *testing.T) {
 }
 
 // During an S3 outage READ, WRITE and FLUSH wait with an interim reply while
-// the connection serves cached data, and finish once S3 is back. The gate
-// check uses the full outage a backup must survive and the daemon's retries.
+// the connection serves cached data, and finish once S3 is back. They share
+// one outage: the full outage a backup must survive in gate mode, with the
+// daemon's retries.
 func TestS3OutageRepliesAsync(t *testing.T) {
 	outage := 3 * time.Second
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
 		outage = smb.S3OutageWindow
 	}
-	for _, test := range ioCommands {
-		// The outages run in parallel, but JuiceFS setup writes a global, so
-		// the servers start one at a time.
-		srv, proxy := newS3Server(t, smbtest.S3Config{MetaRetries: storage.FilesystemRetries, ChunkRetries: storage.UploadRetries})
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-			client := srv.connect(t)
-			cached := client.open(t, "cached")
-			cachedData := []byte("cached during the outage")
-			writeFile(t, client, cached, cachedData)
-			flushOK(t, client, cached)
-			readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
+	srv, proxy := newS3Server(t, smbtest.S3Config{MetaRetries: storage.FilesystemRetries, ChunkRetries: storage.UploadRetries})
+	client := srv.connect(t)
+	cached := client.open(t, "cached")
+	cachedData := []byte("cached during the outage")
+	writeFile(t, client, cached, cachedData)
+	flushOK(t, client, cached)
+	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
+	// READ crosses the first 64 KiB block boundary from a cold cache.
+	stored := bytes.Repeat([]byte("block boundary payload\n"), 6000)
+	offset := uint64(64<<10 - 32)
+	read := client.open(t, "read")
+	writeFile(t, client, read, stored)
+	flushOK(t, client, read)
+	written, flushed := []byte("written during the outage"), []byte("flushed during the outage")
+	write, flush := client.open(t, "write"), client.open(t, "flush")
+	writeFile(t, client, flush, flushed)
 
-			id := client.open(t, "file")
-			data, offset := []byte("written during the outage"), uint64(0)
-			if test.command == wire.Read {
-				// Read across the first 64 KiB block boundary from a cold cache.
-				stored := bytes.Repeat([]byte("block boundary payload\n"), 6000)
-				writeFile(t, client, id, stored)
-				flushOK(t, client, id)
-				offset = 64<<10 - 32
-				data = stored[offset : offset+64]
-			}
-			if test.command == wire.Flush {
-				writeFile(t, client, id, data)
-			}
-			start := proxy.FailS3For(outage)
-			request := sendIO(t, client, test.command, id, offset, data)
-			client.interim(t, request)
-			<-proxy.OutageSeen()
-			client.echo(t)
-			readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
-			final := client.receive(t, request)
-			if final.Header.Status != smb.StatusSuccess {
-				t.Fatalf("final status %#x", final.Header.Status)
-			}
-			if time.Since(start) < outage {
-				t.Fatal("finished before S3 returned")
-			}
-			if test.command != wire.Read {
-				srv.expectContent(t, map[string]string{"file": string(data)})
-			} else if response, err := wire.DecodeReadResponse(final); err != nil || !bytes.Equal(response.Data, data) {
-				t.Fatalf("READ = %q, %v; want %q", response.Data, err, data)
-			}
-		})
+	start := proxy.FailS3For(outage)
+	requests := []wire.Header{
+		sendIO(t, client, wire.Read, read, offset, nil),
+		sendIO(t, client, wire.Write, write, 0, written),
+		sendIO(t, client, wire.Flush, flush, 0, nil),
 	}
+	for _, request := range requests {
+		client.interim(t, request)
+	}
+	<-proxy.OutageSeen()
+	client.echo(t)
+	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
+	finals := make([]wire.Message, len(requests))
+	for i, request := range requests {
+		if finals[i] = client.receive(t, request); finals[i].Header.Status != smb.StatusSuccess {
+			t.Fatalf("%v final status %#x", request.Command, finals[i].Header.Status)
+		}
+	}
+	if time.Since(start) < outage {
+		t.Fatal("finished before S3 returned")
+	}
+	if response, err := wire.DecodeReadResponse(finals[0]); err != nil || !bytes.Equal(response.Data, stored[offset:offset+64]) {
+		t.Fatalf("READ = %q, %v", response.Data, err)
+	}
+	srv.expectContent(t, map[string]string{"write": string(written), "flush": string(flushed)})
 }
 
 // When S3 keeps failing past the retry budget, the final reply reports the
