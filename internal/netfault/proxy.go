@@ -1,31 +1,45 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// Package netfault provides a TCP proxy for tests that cuts and refuses
-// connections on demand.
+// Package netfault provides a TCP proxy for tests that cuts, refuses, slows
+// and stalls connections on demand.
 package netfault
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"sync"
+	"time"
 )
+
+// pieceSize is the most data the proxy forwards at once.
+const pieceSize = 16 << 10
+
+// Shape slows forwarded data like a slow link. Each piece of up to 16 KiB
+// waits Delay, so Delay also limits throughput, and with Rate set also its
+// transfer time at Rate bytes per second. The zero Shape forwards at full
+// speed.
+type Shape struct {
+	Delay time.Duration
+	Rate  int
+}
 
 // Proxy forwards connections from a loopback listener to one upstream address.
 // Methods are safe for concurrent use. Construct it with New.
 type Proxy struct {
-	ctx      context.Context
-	listener net.Listener
-	closeErr error
-	cancel   context.CancelFunc
-	conns    map[net.Conn]struct{}
-	upstream string
-	workers  sync.WaitGroup
-	mu       sync.Mutex
-	drop     bool
-	closed   bool
+	ctx        context.Context
+	listener   net.Listener
+	closeErr   error
+	cancel     context.CancelFunc
+	conns      map[net.Conn]struct{}
+	stallUntil time.Time
+	upstream   string
+	shape      Shape
+	workers    sync.WaitGroup
+	mu         sync.Mutex
+	drop       bool
+	closed     bool
 }
 
 // New starts a proxy on 127.0.0.1 that forwards to upstream (host:port).
@@ -62,6 +76,21 @@ func (p *Proxy) Restore() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.drop = false
+}
+
+// SetShape slows data forwarded from now on, on all connections.
+func (p *Proxy) SetShape(shape Shape) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.shape = shape
+}
+
+// Stall holds all forwarded data until duration has passed, without closing
+// connections. Calling it again replaces the deadline.
+func (p *Proxy) Stall(duration time.Duration) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.stallUntil = time.Now().Add(duration)
 }
 
 // Close stops the proxy, closes all connections and waits for its workers.
@@ -142,19 +171,55 @@ func (p *Proxy) forward(client net.Conn) {
 	// The first direction to end, by EOF, error or cut, ends the link. Copy
 	// errors are the expected end of test traffic, not proxy failures.
 	ended := make(chan error, 2)
-	go func() {
-		_, copyErr := io.Copy(upstream, client)
-		ended <- copyErr
-	}()
-	go func() {
-		_, copyErr := io.Copy(client, upstream)
-		ended <- copyErr
-	}()
+	go func() { ended <- p.pump(upstream, client) }()
+	go func() { ended <- p.pump(client, upstream) }()
 	<-ended
 	p.mu.Lock()
 	p.closeErr = errors.Join(p.closeErr, p.release(client), p.release(upstream))
 	p.mu.Unlock()
 	<-ended
+}
+
+// pump copies src to dst in pieces, holding each as the shape and any stall
+// require.
+func (p *Proxy) pump(dst, src net.Conn) error {
+	piece := make([]byte, pieceSize)
+	for {
+		n, err := src.Read(piece)
+		if n > 0 {
+			if holdErr := p.hold(n); holdErr != nil {
+				return holdErr
+			}
+			if _, writeErr := dst.Write(piece[:n]); writeErr != nil {
+				return writeErr
+			}
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// hold waits for the rest of any stall, then for the shape's delay of a piece
+// of n bytes. Closing the proxy ends the wait.
+func (p *Proxy) hold(n int) error {
+	p.mu.Lock()
+	wait := max(time.Until(p.stallUntil), 0) + p.shape.Delay
+	if p.shape.Rate > 0 {
+		wait += time.Duration(n) * time.Second / time.Duration(p.shape.Rate)
+	}
+	p.mu.Unlock()
+	if wait <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-p.ctx.Done():
+		return p.ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // release closes conn unless a cut already did; it runs under mu.

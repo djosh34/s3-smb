@@ -11,6 +11,10 @@ on:
         description: Run the release gate tests
         type: boolean
         default: false
+      chaos_seed:
+        description: Replay the chaos tests with this seed
+        type: string
+        default: ''
 permissions:
   contents: read
 jobs:
@@ -27,6 +31,7 @@ jobs:
         run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }}
         env:
           S3_SMB_TEST_LOGS: ${{ runner.temp }}/s3-smb-logs
+          S3_SMB_CHAOS_SEED: ${{ inputs.chaos_seed }}
       - if: always()
         name: Save namespace measurements
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02

@@ -4,9 +4,12 @@ package s3fault_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -46,6 +49,20 @@ func send(ctx context.Context, proxy *s3fault.Proxy, method, path string) (int, 
 		return 0, err
 	}
 	return res.StatusCode, res.Body.Close()
+}
+
+// get returns the response to a GET. The caller closes its body.
+func get(t *testing.T, proxy *s3fault.Proxy, path string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, proxy.URL()+path, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return res
 }
 
 func status(t *testing.T, proxy *s3fault.Proxy, method, path string) int {
@@ -144,5 +161,62 @@ func TestHeldChunkResponse(t *testing.T) {
 	proxy.Release()
 	if err := <-done; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestErrorCode(t *testing.T) {
+	proxy, _ := newProxy(t)
+	if err := proxy.SetFault(s3fault.Fault{Status: http.StatusServiceUnavailable, Code: "SlowDown"}); err != nil {
+		t.Fatal(err)
+	}
+	res := get(t, proxy, "/bucket/chunks/a")
+	body, err := io.ReadAll(res.Body)
+	if err = errors.Join(err, res.Body.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if res.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), "<Code>SlowDown</Code>") {
+		t.Fatalf("throttled GET: status %d, body %q", res.StatusCode, body)
+	}
+	if err := proxy.SetFault(s3fault.Fault{Code: "SlowDown"}); err == nil {
+		t.Fatal("an error code without a status was accepted")
+	}
+}
+
+func TestCutResponse(t *testing.T) {
+	var calls atomic.Int64
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if r.Method == http.MethodGet {
+			if _, err := w.Write([]byte("chunk data")); err != nil {
+				t.Error(err)
+			}
+		}
+	}))
+	t.Cleanup(upstream.Close)
+	proxy, err := s3fault.New(t.Context(), upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if closeErr := proxy.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	})
+	if err = proxy.SetFault(s3fault.Fault{Cut: true}); err != nil {
+		t.Fatal(err)
+	}
+	res := get(t, proxy, "/bucket/chunks/a")
+	body, err := io.ReadAll(res.Body)
+	if closeErr := res.Body.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) || string(body) != "chunk" {
+		t.Fatalf("cut GET body %q, error %v", body, err)
+	}
+	if _, err := send(t.Context(), proxy, http.MethodPut, "/bucket/chunks/a"); err == nil {
+		t.Fatal("cut PUT without a body got a response")
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("%d cut requests reached S3, want 2", calls.Load())
 	}
 }

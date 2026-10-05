@@ -42,6 +42,9 @@ const (
 	wrongVolumeKey = "wrong-encryption-passphrase-e2e-marker"
 )
 
+// macGUID is the client GUID of the one Mac the tests play.
+var macGUID = [16]byte{0x4d, 0x61, 0x63}
+
 // daemonBinary is the daemon under test, built by scripts/check.sh.
 var daemonBinary = os.Getenv("S3_SMB_E2E_BINARY")
 
@@ -62,6 +65,9 @@ type fixture struct {
 	readonly                     bool
 	// failStart expects the daemon to exit during startup.
 	failStart bool
+	// keepAlive starts the daemon again when it exits during startup, like
+	// launchd KeepAlive, on the same address until the startup timeout.
+	keepAlive bool
 }
 
 type daemon struct {
@@ -221,6 +227,7 @@ func (f *fixture) logDir() string {
 // start runs the daemon and waits until it serves SMB, answering "yes" to a
 // recovery prompt. The port from freshLocal can be taken by another process
 // before the daemon binds it; then start picks a new port, at most twice.
+// With keepAlive it starts the daemon again instead.
 func (f *fixture) start() *daemon {
 	f.t.Helper()
 	timeout := f.startupTimeout
@@ -229,17 +236,23 @@ func (f *fixture) start() *daemon {
 	}
 	deadline := time.Now().Add(timeout)
 	for attempt := 1; ; attempt++ {
-		d, collided := f.startOnce(deadline)
-		if !collided {
+		d, again := f.startOnce(deadline)
+		switch {
+		case !again:
 			return d
-		}
-		if attempt == 3 {
+		case f.keepAlive:
+			// launchd waits before it starts the daemon again.
+			time.Sleep(time.Second)
+		case attempt == 3:
 			f.t.Fatalf("SMB port taken on every attempt; logs %s", d.path())
+		default:
+			f.addr = freeAddress(f.t)
 		}
-		f.addr = freeAddress(f.t)
 	}
 }
 
+// startOnce runs the daemon once and reports whether to start it again: the
+// port was taken or, with keepAlive, the daemon exited during startup.
 func (f *fixture) startOnce(deadline time.Time) (*daemon, bool) {
 	f.t.Helper()
 	if err := os.WriteFile(filepath.Join(f.root, "config.yaml"), []byte(f.config()), 0o600); err != nil {
@@ -278,7 +291,7 @@ func (f *fixture) startOnce(deadline time.Time) (*daemon, bool) {
 			if f.failStart && err != nil {
 				return d, false
 			}
-			if bytes.Contains(d.read("stderr.log"), []byte(f.addr+": bind: address already in use")) {
+			if f.keepAlive || bytes.Contains(d.read("stderr.log"), []byte(f.addr+": bind: address already in use")) {
 				return d, true
 			}
 			f.t.Fatalf("daemon exited during startup: %v; logs %s", err, d.path())
@@ -409,6 +422,17 @@ func (d *daemon) running(duration time.Duration) {
 	}
 }
 
+// alive fails the test if the daemon has exited.
+func (d *daemon) alive() {
+	d.t.Helper()
+	select {
+	case err := <-d.done:
+		d.exited()
+		d.t.Fatalf("daemon exited: %v", err)
+	default:
+	}
+}
+
 // kill sends SIGKILL, waits for the exit and returns the exit error.
 func (d *daemon) kill() error {
 	d.t.Helper()
@@ -464,8 +488,13 @@ func checkDaemonLog(t *testing.T, path string, data []byte) {
 // the test if the returned function, which logs off, is not called, for
 // example because the daemon was killed.
 func (f *fixture) connect(user, password string) (*smb.Share, func(), error) {
+	return f.connectAt(f.addr, user, password)
+}
+
+// connectAt connects like connect, to addr instead of the daemon's address.
+func (f *fixture) connectAt(addr, user, password string) (*smb.Share, func(), error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", f.addr)
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	if err != nil {
 		cancel()
 		return nil, nil, err
@@ -479,7 +508,7 @@ func (f *fixture) connect(user, password string) (*smb.Share, func(), error) {
 	dialer := smb.Dialer{
 		// The new server lets one client in at a time, so every connection
 		// uses the same client GUID, like the connections of one Mac.
-		Negotiator: smb.Negotiator{RequireMessageSigning: true, ClientGuid: [16]byte{0x4d, 0x61, 0x63}},
+		Negotiator: smb.Negotiator{RequireMessageSigning: true, ClientGuid: macGUID},
 		Initiator:  &smb.NTLMInitiator{User: user, Password: password},
 	}
 	session, err := dialer.DialContext(ctx, conn)
