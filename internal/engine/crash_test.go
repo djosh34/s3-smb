@@ -51,6 +51,13 @@ func (c *crasher) install(f *fixture) {
 	f.bucket.setLanded(func(op, key string) error { return c.point(op + " " + strings.SplitN(key, "/", 2)[0]) })
 }
 
+// disarm stops the crasher from firing.
+func (c *crasher) disarm() {
+	c.mu.Lock()
+	c.at = -1
+	c.mu.Unlock()
+}
+
 func (c *crasher) result() string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -64,7 +71,9 @@ type steps struct {
 	state map[string]string
 }
 
-func (s *steps) resolve(path string) (smb.Resolved, error) { return s.e.Lookup(context.Background(), path) }
+func (s *steps) resolve(path string) (smb.Resolved, error) {
+	return s.e.Lookup(context.Background(), path)
+}
 
 func (s *steps) create(path string, kind smb.Kind) error {
 	r, err := s.resolve(path)
@@ -81,7 +90,7 @@ func (s *steps) create(path string, kind smb.Kind) error {
 	return err
 }
 
-func (s *steps) write(path, data string, offset int) error {
+func (s *steps) write(path, data string, offset uint64) error {
 	ctx := context.Background()
 	r, err := s.resolve(path)
 	if err != nil {
@@ -93,8 +102,8 @@ func (s *steps) write(path, data string, offset int) error {
 	}
 	// Ten bytes at a time, so a long write passes the RAM budget and uploads
 	// chunks early.
-	for i := 0; i < len(data) && err == nil; i += 10 {
-		_, err = s.e.WriteAt(ctx, h, []byte(data[i:min(i+10, len(data))]), uint64(offset+i))
+	for i := uint64(0); i < uint64(len(data)) && err == nil; i += 10 {
+		_, err = s.e.WriteAt(ctx, h, []byte(data[i:min(i+10, uint64(len(data)))]), offset+i)
 	}
 	if err == nil {
 		err = s.e.Flush(ctx, h, smb.SyncData)
@@ -102,7 +111,9 @@ func (s *steps) write(path, data string, offset int) error {
 	err = errors.Join(err, s.e.Close(ctx, h))
 	if err == nil {
 		content := []byte(s.state[path])
-		content = append(content, make([]byte, max(0, offset+len(data)-len(content)))...)
+		if end := offset + uint64(len(data)); end > uint64(len(content)) {
+			content = append(content, make([]byte, end-uint64(len(content)))...)
+		}
 		copy(content[offset:], data)
 		s.state[path] = string(content)
 	}

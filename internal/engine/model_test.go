@@ -82,9 +82,9 @@ func resize(data []byte, size int) []byte {
 }
 
 // step runs one operation chosen by op, with arguments from next.
-func (m *model) step(op byte, next func() int) {
+func (m *model) step(op byte, next func() byte) {
 	t := m.t
-	path := modelFiles[next()%len(modelFiles)]
+	path := modelFiles[int(next())%len(modelFiles)]
 	_, exists := m.live[path]
 	switch op % 14 {
 	case 0: // create a file
@@ -97,19 +97,9 @@ func (m *model) step(op byte, next func() int) {
 			create(t, m.e, strings.TrimSuffix(modelDir, "/"), smb.KindDirectory)
 			m.live[modelDir], m.durable[modelDir] = nil, nil
 		}
-	case 2, 3, 4: // write
+	case 2, 3, 4:
 		if exists {
-			offset, data := next()%100, make([]byte, 1+next()%40)
-			for i := range data {
-				data[i] = byte('A' + next()%26)
-			}
-			writeAt(t, m.e, m.handle(path), string(data), uint64(offset))
-			content := m.live[path]
-			if len(content) < offset+len(data) {
-				content = resize(content, offset+len(data))
-			}
-			copy(content[offset:], data)
-			m.live[path] = content
+			m.write(path, next)
 		}
 	case 5: // truncate
 		if exists {
@@ -117,24 +107,10 @@ func (m *model) step(op byte, next func() int) {
 			if err := m.e.Truncate(t.Context(), m.handle(path), uint64(size)); err != nil {
 				t.Fatal(err)
 			}
-			m.live[path], m.durable[path] = resize(m.live[path], size), resize(m.durable[path], size)
+			m.live[path], m.durable[path] = resize(m.live[path], int(size)), resize(m.durable[path], int(size))
 		}
-	case 6: // flush one file, or all
-		if h := m.handles[path]; h != nil {
-			mode := smb.SyncData
-			if next()%2 == 0 {
-				mode = smb.SyncFull
-			}
-			if err := m.e.Flush(t.Context(), h, mode); err != nil {
-				t.Fatal(err)
-			}
-			if mode == smb.SyncFull {
-				for p := range m.handles {
-					m.durable[p] = bytes.Clone(m.live[p])
-				}
-			}
-			m.durable[path] = bytes.Clone(m.live[path])
-		}
+	case 6:
+		m.flush(path, next()%2 == 0)
 	case 7: // close
 		m.closeHandle(path)
 	case 8: // read
@@ -146,28 +122,68 @@ func (m *model) step(op byte, next func() int) {
 	case 9: // remove a file, or the empty directory
 		m.remove(path, next()%4 == 0)
 	case 10: // rename, replacing a file
-		m.rename(path, modelFiles[next()%len(modelFiles)])
+		m.rename(path, modelFiles[int(next())%len(modelFiles)])
 	case 11: // copy, which may also delete expired trash
 		copyNow(t, m.e)
 		m.copied = clone(m.durable)
 		checkCopies(t, m.f.bucket)
-	case 12: // clean restart, or a crash that keeps the disk
-		if next()%2 == 0 {
-			for p := range m.handles {
-				m.closeHandle(p)
-			}
-			shutdown(t, m.e)
-		} else {
-			m.f.dir = snapshot(t, m.e)
-			kill(t, m.e)
-		}
-		m.start()
+	case 12:
+		m.restart(next()%2 == 0)
 	case 13: // crash and lose the disk
 		kill(t, m.e)
 		m.f.dir = t.TempDir()
 		m.durable = clone(m.copied)
 		m.start()
 	}
+}
+
+func (m *model) write(path string, next func() byte) {
+	offset, data := int(next()%100), make([]byte, 1+next()%40)
+	for i := range data {
+		data[i] = 'A' + next()%26
+	}
+	writeAt(m.t, m.e, m.handle(path), string(data), uint64(offset))
+	content := m.live[path]
+	if len(content) < offset+len(data) {
+		content = resize(content, offset+len(data))
+	}
+	copy(content[offset:], data)
+	m.live[path] = content
+}
+
+// flush flushes one file, or with full every file.
+func (m *model) flush(path string, full bool) {
+	h := m.handles[path]
+	if h == nil {
+		return
+	}
+	mode := smb.SyncData
+	if full {
+		mode = smb.SyncFull
+	}
+	if err := m.e.Flush(m.t.Context(), h, mode); err != nil {
+		m.t.Fatal(err)
+	}
+	if full {
+		for p := range m.handles {
+			m.durable[p] = bytes.Clone(m.live[p])
+		}
+	}
+	m.durable[path] = bytes.Clone(m.live[path])
+}
+
+// restart shuts down cleanly, or crashes and keeps the disk.
+func (m *model) restart(clean bool) {
+	if clean {
+		for p := range m.handles {
+			m.closeHandle(p)
+		}
+		shutdown(m.t, m.e)
+	} else {
+		m.f.dir = snapshot(m.t, m.e)
+		kill(m.t, m.e)
+	}
+	m.start()
 }
 
 func (m *model) remove(path string, directory bool) {
@@ -239,26 +255,25 @@ func (m *model) finish() {
 // following bytes give its arguments.
 func runModel(t testing.TB, input []byte) {
 	m := newModel(t)
-	next := func() int {
+	next := func() byte {
 		if len(input) == 0 {
 			return 0
 		}
 		b := input[0]
 		input = input[1:]
-		return int(b)
+		return b
 	}
 	for len(input) > 0 {
-		m.step(byte(next()), next)
+		m.step(next(), next)
 	}
 	m.finish()
 }
 
 func TestModel(t *testing.T) {
-	for seed := range uint64(40) {
-		random := rand.New(rand.NewPCG(seed, 572)) //nolint:gosec // A fixed seed replays the sequence.
+	for seed := range byte(40) {
 		input := make([]byte, 600)
-		for i := range input {
-			input[i] = byte(random.Uint32())
+		if _, err := rand.NewChaCha8([32]byte{seed}).Read(input); err != nil {
+			t.Fatal(err)
 		}
 		runModel(t, input)
 	}

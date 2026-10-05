@@ -31,8 +31,30 @@ type memBucket struct {
 	objects  map[string]memObject
 	fault    func(op, key string) error
 	landed   func(op, key string) error
+	holding  func(op, key string) bool
 	requests []string
+	held     []func()
 	mu       sync.Mutex
+}
+
+var errHeld = errors.New("request held to land late")
+
+// hold keeps the requests that match, unapplied, and fails them like a
+// timeout. release lands them later, in order.
+func (b *memBucket) hold(match func(op, key string) bool) {
+	b.mu.Lock()
+	b.holding = match
+	b.mu.Unlock()
+}
+
+func (b *memBucket) release() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, apply := range b.held {
+		apply()
+	}
+	b.held = nil
+	b.holding = nil
 }
 
 func newMemBucket() *memBucket { return &memBucket{objects: make(map[string]memObject)} }
@@ -67,6 +89,11 @@ func (b *memBucket) do(ctx context.Context, op, key string, apply func()) error 
 		}
 	}
 	b.mu.Lock()
+	if b.holding != nil && op != "get" && op != "list" && b.holding(op, key) {
+		b.held = append(b.held, apply)
+		b.mu.Unlock()
+		return errHeld
+	}
 	b.requests = append(b.requests, op+" "+key)
 	apply()
 	b.mu.Unlock()
@@ -223,19 +250,34 @@ func snapshot(t testing.TB, e *Engine) string {
 	e.commitMu.Lock()
 	defer e.commitMu.Unlock()
 	dir := t.TempDir()
+	from, to := openRoot(t, e.dir), openRoot(t, dir)
 	for _, name := range []string{databaseName, databaseName + "-wal", serverIDName} {
-		data, err := os.ReadFile(filepath.Join(e.dir, name))
+		data, err := from.ReadFile(name)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+		if err = to.WriteFile(name, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return dir
+}
+
+func openRoot(t testing.TB, dir string) *os.Root {
+	t.Helper()
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return root
 }
 
 func requireError(t testing.TB, err, want error) {
@@ -413,4 +455,44 @@ func copyNow(t testing.TB, e *Engine) {
 	if err := e.makeCopy(t.Context(), 0); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// pausable blocks requests while paused, like a stopped process.
+type pausable struct {
+	objects
+	gate sync.RWMutex
+}
+
+func (p *pausable) put(ctx context.Context, key string, data []byte) error {
+	p.gate.RLock()
+	defer p.gate.RUnlock()
+	return p.objects.put(ctx, key, data)
+}
+
+func (p *pausable) get(ctx context.Context, key string, offset, length uint64) ([]byte, error) {
+	p.gate.RLock()
+	defer p.gate.RUnlock()
+	return p.objects.get(ctx, key, offset, length)
+}
+
+func (p *pausable) remove(ctx context.Context, key string) error {
+	p.gate.RLock()
+	defer p.gate.RUnlock()
+	return p.objects.remove(ctx, key)
+}
+
+func (p *pausable) list(ctx context.Context, prefix string) ([]object, error) {
+	p.gate.RLock()
+	defer p.gate.RUnlock()
+	return p.objects.list(ctx, prefix)
+}
+
+// countRows counts the rows of a table.
+func countRows(t testing.TB, e *Engine, table string) int {
+	t.Helper()
+	var n int
+	if err := e.db.QueryRowContext(t.Context(), `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
 }
