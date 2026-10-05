@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -317,11 +318,13 @@ func TestDeleteInProgressRefusesOpens(t *testing.T) {
 	client, other := srv.connect(t), srv.connect(t)
 	seed(t, client, "data", "old")
 	id := openAs(t, client, "data", fileDelete, 7, fileDeleteOnClose)
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, blocked := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(blocked) })
+	t.Cleanup(release)
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
 			close(entered)
-			<-release
+			<-blocked
 			return srv.adapter.Close(ctx, handle)
 		}
 	})
@@ -331,7 +334,7 @@ func TestDeleteInProgressRefusesOpens(t *testing.T) {
 	if status := openStatus(t, other, "data"); status != smb.StatusDeletePending {
 		t.Fatalf("open during deletion: status %#x", status)
 	}
-	close(release)
+	release()
 	if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
 		t.Fatalf("CLOSE status %#x", status)
 	}
@@ -527,11 +530,13 @@ func TestNamespaceWaitCanBeCancelled(t *testing.T) {
 	seed(t, client, "left/moving", "moving")
 	seed(t, client, "left/waiting", "waiting")
 	moving, waiting := client.open(t, "left/moving"), client.open(t, "left/waiting")
-	entered, release := make(chan struct{}), make(chan struct{})
+	entered, blocked := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(blocked) })
+	t.Cleanup(release)
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Rename = func(ctx context.Context, request smb.RenameRequest) error {
 			close(entered)
-			<-release
+			<-blocked
 			return srv.adapter.Rename(ctx, request)
 		}
 	})
@@ -554,7 +559,7 @@ func TestNamespaceWaitCanBeCancelled(t *testing.T) {
 			t.Fatalf("cancelled SET_INFO status %#x", status)
 		}
 	}
-	close(release)
+	release()
 	if status := client.receive(t, first).Header.Status; status != smb.StatusSuccess {
 		t.Fatalf("rename status %#x", status)
 	}

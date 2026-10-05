@@ -86,6 +86,9 @@ func (connection *connection) serve(ctx context.Context) error {
 		actions = append(actions, connection.server.options.State.Disconnect(id)...)
 	}
 	cleanupErr := connection.server.cleanup(context.WithoutCancel(ctx), actions)
+	if cleanupErr != nil {
+		connection.server.connectionCleanupFailed(cleanupErr)
+	}
 	return errors.Join(err, ctxErr, closeErr, cleanupErr)
 }
 

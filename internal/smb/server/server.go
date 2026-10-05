@@ -147,9 +147,24 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
+// connectionCleanupFailed logs that the opens of an ended connection were not
+// cleaned up, which can lose data, and adds it to Shutdown's result while the
+// server stops.
+func (server *Server) connectionCleanupFailed(err error) {
+	server.options.Logger.Error("clean up connection opens", "error", err)
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.stopping {
+		server.connectionCleanupErr = errors.Join(server.connectionCleanupErr, err)
+	}
+}
+
 func (server *Server) drain(ctx context.Context, closeErr error) {
 	server.workers.Wait()
 	server.waitScavenger()
-	server.shutdownErr = errors.Join(closeErr, server.cleanup(ctx, server.options.State.CloseAll()))
+	server.mu.Lock()
+	connectionErr := server.connectionCleanupErr
+	server.mu.Unlock()
+	server.shutdownErr = errors.Join(closeErr, connectionErr, server.cleanup(ctx, server.options.State.CloseAll()))
 	close(server.shutdownDone)
 }

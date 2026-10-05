@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,8 +88,8 @@ func TestServeAndShutdown(t *testing.T) {
 
 // Shutdown closes the opens of live connections, which report what storage
 // failed to close, and then detached durable opens. It deletes what is to be
-// deleted on close, also when the close fails. Cleanup goes on after the
-// caller gives up, and later calls wait for it.
+// deleted on close, also when the close fails, and reports the failure.
+// Cleanup goes on after the caller gives up, and later calls wait for it.
 func TestShutdownClosesEveryOpen(t *testing.T) {
 	srv := newTestServer(t)
 	dropped := srv.connect(t)
@@ -97,7 +98,10 @@ func TestShutdownClosesEveryOpen(t *testing.T) {
 	client := srv.connect(t)
 	openAs(t, client, "doomed", fileAllAccess, 7, fileDeleteOnClose)
 	failure := errors.New("close failed")
-	entered, release := make(chan struct{}), make(chan struct{})
+	srv.shutdownErr = failure
+	entered, blocked := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(blocked) })
+	t.Cleanup(release)
 	var closes atomic.Int32
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
@@ -105,7 +109,7 @@ func TestShutdownClosesEveryOpen(t *testing.T) {
 				return errors.Join(srv.adapter.Close(ctx, handle), failure)
 			}
 			close(entered)
-			<-release
+			<-blocked
 			return srv.adapter.Close(ctx, handle)
 		}
 	})
@@ -117,10 +121,10 @@ func TestShutdownClosesEveryOpen(t *testing.T) {
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("shutdown error %v", err)
 	}
-	close(release)
+	release()
 	for range 2 {
-		if err := srv.server.Shutdown(t.Context()); err != nil {
-			t.Fatal(err)
+		if err := srv.server.Shutdown(t.Context()); !errors.Is(err, failure) {
+			t.Fatalf("shutdown error %v, want %v", err, failure)
 		}
 	}
 	if err := client.ended(); !errors.Is(err, failure) {

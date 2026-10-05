@@ -33,12 +33,14 @@ import (
 
 // testServer is one SMB server on real storage. Its fault storage sits between
 // the server and adapter. White-box checks may use server.options.State.
+// shutdownErr is the error the final Shutdown must report, nil by default.
 type testServer struct {
-	listener net.Listener
-	server   *Server
-	adapter  *smbfs.FS
-	faults   *faultStorage
-	clock    *fakeClock
+	shutdownErr error
+	listener    net.Listener
+	server      *Server
+	adapter     *smbfs.FS
+	faults      *faultStorage
+	clock       *fakeClock
 }
 
 // newTestServer starts a server on a fresh file-backed JuiceFS runtime.
@@ -71,12 +73,16 @@ func newTestServerOn(t *testing.T, adapter *smbfs.FS) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
+	srv := &testServer{listener: listener, server: server, adapter: adapter, faults: faults, clock: clock}
 	t.Cleanup(func() {
-		if err := errors.Join(listener.Close(), server.Shutdown(context.WithoutCancel(t.Context()))); err != nil {
+		if err := listener.Close(); err != nil {
 			t.Error(err)
 		}
+		if err := server.Shutdown(context.WithoutCancel(t.Context())); !errors.Is(err, srv.shutdownErr) {
+			t.Errorf("shutdown error %v, want %v", err, srv.shutdownErr)
+		}
 	})
-	return &testServer{listener: listener, server: server, adapter: adapter, faults: faults, clock: clock}
+	return srv
 }
 
 // expire runs one expiry pass at the clock's time and waits for its cleanup.
