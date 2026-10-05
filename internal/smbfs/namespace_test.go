@@ -1,6 +1,7 @@
 package smbfs
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -233,5 +234,38 @@ func checkRetainedReferences(t *testing.T, days int) {
 		if count != 0 {
 			t.Fatalf("last close left %d rows: %s", count, query)
 		}
+	}
+}
+
+// PathOf reads one entry per path element through the inode index, never a
+// whole directory, so a name query in a bands directory stays fast.
+func TestPathOfSearchesByInode(t *testing.T) {
+	f := newFixture(t, 0)
+	rows, err := f.fs.directory.QueryContext(t.Context(), "EXPLAIN QUERY PLAN "+nameQuery, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var plan []string
+	for rows.Next() {
+		var id, parent, unused int
+		var detail string
+		if err = rows.Scan(&id, &parent, &unused, &detail); err != nil {
+			t.Fatal(err)
+		}
+		plan = append(plan, detail)
+	}
+	if err = errors.Join(rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 1 || !strings.HasPrefix(plan[0], "SEARCH jfs_edge USING INDEX") {
+		t.Fatalf("plan %q, want one index search of jfs_edge", plan)
+	}
+	dir := f.create(t, "dir", smb.KindDirectory)
+	file := f.create(t, "dir/file", smb.KindFile)
+	if path, err := f.fs.PathOf(t.Context(), file.Object.Inode); err != nil || path != "dir/file" {
+		t.Fatalf("path = %q, %v", path, err)
+	}
+	if path, err := f.fs.PathOf(t.Context(), dir.Object.Inode); err != nil || path != "dir" {
+		t.Fatalf("directory path = %q, %v", path, err)
 	}
 }

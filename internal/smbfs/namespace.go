@@ -3,6 +3,7 @@ package smbfs
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -448,6 +449,39 @@ func (s *FS) checkAncestry(ctx context.Context, source, parent smb.Inode) error 
 	return nil
 }
 
+// nameQuery finds the entries that link an inode through JuiceFS's index on
+// jfs_edge(inode). Meta.GetPaths reads the whole parent directory instead,
+// which takes seconds in a sparsebundle's bands directory.
+const nameQuery = `SELECT parent,name FROM jfs_edge WHERE inode=? LIMIT 2`
+
+// linkedPath walks from ino up to the root through its single links.
+func (s *FS) linkedPath(ctx context.Context, ino smb.Inode) (string, error) {
+	var names []string
+	for ino != smb.Inode(meta.RootInode) {
+		rows, err := s.directory.QueryContext(ctx, nameQuery, ino)
+		if err != nil {
+			return "", err
+		}
+		var links int
+		var name string
+		for rows.Next() {
+			links++
+			if err = rows.Scan(&ino, &name); err != nil {
+				break
+			}
+		}
+		if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+			return "", err
+		}
+		if links != 1 {
+			return "", smb.ErrNameNotFound
+		}
+		names = append(names, name)
+	}
+	slices.Reverse(names)
+	return strings.Join(names, "/"), nil
+}
+
 // PathOf discovers the linked inode's current name, never a cached handle path.
 func (s *FS) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	if ino == 0 {
@@ -469,14 +503,10 @@ func (s *FS) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	if ino == smb.Inode(meta.RootInode) {
 		return "", nil
 	}
-	paths := s.metadata.GetPaths(storageContext(ctx), meta.Ino(ino))
-	if err := ctx.Err(); err != nil {
+	p, err := s.linkedPath(ctx, ino)
+	if err != nil {
 		return "", err
 	}
-	if len(paths) != 1 {
-		return "", smb.ErrNameNotFound
-	}
-	p := strings.TrimPrefix(paths[0], "/")
 	parts, stream, err := parsePath(p)
 	if err != nil || stream != "" {
 		return "", smb.ErrNameNotFound
