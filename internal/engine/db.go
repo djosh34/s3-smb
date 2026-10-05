@@ -95,7 +95,7 @@ func (c connector) Connect(context.Context) (driver.Conn, error) { return c.driv
 func (c connector) Driver() driver.Driver { return c.driver }
 
 // openSQLite opens a database file with WAL, synchronous=FULL and the full
-// fsync hook. mode is rw, rwc or ro.
+// fsync hook. mode is rw or ro.
 func openSQLite(path, mode string) *sql.DB {
 	uri := url.URL{Scheme: "file", Path: path}
 	query := url.Values{"mode": {mode}, "cache": {"private"}, "_busy_timeout": {"10000"}}
@@ -112,12 +112,23 @@ func openSQLite(path, mode string) *sql.DB {
 // it is missing.
 func openDatabase(ctx context.Context, dir string) (*sql.DB, error) {
 	path := filepath.Join(dir, databaseName)
-	_, err := os.Stat(path)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+	fresh, err := missingDatabase(path)
+	if err != nil {
 		return nil, err
 	}
-	fresh := err != nil
-	db := openSQLite(path, "rwc")
+	if fresh {
+		// A WAL beside a missing or empty database is from a first start that
+		// never served. SQLite gives db-wal and db-shm the mode of the database.
+		for _, suffix := range []string{"-wal", "-shm"} {
+			if err = os.Remove(path + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return nil, err
+			}
+		}
+		if err = writeSynced(path, nil); err != nil {
+			return nil, err
+		}
+	}
+	db := openSQLite(path, "rw")
 	if fresh {
 		err = createSchema(ctx, db)
 	} else {
@@ -127,6 +138,19 @@ func openDatabase(ctx context.Context, dir string) (*sql.DB, error) {
 		return nil, errors.Join(err, db.Close())
 	}
 	return db, nil
+}
+
+// missingDatabase reports a database file that is absent or empty. An empty
+// one is left by a crash during the first start.
+func missingDatabase(path string) (bool, error) {
+	info, err := os.Stat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return info.Size() == 0, nil
 }
 
 func checkVersion(ctx context.Context, db *sql.DB) error {

@@ -280,9 +280,7 @@ type localDatabase struct {
 }
 
 func inspectLocal(ctx context.Context, path string) (localDatabase, error) {
-	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return localDatabase{}, nil
-	} else if err != nil {
+	if missing, err := missingDatabase(path); missing || err != nil {
 		return localDatabase{}, err
 	}
 	// Open read-write so SQLite can replay a WAL left by a crash.

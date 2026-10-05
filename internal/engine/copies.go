@@ -65,7 +65,9 @@ func (e *Engine) listCopies(ctx context.Context) ([]copyName, error) {
 // copyLoop makes a copy every copyInterval, even when nothing changed.
 func (e *Engine) copyLoop(ctx context.Context) {
 	defer e.group.Done()
-	for sleep(ctx, e.tune.copyInterval) {
+	next := time.Now().Add(e.tune.copyInterval)
+	for sleep(ctx, time.Until(next)) {
+		next = time.Now().Add(e.tune.copyInterval)
 		if err := e.makeCopy(ctx, 0); err != nil && e.Err() == nil {
 			e.log.Error("database copy failed", "error", err)
 		}
@@ -80,8 +82,9 @@ func (e *Engine) copyLoop(ctx context.Context) {
 func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	e.copyMu.Lock()
 	defer e.copyMu.Unlock()
+	// VACUUM INTO needs a missing or empty file. An empty one keeps it private.
 	temp := filepath.Join(e.dir, copyTemp)
-	if err := os.Remove(temp); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := writeSynced(temp, nil); err != nil {
 		return err
 	}
 	seq, captured, err := e.capture(ctx, seq, temp)
