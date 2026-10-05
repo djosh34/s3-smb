@@ -290,13 +290,16 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover
 
 ## Releasing
 
-1. Make sure the `check` job passes on `main` and run `scripts/check.sh --gate`.
-2. Tag the commit as a release candidate, `vX.Y.Z-rc.N`, and push the tag.
-3. Run `scripts/check-public-install.sh vX.Y.Z-rc.N` on Linux and on a Mac. It
-   installs the version from the Go proxy with empty caches.
-4. Run the Time Machine workflow with `--ref vX.Y.Z-rc.N`.
-   It builds the tagged code; the public proxy install is checked separately.
-5. If it passes, tag the same commit `vX.Y.Z`.
+There are no release candidates.
+
+1. Pick the latest `main` commit. On it, the `check` workflow passes in gate
+   mode (`gh workflow run check.yml -f gate=true`) and the Time Machine
+   workflow passes with `-f mode=acceptance`.
+2. Install that exact commit from the Go proxy with empty caches:
+   `scripts/check-public-install.sh <pseudo-version>`.
+   `go list -m github.com/djosh34/s3-smb@<sha>` prints the pseudo-version. If
+   the install fails, fix it in a pull request and start again.
+3. Tag the commit `vX.Y.Z`, push the tag and create the GitHub release.
 
 Never move or reuse a tag. The Go checksum database keeps the first hash.
 
