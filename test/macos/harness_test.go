@@ -1,6 +1,7 @@
 //go:build macos
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package macos
 
 import (
@@ -22,19 +23,36 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+
+	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
+const (
+	minioUser     = "mac-acceptance"
+	minioPassword = "synthetic-mac-acceptance-secret"
+	bucket        = "time-machine"
+)
+
 type harness struct {
-	t                                                                         *testing.T
-	ctx                                                                       context.Context
-	work, evidence, transfer, bin, local, share, proof, interval, destination string
-	launchdPlist                                                              string
-	daemon, minio, backup                                                     *process
-	backupDirectory                                                           *os.File
-	attachments                                                               []string
-	serial, applicationSerial                                                 int
-	finished                                                                  bool
+	t   *testing.T
+	ctx context.Context
+	// The run's directories. The roots keep file access inside them.
+	work, evidence, transfer, bin, local, share, proof string
+	workDir, evidenceDir, transferDir, proofDir        *os.Root
+	interval, destination, launchdPlist, smbAddress    string
+	// smbLogLevel is the kernel SMB log level to restore, if it was changed.
+	smbLogLevel               string
+	proxy                     *netfault.Proxy
+	s3                        *s3.Client
+	daemon, minio, backup     *process
+	backupDirectory           *os.Root
+	attachments               []string
+	serial, applicationSerial int
+	finished                  bool
 }
 
 func (h *harness) must(err error) {
@@ -44,11 +62,39 @@ func (h *harness) must(err error) {
 	}
 }
 
+// openRoot opens one of the run's directories. It closes after finish.
+func (h *harness) openRoot(path string) *os.Root {
+	root, err := os.OpenRoot(path)
+	h.must(err)
+	h.t.Cleanup(func() {
+		if err := root.Close(); err != nil {
+			h.t.Error(err)
+		}
+	})
+	return root
+}
+
+// writeJSON creates name in dir. It never replaces a file.
+func writeJSON(dir *os.Root, name string, value any) error {
+	file, err := dir.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	return errors.Join(json.NewEncoder(file).Encode(value), file.Close())
+}
+
+func readJSON(dir *os.Root, name string, value any) error {
+	data, err := dir.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	return json.Unmarshal(data, value)
+}
+
+// save writes evidence.
 func (h *harness) save(name string, value any) {
 	h.t.Helper()
-	file, err := os.OpenFile(filepath.Join(h.evidence, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // Only fixed evidence names are created under the run-owned directory.
-	h.must(err)
-	h.must(errors.Join(json.NewEncoder(file).Encode(value), file.Close()))
+	h.must(writeJSON(h.evidenceDir, name, value))
 }
 
 func absent(path string) error {
@@ -66,19 +112,19 @@ func TestTimeMachine(t *testing.T) {
 	if runtime.GOOS != "darwin" || os.Geteuid() != 0 {
 		t.Fatal("native Darwin administrative execution required")
 	}
-	t.Setenv("MINIO_ROOT_USER", "mac-acceptance")
-	t.Setenv("MINIO_ROOT_PASSWORD", "synthetic-mac-acceptance-secret")
+	t.Setenv("MINIO_ROOT_USER", minioUser)
+	t.Setenv("MINIO_ROOT_PASSWORD", minioPassword)
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "features": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
-		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
+		t.Fatal("MAC_PHASE must be discover, backup, features, recover or scenario")
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	h := &harness{t: t, ctx: ctx, interval: "5m"}
+	h := &harness{t: t, ctx: ctx, interval: "5m", smbAddress: "127.0.0.1:1445"}
 	for name, target := range map[string]*string{"MAC_WORK": &h.work, "MAC_ARTIFACTS": &h.evidence, "MAC_TRANSFER": &h.transfer} {
 		*target = os.Getenv(name)
 		if !filepath.IsAbs(*target) || filepath.Clean(*target) == "/" {
@@ -98,6 +144,8 @@ func TestTimeMachine(t *testing.T) {
 		h.must(absent(h.transfer))
 		h.must(os.Mkdir(h.transfer, 0o700))
 	}
+	// Cleanups run in reverse order, so finish runs before these roots close.
+	h.workDir, h.evidenceDir, h.transferDir = h.openRoot(h.work), h.openRoot(h.evidence), h.openRoot(h.transfer)
 	t.Cleanup(h.finish)
 	h.build()
 	var outcome result
@@ -106,7 +154,7 @@ func TestTimeMachine(t *testing.T) {
 		h.discover()
 	case "recover":
 		outcome = h.recoverStore()
-	case "backup":
+	case "backup", "features":
 		outcome = h.baseline()
 	case "scenario":
 		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))
@@ -121,9 +169,10 @@ func TestTimeMachine(t *testing.T) {
 		}
 		h.run(2*time.Minute, "/usr/bin/du", "-sk", filepath.Join(h.work, "objects"))
 		h.run(30*time.Minute, "/usr/bin/tar", "-C", h.work, "-cf", filepath.Join(h.transfer, "store.tar"), "objects")
-		data, err := json.Marshal(outcome)
-		h.must(err)
-		h.must(os.WriteFile(filepath.Join(h.transfer, "reference/recovery.json"), data, 0o600)) //nolint:gosec // Only the run-owned transfer path is used; recovery fields are file content.
+		h.must(writeJSON(h.transferDir, "reference/recovery.json", outcome))
+	}
+	if outcome.NetworkDrop != nil && outcome.NetworkDrop.Status == "not tested" {
+		t.Fatal("not tested: macOS refused reconnect in all three connection-drop attempts")
 	}
 	h.t.Log("acceptance-passed", outcome)
 }
@@ -227,61 +276,83 @@ func (h *harness) services(fresh bool) {
 		}
 		return response.StatusCode == http.StatusOK, response.Body.Close()
 	}))
+	h.s3 = s3.New(s3.Options{
+		Region:       "us-east-1",
+		BaseEndpoint: aws.String("http://127.0.0.1:19000"),
+		UsePathStyle: true,
+		Credentials:  credentials.NewStaticCredentialsProvider(minioUser, minioPassword, ""),
+	})
 	if fresh {
-		h.run(2*time.Minute, filepath.Join(h.bin, "fixture"), "bucket-create", "--endpoint", "http://127.0.0.1:19000", "--bucket", "time-machine")
+		ctx, cancel := context.WithTimeout(h.ctx, 2*time.Minute)
+		defer cancel()
+		_, err := h.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		h.must(err)
 		if len(h.objects("")) != 0 {
 			h.t.Fatal("initial bucket is not empty")
 		}
 	}
 }
 
+// objects returns the size of every object in the bucket under prefix.
 func (h *harness) objects(prefix string) map[string]int64 {
-	output := h.run(5*time.Minute, filepath.Join(h.bin, "fixture"), "bucket-list", "--endpoint", "http://127.0.0.1:19000", "--bucket", "time-machine", "--prefix", prefix)
-	var result struct {
-		Objects []struct {
-			Key  string `json:"key"`
-			Size int64  `json:"size"`
-		} `json:"objects"`
+	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Minute)
+	defer cancel()
+	objects := map[string]int64{}
+	pages := s3.NewListObjectsV2Paginator(h.s3, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		h.must(err)
+		for _, object := range page.Contents {
+			objects[aws.ToString(object.Key)] = aws.ToInt64(object.Size)
+		}
 	}
-	h.must(json.Unmarshal([]byte(output), &result))
-	objects := make(map[string]int64, len(result.Objects))
-	for _, object := range result.Objects {
-		objects[object.Key] = object.Size
-	}
+	h.t.Log("bucket-objects", prefix, len(objects))
 	return objects
 }
 
 func (h *harness) mount() {
 	h.must(os.MkdirAll(h.share, 0o700))
-	h.run(2*time.Minute, "/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@127.0.0.1:1445/TimeMachine", h.share)
+	h.run(2*time.Minute, "/sbin/mount_smbfs", "-N", "//timemachine:synthetic-tm-control@"+h.smbAddress+"/TimeMachine", h.share)
 	h.run(2*time.Minute, "/usr/bin/smbutil", "statshares", "-a")
 	h.run(2*time.Minute, "/sbin/mount")
 }
 
+// createTree creates the test tree that Time Machine backs up. Its manifest is
+// the reference for restores, also on a fresh Mac.
 func (h *harness) createTree() {
 	h.must(absent(h.proof))
+	h.must(os.Mkdir(h.proof, 0o700))
+	h.proofDir = h.openRoot(h.proof)
 	for _, path := range []string{"nested/deeper", "empty", "nested/empty"} {
-		h.must(os.MkdirAll(filepath.Join(h.proof, path), 0o700))
+		h.must(h.proofDir.MkdirAll(path, 0o700))
 	}
 	h.randomFile("original.bin", 4_000_000)
-	h.must(os.WriteFile(filepath.Join(h.proof, "nested/message.txt"), []byte("independent baseline contents\n"), 0o600))
-	h.must(os.WriteFile(filepath.Join(h.proof, "nested/deeper/zero-length"), nil, 0o600))
-	h.must(os.Mkdir(filepath.Join(h.transfer, "reference"), 0o700))
-	h.manifest(h.proof, filepath.Join(h.transfer, "reference/tree.json"))
+	h.must(h.proofDir.WriteFile("nested/message.txt", []byte("independent baseline contents\n"), 0o600))
+	h.must(h.proofDir.WriteFile("nested/deeper/zero-length", nil, 0o600))
+	h.must(h.transferDir.Mkdir("reference", 0o700))
+	h.manifest(h.proof, h.transferDir, "reference/tree.json")
+}
+
+// reference reads the manifest that createTree saved.
+func (h *harness) reference() []helpers.Entry {
+	var rows []helpers.Entry
+	h.must(readJSON(h.transferDir, "reference/tree.json", &rows))
+	return rows
 }
 
 func (h *harness) randomFile(name string, size int64) {
-	file, err := os.OpenFile(filepath.Join(h.proof, name), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600) //nolint:gosec // The name is one of the fixed test fixture files.
+	file, err := h.proofDir.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	h.must(err)
 	_, err = io.CopyN(file, rand.Reader, size)
 	h.must(errors.Join(err, file.Close()))
 }
 
-func (h *harness) manifest(tree, path string) helpers.Counts {
+// manifest hashes tree and saves the manifest in dir as name.
+func (h *harness) manifest(tree string, dir *os.Root, name string) ([]helpers.Entry, helpers.Counts) {
 	rows, counts, err := helpers.Manifest(tree)
 	h.must(err)
-	h.must(helpers.WriteManifest(path, rows))
-	return counts
+	h.must(writeJSON(dir, name, rows))
+	return rows, counts
 }
 
 func (h *harness) discover() {
@@ -328,7 +399,7 @@ func (h *harness) discover() {
 	h.t.Log(h.run(2*time.Minute, "/usr/bin/sw_vers"))
 	h.t.Log(h.run(2*time.Minute, "/sbin/mount"))
 	h.createTree()
-	h.must(os.Mkdir(filepath.Join(h.work, "objects"), 0o700))
+	h.must(h.workDir.Mkdir("objects", 0o700))
 	h.exclusions(true)
 	for _, name := range []string{"Applications", "Library", "opt"} {
 		for _, parent := range []string{"/", "/System/Volumes/Data"} {

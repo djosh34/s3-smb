@@ -3,20 +3,18 @@
 // It must not own SMB opens, directory cursors, share modes, deletion intent,
 // byte locks or leases, and must not call JuiceFS plocks. It never imports server.
 //
-// M1 provides New(options Options) (*FS, error) and
-// NewMetadataBarrier(metadataPath string) (MetadataBarrier, error). The latter
-// covers the SQLite database and WAL with File.Sync, which uses F_FULLFSYNC on
-// macOS for both sync modes. It owns no persistent descriptor or connection.
-// Tests may inject a barrier to check ordering and failures. There are no global
-// handle or open registries. Handles retain an inode reference, immutable object
-// key, kind and access mode. Private per-inode coordination is allowed and must not
-// serialize unrelated inode I/O. New rejects a missing filesystem or barrier.
-// After server shutdown drains requests and closes all opens, the caller calls
-// FS.Shutdown to close its directory connection, then closes the JuiceFS runtime.
+// Handles retain an inode reference, an immutable object key, the kind and the
+// access mode. There are no global handle or open registries, and per-inode
+// coordination never serializes I/O on unrelated inodes. NewMetadataBarrier
+// makes the SQLite database and WAL durable with File.Sync, which uses
+// F_FULLFSYNC on macOS for both sync modes. After the server drains requests and
+// closes all opens, the caller calls FS.Shutdown to close the directory
+// connection, then closes the JuiceFS runtime.
 package smbfs
 
 import (
 	"context"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
 	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
@@ -47,6 +45,9 @@ type Options struct {
 	// indexed queries on one long-lived connection because Meta has no stable
 	// paged enumeration API.
 	MetadataPath string
-	Capacity     uint64
-	ReadOnly     bool
+	// ReadRetryWindow bounds retries of transient read failures. Zero uses the
+	// production outage window plus one minute. Negative values are invalid.
+	ReadRetryWindow time.Duration
+	Capacity        uint64
+	ReadOnly        bool
 }

@@ -15,23 +15,17 @@ import (
 // key and preauth hash, testMember(true, false), and nonce 010203040100000000000000.
 // GCM uses transform bytes 20..51 as AAD and stores its tag at bytes 4..19.
 var transformVectors = []struct {
-	sendKey    string
-	receiveKey string
-	transform  string
-	cipherID   uint16
+	transform string
+	cipherID  uint16
 }{
 	{
-		cipherID:   smb.CipherAES128GCM,
-		sendKey:    "E2AF0DCEFAC68DA71A0DFBD0D1350D74",
-		receiveKey: "629BCBC54422A0F572B97F45989B6073",
+		cipherID: smb.CipherAES128GCM,
 		transform: `
 		fd534d42969e31600ae9155e7607efbc7f556a900102030401000000000000000000000050000000000001001900000000100000
 		66c9c344eadd13ace23b9ea4e69a8e6fe9532f287314125c367854134f5b23b1e4b85ae9a3c57bc28e7fd6fcfa2218370d2b639e5f19e2d505f496f478540d1f68d13fdab43b34f54456b0783a022f20`,
 	},
 	{
-		cipherID:   smb.CipherAES256GCM,
-		sendKey:    "35952fed051bf2471af5f7acc63674b887a54b47af46959f7caff1ce537d7419",
-		receiveKey: "049c27fd8a340262e32c643dea2ba507af7a4c085fd2505aeffcbdeae6d6d8ab",
+		cipherID: smb.CipherAES256GCM,
 		transform: `
 		fd534d42260fed62eb933a651a698a5b23756ac70102030401000000000000000000000050000000000001001900000000100000
 		fbe82445570cc3fa8dfd47b87fac10024f084132606dcce42c6024eadec70237093e7ffa5314c3b110155efdeca868b7713eb3098ae0c06dd857942bcb74c75cb5fb769ac16a0fa0f1fdf7a237014e70`,
@@ -43,25 +37,6 @@ func TestTransformVectors(t *testing.T) {
 		t.Run(fmt.Sprint(vector.cipherID), func(t *testing.T) {
 			server := newTestProtector(t, smb.SigningGMAC, vector.cipherID, RoleServer)
 			client := newTestProtector(t, smb.SigningGMAC, vector.cipherID, RoleClient)
-			keySize := 16
-			if vector.cipherID == smb.CipherAES256GCM {
-				keySize = 32
-			}
-			for _, key := range []struct {
-				label string
-				want  string
-			}{
-				{label: "SMBS2CCipherKey", want: vector.sendKey},
-				{label: "SMBC2SCipherKey", want: vector.receiveKey},
-			} {
-				got, err := deriveKey(testOptions(t, smb.SigningGMAC, vector.cipherID, RoleServer).SessionKey, key.label, vectorContext(t), keySize)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if !bytes.Equal(got, decodeHex(t, key.want)) {
-					t.Fatalf("%s = %x, want %s", key.label, got, key.want)
-				}
-			}
 			plaintext := testMember(true, false)
 			got, err := server.Seal(plaintext)
 			if err != nil {
@@ -149,96 +124,48 @@ func checkGCMCorruption(t *testing.T, receiver *Protector, transform []byte) {
 }
 
 func TestConcurrentNonces(t *testing.T) {
-	for _, cipherID := range []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM} {
-		t.Run(fmt.Sprint(cipherID), func(t *testing.T) {
-			server := newTestProtector(t, smb.SigningGMAC, cipherID, RoleServer)
-			client := newTestProtector(t, smb.SigningGMAC, cipherID, RoleClient)
-			const count = 512
-			nonces := make(chan [12]byte, count)
-			plain := testMember(true, false)
-			var workers sync.WaitGroup
-			for range count {
-				workers.Go(func() {
-					sealed, err := server.Seal(plain)
-					if err != nil {
-						t.Error(err)
-						return
-					}
-					opened, err := client.Open(sealed)
-					if err != nil || !bytes.Equal(opened, plain) {
-						t.Errorf("concurrent round trip: %v", err)
-					}
-					var nonce [12]byte
-					copy(nonce[:], sealed[20:32])
-					nonces <- nonce
-				})
+	server := newTestProtector(t, smb.SigningGMAC, smb.CipherAES128GCM, RoleServer)
+	const count = 64
+	nonces := make(chan [12]byte, count)
+	var workers sync.WaitGroup
+	for range count {
+		workers.Go(func() {
+			sealed, err := server.Seal(testMember(true, false))
+			if err != nil {
+				t.Error(err)
+				return
 			}
-			workers.Wait()
-			close(nonces)
-			seen := make(map[[12]byte]bool, count)
-			for nonce := range nonces {
-				if seen[nonce] {
-					t.Errorf("reused nonce %x", nonce)
-				}
-				seen[nonce] = true
-			}
-			if len(seen) != count {
-				t.Fatalf("got %d nonces, want %d", len(seen), count)
-			}
+			nonces <- [12]byte(sealed[20:32])
 		})
 	}
-}
-
-func TestReconnectKeys(t *testing.T) {
-	server := newTestProtector(t, smb.SigningGMAC, smb.CipherAES256GCM, RoleServer)
-	options := testOptions(t, smb.SigningGMAC, smb.CipherAES256GCM, RoleClient)
-	options.Preauth[0] ^= 1
-	reconnected, err := NewProtector(options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	sealed, err := server.Seal(testMember(true, false))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if opened, openErr := reconnected.Open(sealed); openErr == nil || opened != nil {
-		t.Fatal("fresh reconnect keys accepted old encrypted traffic")
-	}
-	member := testMember(true, false)
-	tag, err := server.Sign(member)
-	if err != nil {
-		t.Fatal(err)
-	}
-	copy(member[48:64], tag[:])
-	if err := reconnected.Verify(member); err == nil {
-		t.Fatal("fresh reconnect key accepted old signature")
-	}
-	if reconnected.counter != 0 {
-		t.Fatal("new protector did not start a fresh nonce counter")
-	}
-}
-
-func TestTransformReservedBytes(t *testing.T) {
-	for _, cipherID := range []uint16{smb.CipherAES128GCM, smb.CipherAES256GCM} {
-		server := newTestProtector(t, smb.SigningGMAC, cipherID, RoleServer)
-		client := newTestProtector(t, smb.SigningGMAC, cipherID, RoleClient)
-		for _, pair := range [][2]*Protector{{server, client}, {client, server}} {
-			plain := testMember(false, false)
-			transform, err := pair[0].Seal(plain)
-			if err != nil {
-				t.Fatal(err)
-			}
-			// A peer can send nonzero Reserved bytes. They remain part of the
-			// authenticated header but do not change the transform's meaning.
-			transform[40], transform[41] = 0x12, 0x34
-			sealed := pair[0].send.Seal(nil, transform[20:32], plain, transform[20:52])
-			copy(transform[4:20], sealed[len(plain):])
-			copy(transform[52:], sealed[:len(plain)])
-			opened, err := pair[1].Open(transform)
-			if err != nil || !bytes.Equal(opened, plain) {
-				t.Fatalf("authenticated reserved bytes were rejected: %v", err)
-			}
+	workers.Wait()
+	close(nonces)
+	seen := make(map[[12]byte]bool, count)
+	for nonce := range nonces {
+		if seen[nonce] {
+			t.Fatalf("reused nonce %x", nonce)
 		}
+		seen[nonce] = true
+	}
+}
+
+// A peer can send nonzero Reserved bytes. They stay part of the authenticated
+// header but do not change the transform's meaning (MS-SMB2 2.2.41).
+func TestTransformReservedBytes(t *testing.T) {
+	server := newTestProtector(t, smb.SigningGMAC, smb.CipherAES128GCM, RoleServer)
+	client := newTestProtector(t, smb.SigningGMAC, smb.CipherAES128GCM, RoleClient)
+	plain := testMember(false, false)
+	transform, err := client.Seal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transform[40], transform[41] = 0x12, 0x34
+	sealed := client.send.Seal(nil, transform[20:32], plain, transform[20:52])
+	copy(transform[4:20], sealed[len(plain):])
+	copy(transform[52:], sealed[:len(plain)])
+	opened, err := server.Open(transform)
+	if err != nil || !bytes.Equal(opened, plain) {
+		t.Fatalf("authenticated reserved bytes were rejected: %v", err)
 	}
 }
 

@@ -1,12 +1,11 @@
-// Package wire owns pure, bounds-checked SMB codecs and command constants.
-// It must not do I/O, authenticate, allocate credits or change server state.
-// Decoders reject bad lengths, offsets, alignment, UTF-16 and context chains.
-// Every decoder gets a native Go fuzz target. Returned bytes do not alias input.
+// Package wire holds the SMB2 codecs and command constants. It does no I/O,
+// authentication, credit accounting or server state.
 //
-// M1 implements the plain typed functions documented in api.go and info_api.go.
-// No codec instance or type assertion is needed. The server distinguishes a
-// well-framed unknown command from malformed framing and returns NOT_SUPPORTED.
-// Raw test clients bypass body codecs by supplying Message.Body.
+// Decoders read through a bounds-checked reader and reject bad lengths,
+// offsets, alignment, UTF-16 and context chains with an error. Each decoder has
+// a native Go fuzz target. Returned byte slices never alias the input. Offsets
+// in command bodies are relative to the member's SMB header. Encoders return
+// the command body without the header or the TCP length prefix.
 package wire
 
 import "github.com/djosh34/s3-smb/internal/smb"
@@ -120,9 +119,8 @@ type TreeConnectRequest struct {
 	Flags uint16
 }
 
-// CreateContext carries a validated CREATE context. The codec checks chain
-// lengths and overlap. Known tags: AAPL, MxAc, QFid, DH2Q, DH2C, RqLs. Context
-// data decoders are supplied by M1 with round-trip and malformed-input tests.
+// CreateContext carries one CREATE context. The codec checks chain lengths and
+// overlap. The typed context codecs read AAPL, DH2Q, DH2C and RqLs data.
 type CreateContext struct {
 	Name string
 	Data []byte
@@ -211,8 +209,8 @@ type QueryInfoRequest struct {
 	InfoClass             uint8
 }
 
-// SetInfoRequest owns its validated info-class bytes. info.go and info_api.go
-// define their concrete types and codecs. Timestamp fields retain sentinel bits.
+// SetInfoRequest carries the raw information class bytes for the class
+// decoders such as DecodeFileBasicInformation.
 type SetInfoRequest struct {
 	Input                 []byte
 	ID                    FileID

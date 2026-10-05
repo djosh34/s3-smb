@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
-	"io"
 	"net"
 	"sync"
 )
@@ -31,8 +30,8 @@ func newSender(conn net.Conn) *sender {
 
 func (sender *sender) enqueue(payload []byte) <-chan error {
 	result := make(chan error, 1)
-	if len(payload) == 0 || len(payload) > 0xffffff {
-		result <- errors.New("invalid outgoing frame length")
+	if len(payload) > 0xffffff {
+		result <- errors.New("reply exceeds the direct TCP frame length")
 		return result
 	}
 	frame := make([]byte, 4, len(payload)+4)
@@ -89,8 +88,8 @@ func (sender *sender) run(ctx context.Context, closeConn func() error) {
 			}
 			continue
 		}
-		err := writeAll(sender.conn, job.frame)
-		if err != nil {
+		// Write returns an error for any short write.
+		if _, err := sender.conn.Write(job.frame); err != nil {
 			err = errors.Join(err, closeConn())
 			// Publish the terminal state before reporting the current completion.
 			// No later producer may put another frame on the broken stream.
@@ -100,18 +99,4 @@ func (sender *sender) run(ctx context.Context, closeConn func() error) {
 		}
 		job.result <- nil
 	}
-}
-
-func writeAll(writer io.Writer, frame []byte) error {
-	for len(frame) > 0 {
-		n, err := writer.Write(frame)
-		if err != nil {
-			return err
-		}
-		if n <= 0 || n > len(frame) {
-			return io.ErrShortWrite
-		}
-		frame = frame[n:]
-	}
-	return nil
 }

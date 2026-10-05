@@ -1,6 +1,12 @@
 package wire
 
 func readDirectoryMetadata(r *reader) (DirectoryMetadata, uint32) {
+	v, nameLength := readDirectoryBase(r)
+	v.EASize = r.u32()
+	return v, nameLength
+}
+
+func readDirectoryBase(r *reader) (DirectoryMetadata, uint32) {
 	var v DirectoryMetadata
 	v.FileIndex = r.u32()
 	v.Basic.Created = Filetime(r.u64())
@@ -11,11 +17,15 @@ func readDirectoryMetadata(r *reader) (DirectoryMetadata, uint32) {
 	v.AllocationSize = r.u64()
 	v.Basic.Attributes = r.u32()
 	nameLength := r.u32()
-	v.EASize = r.u32()
 	return v, nameLength
 }
 
 func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength int) {
+	writeDirectoryBase(b, v, nameLength)
+	b.u32(v.EASize)
+}
+
+func writeDirectoryBase(b *builder, v DirectoryMetadata, nameLength int) {
 	b.u32(v.FileIndex)
 	b.u64(uint64(v.Basic.Created))
 	b.u64(uint64(v.Basic.Accessed))
@@ -25,7 +35,6 @@ func writeDirectoryMetadata(b *builder, v DirectoryMetadata, nameLength int) {
 	b.u64(v.AllocationSize)
 	b.u32(v.Basic.Attributes)
 	b.length32(nameLength)
-	b.u32(v.EASize)
 }
 
 // DecodeDirectoryIDBothEntries validates names and every class 37 link.
@@ -74,7 +83,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if len(short) > 24 || !size32(111+len(name)) {
+		if len(short) > 24 {
 			return nil, errMalformed
 		}
 		member := builder{}
@@ -94,7 +103,7 @@ func EncodeDirectoryIDBothEntries(entries []DirectoryIDBothEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {
@@ -140,9 +149,6 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		if err != nil {
 			return nil, err
 		}
-		if !size32(87 + len(name)) {
-			return nil, errMalformed
-		}
 		member := builder{}
 		n := 80 + len(name)
 		if i < len(entries)-1 {
@@ -156,7 +162,7 @@ func EncodeDirectoryIDFullEntries(entries []DirectoryIDFullEntry) ([]byte, error
 		member.u64(e.Metadata.FileID)
 		member.bytes(name)
 		if i < len(entries)-1 {
-			member.align(8)
+			member.align8()
 		}
 		data, err := member.finish()
 		if err != nil {

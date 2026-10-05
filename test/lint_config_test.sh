@@ -23,11 +23,8 @@ lint_fails() {
     grep -F "$finding" "$fixture/output" >/dev/null || fail "missing $finding"
   done
 }
-# Every excluded package has deliberate errors. New subpackages must not inherit
-# the temporary exclusions. Frozen and vendored trees stay excluded recursively.
-for directory in internal/app internal/backup internal/config internal/logging \
-  internal/storage test/e2e test/macos/fixture internal/juicefs/probe \
-  internal/thirdparty/probe internal/smb-old/probe; do
+# Vendored and frozen trees are excluded recursively, even with deliberate errors.
+for directory in internal/juicefs/probe internal/thirdparty/probe internal/smb-old/probe; do
   mkdir -p "$directory"
   cat > "$directory/probe.go" <<'GO'
 package probe
@@ -36,17 +33,9 @@ import "os"
 func broken() { os.Chdir("."); panic("excluded") }
 GO
 done
-cat > main.go <<'GO'
-package main
-func main() { panic("excluded root") }
-GO
-cat > packaging_test.go <<'GO'
-package main
-//nolint
-func brokenRootTest() { panic("excluded root test") }
-GO
 lint_passes
 
+# Our code, including the root package, gets the full config in both builds.
 mkdir -p internal/smb
 cat > internal/smb/probe.go <<'GO'
 // Package smb tests the lint configuration.
@@ -61,18 +50,25 @@ func Probe() {
 func marker() {}
 GO
 lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
-# Both build selections enforce the same config.
 if "$tools/golangci-lint" run --build-tags smbnext ./... > "$fixture/tagged" 2>&1; then
   fail 'tagged lint accepted invalid code'
 fi
 for finding in errcheck forbidigo nolintlint; do
   grep -F "($finding)" "$fixture/tagged" >/dev/null || fail "tagged lint missed $finding"
 done
-mv internal/smb internal/app/newpackage
+mv internal/smb internal/app
 lint_fails '(errcheck)' '(forbidigo)' '(nolintlint)'
-rm -rf internal/app/newpackage
+rm -rf internal/app
+cat > main.go <<'GO'
+// Package main tests the lint configuration.
+package main
 
-mkdir -p internal/smb cmd/probe
+func main() { panic("root") }
+GO
+lint_fails '(forbidigo)'
+rm main.go
+
+mkdir -p internal/smb cmd/probe test/macos/fullsync
 cat > internal/smb/print_test.go <<'GO'
 package smb
 
@@ -96,7 +92,19 @@ func main() {
 	os.Exit(0)
 }
 GO
+cp cmd/probe/main.go test/macos/fullsync/main.go
 lint_passes
+cat > test/macos/fullsync/write.go <<'GO'
+package main
+
+import "os"
+
+func exitHelper() {
+	os.Exit(0)
+}
+GO
+lint_fails '(forbidigo)'
+rm test/macos/fullsync/write.go
 cat > internal/smb/main.go <<'GO'
 package smb
 

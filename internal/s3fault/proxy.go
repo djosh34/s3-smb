@@ -28,24 +28,13 @@ type Event struct {
 	Status int
 }
 
-// Fault applies to matching requests until SetFault replaces it. Empty Method
-// and PathContains match every request. HeaderDelay precedes response headers;
-// BodyDelay applies before every body read, not just the first byte. Total delay
-// grows with body size and depends on the reverse proxy's read buffer (currently
-// 32 KiB). Status injects an S3 XML error without forwarding; Code defaults to
-// ServiceUnavailable. For throttling, use status 503 and code SlowDown. CutBody
-// sends at most CutAfter bytes and aborts a shortened response, including chunked
-// responses. It leaves the original Content-Length intact.
-// A request snapshots its fault, so replacement affects only later requests.
+// Fault applies to requests with a matching Method (empty matches all) until
+// SetFault replaces it. HeaderDelay holds the response headers. Status, if
+// set, answers with an S3 XML error after the delay without forwarding.
 type Fault struct {
-	Method       string
-	PathContains string
-	Code         string
-	HeaderDelay  time.Duration
-	BodyDelay    time.Duration
-	Status       int
-	CutAfter     int64
-	CutBody      bool
+	Method      string
+	HeaderDelay time.Duration
+	Status      int
 }
 
 type heldResponse struct {
@@ -55,8 +44,8 @@ type heldResponse struct {
 }
 
 // Proxy owns its loopback HTTP server and upstream transport. Methods are safe
-// for concurrent use. Call Close to cancel delays, release holds and stop it.
-// Construct it with New; the zero value is not usable.
+// for concurrent use. Construct it with New and call Close to stop it, which
+// also ends delays and holds.
 type Proxy struct {
 	server       *http.Server
 	transport    *http.Transport
@@ -76,15 +65,14 @@ type Proxy struct {
 	metadataFail atomic.Bool
 }
 
-// New starts a proxy for an explicit HTTP backend. It is for test buckets only,
-// not production endpoints. Construction and listener errors are returned.
+// New starts a proxy for an http:// test backend.
 func New(ctx context.Context, upstream string) (*Proxy, error) {
 	target, err := url.Parse(upstream)
 	if err != nil {
 		return nil, fmt.Errorf("parse fault proxy upstream: %w", err)
 	}
-	if target.Host == "" || target.Scheme != "http" || target.User != nil || target.RawQuery != "" || target.Fragment != "" {
-		return nil, errors.New("fault proxy requires an explicit disposable HTTP backend")
+	if target.Scheme != "http" || target.Host == "" {
+		return nil, errors.New("fault proxy requires an http:// test backend")
 	}
 	var config net.ListenConfig
 	listener, err := config.Listen(ctx, "tcp", "127.0.0.1:0")
@@ -100,14 +88,11 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	// Only the dial address changes. Host remains the one used for signing.
 	proxy.Transport = p.transport
-	proxy.FlushInterval = -1 // Send headers before applying body delays.
 	proxy.ErrorLog = log.New(io.Discard, "", 0)
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, _ error) {
-		p.writeError(w, http.StatusBadGateway, "ServiceUnavailable")
+		writeError(w, http.StatusBadGateway)
 	}
-	p.server = &http.Server{
-		Handler: p.handler(proxy), ReadHeaderTimeout: 5 * time.Second,
-	}
+	p.server = &http.Server{Handler: p.handler(proxy), ReadHeaderTimeout: 5 * time.Second}
 	go func() { p.served <- p.server.Serve(listener) }()
 	return p, nil
 }
@@ -116,7 +101,7 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 func (p *Proxy) URL() string { return p.address }
 
 // Close stops the proxy, including held or delayed responses. Repeated calls
-// return the same result, including any server shutdown error.
+// return the same result.
 func (p *Proxy) Close() error {
 	p.closeOnce.Do(func() {
 		close(p.done)
@@ -130,11 +115,11 @@ func (p *Proxy) Close() error {
 	return p.closeErr
 }
 
-// SetFault replaces the current fault. A zero Fault restores normal responses.
-// Invalid values leave the previous fault unchanged.
+// SetFault replaces the current fault for later requests. A zero Fault
+// restores normal responses. Invalid values leave the fault unchanged.
 func (p *Proxy) SetFault(fault Fault) error {
-	if fault.HeaderDelay < 0 || fault.BodyDelay < 0 || fault.CutAfter < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
-		return errors.New("invalid S3 fault delay, cut point or error status")
+	if fault.HeaderDelay < 0 || (fault.Status != 0 && (fault.Status < 400 || fault.Status > 599)) {
+		return errors.New("invalid S3 fault delay or error status")
 	}
 	p.mu.Lock()
 	p.fault = fault
@@ -144,30 +129,35 @@ func (p *Proxy) SetFault(fault Fault) error {
 
 func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chunk := strings.Contains(r.URL.Path, "/chunks/")
+		meta := strings.Contains(r.URL.Path, "/meta/")
 		if time.Now().UnixNano() < p.outageUntil.Load() {
-			if strings.Contains(r.URL.Path, "/chunks/") {
-				notify(p.outageSeen, r, http.StatusServiceUnavailable)
+			if chunk {
+				notify(p.outageSeen, r)
 			}
-			p.writeError(w, http.StatusServiceUnavailable, "ServiceUnavailable")
+			if meta {
+				notify(p.metadataSeen, r)
+			}
+			writeError(w, http.StatusServiceUnavailable)
 			return
 		}
-		if p.metadataFail.Load() && strings.Contains(r.URL.Path, "/meta/") && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
-			notify(p.metadataSeen, r, http.StatusServiceUnavailable)
-			p.writeError(w, http.StatusServiceUnavailable, "ServiceUnavailable")
+		if p.metadataFail.Load() && meta && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
+			notify(p.metadataSeen, r)
+			writeError(w, http.StatusServiceUnavailable)
 			return
 		}
 		p.mu.Lock()
 		fault := p.fault
 		p.mu.Unlock()
-		if (fault.Method != "" && fault.Method != r.Method) || !strings.Contains(r.URL.Path, fault.PathContains) {
+		if fault.Method != "" && fault.Method != r.Method {
 			fault = Fault{}
 		}
 		if fault.Status != 0 {
 			if err := p.wait(r.Context(), fault.HeaderDelay); err != nil {
-				p.writeError(w, http.StatusBadGateway, "ServiceUnavailable")
+				writeError(w, http.StatusBadGateway)
 				return
 			}
-			p.writeError(w, fault.Status, fault.Code)
+			writeError(w, fault.Status)
 			return
 		}
 		// A per-request copy avoids sharing ModifyResponse state across requests.
@@ -177,38 +167,31 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			if err := p.holdChunkResponse(ctx, res); err != nil {
 				return err
 			}
-			if err := p.wait(ctx, fault.HeaderDelay); err != nil {
-				return err
-			}
-			if fault.BodyDelay != 0 || fault.CutBody {
-				res.Body = &faultBody{ReadCloser: res.Body, proxy: p, ctx: ctx, delay: fault.BodyDelay, remaining: fault.CutAfter, cut: fault.CutBody}
-			}
-			return nil
+			return p.wait(ctx, fault.HeaderDelay)
 		}
 		requestProxy.ServeHTTP(w, r)
 	})
 }
 
-func (p *Proxy) writeError(w http.ResponseWriter, status int, code string) {
-	if code == "" {
-		code = "ServiceUnavailable"
-	}
+// writeError answers with an S3 XML error with code ServiceUnavailable.
+func writeError(w http.ResponseWriter, status int) {
 	w.Header().Set("Content-Type", "application/xml")
 	w.WriteHeader(status)
 	body := struct {
 		XMLName xml.Name `xml:"Error"`
 		Code    string   `xml:"Code"`
 		Message string   `xml:"Message"`
-	}{Code: code, Message: "Injected S3 fault"}
+	}{Code: "ServiceUnavailable", Message: "Injected S3 fault"}
 	if err := xml.NewEncoder(w).Encode(body); err != nil {
-		// Encoding only strings cannot fail except when the client stops reading.
+		// Encoding only strings fails only when the client stops reading.
 		log.Printf("s3 fault proxy: write injected error: %v", err)
 	}
 }
 
-func notify(events chan Event, r *http.Request, status int) {
+// notify never blocks, so observation cannot stall an S3 caller.
+func notify(events chan Event, r *http.Request) {
 	select {
-	case events <- Event{Method: r.Method, Path: r.URL.Path, Status: status}:
+	case events <- Event{Method: r.Method, Path: r.URL.Path, Status: http.StatusServiceUnavailable}:
 	default:
 	}
 }
@@ -252,8 +235,8 @@ func (p *Proxy) holdChunkResponse(ctx context.Context, res *http.Response) error
 	}
 }
 
-// HoldNextChunkResponse holds the next successful real chunk PUT before sending
-// its headers. The event proves that S3 accepted the data. Only one hold can be
+// HoldNextChunkResponse holds the next successful chunk PUT before sending its
+// headers. The event proves that S3 accepted the data. Only one hold can be
 // armed at a time; call Release before arming another.
 func (p *Proxy) HoldNextChunkResponse() (<-chan Event, error) {
 	p.mu.Lock()
@@ -279,9 +262,9 @@ func (p *Proxy) Release() {
 	p.active = nil
 }
 
-// FailS3For rejects every S3 request until start+duration, without forwarding.
-// It returns start so tests can measure the outage. A nonpositive duration ends
-// the outage immediately. Calling it again replaces the deadline.
+// FailS3For answers every S3 request with 503, without forwarding, until
+// duration has passed. It returns the start time. Calling it again replaces
+// the deadline.
 func (p *Proxy) FailS3For(duration time.Duration) time.Time {
 	start := time.Now()
 	p.outageUntil.Store(start.Add(duration).UnixNano())
@@ -291,54 +274,16 @@ func (p *Proxy) FailS3For(duration time.Duration) time.Time {
 // RestoreS3 ends an outage immediately.
 func (p *Proxy) RestoreS3() { p.outageUntil.Store(0) }
 
-// OutageSeen reports rejected chunk requests. Events are dropped if its buffer
-// fills, so observation never stalls an S3 caller.
+// OutageSeen reports chunk requests rejected by an outage. Events are dropped
+// when its buffer is full.
 func (p *Proxy) OutageSeen() <-chan Event { return p.outageSeen }
 
-// SetMetadataFailure rejects metadata GETs and PUTs while enabled.
+// SetMetadataFailure answers metadata GETs and PUTs with 503 while enabled.
 func (p *Proxy) SetMetadataFailure(enabled bool) { p.metadataFail.Store(enabled) }
 
-// MetadataFailureSeen reports rejected metadata requests, with bounded buffering.
+// MetadataFailureSeen reports metadata requests rejected by a metadata failure
+// or an outage. Events are dropped when its buffer is full.
 func (p *Proxy) MetadataFailureSeen() <-chan Event { return p.metadataSeen }
 
-// ChunkPuts returns the number of successful real chunk PUT responses.
+// ChunkPuts returns the number of successful chunk PUT responses.
 func (p *Proxy) ChunkPuts() int64 { return p.chunkPuts.Load() }
-
-type faultBody struct {
-	io.ReadCloser
-	proxy     *Proxy
-	ctx       context.Context
-	delay     time.Duration
-	remaining int64
-	cut       bool
-}
-
-func (body *faultBody) Read(dst []byte) (int, error) {
-	if len(dst) == 0 {
-		return 0, nil
-	}
-	if err := body.proxy.wait(body.ctx, body.delay); err != nil {
-		return 0, err
-	}
-	if body.cut {
-		if body.remaining == 0 {
-			// Distinguish a real end from a cut, even without Content-Length.
-			// A non-EOF error makes ReverseProxy abort instead of writing the
-			// terminating chunk that would turn the cut into a successful read.
-			var probe [1]byte
-			n, err := body.ReadCloser.Read(probe[:])
-			if n != 0 {
-				return 0, io.ErrUnexpectedEOF
-			}
-			return 0, err
-		}
-		if int64(len(dst)) > body.remaining {
-			dst = dst[:body.remaining]
-		}
-	}
-	n, err := body.ReadCloser.Read(dst)
-	if body.cut {
-		body.remaining -= int64(n)
-	}
-	return n, err
-}

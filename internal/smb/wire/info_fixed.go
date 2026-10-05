@@ -248,17 +248,6 @@ func EncodeFileAllocationInformation(v FileAllocationInformation) ([]byte, error
 	return b.data, nil
 }
 
-// DecodeFilesystemSizeInformation reads the MS-FSCC class buffer.
-func DecodeFilesystemSizeInformation(data []byte) (FilesystemSizeInformation, error) {
-	r := reader{data: data}
-	var v FilesystemSizeInformation
-	v.TotalUnits = r.u64()
-	v.AvailableUnits = r.u64()
-	v.SectorsPerUnit = r.u32()
-	v.BytesPerSector = r.u32()
-	return v, r.exact()
-}
-
 // EncodeFilesystemSizeInformation writes fields in MS-FSCC order.
 func EncodeFilesystemSizeInformation(v FilesystemSizeInformation) ([]byte, error) {
 	b := builder{}
@@ -269,19 +258,8 @@ func EncodeFilesystemSizeInformation(v FilesystemSizeInformation) ([]byte, error
 	return b.data, nil
 }
 
-// DecodeFilesystemFullSizeInformation reads the MS-FSCC class buffer.
-func DecodeFilesystemFullSizeInformation(data []byte) (FilesystemFullSizeInformation, error) {
-	r := reader{data: data}
-	var v FilesystemFullSizeInformation
-	v.TotalUnits = r.u64()
-	v.CallerAvailableUnits = r.u64()
-	v.ActualAvailableUnits = r.u64()
-	v.SectorsPerUnit = r.u32()
-	v.BytesPerSector = r.u32()
-	return v, r.exact()
-}
-
-// EncodeFilesystemFullSizeInformation writes fields in MS-FSCC order.
+// EncodeFilesystemFullSizeInformation writes fields in MS-FSCC order, with
+// ActualAvailableUnits at byte offset 16.
 func EncodeFilesystemFullSizeInformation(v FilesystemFullSizeInformation) ([]byte, error) {
 	b := builder{}
 	b.u64(v.TotalUnits)

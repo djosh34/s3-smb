@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-package storage_test
+package storage
 
 import (
 	"bytes"
@@ -34,29 +34,26 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
+
 	"github.com/djosh34/s3-smb/internal/config"
 	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 	"github.com/djosh34/s3-smb/internal/logging"
-	"github.com/djosh34/s3-smb/internal/storage"
 )
 
-const transportBucket = "transport-test"
-const transportHost = "transport.test"
-const transportAccess = "s3smb-test-access"
-const transportSecret = "s3smb-test-secret-only"
+// transportSMBMarker is the SMB password. It must not show up in the logs.
+var transportSMBMarker = "transport-smb-password-marker"
+
+const (
+	transportBucket = "transport-test"
+	// scripts/check.sh resolves this name and its bucket subdomain to the runner.
+	transportHost = "transport.test"
+)
 
 // TestTransportAcceptance runs the config resolver and the S3 client against
 // MinIO through a local TLS proxy. The proxy terminates TLS and records each
 // request. It leaves the signed Host and path unchanged.
 func TestTransportAcceptance(t *testing.T) {
-	if os.Getenv("S3_SMB_E2E_ENDPOINT") == "" {
-		t.Skip("needs MinIO: run scripts/check.sh")
-	}
-	upstream, err := url.Parse(os.Getenv("S3_SMB_E2E_ENDPOINT"))
-	if err != nil || upstream.Host == "" || upstream.Scheme != "http" {
-		t.Fatal("transport acceptance requires the shared disposable HTTP MinIO endpoint")
-	}
-	transportWaitMinIO(t, upstream)
+	upstream := minioEndpoint(t)
 	ca := transportCA(t)
 	wrongCA := transportCA(t)
 	serverCert, serverKey := ca.issue(t, false)
@@ -95,25 +92,22 @@ func TestTransportAcceptance(t *testing.T) {
 		cfg := transportConfig(t, proxy.endpoint, true)
 		cfg.S3.TLS.CAFile = wrongCAFile
 		store := transportOpen(t, cfg)
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 		defer cancel()
-		start := time.Now()
 		_, err := store.Head(ctx, "accepted/path_style_true/private_ca")
 		if err == nil {
-			t.Fatal("untrusted TLS connection unexpectedly succeeded")
+			t.Fatal("untrusted TLS connection succeeded")
 		}
-		if time.Since(start) > 4*time.Second {
-			t.Fatal("TLS failure exceeded caller deadline")
-		}
-		transportNoSecrets(t, err.Error(), transportAccess, transportSecret)
+		access, secret := minioCredentials()
+		transportNoSecrets(t, err.Error(), access, secret)
 		if got := proxy.snapshot(); len(got) != 0 {
 			t.Fatal("TLS authentication failure reached the S3 HTTP handler")
 		}
 	})
 
 	t.Run("static_session_token", func(t *testing.T) {
-		// MinIO validates a real signed STS token, not an invented header. Acquire it
-		// once as fixture setup; the application receives only explicit static values.
+		// MinIO validates a real signed STS token. The fixture gets one; the
+		// application only receives static configured values.
 		access, secret, token := transportSTS(t, upstream)
 		proxy := transportProxy(t, upstream, serverPair, ca.cert, false)
 		proxy.expectedToken = token
@@ -121,7 +115,7 @@ func TestTransportAcceptance(t *testing.T) {
 		cfg.S3.AccessKey = config.SecretSource{Value: &access}
 		cfg.S3.SecretKey = config.SecretSource{Value: &secret}
 		cfg.S3.SessionToken, cfg.S3.TLS.CAFile = token, caFile
-		// Poison ambient providers: configured credentials must be authoritative.
+		// Configured credentials must win over the environment.
 		t.Setenv("AWS_ACCESS_KEY_ID", "ambient-access-must-not-be-used")
 		t.Setenv("AWS_SECRET_ACCESS_KEY", "ambient-secret-must-not-be-used")
 		t.Setenv("AWS_SESSION_TOKEN", "ambient-token-must-not-be-used")
@@ -129,7 +123,7 @@ func TestTransportAcceptance(t *testing.T) {
 		proxy.assertRequests(t, false, false, token)
 		for _, r := range proxy.snapshot() {
 			if r.method == http.MethodPost {
-				t.Fatal("native client attempted credential acquisition/refresh")
+				t.Fatal("S3 client tried to acquire or refresh credentials")
 			}
 		}
 	})
@@ -137,18 +131,21 @@ func TestTransportAcceptance(t *testing.T) {
 
 func transportConfig(t *testing.T, endpoint string, pathStyle bool) *config.Config {
 	t.Helper()
-	password, access, secret := "transport-smb-password-marker", transportAccess, transportSecret
+	access, secret := minioCredentials()
 	return &config.Config{
-		SMB:     config.SMBConfig{Listen: "127.0.0.1:445", Share: "transport", Username: "transport", Password: password},
+		SMB:     config.SMBConfig{Listen: "127.0.0.1:445", Share: "transport", Username: "transport", Password: transportSMBMarker},
 		Storage: config.StorageConfig{StateDir: t.TempDir(), CacheDir: t.TempDir()},
-		S3: config.S3Config{Bucket: transportBucket, Region: "us-east-1", Endpoint: endpoint, PathStyle: &pathStyle,
-			AccessKey: config.SecretSource{Value: &access}, SecretKey: config.SecretSource{Value: &secret}},
+		S3: config.S3Config{
+			Bucket: transportBucket, Region: "us-east-1", Endpoint: endpoint, PathStyle: &pathStyle,
+			AccessKey: config.SecretSource{Value: &access}, SecretKey: config.SecretSource{Value: &secret},
+		},
 		Backup:  config.BackupConfig{Interval: time.Hour, TrashDays: 14},
 		Logging: config.LoggingConfig{Format: "json", Level: "debug"},
 	}
 }
 
-// Use the same config resolver as startup, including CA/client-key file loading.
+// transportOpen resolves cfg like startup does, including the CA and client
+// key files, and checks at cleanup that the logs hold no secrets.
 func transportOpen(t *testing.T, cfg *config.Config) object.ObjectStorage {
 	t.Helper()
 	var logs transportBuffer
@@ -159,100 +156,96 @@ func transportOpen(t *testing.T, cfg *config.Config) object.ObjectStorage {
 	t.Cleanup(func() {
 		logging.Install(os.Stderr)
 		data := logs.String()
-		secrets := []string{transportAccess, transportSecret, cfg.S3.SessionToken, cfg.SMB.Password}
-		if cfg.S3.AccessKey.Value != nil {
-			secrets = append(secrets, *cfg.S3.AccessKey.Value)
-		}
-		if cfg.S3.SecretKey.Value != nil {
-			secrets = append(secrets, *cfg.S3.SecretKey.Value)
+		access, secret := minioCredentials()
+		secrets := []string{access, secret, cfg.S3.SessionToken, cfg.SMB.Password}
+		for _, source := range []config.SecretSource{cfg.S3.AccessKey, cfg.S3.SecretKey} {
+			if source.Value != nil {
+				secrets = append(secrets, *source.Value)
+			}
 		}
 		transportNoSecrets(t, data, secrets...)
-		for _, line := range strings.Split(strings.TrimSpace(data), "\n") {
+		for line := range strings.SplitSeq(strings.TrimSpace(data), "\n") {
 			if line != "" && !json.Valid([]byte(line)) {
-				t.Error("native diagnostic stream contained non-JSON output")
+				t.Error("log output contained non-JSON lines")
 			}
 		}
 	})
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	resolved, err := cfg.Resolve(ctx, slog.Default())
 	if err != nil {
 		t.Fatalf("resolve transport config: %s", logging.Redact(err.Error()))
 	}
-	store, err := storage.OpenS3(resolved)
+	store, err := OpenS3(resolved)
 	if err != nil {
-		t.Fatalf("construct native S3: %s", logging.Redact(err.Error()))
+		t.Fatalf("construct S3 client: %s", logging.Redact(err.Error()))
 	}
-	t.Cleanup(func() {
-		if closer, ok := store.(io.Closer); ok {
-			_ = closer.Close()
-		}
-	})
+	if closer, ok := store.(io.Closer); ok {
+		t.Cleanup(func() {
+			if closeErr := closer.Close(); closeErr != nil {
+				t.Error(closeErr)
+			}
+		})
+	}
 	return store
 }
 
 func transportRoundTrip(t *testing.T, store object.ObjectStorage, key string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
 	must := func(op string, err error) {
 		t.Helper()
 		if err != nil {
-			t.Fatalf("native S3 %s: %s", op, logging.Redact(err.Error()))
+			t.Fatalf("S3 %s: %s", op, logging.Redact(err.Error()))
 		}
 	}
 	must("Create", store.Create(ctx))
-	payload := []byte("native S3 transport acceptance\x00\xff\n")
+	payload := []byte("S3 transport acceptance\x00\xff\n")
 	must("Put", store.Put(ctx, key, bytes.NewReader(payload)))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		_ = store.Delete(ctx, key)
-	})
 	r, err := store.Get(ctx, key, 0, -1)
 	must("Get", err)
 	data, err := io.ReadAll(r)
-	closeErr := r.Close()
-	must("Read", err)
-	must("Close", closeErr)
+	must("Read", errors.Join(err, r.Close()))
 	if !bytes.Equal(data, payload) {
-		t.Fatal("real MinIO round trip changed payload")
+		t.Fatal("MinIO round trip changed the payload")
 	}
 	obj, err := store.Head(ctx, key)
 	must("Head", err)
 	if obj.Size() != int64(len(payload)) {
-		t.Fatal("real MinIO HEAD returned wrong size")
+		t.Fatal("MinIO HEAD returned the wrong size")
 	}
 	objs, _, _, err := store.List(ctx, key, "", "", "", 100, true)
 	must("List", err)
 	if len(objs) != 1 || objs[0].Key() != key {
-		t.Fatal("real MinIO LIST did not return written object")
+		t.Fatal("MinIO LIST did not return the written object")
 	}
 	must("Delete", store.Delete(ctx, key))
-	_, err = store.Head(ctx, key)
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("deleted object still exists or HEAD did not report not-exist")
+	if _, err = store.Head(ctx, key); !errors.Is(err, os.ErrNotExist) {
+		t.Fatal("HEAD of a deleted object did not report not-exist")
 	}
 	missing, err := store.Get(ctx, key, 0, -1)
 	if missing != nil {
-		_ = missing.Close()
+		must("Close", missing.Close())
 	}
 	if !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("deleted object GET did not report not-exist")
+		t.Fatal("GET of a deleted object did not report not-exist")
 	}
 }
 
 type transportRequest struct {
-	method, host, path  string
-	tlsVersion          uint16
-	clientCert, tokenOK bool
-	status              int
+	method, host, path string
+	status             int
+	tlsVersion         uint16
+	clientCert         bool
+	tokenOK            bool
 }
+
 type transportObserver struct {
 	endpoint      string
-	mu            sync.Mutex
-	requests      []transportRequest
 	expectedToken string
+	requests      []transportRequest
+	mu            sync.Mutex
 }
 
 func (p *transportObserver) snapshot() []transportRequest {
@@ -260,9 +253,13 @@ func (p *transportObserver) snapshot() []transportRequest {
 	defer p.mu.Unlock()
 	return append([]transportRequest(nil), p.requests...)
 }
+
 func (p *transportObserver) assertRequests(t *testing.T, pathStyle, mutual bool, token string) {
 	t.Helper()
-	endpoint, _ := url.Parse(p.endpoint)
+	endpoint, err := url.Parse(p.endpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
 	host := endpoint.Host
 	prefix := "/"
 	if pathStyle {
@@ -279,16 +276,16 @@ func (p *transportObserver) assertRequests(t *testing.T, pathStyle, mutual bool,
 			t.Errorf("request path %q does not use addressing prefix %q", r.path, prefix)
 		}
 		if !pathStyle && strings.HasPrefix(r.path, "/"+transportBucket+"/") {
-			t.Error("virtual-host mode silently fell back to path-style")
+			t.Error("virtual-host mode fell back to path style")
 		}
 		if r.tlsVersion < tls.VersionTLS12 {
-			t.Error("native request did not use verified TLS 1.2+")
+			t.Error("request did not use TLS 1.2 or later")
 		}
 		if r.clientCert != mutual {
-			t.Error("unexpected authenticated client-certificate state")
+			t.Error("unexpected client certificate state")
 		}
 		if token != "" && !r.tokenOK {
-			t.Error("native request omitted/changed explicit session token")
+			t.Error("request omitted or changed the session token")
 		}
 		if r.status >= 200 && r.status < 300 {
 			methods[r.method] = true
@@ -296,7 +293,7 @@ func (p *transportObserver) assertRequests(t *testing.T, pathStyle, mutual bool,
 	}
 	for _, method := range []string{"PUT", "GET", "HEAD", "DELETE"} {
 		if !methods[method] {
-			t.Errorf("no successful real MinIO %s response observed", method)
+			t.Errorf("no successful MinIO %s response observed", method)
 		}
 	}
 }
@@ -304,16 +301,27 @@ func (p *transportObserver) assertRequests(t *testing.T, pathStyle, mutual bool,
 func transportProxy(t *testing.T, upstream *url.URL, pair tls.Certificate, ca *x509.Certificate, mutual bool) *transportObserver {
 	t.Helper()
 	p := &transportObserver{}
-	backend := http.DefaultTransport.(*http.Transport).Clone()
+	backend, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		t.Fatal("default HTTP transport has an unexpected type")
+	}
+	backend = backend.Clone()
 	backend.Proxy = nil
 	t.Cleanup(backend.CloseIdleConnections)
 	proxy := &httputil.ReverseProxy{
-		Director:  func(r *http.Request) { r.URL.Scheme = upstream.Scheme; r.URL.Host = upstream.Host },
+		// Keep the signed Host header; only the connection goes to MinIO.
+		Rewrite: func(r *httputil.ProxyRequest) {
+			r.Out.URL.Scheme = upstream.Scheme
+			r.Out.URL.Host = upstream.Host
+			r.Out.Host = r.In.Host
+		},
 		Transport: backend, ErrorLog: log.New(io.Discard, "", 0),
 	}
 	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		observed := transportRequest{method: r.Method, host: r.Host, path: r.URL.Path,
-			tokenOK: r.Header.Get("X-Amz-Security-Token") == p.expectedToken}
+		observed := transportRequest{
+			method: r.Method, host: r.Host, path: r.URL.Path,
+			tokenOK: r.Header.Get("X-Amz-Security-Token") == p.expectedToken,
+		}
 		if r.TLS != nil {
 			observed.tlsVersion = r.TLS.Version
 			observed.clientCert = len(r.TLS.VerifiedChains) > 0
@@ -351,9 +359,10 @@ func (w *transportStatusWriter) WriteHeader(status int) {
 	w.status = status
 	w.ResponseWriter.WriteHeader(status)
 }
+
 func (w *transportStatusWriter) Write(b []byte) (int, error) {
 	if w.status == 0 {
-		w.WriteHeader(200)
+		w.WriteHeader(http.StatusOK)
 	}
 	return w.ResponseWriter.Write(b)
 }
@@ -370,8 +379,10 @@ func transportCA(t *testing.T) *transportAuthority {
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: transportSerial(t), Subject: pkix.Name{CommonName: "disposable transport test CA"},
-		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature}
+	template := &x509.Certificate{
+		SerialNumber: transportSerial(t), Subject: pkix.Name{CommonName: "disposable transport test CA"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
 	if err != nil {
 		t.Fatal(err)
@@ -382,15 +393,18 @@ func transportCA(t *testing.T) *transportAuthority {
 	}
 	return &transportAuthority{cert: cert, key: key, pem: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})}
 }
-func (ca *transportAuthority) issue(t *testing.T, client bool) ([]byte, []byte) {
+
+func (ca *transportAuthority) issue(t *testing.T, client bool) (certPEM, keyPEM []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	template := &x509.Certificate{SerialNumber: transportSerial(t), Subject: pkix.Name{CommonName: "disposable transport leaf"},
+	template := &x509.Certificate{
+		SerialNumber: transportSerial(t), Subject: pkix.Name{CommonName: "disposable transport leaf"},
 		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature,
-		DNSNames: []string{transportHost, "*." + transportHost}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+		DNSNames: []string{transportHost, "*." + transportHost}, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
 	if client {
 		template.ExtKeyUsage = []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}
 		template.DNSNames = nil
@@ -403,9 +417,9 @@ func (ca *transportAuthority) issue(t *testing.T, client bool) ([]byte, []byte) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
-	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), keyPEM
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: raw})
 }
+
 func transportSerial(t *testing.T) *big.Int {
 	t.Helper()
 	n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
@@ -414,77 +428,72 @@ func transportSerial(t *testing.T) *big.Int {
 	}
 	return n.Add(n, big.NewInt(1))
 }
+
 func transportFile(t *testing.T, name string, data []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
 type transportBuffer struct {
-	sync.Mutex
 	data bytes.Buffer
+	mu   sync.Mutex
 }
 
 func (b *transportBuffer) Write(p []byte) (int, error) {
-	b.Lock()
-	defer b.Unlock()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.data.Write(p)
 }
-func (b *transportBuffer) String() string { b.Lock(); defer b.Unlock(); return b.data.String() }
+
+func (b *transportBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.data.String()
+}
+
 func transportNoSecrets(t *testing.T, data string, secrets ...string) {
 	t.Helper()
 	for _, secret := range secrets {
 		if secret != "" && strings.Contains(data, secret) {
-			t.Error("secret marker leaked in native error/diagnostic output")
+			t.Error("a secret leaked into error or log output")
 		}
 	}
 }
 
-func transportWaitMinIO(t *testing.T, u *url.URL) {
+// transportSTS gets temporary credentials from MinIO's STS endpoint.
+func transportSTS(t *testing.T, upstream *url.URL) (access, secret, token string) {
 	t.Helper()
-	client := &http.Client{Timeout: time.Second, Transport: &http.Transport{Proxy: nil}}
-	defer client.CloseIdleConnections()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		response, err := client.Get(u.String() + "/minio/health/ready")
-		if err == nil {
-			response.Body.Close()
-			if response.StatusCode == 200 {
-				return
-			}
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-	t.Fatal("shared pinned MinIO did not become ready in 30s")
-}
-
-func transportSTS(t *testing.T, upstream *url.URL) (string, string, string) {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	body := "Action=AssumeRole&Version=2011-06-15&DurationSeconds=900"
-	request, err := http.NewRequestWithContext(ctx, "POST", upstream.String()+"/", strings.NewReader(body))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, upstream.JoinPath("/").String(), strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	sum := sha256.Sum256([]byte(body))
-	err = v4.NewSigner().SignHTTP(ctx, aws.Credentials{AccessKeyID: transportAccess, SecretAccessKey: transportSecret}, request, hex.EncodeToString(sum[:]), "sts", "us-east-1", time.Now())
+	rootAccess, rootSecret := minioCredentials()
+	err = v4.NewSigner().SignHTTP(ctx, aws.Credentials{AccessKeyID: rootAccess, SecretAccessKey: rootSecret}, request, hex.EncodeToString(sum[:]), "sts", "us-east-1", time.Now())
 	if err != nil {
-		t.Fatal("sign disposable STS fixture request")
+		t.Fatal("sign STS request")
 	}
-	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	client := &http.Client{Transport: &http.Transport{Proxy: nil}}
 	defer client.CloseIdleConnections()
 	response, err := client.Do(request)
 	if err != nil {
-		t.Fatal("request disposable MinIO STS credentials")
+		t.Fatal("request MinIO STS credentials")
 	}
-	defer response.Body.Close()
-	if response.StatusCode != 200 {
-		t.Fatalf("MinIO STS fixture returned HTTP %d", response.StatusCode)
+	defer func() {
+		if closeErr := response.Body.Close(); closeErr != nil {
+			t.Error(closeErr)
+		}
+	}()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("MinIO STS returned HTTP %d", response.StatusCode)
 	}
 	var result struct {
 		Result struct {
@@ -495,12 +504,12 @@ func transportSTS(t *testing.T, upstream *url.URL) (string, string, string) {
 			} `xml:"Credentials"`
 		} `xml:"AssumeRoleResult"`
 	}
-	if err := xml.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
-		t.Fatal("decode disposable STS fixture response")
+	if err = xml.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&result); err != nil {
+		t.Fatal("decode MinIO STS response")
 	}
 	c := result.Result.Credentials
 	if c.Access == "" || c.Secret == "" || c.Token == "" {
-		t.Fatal("MinIO STS fixture returned incomplete credentials")
+		t.Fatal("MinIO STS returned incomplete credentials")
 	}
 	return c.Access, c.Secret, c.Token
 }

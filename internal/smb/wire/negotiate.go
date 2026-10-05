@@ -29,7 +29,7 @@ func DecodeNegotiateRequest(m Message) (NegotiateRequest, error) {
 
 // EncodeNegotiateRequest writes dialect offers and aligned contexts.
 func EncodeNegotiateRequest(v NegotiateRequest) ([]byte, error) {
-	if len(v.Dialects) == 0 || !size16(len(v.Dialects)) {
+	if len(v.Dialects) == 0 {
 		return nil, errMalformed
 	}
 	has311 := false
@@ -63,7 +63,7 @@ func EncodeNegotiateRequest(v NegotiateRequest) ([]byte, error) {
 		b.u16(d)
 	}
 	if len(contexts) > 0 {
-		b.align(8)
+		b.align8()
 		b.bytes(contexts)
 	}
 	return b.finish()
@@ -95,7 +95,7 @@ func DecodeNegotiateResponse(m Message) (NegotiateResponse, error) {
 
 // EncodeNegotiateResponse writes the selected dialect and aligned contexts.
 func EncodeNegotiateResponse(v NegotiateResponse) ([]byte, error) {
-	if !size16(len(v.Token)) || v.Dialect != 0x0311 && len(v.Contexts) > 0 {
+	if v.Dialect != 0x0311 && len(v.Contexts) > 0 {
 		return nil, errMalformed
 	}
 	contexts, err := encodeNegotiateContexts(v.Contexts)
@@ -116,11 +116,7 @@ func EncodeNegotiateResponse(v NegotiateResponse) ([]byte, error) {
 	b.u32(v.MaxWrite)
 	b.u64(v.SystemTime)
 	b.u64(v.ServerStartTime)
-	if len(v.Token) > 0 {
-		b.u16(128)
-	} else {
-		b.u16(0)
-	}
+	b.u16(128)
 	b.length16(len(v.Token))
 	if len(contexts) > 0 {
 		b.length32(offset + 64)
@@ -129,7 +125,7 @@ func EncodeNegotiateResponse(v NegotiateResponse) ([]byte, error) {
 	}
 	b.bytes(v.Token)
 	if len(contexts) > 0 {
-		b.align(8)
+		b.align8()
 		b.bytes(contexts)
 	}
 	return b.finish()

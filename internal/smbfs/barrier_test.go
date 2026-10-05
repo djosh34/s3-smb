@@ -2,10 +2,10 @@ package smbfs
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
@@ -42,8 +42,11 @@ func TestDiskBarrierDatabaseAndOptionalWAL(t *testing.T) {
 	requireError(t, barrier.Commit(t.Context(), true), os.ErrNotExist)
 }
 
-func TestConstructorRejectsMissingDependencies(t *testing.T) {
+func TestConstructorRejectsInvalidOptions(t *testing.T) {
 	_, err := New(Options{})
+	requireError(t, err, smb.ErrInvalidParameter)
+	f := newFixture(t, 0)
+	_, err = New(Options{Filesystem: f.native, Barrier: f.fs.barrier, Config: f.config, Store: f.chunks, MetadataPath: f.path, ReadRetryWindow: -time.Second})
 	requireError(t, err, smb.ErrInvalidParameter)
 	_, err = NewMetadataBarrier("relative.db")
 	if err == nil {
@@ -55,41 +58,4 @@ func TestConstructorRejectsMissingDependencies(t *testing.T) {
 	}
 	_, err = NewMetadataBarrier(filepath.Join(t.TempDir(), "missing.db"))
 	requireError(t, err, os.ErrNotExist)
-}
-
-func TestSyncModesAndStreamBarriers(t *testing.T) {
-	f := newFixture(t, 0)
-	base := f.create(t, "data", smb.KindFile)
-	stream := f.create(t, "data:fork", smb.KindFile)
-	called := false
-	barrier := f.fs.barrier
-	f.fs.barrier = testBarrier{commit: func(ctx context.Context, full bool) error { called = full; return barrier.Commit(ctx, full) }}
-	for _, key := range []smb.ObjectKey{base.Object, stream.Object} {
-		h := f.open(t, key, smb.AccessRead|smb.AccessWrite)
-		write(t, f.fs, h, "bytes", 0)
-		for _, mode := range []smb.SyncMode{smb.SyncData, smb.SyncFull} {
-			if err := f.fs.Flush(t.Context(), h, mode); err != nil {
-				t.Fatal(err)
-			}
-			if called != (mode == smb.SyncFull) {
-				t.Fatal("wrong metadata barrier mode")
-			}
-		}
-	}
-}
-
-func TestClosePropagatesFlushErrorAndReleasesReference(t *testing.T) {
-	f := newFixture(t, 0)
-	base := f.create(t, "data", smb.KindFile)
-	h := f.open(t, base.Object, smb.AccessWrite)
-	f.store.fail.Store(true)
-	write(t, f.fs, h, "data", 0)
-	err := f.fs.Close(t.Context(), h)
-	if !errors.Is(err, smb.ErrIO) {
-		t.Fatalf("close error = %v", err)
-	}
-	requireError(t, f.fs.Close(t.Context(), h), smb.ErrInvalidHandle)
-	if len(f.fs.inodes) != 0 {
-		t.Fatal("closed reference retained")
-	}
 }

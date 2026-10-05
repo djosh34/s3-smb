@@ -16,9 +16,9 @@ func confirm(message string) error {
 	if err != nil {
 		return errors.New("startup requires confirmation on a controlling terminal (/dev/tty); no dataset was initialized or recovered")
 	}
-	defer tty.Close()
-	return confirmOn(tty, tty, message)
+	return errors.Join(confirmOn(tty, tty, message), tty.Close())
 }
+
 func confirmOn(r io.Reader, w io.Writer, message string) error {
 	if _, err := fmt.Fprintf(w, "%s\nContinue? [yes/no]: ", message); err != nil {
 		return err

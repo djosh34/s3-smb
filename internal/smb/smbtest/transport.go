@@ -20,10 +20,11 @@ func NewClient(conn net.Conn) (*Client, error) {
 	return &Client{conn: conn, pending: make(map[uint64]pendingReply), sendSlot: make(chan struct{}, 1)}, nil
 }
 
-// Send encodes one compound, changing only NextCommand links and padding.
-// It does not allocate message IDs or adjust credits, flags or signatures.
+// Send encodes one compound and applies protection after Login. Before Login
+// it changes only NextCommand links and padding. It never allocates message IDs
+// or adjusts credits. Use SendRaw to bypass protection.
 func (client *Client) Send(ctx context.Context, messages []wire.Message) error {
-	payload, err := wire.Join(messages)
+	payload, err := client.encodeMessages(messages)
 	if err != nil {
 		return err
 	}
@@ -63,22 +64,44 @@ func (client *Client) SendRaw(ctx context.Context, framed []byte) error {
 	})
 }
 
-// Receive returns the next frame. An interim reply is returned on its own, and
+// Receive returns the next frame's normal replies, queuing lease breaks for
+// WaitLeaseBreak. Raw still contains the whole frame, including notifications.
+// An interim reply is returned on its own, and
 // its final reply comes from a later call. An async final must keep the pending
 // reply's MessageID, AsyncID and SessionID.
 // A correlation error returns the decoded reply as well, for test assertions.
-// Callers must use only one receiver, including ReceiveRaw.
+// Callers must use only one receiver.
 func (client *Client) Receive(ctx context.Context) (Reply, error) {
-	payload, err := client.ReceiveRaw(ctx)
+	if err := ctx.Err(); err != nil {
+		return Reply{}, err
+	}
+	if len(client.replies) != 0 {
+		reply := client.replies[0]
+		client.replies[0] = Reply{}
+		client.replies = client.replies[1:]
+		return reply, nil
+	}
+	for {
+		reply, err := client.receiveRouted(ctx)
+		if err != nil || len(reply.Messages) != 0 {
+			return reply, err
+		}
+	}
+}
+
+func (client *Client) receiveRouted(ctx context.Context) (Reply, error) {
+	payload, err := client.receiveRaw(ctx)
 	if err != nil {
 		return Reply{}, err
 	}
-	messages, err := wire.Split(payload)
-	reply := Reply{Raw: payload, Messages: messages}
+	reply, err := client.decodeMessages(payload)
 	if err != nil {
 		return reply, err
 	}
-	for _, message := range messages {
+	if err := client.routeLeaseBreaks(&reply); err != nil {
+		return reply, err
+	}
+	for _, message := range reply.Messages {
 		h := message.Header
 		if h.Flags&wire.FlagAsync == 0 {
 			if h.Status == smb.StatusPending {
@@ -105,9 +128,9 @@ func (client *Client) Receive(ctx context.Context) (Reply, error) {
 	return reply, nil
 }
 
-// ReceiveRaw reads a direct TCP frame and returns its exact payload. It does not
-// decode SMB headers or track pending replies. It may run concurrently with Send.
-func (client *Client) ReceiveRaw(ctx context.Context) ([]byte, error) {
+// receiveRaw reads a direct TCP frame and returns its exact payload. It may run
+// concurrently with Send.
+func (client *Client) receiveRaw(ctx context.Context) ([]byte, error) {
 	var payload []byte
 	err := client.transfer(ctx, func() error {
 		var header [4]byte

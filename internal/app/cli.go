@@ -3,8 +3,6 @@ package app
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"strings"
 )
 
@@ -21,28 +19,26 @@ Source: https://github.com/djosh34/s3-smb (AGPL-3.0-only; see NOTICE for upstrea
 
 type arguments struct{ command, configPath, logFormat string }
 
-// logOverride finds --log-format before the command line is parsed, so an
-// error in the command line or the config is reported in that format too.
+// logOverride finds the last --log-format value before the command line is
+// parsed.
 func logOverride(args []string) string {
 	format := ""
 	for i, arg := range args {
-		if strings.HasPrefix(arg, "--log-format=") {
-			format = strings.TrimPrefix(arg, "--log-format=")
+		if value, ok := strings.CutPrefix(arg, "--log-format="); ok {
+			format = value
 		}
 		if arg == "--log-format" && i+1 < len(args) {
 			format = args[i+1]
 		}
 	}
-	if format == "json" || format == "text" {
-		return format
-	}
-	return ""
+	return format
 }
 
 func parseArguments(args []string) (arguments, error) {
 	var a arguments
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
+	for len(args) > 0 {
+		arg := args[0]
+		args = args[1:]
 		switch {
 		case arg == "-h" || arg == "--help":
 			a.command = "help"
@@ -51,15 +47,15 @@ func parseArguments(args []string) (arguments, error) {
 			a.command = "version"
 			return a, nil
 		case arg == "-c" || arg == "--log-format":
-			i++
-			if i == len(args) {
+			if len(args) == 0 {
 				return a, errors.New("option requires a value")
 			}
 			if arg == "-c" {
-				a.configPath = args[i]
+				a.configPath = args[0]
 			} else {
-				a.logFormat = args[i]
+				a.logFormat = args[0]
 			}
+			args = args[1:]
 		case strings.HasPrefix(arg, "-c="):
 			a.configPath = strings.TrimPrefix(arg, "-c=")
 		case strings.HasPrefix(arg, "--log-format="):
@@ -76,10 +72,5 @@ func parseArguments(args []string) (arguments, error) {
 	if a.command == "" {
 		return a, errors.New("a command is required; use --help")
 	}
-	if a.logFormat != "" && a.logFormat != "text" && a.logFormat != "json" {
-		return a, errors.New("log format must be text or json")
-	}
 	return a, nil
 }
-
-func printHelp(w io.Writer) { _, _ = fmt.Fprint(w, usage) }

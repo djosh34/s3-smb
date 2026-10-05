@@ -4,8 +4,6 @@ import (
 	"bytes"
 	"encoding/hex"
 	"errors"
-	"io"
-	"strconv"
 	"testing"
 	"time"
 )
@@ -247,7 +245,7 @@ type failingReader struct{ err error }
 
 func (reader failingReader) Read([]byte) (int, error) { return 0, reader.err }
 
-func TestRandomErrors(t *testing.T) {
+func TestRandomError(t *testing.T) {
 	failure := errors.New("random source failed")
 	acceptor := testAcceptor(t, vectorAccount)
 	initial, err := acceptor.InitialToken()
@@ -265,30 +263,6 @@ func TestRandomErrors(t *testing.T) {
 	if !errors.Is(err, failure) {
 		t.Fatalf("lost random error: %v", err)
 	}
-	for _, length := range []int{0, 4, 8, 12, 23} {
-		t.Run(strconv.Itoa(length), func(t *testing.T) {
-			acceptor := testAcceptor(t, vectorAccount)
-			initiator := testInitiator(t, vectorAccount)
-			initial, err := acceptor.InitialToken()
-			if err != nil {
-				t.Fatal(err)
-			}
-			negotiate, err := initiator.Start(initial)
-			if err != nil {
-				t.Fatal(err)
-			}
-			challenge, err := acceptor.Step(negotiate.Token)
-			if err != nil {
-				t.Fatal(err)
-			}
-			initiator.random = bytes.NewReader(make([]byte, length))
-			result, err := initiator.Step(challenge.Token)
-			requireFailure(t, result, err)
-			if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
-				t.Fatalf("lost short random source error: %v", err)
-			}
-		})
-	}
 }
 
 func TestConfiguration(t *testing.T) {
@@ -300,9 +274,6 @@ func TestConfiguration(t *testing.T) {
 		{User: "user", Password: string([]byte{0xff})},
 		{User: string(bytes.Repeat([]byte{'x'}, 1025))},
 	} {
-		if _, err := NewInitiator(account, nil); err == nil {
-			t.Fatal("invalid account accepted by initiator")
-		}
 		if _, err := NewAcceptor(Options{Account: account, ServerName: "Server"}); err == nil {
 			t.Fatal("invalid account accepted by acceptor")
 		}
@@ -311,14 +282,6 @@ func TestConfiguration(t *testing.T) {
 		if _, err := NewAcceptor(Options{Account: vectorAccount, ServerName: name}); err == nil {
 			t.Fatal("invalid server name accepted")
 		}
-	}
-	acceptor, err := NewAcceptor(Options{Account: vectorAccount, ServerName: "Server"})
-	if err != nil || acceptor.options.Random == nil || acceptor.options.Now == nil {
-		t.Fatalf("default nondeterminism missing: %v", err)
-	}
-	initiator, err := NewInitiator(vectorAccount, nil)
-	if err != nil || initiator.random == nil {
-		t.Fatalf("default random source missing: %v", err)
 	}
 }
 

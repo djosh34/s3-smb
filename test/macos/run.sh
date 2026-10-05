@@ -1,15 +1,16 @@
 #!/bin/bash
 # SPDX-License-Identifier: AGPL-3.0-only
-# Actions needs sudo for Apple's administrative commands. The test owns everything else.
+# Runs the Mac acceptance test as root, which Apple's administrative commands
+# need. The workflow sets MAC_PHASE, MAC_SERVER and the task paths.
 set -euo pipefail
 cd "$(dirname "$0")/../.."
 : "${MAC_SERVER:?default or smbnext required}"
 case "$MAC_PHASE" in
   discover) timeout=25m ;;
-  backup) timeout=140m ;;
+  backup|features) timeout=140m ;;
   recover) timeout=80m ;;
   scenario) timeout=110m ;;
-  *) echo 'MAC_PHASE must be discover, backup, recover or scenario' >&2; exit 1 ;;
+  *) echo 'MAC_PHASE must be discover, backup, features, recover or scenario' >&2; exit 1 ;;
 esac
 sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_RUNNER_HOME=$HOME" \
   "MAC_WORK=$MAC_WORK" "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_TRANSFER=$MAC_TRANSFER" \

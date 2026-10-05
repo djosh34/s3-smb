@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
@@ -37,10 +38,10 @@ func TestNewVolumeStoresUncompressedObjects(t *testing.T) {
 	}
 
 	data := bytes.Repeat([]byte("uncompressed file data\n"), 1024)
-	share, closeShare := f.share()
+	share, disconnect := f.share()
 	writeFile(t, share, "data.bin", data)
 	verifyFiles(t, share, map[string][]byte{"data.bin": data})
-	closeShare()
+	disconnect()
 	d.stop()
 
 	objects, err := f.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket), Prefix: aws.String("s3-smb/chunks/")})

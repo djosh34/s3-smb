@@ -1,11 +1,11 @@
 //go:build macos
 
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package macos
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -15,17 +15,21 @@ import (
 )
 
 type result struct {
-	Baseline        string         `json:"baseline"`
-	Scenario        string         `json:"scenario,omitempty"`
-	MetadataBackup  string         `json:"metadata_backup,omitempty"`
-	AtKill          string         `json:"at_kill,omitempty"`
-	Resumed         string         `json:"resumed,omitempty"`
-	RecoveredFrom   string         `json:"recovered_from,omitempty"`
-	BaselineRestore helpers.Counts `json:"baseline_restore,omitempty"`
-	ResumedRestore  helpers.Counts `json:"resumed_restore,omitempty"`
-	ChunkObjectsEnd int            `json:"chunk_objects_end,omitempty"`
+	NetworkDrop     *helpers.DropReport `json:"network_drop,omitempty"`
+	Baseline        string              `json:"baseline"`
+	Scenario        string              `json:"scenario,omitempty"`
+	MetadataBackup  string              `json:"metadata_backup,omitempty"`
+	AtKill          string              `json:"at_kill,omitempty"`
+	Resumed         string              `json:"resumed,omitempty"`
+	RecoveredFrom   string              `json:"recovered_from,omitempty"`
+	BaselineRestore helpers.Counts      `json:"baseline_restore,omitempty"`
+	ResumedRestore  helpers.Counts      `json:"resumed_restore,omitempty"`
+	ChunkObjectsEnd int                 `json:"chunk_objects_end,omitempty"`
 }
 
+// baseline starts fresh storage and s3-smb, then makes and checks the first
+// Time Machine backup. The features phase first checks Mac file operations on
+// the empty share.
 func (h *harness) baseline() result {
 	h.must(absent(filepath.Join(h.work, "objects")))
 	h.must(absent(h.local))
@@ -37,6 +41,10 @@ func (h *harness) baseline() result {
 	h.must(err)
 	if len(entries) != 0 {
 		h.t.Fatal("initial application share not empty")
+	}
+	if os.Getenv("MAC_PHASE") == "features" {
+		h.shareFeatures()
+		h.t.Log("share-features-passed")
 	}
 	h.destinationSetup()
 	h.createTree()
@@ -115,12 +123,14 @@ func (h *harness) cold() {
 	if h.daemon != nil {
 		h.stopDaemon(false)
 	}
-	h.must(os.RemoveAll(h.local))
+	h.must(h.workDir.RemoveAll("daemon"))
 	h.startDaemon("recover")
 }
 
 func (h *harness) scenario(name string) result {
 	switch name {
+	case "network-drop", "network-outage":
+		return h.networkScenario(name)
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
@@ -139,10 +149,10 @@ func (h *harness) scenario(name string) result {
 		size = 4 << 30
 	}
 	h.randomFile("later.bin", size)
-	h.must(os.WriteFile(filepath.Join(h.proof, "nested/message.txt"), []byte("changed after the baseline\n"), 0o600))
-	updated := filepath.Join(h.evidence, "updated-tree.json")
-	h.manifest(h.proof, updated)
-	// Take P1 last, so cold and machine-loss kills precede the next scheduled point.
+	h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed after the baseline\n"), 0o600))
+	updated, _ := h.manifest(h.proof, h.evidenceDir, "updated-tree.json")
+	// Wait for this metadata point last, so the cold and machine-loss kills
+	// come before the next scheduled point.
 	p1 := h.metadata(time.Now().UTC(), "pre-interruption")
 	before := h.objects("s3-smb/chunks/")
 	atKill := h.copying()
@@ -163,7 +173,7 @@ func (h *harness) scenario(name string) result {
 			output, err := h.try(time.Minute, args...)
 			h.t.Log("client abort", output, err)
 		}
-		for _, path := range mountpoints(h.run(2*time.Minute, "/sbin/mount")) {
+		for _, path := range h.mountpoints(h.run(2*time.Minute, "/sbin/mount")) {
 			output, err := h.try(2*time.Minute, "/sbin/umount", "-f", path)
 			h.t.Log("forced client unmount", output, err)
 		}
@@ -192,7 +202,7 @@ func (h *harness) scenario(name string) result {
 		}
 		h.cold()
 		if name == "server-kill-cold" && h.daemon.point != p1.Key {
-			h.t.Fatalf("recovered from %s, expected P1 %s", h.daemon.point, p1.Key)
+			h.t.Fatalf("recovered from %s, expected %s", h.daemon.point, p1.Key)
 		}
 		if name != "server-kill-cold" && h.daemon.point < point.Key {
 			h.t.Fatalf("recovered from %s, expected %s or later", h.daemon.point, point.Key)
@@ -200,7 +210,7 @@ func (h *harness) scenario(name string) result {
 	}
 	outcome.MetadataBackup = point.Key
 	h.mount()
-	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-recovered", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-recovered", outcome.Baseline), h.reference(), "restore-baseline")
 	h.must(h.detach())
 	latest := h.resumeBackup(outcome.Baseline, name == "launchd-kill-restart")
 	outcome.ResumedRestore = h.restore(latest, updated, "restore-resumed")
@@ -239,20 +249,19 @@ func (h *harness) resumeBackup(baseline string, requireNext bool) string {
 	return ""
 }
 
+// recoverStore recovers s3-smb on a fresh Mac from the store that a backup or
+// machine-loss job exported, then restores the baseline backup.
 func (h *harness) recoverStore() result {
 	h.must(absent(h.local))
 	h.must(absent(filepath.Join(h.work, "objects")))
-	data, err := os.ReadFile(filepath.Join(h.transfer, "reference/recovery.json"))
-	h.must(err)
 	var outcome result
-	h.must(json.Unmarshal(data, &outcome))
+	h.must(readJSON(h.transferDir, "reference/recovery.json", &outcome))
 	if outcome.Baseline == "" {
 		h.t.Fatal("missing baseline identifier")
 	}
 	h.platform(true)
-	tar := filepath.Join(h.transfer, "store.tar")
-	h.run(30*time.Minute, "/usr/bin/tar", "-C", h.work, "-xf", tar)
-	h.must(os.Remove(tar))
+	h.run(30*time.Minute, "/usr/bin/tar", "-C", h.work, "-xf", filepath.Join(h.transfer, "store.tar"))
+	h.must(h.transferDir.Remove("store.tar"))
 	h.services(false)
 	h.startDaemon("recover")
 	if outcome.MetadataBackup != "" && outcome.MetadataBackup != h.daemon.point {
@@ -261,12 +270,14 @@ func (h *harness) recoverStore() result {
 	// No source tree is created here. Only hashes and S3 objects crossed runners.
 	h.must(absent(h.proof))
 	h.mount()
-	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline", outcome.Baseline), filepath.Join(h.transfer, "reference/tree.json"), "restore-baseline")
+	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline", outcome.Baseline), h.reference(), "restore-baseline")
 	outcome.RecoveredFrom = h.daemon.point
 	h.must(h.detach())
 	return outcome
 }
 
+// finish releases everything the run started, also after a failure or timeout,
+// and saves final diagnostics.
 func (h *harness) finish() {
 	if h.finished {
 		return
@@ -274,30 +285,33 @@ func (h *harness) finish() {
 	h.finished = true
 	parent := h.ctx
 	ctx, cancel := context.WithTimeout(context.Background(), 7*time.Minute)
-	h.ctx = ctx
 	defer func() { cancel(); h.ctx = parent }()
 	report := func(err error) {
 		if err != nil {
 			h.t.Error(err)
 		}
 	}
-	// Leave two minutes of the outer budget for bootout and stopping services.
-	//nolint:contextcheck // Native commands use h.ctx, set to each callback's context before calls.
-	report(helpers.Cleanup(ctx, 5*time.Minute, func(clientCtx context.Context) error {
-		h.ctx = clientCtx
-		var err error
-		if h.backup != nil {
-			h.t.Error("owned Time Machine startbackup still active at final cleanup")
-			err = h.stopBackup(30 * time.Second)
-		}
-		if h.daemon != nil || h.launchdPlist != "" || len(h.attachments) != 0 {
-			err = errors.Join(err, h.detach())
-		}
-		return err
-	}, func(cleanupCtx context.Context) error {
-		h.ctx = cleanupCtx
-		return h.unloadLaunchd()
-	}))
+	if h.proxy != nil {
+		h.proxy.Restore()
+	}
+	// Clients get five minutes, which leaves two for the launchd job and services.
+	clientCtx, cancelClients := context.WithTimeout(ctx, 5*time.Minute)
+	h.ctx = clientCtx
+	if h.backup != nil {
+		h.t.Error("owned Time Machine startbackup still active at final cleanup")
+		report(h.stopBackup(30 * time.Second))
+	}
+	if h.daemon != nil || h.launchdPlist != "" || len(h.attachments) != 0 {
+		report(h.detach())
+	}
+	cancelClients()
+	h.ctx = ctx
+	report(h.unloadLaunchd())
+	report(h.restoreSMBLogging())
+	if h.proxy != nil {
+		report(h.proxy.Close())
+		h.proxy = nil
+	}
 	if h.daemon != nil {
 		report(stop(h.daemon, false))
 		h.daemon = nil

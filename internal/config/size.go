@@ -11,7 +11,7 @@ import (
 )
 
 // ByteSize is a size in bytes, parsed with decimal units.
-type ByteSize int64
+type ByteSize uint64
 
 var decimalSize = regexp.MustCompile(`^([0-9]+(?:\.[0-9]+)?)\s*(B|KB|MB|GB|TB)?$`)
 
@@ -46,8 +46,10 @@ func ParseByteSize(s string) (ByteSize, error) {
 	if !bytes.IsInt64() {
 		return 0, errors.New("capacity overflows signed 64-bit bytes")
 	}
-	return ByteSize(bytes.Int64()), nil
+	return ByteSize(bytes.Uint64()), nil
 }
+
+// UnmarshalYAML parses a YAML scalar with ParseByteSize.
 func (b *ByteSize) UnmarshalYAML(node *yaml.Node) error {
 	if node.Kind != yaml.ScalarNode || (node.Tag != "!!str" && node.Tag != "!!int" && node.Tag != "!!float") {
 		return errors.New("capacity must be a decimal size")

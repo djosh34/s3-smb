@@ -146,16 +146,18 @@ bucket layout are in [recovery](docs/recovery.md).
 - The S3 provider must support `PutObject` with `If-None-Match: *`.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
   On a Mac, the [launchd plist](docs/com.s3-smb.plist) can keep it running.
-- The Time Machine tests kill the application and the Time Machine client
-  during a backup. They do not cover power loss or lost S3 objects. A Linux test
+- The Time Machine tests kill the application or the Time Machine client, or
+  cut the connection, during a backup. They do not cover power loss or lost S3 objects. A Linux test
   deletes data objects and checks that reading the file fails over SMB.
 
 ## Development
 
 `scripts/check.sh` runs the same checks locally and in CI, including race tests
-and MinIO integration tests in Docker. Use `scripts/check.sh --gate` for phase
-and release gates, including fuzz exploration. [Development](docs/development.md)
-describes the code, the tests and the Time Machine workflow.
+and MinIO integration tests in Docker. `scripts/check.sh --gate` is the release
+gate, with full-length outage tests and fuzzing. [Development](docs/development.md)
+describes the code, the tests and the Time Machine workflow. A new SMB server is
+in progress; build with `-tags smbnext` to use it, as described in
+[the SMB server design](docs/smb-design.md).
 [Vendored source](docs/vendored.md) lists the patches to JuiceFS and the SMB
 server.
 

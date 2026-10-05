@@ -27,6 +27,7 @@ func (f logrusFormatter) Format(e *logrus.Entry) ([]byte, error) {
 	switch e.Level {
 	case logrus.TraceLevel, logrus.DebugLevel:
 		level = slog.LevelDebug
+	case logrus.InfoLevel:
 	case logrus.WarnLevel:
 		level = slog.LevelWarn
 	case logrus.ErrorLevel, logrus.FatalLevel, logrus.PanicLevel:
@@ -50,6 +51,7 @@ func (f logrusFormatter) Format(e *logrus.Entry) ([]byte, error) {
 // request, signing and body traces stay off.
 type SDKLogger struct{}
 
+// Logf logs one SDK line.
 func (SDKLogger) Logf(classification smithylog.Classification, format string, args ...interface{}) {
 	level := slog.LevelDebug
 	if classification == smithylog.Warn {

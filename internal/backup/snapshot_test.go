@@ -10,26 +10,22 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
 )
 
-func TestSnapshotWhileWriterHasUncommittedChanges(t *testing.T) {
-	m, _ := newMetadata(t)
+func TestSnapshotExcludesUncommittedChanges(t *testing.T) {
 	ctx := context.Background()
+	m, _ := newMetadata(t)
 	db, err := openSnapshotDB(m.path, "rw")
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() {
-		if err := db.Close(); err != nil {
-			t.Error(err)
-		}
-	})
-	var before int64
-	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_counter WHERE name='nextInode'").Scan(&before); err != nil {
-		t.Fatal(err)
-	}
+	cleanup(t, db.Close)
+	before := counter(t, m.path)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -44,47 +40,28 @@ func TestSnapshotWhileWriterHasUncommittedChanges(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	if st, err := os.Stat(path); err != nil || st.Mode().Perm() != 0600 {
+	st, err := os.Stat(path)
+	if err != nil || st.Mode().Perm() != 0o600 {
 		t.Fatal("snapshot is not private", st, err)
 	}
-	snapshot, err := openSnapshotDB(path, "ro")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		if err := snapshot.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
-	var got int64
-	if err = snapshot.QueryRowContext(ctx, "SELECT value FROM jfs_counter WHERE name='nextInode'").Scan(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got != before {
-		t.Fatalf("snapshot contains uncommitted counter: %d, want %d", got, before)
+	if got := counter(t, path); got != before {
+		t.Fatalf("snapshot contains an uncommitted counter: %d, want %d", got, before)
 	}
 	compressed := filepath.Join(t.TempDir(), "snapshot.db.gz")
 	if err = compressSnapshot(path, compressed); err != nil {
 		t.Fatal(err)
 	}
-	f, err := os.Open(compressed)
+	f, err := os.Open(filepath.Clean(compressed))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() {
-		if err := f.Close(); err != nil {
-			t.Error(err)
-		}
-	}()
 	gz, err := gzip.NewReader(f)
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := sha256.New()
-	if _, err = io.Copy(h, gz); err != nil {
-		t.Fatal(err)
-	}
-	if err = gz.Close(); err != nil {
+	_, err = io.Copy(h, io.LimitReader(gz, 1<<30))
+	if err = errors.Join(err, gz.Close(), f.Close()); err != nil {
 		t.Fatal(err)
 	}
 	if gz.Comment != "sha256:"+hex.EncodeToString(h.Sum(nil)) {
@@ -92,85 +69,96 @@ func TestSnapshotWhileWriterHasUncommittedChanges(t *testing.T) {
 	}
 }
 
-func TestSnapshotMissingSourceDoesNotCreateDatabase(t *testing.T) {
-	source := filepath.Join(t.TempDir(), "missing.db")
-	target := filepath.Join(t.TempDir(), "snapshot.db")
-	if err := takeSnapshot(context.Background(), source, target); err == nil {
-		t.Fatal("accepted missing source")
+func counter(t *testing.T, path string) int64 {
+	t.Helper()
+	db, err := openSnapshotDB(path, "ro")
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, path := range []string{source, target} {
-		if _, err := os.Stat(path); !os.IsNotExist(err) {
-			t.Fatalf("created %s: %v", path, err)
-		}
+	var value int64
+	err = db.QueryRowContext(context.Background(), "SELECT value FROM jfs_counter WHERE name='nextInode'").Scan(&value)
+	if err = errors.Join(err, db.Close()); err != nil {
+		t.Fatal(err)
 	}
+	return value
 }
 
-func TestRetentionAndReservationCleanup(t *testing.T) {
+func TestBackupOfMissingDatabaseCreatesAndUploadsNothing(t *testing.T) {
 	m, _ := newMetadata(t)
 	s := newStore(t)
-	now := time.Date(2026, 10, 4, 12, 0, 0, 0, time.UTC)
-	mgr := newManager(t, m, s, t.TempDir(), func() time.Time { return now }, time.Minute)
-	if err := mgr.opts.Protection.protect(now); err != nil {
-		t.Fatal(err)
+	mgr := newManager(t, m, s, t.TempDir(), time.Now, time.Minute)
+	missing := filepath.Join(t.TempDir(), "missing.db")
+	mgr.opts.DatabasePath = missing
+	mgr.wait = func(context.Context, time.Duration) error { return errors.New("no retry") }
+	if _, err := mgr.Backup(context.Background()); err == nil {
+		t.Fatal("backed up a missing database")
 	}
-	key := func(age time.Duration) string {
-		return "meta/snapshot-" + now.Add(-age).Format("2006-01-02-150405") + ".db.gz"
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Fatalf("snapshot created the source database: %v", err)
 	}
-	// Earliest snapshot in each thinning period wins, not the newest.
-	kept := []string{key(time.Hour), key(47 * time.Hour), key(71 * time.Hour), key(335 * time.Hour), key(600 * time.Hour), key(2000 * time.Hour)}
-	removed := []string{key(49 * time.Hour), key(313 * time.Hour), key(550 * time.Hour), key(1900 * time.Hour), key(3 * 365 * 24 * time.Hour)}
-	for _, keys := range [][]string{kept, removed} {
-		for _, k := range keys {
-			if err := s.Put(context.Background(), k, nilReader{}); err != nil {
-				t.Fatal(err)
-			}
-			if err := mgr.reserve(k); err != nil {
-				t.Fatal(err)
-			}
-		}
-	}
-	oldFailed, recentFailed := key(100*time.Hour), key(2*time.Hour)
-	for _, k := range []string{oldFailed, recentFailed} {
-		if err := mgr.reserve(k); err != nil {
-			t.Fatal(err)
-		}
-	}
-	unknown := filepath.Join(mgr.opts.StateDir, "backup-names", "keep-me")
-	if err := os.WriteFile(unknown, nil, 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := mgr.cleanup(context.Background(), now); err != nil {
-		t.Fatal(err)
-	}
-	for _, k := range kept {
-		if _, err := s.Head(context.Background(), k); err != nil {
-			t.Fatalf("removed retained snapshot %s: %v", k, err)
-		}
-		if _, err := os.Stat(filepath.Join(mgr.opts.StateDir, "backup-names", filepath.Base(k))); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, k := range removed {
-		if _, err := s.Head(context.Background(), k); !os.IsNotExist(err) {
-			t.Fatalf("kept expired snapshot %s: %v", k, err)
-		}
-	}
-	for _, k := range append(removed, oldFailed) {
-		if _, err := os.Stat(filepath.Join(mgr.opts.StateDir, "backup-names", filepath.Base(k))); !os.IsNotExist(err) {
-			t.Fatalf("kept expired reservation %s: %v", k, err)
-		}
-	}
-	for _, path := range []string{unknown, filepath.Join(mgr.opts.StateDir, "backup-names", filepath.Base(recentFailed))} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatal(err)
-		}
-	}
-	mgr.opts.Protection.Close()
-	if err := mgr.cleanup(context.Background(), now.AddDate(3, 0, 0)); !errors.Is(err, ErrUnprotected) {
-		t.Fatalf("retention ignored protection: %v", err)
+	if s.puts.Load() != 0 {
+		t.Fatal("uploaded an incomplete snapshot")
 	}
 }
 
-type nilReader struct{}
+type corruptReadbackStore struct{ *fixtureStore }
 
-func (nilReader) Read([]byte) (int, error) { return 0, io.EOF }
+func (corruptReadbackStore) Get(context.Context, string, int64, int64, ...object.AttrGetter) (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("wrong stored bytes")), nil
+}
+
+func TestReadbackMismatchDoesNotOpenProtection(t *testing.T) {
+	m, _ := newMetadata(t)
+	state := t.TempDir()
+	mgr := newManager(t, m, corruptReadbackStore{newStore(t)}, state, time.Now, time.Minute)
+	mgr.wait = func(context.Context, time.Duration) error { return errors.New("no retry") }
+	if _, err := mgr.Backup(context.Background()); err == nil || !strings.Contains(err.Error(), "readback mismatch") {
+		t.Fatal("accepted a corrupt readback:", err)
+	}
+	if !errors.Is(mgr.opts.Protection.Check(), ErrUnprotected) {
+		t.Fatal("readback failure left protection open")
+	}
+	if _, err := os.Stat(filepath.Join(state, "backup-receipt.json")); !os.IsNotExist(err) {
+		t.Fatal("readback failure published a receipt:", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(state, "backup-staging"))
+	if err != nil || len(entries) != 0 {
+		t.Fatal("failed backup left staging behind:", entries, err)
+	}
+}
+
+func TestSnapshotStagingCleanupLeavesUnknownFiles(t *testing.T) {
+	root := t.TempDir()
+	owned := filepath.Join(root, "snapshot-owned")
+	unknown := filepath.Join(root, "snapshot-unknown")
+	for _, dir := range []string{owned, unknown} {
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"metadata.db", "snapshot.db.gz"} {
+		if err := os.WriteFile(filepath.Join(owned, name), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	keep := filepath.Join(unknown, "unrelated")
+	if err := os.WriteFile(keep, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "snapshot-link")
+	if err := os.Symlink(unknown, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := cleanupSnapshotStaging(root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(owned); !os.IsNotExist(err) {
+		t.Fatal("left an abandoned snapshot:", err)
+	}
+	if data, err := os.ReadFile(filepath.Clean(keep)); err != nil || string(data) != "keep" {
+		t.Fatal("removed an unknown staging file:", err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatal("removed an unknown staging symlink:", err)
+	}
+}

@@ -45,10 +45,12 @@ const (
 	RightDelete
 )
 
-// ShareMode uses the same bits as Rights. New rights must be allowed by every
-// existing share mode, and existing rights must be allowed by the new share mode.
+// ShareMode uses the same bits as Rights. When both same-stream opens have
+// sharing intent, new rights must be allowed by the existing share mode and
+// existing rights by the new share mode. Metadata-only opens do not participate,
+// including in base-file delete checks against named streams.
 // Check and reservation occur before any create disposition can destroy bytes.
-// Base-file delete access also checks deny-delete opens on every named stream.
+// Base-file delete access also checks every named stream with sharing intent.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;
@@ -56,37 +58,44 @@ type ShareMode Rights
 // Its handle, ranges, deletion intent and lease survive detachment. Explicit
 // close, expiry and shutdown release them. CloseSession and CloseTree also close
 // durable opens on logoff and tree disconnect. A transport drop does not.
-// GrantedAccess retains the full expanded SMB mask through replay and reconnect.
+// GrantedAccess retains the full expanded SMB mask through reconnect.
 // SharingIntent includes the minimum read, write and delete intent from the
 // granted mask. DeleteOnClose records the CREATE option; SET_INFO disposition
 // is tracked separately and makes the object delete-pending at once.
+// WriteThrough retains CREATE's durability mode for every WRITE on this open.
+// Kind is the opened object's kind, which never changes.
 // This table is never persisted across restart.
 type Open struct {
-	DurableDeadline  time.Time
-	Handle           smb.Handle
-	User             string
-	Share            string
-	Directory        DirectoryCursor
-	Object           smb.ObjectKey
-	ID               FileID
-	Binding          Binding
-	ClientGUID       GUID
-	CreateGUID       GUID
-	CreateParameters [32]byte
-	LeaseKey         GUID
-	DurableTimeout   time.Duration
-	GrantedAccess    uint32
-	SharingIntent    Rights
-	Sharing          ShareMode
-	DeleteOnClose    bool
-	Durable          bool
+	DurableDeadline time.Time
+	Handle          smb.Handle
+	User            string
+	Share           string
+	Object          smb.ObjectKey
+	Directory       DirectoryCursor
+	ID              FileID
+	Binding         Binding
+	ClientGUID      GUID
+	CreateGUID      GUID
+	LeaseKey        GUID
+	DurableTimeout  time.Duration
+	GrantedAccess   uint32
+	SharingIntent   Rights
+	Sharing         ShareMode
+	DeleteOnClose   bool
+	WriteThrough    bool
+	Durable         bool
+	Kind            smb.Kind
 }
 
 // DirectoryCursor belongs to one SMB open. Empty continuation patterns reuse
-// Pattern. Restart clears Cookie; reopening starts a new search.
+// Pattern. Restart clears Cookie and DotEntries; reopening starts a new search.
+// Started distinguishes an empty first search from an exhausted continuation.
+// DotEntries counts the synthetic dot entries already returned.
 type DirectoryCursor struct {
-	Pattern string
-	Cookie  smb.Cookie
+	Pattern    string
+	Cookie     smb.Cookie
+	DotEntries uint8
+	Started    bool
 }
 
 // Range describes a non-blocking byte lock owned by one persistent FileId.
@@ -102,15 +111,16 @@ type Range struct {
 	Exclusive bool
 }
 
-// Lease tracks a V2 lease shared by opens of the same client and key on one
-// object. A break only loses rights. Epoch advances per V2 rules; pending grants
-// cannot exceed BreakTo. Timeout revokes the whole lease. H is required for a
-// durable grant. Directory and named-stream opens receive no lease or durability.
-// A client's lease key identifies only one object; reuse on another is rejected.
+// Lease is the one V2 lease on a regular file. All opens of the file with the
+// same client GUID and lease key share it; other opens of the file get none.
+// While Breaking, the holder keeps State until it acknowledges BreakTo or
+// Deadline passes, which revokes the whole lease. Durable opens need H, counted
+// as BreakTo while a break is pending. A lease key names only one file.
 type Lease struct {
 	Deadline   time.Time
 	ClientGUID GUID
 	Key        GUID
+	ParentKey  GUID
 	State      uint32
 	BreakTo    uint32
 	Epoch      uint16
@@ -121,13 +131,14 @@ type Lease struct {
 // never cross stream keys. DeletePending rejects new opens. DeleteName is the
 // name selected for deletion, not the name of the last closing handle. For a
 // renamed base, the close path resolves PathOf and verifies the inode again.
+// DeletePending remains set until CompleteDelete reports the cleanup outcome.
 // A base deletion waits for all opens on that inode, including named streams;
 // a stream deletion waits only for that stream and never removes the base.
-// Records are removed only after opens, reservations, locks and leases are gone.
+// Records are removed only after opens, reservations, locks and the lease are
+// gone.
 type ObjectRecord struct {
 	Opens         []uint64
 	Locks         []Range
-	Leases        []Lease
 	Key           smb.ObjectKey
 	DeleteName    smb.Name
 	DeletePending bool
@@ -140,19 +151,16 @@ type ObjectRecord struct {
 // GrantedAccess includes append and metadata rights, not just SharingIntent.
 // Reserve adds the mask's minimum sharing intent; callers may add delete for
 // supersede even when the mask does not contain DELETE.
-// CreateParameters is the server's SHA-256 of canonical CREATE parameters,
-// including name, disposition, options and requested contexts, for replay checks.
 type OpenRequest struct {
-	User             string
-	Share            string
-	Object           smb.ObjectKey
-	Binding          Binding
-	ClientGUID       GUID
-	CreateGUID       GUID
-	CreateParameters [32]byte
-	GrantedAccess    uint32
-	SharingIntent    Rights
-	Sharing          ShareMode
+	User          string
+	Share         string
+	Object        smb.ObjectKey
+	Binding       Binding
+	ClientGUID    GUID
+	CreateGUID    GUID
+	GrantedAccess uint32
+	SharingIntent Rights
+	Sharing       ShareMode
 }
 
 // Reservation is an opaque token. It participates in share checks until Commit
@@ -160,32 +168,38 @@ type OpenRequest struct {
 // share check and adapter Open or Truncate. No table mutex is held by the caller.
 type Reservation uint64
 
-// Grant supplies storage and CREATE results for Commit. A durable grant requires
-// an H lease on a regular unnamed file and a timeout in (0, MaxDurableTimeout].
-// Zero timeout means no durable grant. The handler normalizes a client's requested
-// timeout to the default or maximum before Commit; this is a granted timeout.
+// Grant supplies storage and CREATE results for Commit. Lease is the lease the
+// client asked for, with State R, RH or RWH, or zero to join only an existing
+// lease of the same key. The caller asks for no lease on directories and named
+// streams. DurableTimeout is the timeout to grant, at most MaxDurableTimeout;
+// Commit grants it only to an open with a nonzero CreateGUID that keeps H.
 type Grant struct {
 	Handle         smb.Handle
 	DeleteName     smb.Name
 	Lease          Lease
 	DurableTimeout time.Duration
-	Directory      bool
 	DeleteOnClose  bool
+	WriteThrough   bool
+	Kind           smb.Kind
 }
 
-// CloseAction transfers cleanup to the server. The table has already removed
-// the open and ranges. The server closes Handle and, if Remove is true, calls
-// identity-checked Remove after resolving the current name under a parent guard.
+// CloseAction transfers cleanup to the server. FileID names the removed open;
+// active references use its persistent half across reconnects. The table has
+// already removed the open and ranges. The server closes Handle and, if Remove
+// is true, calls identity-checked Remove after resolving the current name under
+// a parent guard.
 // Object and Name identify the deletion, which may be a pending base deletion
 // triggered by the last stream close, not Handle.Key().
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
-// blocks new opens through the guard until deletion finishes, and drains active
-// request references before closing Handle. A transport drop cannot close a
-// storage reference still in use by an async request.
+// retains delete-pending until CompleteDelete on every removal outcome, and
+// drains active request references before closing Handle without a parent guard.
+// A transport drop cannot close a storage reference still in use by an async
+// request.
 type CloseAction struct {
 	Handle smb.Handle
 	Object smb.ObjectKey
 	Name   smb.Name
+	FileID FileID
 	Remove bool
 }
 
@@ -202,9 +216,8 @@ type ReconnectRequest struct {
 	LeaseKey   GUID
 }
 
-// Break is work for the server's sender after the state lock is released.
-// The table captures CurrentState and AckRequired when it starts the break.
-// The server waits asynchronously before committing a conflicting CREATE.
+// Break is a lease break notification for the server to send to Binding's
+// session after the table lock is released.
 type Break struct {
 	Binding      Binding
 	ClientGUID   GUID
@@ -228,6 +241,7 @@ type Table struct {
 	objects         map[smb.ObjectKey]*objectEntry
 	creates         map[createIdentity]createEntry
 	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64
 	nextPersistent  uint64
@@ -241,8 +255,10 @@ type openEntry struct {
 }
 
 type objectEntry struct {
+	lease *Lease
 	ObjectRecord
 	deleteCommitted bool
+	removalPending  bool
 }
 
 type createIdentity struct {

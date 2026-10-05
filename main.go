@@ -2,14 +2,15 @@
 package main
 
 import (
-	"github.com/djosh34/s3-smb/internal/app"
 	"os"
 	"runtime/debug"
+
+	"github.com/djosh34/s3-smb/internal/app"
 )
 
 var version = "dev"
 
-func main() { os.Exit(app.Main(os.Args[1:], buildVersion())) }
+func main() { os.Exit(app.Main(os.Args[1:], buildVersion(), os.Stdout, os.Stderr, os.Exit)) }
 
 func buildVersion() string {
 	if version != "dev" {

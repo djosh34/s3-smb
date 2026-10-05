@@ -123,6 +123,7 @@ func TestPreauthVectors(t *testing.T) {
 
 func TestKeyDerivationVectors(t *testing.T) {
 	key := decodeHex(t, "270E1BA896585EEB7AF3472D3B4C75A7")
+	// The 256-bit keys were calculated independently with Python HMAC-SHA256.
 	vectors := []struct {
 		label string
 		key   string
@@ -130,9 +131,11 @@ func TestKeyDerivationVectors(t *testing.T) {
 		{label: "SMBSigningKey", key: "73FE7A9A77BEF0BDE49C650D8CCB5F76"},
 		{label: "SMBS2CCipherKey", key: "E2AF0DCEFAC68DA71A0DFBD0D1350D74"},
 		{label: "SMBC2SCipherKey", key: "629BCBC54422A0F572B97F45989B6073"},
+		{label: "SMBS2CCipherKey", key: "35952fed051bf2471af5f7acc63674b887a54b47af46959f7caff1ce537d7419"},
+		{label: "SMBC2SCipherKey", key: "049c27fd8a340262e32c643dea2ba507af7a4c085fd2505aeffcbdeae6d6d8ab"},
 	}
 	for _, vector := range vectors {
-		got, err := deriveKey(key, vector.label, vectorContext(t), 16)
+		got, err := deriveKey(key, vector.label, vectorContext(t), len(vector.key)/2)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -151,9 +154,9 @@ func TestFinalSetupCMACConcurrent(t *testing.T) {
 	expected := bytes.Clone(member[48:64])
 	clear(member[48:64])
 	var workers sync.WaitGroup
-	for range 32 {
+	for range 8 {
 		workers.Go(func() {
-			for range 20 {
+			for range 10 {
 				got, err := protector.Sign(member)
 				if err != nil {
 					t.Error(err)

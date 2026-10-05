@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"sync"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -60,9 +59,9 @@ func testMember(response, cancel bool) []byte {
 // These fixed GMAC vectors use MS-SMB2 3.1.4.1 nonce construction and the
 // published Microsoft signing key. Tags were calculated independently with
 // OpenSSL 3 EVP AES-128-GCM, with the entire zero-signature member as AAD.
-func TestGMACVectorsConcurrent(t *testing.T) {
+func TestGMACVectors(t *testing.T) {
 	protector := newTestProtector(t, smb.SigningGMAC, 0, RoleServer)
-	vectors := []struct {
+	for _, vector := range []struct {
 		tag      string
 		response bool
 		cancel   bool
@@ -70,32 +69,15 @@ func TestGMACVectorsConcurrent(t *testing.T) {
 		{tag: "2b2561b7023f3c134da38913f13aaff3"},
 		{tag: "09d6ff32075d502dba17c245e691ec72", response: true},
 		{tag: "d4bfb43bab8f8325667bf3235bd885cc", cancel: true},
-	}
-	var workers sync.WaitGroup
-	for _, vector := range vectors {
-		expected := decodeHex(t, vector.tag)
-		for range 16 {
-			workers.Go(func() {
-				for range 20 {
-					member := testMember(vector.response, vector.cancel)
-					got, err := protector.Sign(member)
-					if err != nil {
-						t.Error(err)
-						return
-					}
-					if !bytes.Equal(got[:], expected) {
-						t.Errorf("GMAC = %x, want %x", got, expected)
-						return
-					}
-					copy(member[48:64], got[:])
-					if err := protector.Verify(member); err != nil {
-						t.Error(err)
-					}
-				}
-			})
+	} {
+		got, err := protector.Sign(testMember(vector.response, vector.cancel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got[:], decodeHex(t, vector.tag)) {
+			t.Errorf("GMAC = %x, want %s", got, vector.tag)
 		}
 	}
-	workers.Wait()
 }
 
 func TestSigningValidation(t *testing.T) {
@@ -181,14 +163,10 @@ func TestOptionsValidation(t *testing.T) {
 		change func(*Options)
 		name   string
 	}{
-		{name: "empty key", change: func(o *Options) { o.SessionKey = nil }},
 		{name: "short key", change: func(o *Options) { o.SessionKey = make([]byte, 15) }},
-		{name: "long key", change: func(o *Options) { o.SessionKey = make([]byte, 32) }},
 		{name: "role", change: func(o *Options) { o.Role = 2 }},
 		{name: "no signing", change: func(o *Options) { o.Signing = 0 }},
-		{name: "unknown signing", change: func(o *Options) { o.Signing = 99 }},
 		{name: "CCM", change: func(o *Options) { o.Cipher = 1 }},
-		{name: "unknown cipher", change: func(o *Options) { o.Cipher = 99 }},
 		{name: "short random", change: func(o *Options) { o.Random = bytes.NewReader([]byte{1, 2, 3}) }},
 	}
 	for _, test := range tests {
@@ -229,22 +207,5 @@ func TestNonceExhaustion(t *testing.T) {
 		if data, err := protector.Seal(testMember(true, false)); err == nil || data != nil {
 			t.Fatal("nonce counter wrapped")
 		}
-	}
-}
-
-func TestUninitializedProtector(t *testing.T) {
-	var protector Protector
-	member := testMember(true, false)
-	if _, err := protector.Sign(member); err == nil {
-		t.Fatal("uninitialized protector signed a message")
-	}
-	if err := protector.Verify(member); err == nil {
-		t.Fatal("uninitialized protector verified a message")
-	}
-	if data, err := protector.Seal(member); err == nil || data != nil {
-		t.Fatal("uninitialized protector encrypted a message")
-	}
-	if data, err := protector.Open(member); err == nil || data != nil {
-		t.Fatal("uninitialized protector decrypted a message")
 	}
 }

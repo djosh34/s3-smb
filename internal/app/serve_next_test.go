@@ -6,12 +6,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 
@@ -47,11 +49,27 @@ func TestSMBNextServeCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	initErr := m.Init(format, false)
-	if closeErr := m.Shutdown(); initErr != nil || closeErr != nil {
-		t.Fatalf("initialize local dataset: %v, %v", initErr, closeErr)
+	if err = m.Init(format, false); err != nil {
+		t.Fatal(err)
 	}
-	identity, err := json.Marshal(format)
+	// SID-zero rows from the old adapter are unrelated to the new server.
+	if eno := m.Setlk(meta.WrapContext(t.Context()), meta.RootInode, 1, false, syscall.F_WRLCK, 0, 11, 1); eno != 0 {
+		t.Fatal(eno)
+	}
+	if eno := m.Flock(meta.WrapContext(t.Context()), meta.RootInode, 1, syscall.F_WRLCK, false); eno != 0 {
+		t.Fatal(eno)
+	}
+	if err = m.Shutdown(); err != nil {
+		t.Fatal(err)
+	}
+	// format.json holds no bucket or credentials.
+	identity, err := json.Marshal(struct {
+		meta.Format
+		Bucket       string `json:"-"`
+		AccessKey    string `json:"-"`
+		SecretKey    string `json:"-"`
+		SessionToken string `json:"-"`
+	}{Format: *format})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +88,8 @@ func TestSMBNextServeCancellation(t *testing.T) {
 			t.Errorf("unexpected S3 request: %s %s", r.Method, r.URL)
 			w.WriteHeader(http.StatusBadRequest)
 		}
-		if _, err := w.Write(data); err != nil {
-			t.Error(err)
+		if _, e := w.Write(data); e != nil {
+			t.Error(e)
 		}
 	}))
 	defer s3.Close()
@@ -95,48 +113,40 @@ func TestSMBNextServeCancellation(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	go func() {
-		done <- serve(ctx, c)
+		done <- serve(ctx, c, func() { t.Error("hard exit") })
 		close(done)
 	}()
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case err := <-done:
-			if err != nil {
-				t.Error(err)
-			}
-		case <-time.After(10 * time.Second):
-			t.Error("serve did not stop")
-		}
-	})
 	var address string
 	select {
 	case address = <-ready:
-	case err := <-done:
+	case err = <-done:
 		t.Fatalf("serve stopped before listening: %v", err)
-	case <-time.After(10 * time.Second):
-		t.Fatal("serve did not start")
 	}
 	cancel()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("canceled serve: %v", err)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("serve did not stop after cancellation")
+	if err = <-done; err != nil {
+		t.Fatalf("canceled serve: %v", err)
 	}
-	if conn, err := net.DialTimeout("tcp", address, time.Second); err == nil {
-		if err := conn.Close(); err != nil {
-			t.Error(err)
-		}
-		t.Fatal("serve left its listener open")
+	if conn, e := new(net.Dialer).DialContext(t.Context(), "tcp", address); e == nil {
+		t.Fatal(errors.Join(errors.New("serve left its listener open"), conn.Close()))
+	}
+	conf := meta.DefaultConf()
+	conf.ReadOnly = true
+	m, err = storage.OpenMetadata(filepath.Join(stateDir, "metadata.db"), conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plocks, flocks, listErr := m.ListLocks(t.Context(), meta.RootInode)
+	if closeErr := m.Shutdown(); listErr != nil || closeErr != nil {
+		t.Fatalf("inspect native locks: %v, %v", listErr, closeErr)
+	}
+	if len(plocks) != 1 || len(flocks) != 1 {
+		t.Fatalf("new server changed native locks: plocks=%v, flocks=%v", plocks, flocks)
 	}
 	lock, err := lockState(stateDir)
 	if err != nil {
 		t.Fatalf("serve retained its state lock: %v", err)
 	}
-	if err := lock.Close(); err != nil {
+	if err = lock.Close(); err != nil {
 		t.Fatal(err)
 	}
 }

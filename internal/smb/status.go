@@ -18,13 +18,13 @@ const (
 	StatusBufferOverflow                   Status = 0x80000005
 	StatusNoMoreFiles                      Status = 0x80000006
 	StatusUnsuccessful                     Status = 0xc0000001
-	StatusNotImplemented                   Status = 0xc0000002
 	StatusInvalidInfoClass                 Status = 0xc0000003
 	StatusInfoLengthMismatch               Status = 0xc0000004
 	StatusInvalidHandle                    Status = 0xc0000008
 	StatusInvalidParameter                 Status = 0xc000000d
 	StatusNoSuchFile                       Status = 0xc000000f
 	StatusInvalidDeviceRequest             Status = 0xc0000010
+	StatusInvalidDeviceState               Status = 0xc0000184
 	StatusEndOfFile                        Status = 0xc0000011
 	StatusMoreProcessingRequired           Status = 0xc0000016
 	StatusAccessDenied                     Status = 0xc0000022
@@ -41,6 +41,7 @@ const (
 	StatusDiskFull                         Status = 0xc000007f
 	StatusInsufficientResources            Status = 0xc000009a
 	StatusMediaWriteProtected              Status = 0xc00000a2
+	StatusBadImpersonationLevel            Status = 0xc00000a5
 	StatusFileIsADirectory                 Status = 0xc00000ba
 	StatusNotSupported                     Status = 0xc00000bb
 	StatusBadNetworkName                   Status = 0xc00000cc
@@ -57,7 +58,6 @@ const (
 	StatusUserSessionDeleted               Status = 0xc0000203
 	StatusSMBNoPreauthIntegrityHashOverlap Status = 0xc05d0000
 	StatusNetworkNameDeleted               Status = 0xc00000c9
-	StatusNetworkSessionExpired            Status = 0xc000035c
 	StatusRangeNotLocked                   Status = 0xc000007e
 	StatusFileTooLarge                     Status = 0xc0000904
 )

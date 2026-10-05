@@ -68,14 +68,9 @@ func (credits *credits) grant(header wire.Header) uint16 {
 	}
 	room := smb.TargetCredits - uint16(balance)
 	wanted = min(wanted, room)
-	var granted uint16
 	for range wanted {
-		if credits.next == math.MaxUint64 {
-			break
-		}
 		credits.available[credits.next] = struct{}{}
 		credits.next++
-		granted++
 	}
-	return granted
+	return wanted
 }

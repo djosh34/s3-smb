@@ -1,7 +1,5 @@
 package wire
 
-import "github.com/djosh34/s3-smb/internal/smb"
-
 // Negotiate context identifiers from MS-SMB2. Compression, transport, netname and
 // unknown contexts are retained as raw contexts, but not advertised by the server.
 const (
@@ -40,26 +38,6 @@ type AAPLReply struct {
 	Returned           uint64
 	ServerCapabilities uint64
 	VolumeCapabilities uint64
-}
-
-// MaxAccessQuery is MxAc's optional timestamp, preserved as FILETIME bits.
-type MaxAccessQuery struct {
-	Timestamp uint64
-}
-
-// MaxAccessReply reports MxAc's result, not the CREATE's overall status.
-type MaxAccessReply struct {
-	Status smb.Status
-	Access uint32
-}
-
-// FileIDQuery requests QFid, without a request payload.
-type FileIDQuery struct{}
-
-// FileIDReply reports QFid's storage inode and stable volume identity, not an open ID.
-type FileIDReply struct {
-	DiskFileID uint64
-	VolumeID   uint64
 }
 
 // DurableRequest is DH2Q. Timeout is milliseconds; flags retain a persistent

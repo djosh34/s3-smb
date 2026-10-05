@@ -44,8 +44,12 @@ type Access uint8
 const (
 	// AccessRead permits reading data.
 	AccessRead Access = 1 << iota
-	// AccessWrite permits writing and truncating data.
+	// AccessWrite permits writing and truncating data. AccessAppend, when also
+	// set, restricts writes but leaves truncate permission intact.
 	AccessWrite
+	// AccessAppend permits writes only at or beyond the selected object's live
+	// EOF, even with AccessWrite. Alone it does not permit truncation.
+	AccessAppend
 )
 
 // Handle is an adapter-owned file reference and access mode, not an SMB open.
@@ -82,12 +86,16 @@ type Attr struct {
 
 // AttrChange uses pointers to distinguish absent values from zero or Unix epoch.
 // The wire layer handles FILETIME sentinels before forming this value.
+// Size sets EOF; SizeCap only shrinks it, comparing against live EOF inside the
+// adapter's inode mutation coordinator. They are mutually exclusive. A SizeCap
+// at or above EOF changes neither length nor automatic timestamps.
 type AttrChange struct {
 	Created    *time.Time
 	Accessed   *time.Time
 	Modified   *time.Time
 	Changed    *time.Time
 	Size       *uint64
+	SizeCap    *uint64
 	Attributes *uint32
 }
 
@@ -149,8 +157,8 @@ type RenameRequest struct {
 // Coherence is per inode across every handle. Reads see acknowledged writes;
 // Flush, Truncate and SetAttr coordinate with the shared writer. Lookup, GetAttr
 // and ReadDir include buffered size without uploading data. A later flush cannot
-// undo an acknowledged truncate or explicit timestamp change (#84, #89, #96,
-// #113). No storage or network I/O runs under a global share lock (#59).
+// undo an acknowledged truncate or explicit timestamp change. No storage or
+// network I/O runs under a global share lock.
 // Namespace mutations may serialize by parent; unrelated inodes must progress.
 //
 // The server owns SMB opens and guards namespace lookup, checks and mutations
@@ -163,7 +171,9 @@ type Storage interface {
 	// missing ancestors return ErrPathNotFound. Attr is valid only when Exists.
 	Lookup(ctx context.Context, path string) (Resolved, error)
 	// Open takes an existing identity, never creates or truncates it. It returns
-	// a handle whose Key is exactly object. Zero inode is an error.
+	// a handle whose Key is exactly object and whose data permissions are access.
+	// AccessAppend restricts WriteAt even when AccessWrite permits initialization
+	// by Truncate. Zero inode is an error.
 	Open(ctx context.Context, object ObjectKey, access Access) (Handle, error)
 	// Create exclusively creates the selected object. A stream requires its
 	// base file to exist. Existing objects return ErrNameCollision. It returns
@@ -174,8 +184,11 @@ type Storage interface {
 	// ReadAt reads the selected object. A short read returns its byte count and
 	// io.EOF; the server sends bytes if n>0, or STATUS_END_OF_FILE if n==0.
 	ReadAt(ctx context.Context, handle Handle, dst []byte, offset uint64) (int, error)
-	// WriteAt writes the selected object. Short writes always return an error.
-	// Streams obey the same offset and hole rules, with a 64 KiB size limit.
+	// WriteAt writes the selected object. With AccessAppend it rejects offsets
+	// below that object's current EOF atomically with every write and length
+	// change. A stream's EOF is independent of the base file and other streams.
+	// Short writes always return an error. Streams obey the same offset and hole
+	// rules, with a 64 KiB size limit.
 	WriteAt(ctx context.Context, handle Handle, src []byte, offset uint64) (int, error)
 	// Flush covers all writes completed before the call on this inode, even
 	// from other handles. Both modes return only after data is in S3 and local
@@ -185,6 +198,7 @@ type Storage interface {
 	Flush(ctx context.Context, handle Handle, mode SyncMode) error
 	// Truncate changes the selected object's length coherently. Pending writes
 	// cannot later resurrect removed bytes. Extensions read as zeroes.
+	// AccessWrite is required; AccessAppend alone does not permit truncation.
 	Truncate(ctx context.Context, handle Handle, size uint64) error
 	// GetAttr returns the selected object's live size, including buffered data,
 	// without a flush. Streams never report the base file's length.
@@ -206,7 +220,7 @@ type Storage interface {
 	// Named-stream rename returns ErrNotSupported, mapped to STATUS_NOT_SUPPORTED.
 	Rename(ctx context.Context, request RenameRequest) error
 	// PathOf returns the current share-relative base path. No hard links are
-	// supported, so a linked inode has one path. An unlinked inode is not found.
+	// supported. An unlinked inode or one with multiple paths is not found.
 	PathOf(ctx context.Context, inode Inode) (string, error)
 	// StatFS reports volume identity and configured capacity, independent of handles.
 	StatFS(ctx context.Context) (Space, error)

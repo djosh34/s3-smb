@@ -276,7 +276,7 @@ func TestSPNEGOOnlyNTLM(t *testing.T) {
 }
 
 func TestSPNEGOHints(t *testing.T) {
-	// MS-SPNG's server-first NegTokenInit2 hint from the old server's fixture.
+	// An MS-SPNG server-first NegTokenInit2 with a negotiation hint.
 	token := hexBytes(t, "604806062b0601050502a03e303ca00e300c060a2b06010401823702020aa32a3028a0261b246e6f745f646566696e65645f696e5f5246433431373840706c656173655f69676e6f7265")
 	wrapped, err := decodeSPNEGO(token)
 	if err != nil || !wrapped.initial || len(wrapped.mechs) != 1 {

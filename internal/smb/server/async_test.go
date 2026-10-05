@@ -3,115 +3,183 @@ package server
 import (
 	"context"
 	"errors"
+	"io"
+	"slices"
+	"sync/atomic"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-func asyncMessage(t *testing.T, command wire.Command, id uint64) wire.Message {
-	t.Helper()
-	var body []byte
-	var err error
-	switch uint16(command) {
-	case uint16(wire.Read):
-		body, err = wire.EncodeReadRequest(wire.ReadRequest{Length: 16})
-	case uint16(wire.Write):
-		body, err = wire.EncodeWriteRequest(wire.WriteRequest{Data: []byte("data")})
-	case uint16(wire.Flush):
-		body, err = wire.EncodeFlushRequest(wire.FlushRequest{})
-	default:
-		t.Fatalf("not an async command: %d", command)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	return wire.Message{Header: wire.Header{Command: command, MessageID: id, SessionID: 77, TreeID: 12, CreditCharge: 1, Credit: 16}, Body: body}
-}
-
-func controlledAsync(t *testing.T, command wire.Command, result reply, resultErr error) (*Server, chan struct{}) {
-	t.Helper()
-	server, err := New(testOptions(t))
-	if err != nil {
-		t.Fatal(err)
-	}
-	release := make(chan struct{})
-	// Install controlled work at the handler boundary, before ServeConn starts.
-	// No file handler or authenticated session is needed to test completion.
-	server.handlers[command] = func(ctx context.Context, _ wire.Message) (reply, error) {
-		select {
-		case <-release:
-			return result, resultErr
-		case <-ctx.Done():
-			return reply{}, ctx.Err()
+// CANCEL names a waiting request by message or async ID. It counts only when
+// it passes the session's signing or encryption and comes from the session of
+// the request. It never gets a reply.
+func TestCancel(t *testing.T) {
+	protected := func(t *testing.T, client *testClient, cancel wire.Message) {
+		if err := client.raw.Send(t.Context(), []wire.Message{cancel}); err != nil {
+			t.Fatal(err)
 		}
 	}
-	return server, release
-}
-
-// Regression for #104: the async error keeps all three request identities.
-func TestAsyncLockErrorRetainsIdentity(t *testing.T) {
-	for _, command := range []wire.Command{wire.Read, wire.Write} {
-		t.Run(commandName(command), func(t *testing.T) {
-			server, release := controlledAsync(t, command, reply{status: smb.StatusFileLockConflict}, nil)
-			client, ctx := pipeClient(t, server)
-			exchange(ctx, t, client, negotiateMessage(t, 2))
-			request := asyncMessage(t, command, 1)
-			pending := exchange(ctx, t, client, request)[0]
-			if pending.Header.Status != smb.StatusPending || pending.Header.Flags&wire.FlagAsync == 0 || pending.Header.AsyncID == 0 || pending.Header.CreditCharge != request.Header.CreditCharge {
-				t.Fatalf("pending: %+v", pending.Header)
+	unprotected := func(t *testing.T, client *testClient, cancel wire.Message) { client.sendUnprotected(t, cancel) }
+	forged := func(t *testing.T, client *testClient, cancel wire.Message) {
+		cancel.Header.Flags |= wire.FlagSigned
+		cancel.Header.Signature = [16]byte{1}
+		client.sendUnprotected(t, cancel)
+	}
+	otherSession := func(t *testing.T, client *testClient, cancel wire.Message) {
+		cancel.Header.SessionID++
+		client.sendUnprotected(t, cancel)
+	}
+	for _, test := range []struct {
+		send        func(t *testing.T, client *testClient, cancel wire.Message)
+		name        string
+		cipher      uint16
+		byMessageID bool
+		cancels     bool
+	}{
+		{protected, "by message ID", 0, true, true},
+		{protected, "by async ID, encrypted", smb.CipherAES128GCM, false, true},
+		{unprotected, "unsigned", 0, false, true},
+		{forged, "forged signature", 0, false, false},
+		{unprotected, "plaintext in an encrypted session", smb.CipherAES128GCM, false, false},
+		{otherSession, "another session", 0, false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := dialProtected(t, test.cipher)
+			id := client.open(t, "file")
+			entered, release := client.server.holdWrites()
+			request := client.send(t, wire.Write, encode(t, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")}), 1)
+			<-entered
+			interim := client.interim(t, request)
+			header := wire.Header{Command: wire.Cancel, SessionID: client.session.SessionID, MessageID: request.MessageID}
+			if !test.byMessageID {
+				header.Flags, header.AsyncID = wire.FlagAsync, interim.AsyncID
 			}
-			// A blocked operation must not stop independent ECHO traffic.
-			messages := exchange(ctx, t, client, echo(t, 2))
-			if messages[0].Header.Status != smb.StatusSuccess {
-				t.Fatalf("ECHO while pending: %+v", messages[0].Header)
+			test.send(t, client, wire.Message{Header: header, Body: encode(t, wire.EncodeCancelRequest, wire.EmptyRequest{})})
+			client.echo(t) // The server takes requests in order, so it has handled CANCEL.
+			want := smb.StatusCancelled
+			if !test.cancels {
+				close(release)
+				want = smb.StatusSuccess
 			}
-			close(release)
-			final, err := client.Receive(ctx)
-			if err != nil {
-				t.Fatal(err)
+			if status := client.receive(t, request).Header.Status; status != want {
+				t.Fatalf("WRITE status %#x, want %#x", status, want)
 			}
-			header := final.Messages[0].Header
-			if header.MessageID != 1 || header.SessionID != 77 || header.AsyncID != pending.Header.AsyncID || header.Flags&wire.FlagAsync == 0 || header.Status != smb.StatusFileLockConflict || header.TreeID != 0 || header.CreditCharge != request.Header.CreditCharge {
-				t.Fatalf("async final lost identity: %+v", header)
-			}
+			client.noExtraReplies(t)
 		})
 	}
 }
 
-// Regression for #132: the final error does not allocate a second credit grant.
-func TestAsyncBackendErrorGrantsNoFinalCredits(t *testing.T) {
-	for _, command := range []wire.Command{wire.Read, wire.Write, wire.Flush} {
-		t.Run(commandName(command), func(t *testing.T) {
-			server, release := controlledAsync(t, command, reply{}, errors.New("controlled storage error"))
-			client, ctx := pipeClient(t, server)
-			exchange(ctx, t, client, negotiateMessage(t, 1))
-			pending := exchange(ctx, t, client, asyncMessage(t, command, 1))[0]
-			if pending.Header.Status != smb.StatusPending || pending.Header.Credit != 16 {
-				t.Fatalf("pending grant: %+v", pending.Header)
-			}
-			close(release)
-			final, err := client.Receive(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			header := final.Messages[0].Header
-			if header.Status != smb.StatusInternalError || header.Credit != 0 {
-				t.Fatalf("async final credit/status: %+v", header)
-			}
-		})
+// Cancelling a related member that waits for the one before it leaves that
+// one running.
+func TestCancelWaitingRelatedRequest(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Flush = func(context.Context, smb.Handle, smb.SyncMode) error {
+			t.Error("the cancelled FLUSH reached storage")
+			return nil
+		}
+	})
+	entered, release := srv.holdWrites()
+	write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+	flush := related(message(t, client, wire.Flush, wire.EncodeFlushRequest, wire.FlushRequest{ID: placeholder}))
+	if err := client.raw.Send(t.Context(), []wire.Message{write, flush}); err != nil {
+		t.Fatal(err)
 	}
+	<-entered
+	client.interim(t, write.Header)
+	client.cancelAsync(t, client.interim(t, flush.Header))
+	if status := client.receive(t, flush.Header).Header.Status; status != smb.StatusCancelled {
+		t.Fatalf("FLUSH status %#x", status)
+	}
+	close(release)
+	if status := client.receive(t, write.Header).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("WRITE status %#x", status)
+	}
+	srv.expectContent(t, map[string]string{"file": "data"})
+	client.noExtraReplies(t)
 }
 
-func commandName(command wire.Command) string {
-	switch uint16(command) {
-	case uint16(wire.Read):
-		return "read"
-	case uint16(wire.Write):
-		return "write"
-	case uint16(wire.Flush):
-		return "flush"
-	default:
-		return "unknown"
+// However a session's work is cut short, the server cancels its requests and
+// waits for them before closing their files, even for a storage call that
+// ignores the cancellation and a related request still waiting for it. A
+// reply that still goes out after LOGOFF uses the ended session's keys.
+func TestCleanupWaitsForRunningRequests(t *testing.T) {
+	drop := func(t *testing.T, _ *testServer, client *testClient) { client.drop(t) }
+	shutdown := func(t *testing.T, srv *testServer, client *testClient) {
+		if err := srv.server.Shutdown(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		if err := client.ended(); !errors.Is(err, context.Canceled) {
+			t.Fatalf("connection error %v", err)
+		}
+	}
+	for _, test := range []struct {
+		cut     func(t *testing.T, srv *testServer, client *testClient)
+		name    string
+		cipher  uint16
+		command wire.Command // LOGOFF or TREE_DISCONNECT, if cut is nil
+	}{
+		{nil, "LOGOFF", 0, wire.Logoff},
+		{nil, "LOGOFF, encrypted", smb.CipherAES128GCM, wire.Logoff},
+		{nil, "TREE_DISCONNECT", smb.CipherAES128GCM, wire.TreeDisconnect},
+		{drop, "network cut", 0, 0},
+		{shutdown, "shutdown", 0, 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client := dialProtected(t, test.cipher)
+			srv := client.server
+			id := client.open(t, "file")
+			var written atomic.Bool
+			var closes atomic.Int32
+			srv.faults.set(func(hooks *storageHooks) {
+				hooks.WriteAt = func(ctx context.Context, handle smb.Handle, src []byte, offset uint64) (int, error) {
+					<-ctx.Done()
+					n, err := srv.adapter.WriteAt(context.WithoutCancel(ctx), handle, src, offset)
+					written.Store(true)
+					return n, err
+				}
+				hooks.Flush = func(context.Context, smb.Handle, smb.SyncMode) error {
+					t.Error("the cancelled FLUSH reached storage")
+					return nil
+				}
+				hooks.Close = func(ctx context.Context, handle smb.Handle) error {
+					if !written.Load() {
+						t.Error("the file closed while WRITE was using it")
+					}
+					closes.Add(1)
+					return srv.adapter.Close(ctx, handle)
+				}
+			})
+			write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})
+			flush := related(message(t, client, wire.Flush, wire.EncodeFlushRequest, wire.FlushRequest{ID: placeholder}))
+			if err := client.raw.Send(t.Context(), []wire.Message{write, flush}); err != nil {
+				t.Fatal(err)
+			}
+			client.interim(t, write.Header)
+			client.interim(t, flush.Header)
+			if test.cut != nil {
+				test.cut(t, srv, client)
+				// The connection is gone; nothing came after the interim replies.
+				if reply, err := client.raw.Receive(t.Context()); !errors.Is(err, io.EOF) {
+					t.Fatalf("reply %+v, %v", reply.Messages, err)
+				}
+			} else {
+				// LOGOFF and TREE_DISCONNECT have the same empty body.
+				end := message(t, client, test.command, wire.EncodeLogoffRequest, wire.EmptyRequest{})
+				statuses := sendCompound(t, client, end)
+				statuses = append(finalStatuses(t, client, []wire.Message{write, flush}), statuses...)
+				if want := []smb.Status{smb.StatusSuccess, smb.StatusCancelled, smb.StatusSuccess}; !slices.Equal(statuses, want) {
+					t.Fatalf("WRITE, FLUSH, %v statuses %#x", test.command, statuses)
+				}
+			}
+			if closes.Load() != 1 {
+				t.Fatalf("%d closes", closes.Load())
+			}
+			srv.expectContent(t, map[string]string{"file": "data"})
+		})
 	}
 }

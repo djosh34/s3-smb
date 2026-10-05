@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"errors"
 	"io"
 	"net"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/djosh34/s3-smb/internal/backup"
+
+	"github.com/djosh34/s3-smb/internal/s3fault"
 )
 
-// Actual executable + signed SMB + native S3/MinIO, not a Manager stub. A tiny
-// HTTP proxy fails only real metadata backup requests after a verified baseline.
-// Chunk data and prior recovery points remain in the real disposable bucket.
+// TestScheduledBackupFailure fails every metadata backup after a good one. The
+// daemon must stop with an error once protection expires, keep the earlier
+// backup intact, and recover from it with no local state.
 func TestScheduledBackupFailure(t *testing.T) {
 	for _, encrypted := range []bool{false, true} {
 		name := "plaintext"
@@ -30,102 +30,78 @@ func TestScheduledBackupFailure(t *testing.T) {
 		}
 		t.Run(name, func(t *testing.T) {
 			f := newFixture(t, encrypted)
-			proxy := newFaultProxy(t, f.endpoint)
-			f.endpoint = proxy.URL() // f.store intentionally remains a direct MinIO client.
+			proxy := f.newFaultProxy()
 			d := f.start()
-			s, disconnect := f.share()
-			fixtures := map[string][]byte{
+			share, disconnect := f.share()
+			files := map[string][]byte{
 				"protected-empty":      {},
 				"protected-文件.txt":     []byte("verified baseline survives scheduled native metadata failure\n"),
 				"protected-blocks.bin": bytes.Repeat([]byte("native-smb-to-minio-baseline-"), 16384),
 			}
-			for name, data := range fixtures {
-				writeFile(t, s, name, data)
+			for name, data := range files {
+				writeFile(t, share, name, data)
 			}
-			verifyFiles(t, s, fixtures)
 			disconnect()
 			f.protectedAfter(time.Now())
-			receiptBytes, err := os.ReadFile(filepath.Join(f.root, "state", "backup-receipt.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var receipt backup.Receipt
-			if err = json.Unmarshal(receiptBytes, &receipt); err != nil {
-				t.Fatal(err)
-			}
-			key := protectionObjectKey(t, f, receipt.Key)
+			key := protectionObjectKey(t, f, f.receipt().Key)
 			baselineDigest := protectionObjectDigest(t, f, key)
-			failureStart := time.Now()
 			proxy.SetMetadataFailure(true)
-			select {
-			case <-proxy.MetadataFailureSeen():
-			case err := <-d.done:
-				d.stopped = true
-				d.closeLogs()
-				t.Fatalf("daemon exited before a scheduled metadata request was faulted: %v", err)
-			case <-time.After(15 * time.Second):
-				t.Fatal("no scheduled native metadata PUT/GET reached proxy")
+			waitFailStop(t, d, proxy)
+			if !bytes.Contains(d.output(), []byte("metadata backup protection failed")) {
+				t.Fatal("daemon exit was not attributed to failed metadata backups")
 			}
-			// A backup may take one backup interval and shutdown 30 seconds. Three
-			// failed attempts end sooner. The bound catches a process that never stops.
-			deadline := failureStart.Add(2*time.Minute + 35*time.Second)
-			timer := time.NewTimer(time.Until(deadline))
-			defer timer.Stop()
-			select {
-			case err := <-d.done:
-				d.stopped = true
-				if err == nil {
-					d.closeLogs()
-					t.Fatal("scheduled backup failure produced successful process exit")
-				}
-				d.closeLogs()
-				t.Logf("scheduled native backup failure stopped executable in %s: %v", time.Since(failureStart), err)
-			case <-timer.C:
-				_ = d.cmd.Process.Kill()
-				<-d.done
-				d.stopped = true
-				d.closeLogs()
-				t.Fatal("writable executable exceeded backup budget plus bounded shutdown")
-			}
-			var failureLog bool
-			for _, file := range d.logs {
-				data, err := os.ReadFile(file.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if bytes.Contains(data, []byte("metadata backup protection failed")) {
-					failureLog = true
-				}
-			}
-			if !failureLog {
-				t.Fatal("nonzero exit was not attributed to metadata backup protection failure")
-			}
-			if conn, err := net.DialTimeout("tcp", f.addr, 500*time.Millisecond); err == nil {
-				conn.Close()
-				t.Fatal("SMB listener remained writable after fail-stop")
+			if conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", f.addr); err == nil {
+				t.Fatal(errors.Join(errors.New("SMB port still open after the daemon stopped"), conn.Close()))
 			}
 			if digest := protectionObjectDigest(t, f, key); digest != baselineDigest {
-				t.Fatal("failed scheduled operation replaced or corrupted previous recovery point")
+				t.Fatal("failed backups changed the earlier metadata backup")
 			}
-			// Remove all daemon-local config/state/cache/key material. Normal recovery
-			// must decrypt/load the selected native point and verify EVERY baseline file.
 			proxy.SetMetadataFailure(false)
 			f.freshLocal()
-			restored := f.start()
-			recovered, closeRecovered := f.share()
-			verifyFiles(t, recovered, fixtures)
-			fixtures["resumed-after-failure.txt"] = []byte("writable recovery after fail-stop\n")
-			writeFile(t, recovered, "resumed-after-failure.txt", fixtures["resumed-after-failure.txt"])
-			verifyFiles(t, recovered, fixtures)
-			closeRecovered()
+			d = f.start()
+			share, disconnect = f.share()
+			verifyFiles(t, share, files)
+			files["resumed-after-failure.txt"] = []byte("writable recovery after fail-stop\n")
+			writeFile(t, share, "resumed-after-failure.txt", files["resumed-after-failure.txt"])
+			verifyFiles(t, share, files)
+			disconnect()
 			f.protectedAfter(time.Now())
-			restored.stop()
+			d.stop()
 		})
 	}
 }
+
+// waitFailStop waits for a failed metadata backup and then for the daemon to
+// exit with an error. Retries stop when protection expires, then shutdown
+// takes at most 30 seconds.
+func waitFailStop(t *testing.T, d *daemon, proxy *s3fault.Proxy) {
+	t.Helper()
+	start := time.Now()
+	select {
+	case <-proxy.MetadataFailureSeen():
+	case err := <-d.done:
+		d.exited()
+		t.Fatalf("daemon exited before a metadata backup failed: %v", err)
+	case <-time.After(15 * time.Second):
+		t.Fatal("no scheduled metadata backup reached S3")
+	}
+	timer := time.NewTimer(time.Until(start.Add(2*time.Minute + 35*time.Second)))
+	defer timer.Stop()
+	select {
+	case err := <-d.done:
+		d.exited()
+		if err == nil {
+			t.Fatal("daemon exited successfully after metadata backups failed")
+		}
+	case <-timer.C:
+		t.Fatalf("daemon kept running after metadata backups failed: %v", d.kill())
+	}
+}
+
+// protectionObjectKey returns the S3 key of a metadata backup.
 func protectionObjectKey(t *testing.T, f *fixture, key string) string {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	out, err := f.store.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
 	if err != nil {
@@ -140,9 +116,11 @@ func protectionObjectKey(t *testing.T, f *fixture, key string) string {
 	t.Fatalf("durable receipt has no corresponding native MinIO object: %s", key)
 	return ""
 }
+
+// protectionObjectDigest returns the SHA-256 of an S3 object.
 func protectionObjectDigest(t *testing.T, f *fixture, key string) [32]byte {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
 	out, err := f.store.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: aws.String(key)})
 	if err != nil {

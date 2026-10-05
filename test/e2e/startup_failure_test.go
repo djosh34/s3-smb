@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package e2e
 
 import (
@@ -25,19 +26,18 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+
 	"github.com/djosh34/s3-smb/internal/backup"
 	"github.com/djosh34/s3-smb/internal/config"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
 	"github.com/djosh34/s3-smb/internal/storage"
-	"golang.org/x/sys/unix"
 )
 
 // Remote snapshots include all keys, full content hashes, ETags and modification
 // times, so a rejected startup cannot hide object replacement behind equal data.
 type remoteFingerprint struct {
-	Hash     [32]byte
-	ETag     string
 	Modified time.Time
+	ETag     string
+	Hash     [32]byte
 }
 
 func startupRemoteSnapshot(f *fixture) map[string]remoteFingerprint {
@@ -66,6 +66,7 @@ func startupRemoteSnapshot(f *fixture) map[string]remoteFingerprint {
 	}
 	return result
 }
+
 func startupPut(f *fixture, key string, data []byte) {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -74,6 +75,7 @@ func startupPut(f *fixture, key string, data []byte) {
 		f.t.Fatal(err)
 	}
 }
+
 func startupDelete(f *fixture, key string) {
 	f.t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -82,6 +84,7 @@ func startupDelete(f *fixture, key string) {
 		f.t.Fatal(err)
 	}
 }
+
 func startupKeys(objects map[string]remoteFingerprint, prefix string) []string {
 	var keys []string
 	for key := range objects {
@@ -92,6 +95,7 @@ func startupKeys(objects map[string]remoteFingerprint, prefix string) []string {
 	sort.Strings(keys)
 	return keys
 }
+
 func assertStartupRemoteUnchanged(f *fixture, before map[string]remoteFingerprint) {
 	f.t.Helper()
 	after := startupRemoteSnapshot(f)
@@ -99,6 +103,7 @@ func assertStartupRemoteUnchanged(f *fixture, before map[string]remoteFingerprin
 		f.t.Fatalf("startup mutated remote objects: before=%v after=%v", before, after)
 	}
 }
+
 func assertNoStartupDatabase(f *fixture) {
 	f.t.Helper()
 	if _, err := os.Lstat(filepath.Join(f.root, "state", "metadata.db")); !os.IsNotExist(err) {
@@ -112,8 +117,10 @@ func TestStartupRejectsCompressedFormat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	format.Compression = "zstd"
-	data, err := json.Marshal(format)
+	// The fields startup checks before the compression.
+	data, err := json.Marshal(map[string]any{
+		"Name": format.Name, "UUID": format.UUID, "BlockSize": format.BlockSize, "Compression": "zstd",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,11 +130,7 @@ func TestStartupRejectsCompressedFormat(t *testing.T) {
 	d := f.start()
 	assertNoStartupDatabase(f)
 	assertStartupRemoteUnchanged(f, before)
-	stderr, err := os.ReadFile(d.logs[1].Name())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(stderr, []byte("unsupported compression")) {
+	if !bytes.Contains(d.read("stderr.log"), []byte("unsupported compression")) {
 		t.Fatal("startup did not reject the stored compression format")
 	}
 }
@@ -159,50 +162,52 @@ func TestStartupRejectsPartialRemoteState(t *testing.T) {
 	}
 }
 
-// For credential/listing failures no confirmation should be attempted. Use a
-// detached actual executable with piped yes: it must report listing failure, not
-// classify an empty bucket and merely fail for lack of /dev/tty.
+// startupWithBadListingConfig runs the daemon with a config that cannot list
+// the bucket and "yes" on stdin. It must report the listing failure, not treat
+// the bucket as empty and then fail for lack of a terminal.
 func startupWithBadListingConfig(f *fixture, text string) {
 	f.t.Helper()
-	f.generation++
-	path := filepath.Join(f.root, "bad-listing-config.yaml")
-	if err := os.WriteFile(path, []byte(text), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "bad-listing-config.yaml"), []byte(text), 0o600); err != nil {
 		f.t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(f.t.Context(), 20*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Getenv("S3_SMB_E2E_BINARY"), "-c", path, "serve")
+	cmd := exec.CommandContext(ctx, daemonBinary, "-c", "bad-listing-config.yaml", "serve")
+	cmd.Dir = f.root
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	cmd.Stdin = strings.NewReader("yes\n")
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()
-	artifacts := os.Getenv("S3_SMB_TEST_ARTIFACTS")
-	if artifacts == "" {
-		artifacts = f.t.TempDir()
-	}
-	dir := filepath.Join(artifacts, strings.ReplaceAll(f.t.Name(), "/", "-"), fmt.Sprint(f.generation))
-	if e := os.MkdirAll(dir, 0700); e != nil {
-		f.t.Fatal(e)
-	}
-	for name, data := range map[string][]byte{"stdout.log": stdout.Bytes(), "stderr.log": stderr.Bytes()} {
-		out := filepath.Join(dir, name)
-		if e := os.WriteFile(out, data, 0600); e != nil {
-			f.t.Fatal(e)
-		}
-		checkDaemonLog(f.t, out)
-	}
+	dir := f.saveLogs(stdout.Bytes(), stderr.Bytes(), nil)
 	if err == nil || ctx.Err() != nil {
-		f.t.Fatalf("listing failure did not exit promptly/nonzero: %v %v", err, ctx.Err())
+		f.t.Fatalf("listing failure did not exit promptly with an error: %v %v", err, ctx.Err())
 	}
 	if !bytes.Contains(stderr.Bytes(), []byte("remote dataset listing failed; refusing initialization")) {
-		f.t.Fatalf("did not distinguish listing error from empty/TTY failure; artifacts %s", dir)
+		f.t.Fatalf("listing error not reported as such; logs %s", dir)
 	}
 	if bytes.Contains(stderr.Bytes(), []byte("s3smb-wrong-secret-marker")) {
 		f.t.Fatal("wrong credential leaked")
 	}
 }
+
+// saveLogs stores the output of a daemon run that the test ran itself, checks
+// the JSON logs and returns the log directory.
+func (f *fixture) saveLogs(stdout, stderr, prompts []byte) string {
+	f.t.Helper()
+	dir := f.logDir()
+	for name, data := range map[string][]byte{"stdout.log": stdout, "stderr.log": stderr, "prompts.log": prompts} {
+		if err := f.logs.WriteFile(filepath.Join(dir, name), data, 0o600); err != nil {
+			f.t.Fatal(err)
+		}
+	}
+	path := filepath.Join(f.logs.Name(), dir)
+	checkDaemonLog(f.t, filepath.Join(path, "stdout.log"), stdout)
+	checkDaemonLog(f.t, filepath.Join(path, "stderr.log"), stderr)
+	return path
+}
+
 func TestStartupListingFailuresAreNotEmpty(t *testing.T) {
 	for _, mode := range []string{"wrong-secret", "missing-bucket"} {
 		t.Run(mode, func(t *testing.T) {
@@ -210,7 +215,7 @@ func TestStartupListingFailuresAreNotEmpty(t *testing.T) {
 			before := startupRemoteSnapshot(f)
 			text := f.config()
 			if mode == "wrong-secret" {
-				text = strings.Replace(text, "s3smb-test-secret-only", "s3smb-wrong-secret-marker", 1)
+				text = strings.Replace(text, s3SigningKey, "s3smb-wrong-secret-marker", 1)
 			} else {
 				text = strings.Replace(text, fmt.Sprintf("bucket: %q", f.bucket), fmt.Sprintf("bucket: %q", f.bucket+"-absent"), 1)
 			}
@@ -225,12 +230,12 @@ func startupProtectedFixture(t *testing.T, encrypted bool) (*fixture, map[string
 	t.Helper()
 	f := newFixture(t, encrypted)
 	d := f.start()
-	share, closeShare := f.share()
+	share, disconnect := f.share()
 	files := map[string][]byte{"preserved.txt": []byte("every recovery fixture must survive\n"), "empty": {}}
 	for name, data := range files {
 		writeFile(t, share, name, data)
 	}
-	closeShare()
+	disconnect()
 	f.protectedAfter(time.Now())
 	d.stop()
 	if points := startupKeys(startupRemoteSnapshot(f), "s3-smb/meta/snapshot-"); len(points) < 2 {
@@ -238,6 +243,10 @@ func startupProtectedFixture(t *testing.T, encrypted bool) (*fixture, map[string
 	}
 	return f, files
 }
+
+// TestStartupRejectsBrokenRecovery breaks the newest metadata backup or the
+// encryption key in S3, then recovers with no local state. Startup must fail
+// without changing S3 or creating local metadata.
 func TestStartupRejectsBrokenRecovery(t *testing.T) {
 	for _, encrypted := range []bool{false, true} {
 		mode := "plaintext"
@@ -253,14 +262,13 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 				f, _ := startupProtectedFixture(t, encrypted)
 				objects := startupRemoteSnapshot(f)
 				points := startupKeys(objects, "s3-smb/meta/snapshot-")
-				if fault == "missing-selected-backup" {
+				switch fault {
+				case "missing-selected-backup":
 					f.freshLocal()
 					before := startupLoseSelectedPoint(f, points[len(points)-1])
 					assertStartupRemoteUnchanged(f, before)
 					assertNoStartupDatabase(f)
 					return
-				}
-				switch fault {
 				case "corrupt-latest-backup":
 					startupPut(f, points[len(points)-1], []byte("corrupt latest checkpoint; valid older checkpoint remains"))
 				case "missing-all-backups":
@@ -270,40 +278,9 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 				case "mode-mismatch":
 					f.encrypted = !f.encrypted
 				case "wrong-passphrase":
-					f.secret = "wrong-encryption-passphrase-e2e-marker"
-				case "missing-key", "corrupt-key", "wrong-key":
-					keys := startupKeys(objects, "s3-smb/keys/")
-					if len(keys) != 1 {
-						t.Fatalf("expected one native bootstrap key, found %d", len(keys))
-					}
-					if fault == "missing-key" {
-						startupDelete(f, keys[0])
-					} else if fault == "corrupt-key" {
-						startupPut(f, keys[0], []byte("corrupt protected key must not be regenerated"))
-					} else {
-						other := newFixture(t, true)
-						// Keep the second volume's logs separate from f's generations.
-						other.generation = 1000
-						d := other.start()
-						d.stop()
-						otherKeys := startupKeys(startupRemoteSnapshot(other), "s3-smb/keys/")
-						if len(otherKeys) != 1 {
-							t.Fatal("second volume must have exactly one bootstrap key")
-						}
-						ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-						defer cancel()
-						obj, err := other.store.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(other.bucket), Key: aws.String(otherKeys[0])})
-						if err != nil {
-							t.Fatal(err)
-						}
-						data, err := io.ReadAll(obj.Body)
-						obj.Body.Close()
-						if err != nil {
-							t.Fatal(err)
-						}
-						// Valid encrypted PKCS8 key, same passphrase, different volume key.
-						startupPut(f, keys[0], data)
-					}
+					f.secret = wrongVolumeKey
+				default:
+					breakKey(t, f, fault, startupKeys(objects, "s3-smb/keys/"))
 				}
 				before := startupRemoteSnapshot(f)
 				f.freshLocal()
@@ -316,92 +293,106 @@ func TestStartupRejectsBrokenRecovery(t *testing.T) {
 	}
 }
 
-// Remove the already selected newest backup only after the real recovery prompt
-// displays it. An older valid point remains, but the process must not fall back.
+// breakKey deletes or corrupts the volume key, or replaces it with the valid
+// key of another volume with the same passphrase.
+func breakKey(t *testing.T, f *fixture, fault string, keys []string) {
+	t.Helper()
+	if len(keys) != 1 {
+		t.Fatalf("expected one volume key, found %d", len(keys))
+	}
+	switch fault {
+	case "missing-key":
+		startupDelete(f, keys[0])
+	case "corrupt-key":
+		startupPut(f, keys[0], []byte("corrupt protected key must not be regenerated"))
+	case "wrong-key":
+		other := newFixture(t, true)
+		other.start().stop()
+		otherKeys := startupKeys(startupRemoteSnapshot(other), "s3-smb/keys/")
+		if len(otherKeys) != 1 {
+			t.Fatalf("expected one key in the second volume, found %d", len(otherKeys))
+		}
+		object, err := other.store.GetObject(t.Context(), &s3.GetObjectInput{Bucket: aws.String(other.bucket), Key: aws.String(otherKeys[0])})
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, err := io.ReadAll(object.Body)
+		if err = errors.Join(err, object.Body.Close()); err != nil {
+			t.Fatal(err)
+		}
+		startupPut(f, keys[0], data)
+	default:
+		t.Fatalf("unknown fault %q", fault)
+	}
+}
+
+// startupLoseSelectedPoint deletes the newest metadata backup after the
+// recovery prompt has selected it. An older backup remains, but the daemon
+// must fail instead of falling back to it.
 func startupLoseSelectedPoint(f *fixture, key string) map[string]remoteFingerprint {
 	f.t.Helper()
-	f.generation++
-	path := filepath.Join(f.root, "config.yaml")
-	if err := os.WriteFile(path, []byte(f.config()), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(f.root, "config.yaml"), []byte(f.config()), 0o600); err != nil {
 		f.t.Fatal(err)
 	}
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	defer master.Close()
-	if err = unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0); err != nil {
-		f.t.Fatal(err)
-	}
-	number, err := unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	slave, err := os.OpenFile(fmt.Sprintf("/dev/pts/%d", number), os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	defer slave.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	master, slave := openPTY(f.t)
+	defer func() {
+		if err := master.Close(); err != nil {
+			f.t.Error(err)
+		}
+	}()
+	ctx, cancel := context.WithTimeout(f.t.Context(), 45*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Getenv("S3_SMB_E2E_BINARY"), "serve", "-c", path)
+	cmd := exec.CommandContext(ctx, daemonBinary, "serve", "-c", "config.yaml")
+	cmd.Dir = f.root
 	cmd.Stdin = slave
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err = cmd.Start(); err != nil {
+	if err := errors.Join(cmd.Start(), slave.Close()); err != nil {
 		f.t.Fatal(err)
 	}
-	slave.Close()
-	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
-	var prompt strings.Builder
-	for !strings.Contains(prompt.String(), "Continue? [yes/no]:") {
-		var buf [1024]byte
-		n, e := master.Read(buf[:])
-		if e != nil {
-			cmd.Process.Kill()
-			cmd.Wait()
-			f.t.Fatalf("no recovery prompt: %v; stderr %s", e, stderr.String())
-		}
-		prompt.Write(buf[:n])
-		if prompt.Len() > 8192 {
-			f.t.Fatal("unexpected oversized prompt")
-		}
+	prompt, readErr := readPrompt(master)
+	if readErr != nil {
+		// Canceling the context kills the daemon.
+		cancel()
+		f.t.Fatalf("no recovery prompt: %v; exit %v; stderr %s", readErr, cmd.Wait(), stderr.String())
 	}
-	if !strings.Contains(prompt.String(), strings.TrimPrefix(key, "s3-smb/")) {
-		f.t.Fatal("prompt did not select the newest expected point")
+	if !strings.Contains(prompt, strings.TrimPrefix(key, "s3-smb/")) {
+		cancel()
+		f.t.Fatalf("prompt did not select the newest backup; exit %v", cmd.Wait())
 	}
 	startupDelete(f, key)
 	before := startupRemoteSnapshot(f)
-	if _, err = master.WriteString("yes\n"); err != nil {
+	if _, err := master.WriteString("yes\n"); err != nil {
 		f.t.Fatal(err)
 	}
-	err = cmd.Wait()
-	artifacts := os.Getenv("S3_SMB_TEST_ARTIFACTS")
-	if artifacts == "" {
-		artifacts = f.t.TempDir()
-	}
-	dir := filepath.Join(artifacts, strings.ReplaceAll(f.t.Name(), "/", "-"), fmt.Sprint(f.generation))
-	if e := os.MkdirAll(dir, 0700); e != nil {
-		f.t.Fatal(e)
-	}
-	for name, data := range map[string][]byte{"stdout.log": stdout.Bytes(), "stderr.log": stderr.Bytes(), "prompts.log": []byte(prompt.String())} {
-		out := filepath.Join(dir, name)
-		if e := os.WriteFile(out, data, 0600); e != nil {
-			f.t.Fatal(e)
-		}
-		if name != "prompts.log" {
-			checkDaemonLog(f.t, out)
-		}
-	}
+	err := cmd.Wait()
+	dir := f.saveLogs(stdout.Bytes(), stderr.Bytes(), []byte(prompt))
 	if err == nil || ctx.Err() != nil {
-		f.t.Fatalf("missing selected backup did not promptly fail: %v %v", err, ctx.Err())
+		f.t.Fatalf("missing selected backup did not fail promptly: %v %v", err, ctx.Err())
 	}
 	if bytes.Contains(stderr.Bytes(), []byte("SMB serving")) || !bytes.Contains(stderr.Bytes(), []byte("recover selected metadata")) {
-		f.t.Fatalf("wrong failure or writable fallback; artifacts %s", dir)
+		f.t.Fatalf("wrong failure or fallback to an older backup; logs %s", dir)
 	}
 	return before
+}
+
+// readPrompt reads terminal output up to the recovery prompt.
+func readPrompt(tty *os.File) (string, error) {
+	var prompt strings.Builder
+	var buf [1024]byte
+	for !strings.Contains(prompt.String(), "Continue? [yes/no]:") {
+		n, err := tty.Read(buf[:])
+		if err != nil {
+			return prompt.String(), err
+		}
+		prompt.Write(buf[:n])
+		if prompt.Len() > 8192 {
+			return prompt.String(), errors.New("prompt longer than 8 KiB")
+		}
+	}
+	return prompt.String(), nil
 }
 
 // Poison only the selected snapshot's connection fields, using the real native
@@ -425,8 +416,8 @@ func startupPoisonSavedConnection(f *fixture) {
 	}
 	if closer, ok := raw.(io.Closer); ok {
 		defer func() {
-			if err := closer.Close(); err != nil {
-				f.t.Error(err)
+			if closeErr := closer.Close(); closeErr != nil {
+				f.t.Error(closeErr)
 			}
 		}()
 	}
@@ -454,15 +445,18 @@ func startupPoisonSavedConnection(f *fixture) {
 	if err = errors.Join(err, gz.Close(), reader.Close()); err != nil {
 		f.t.Fatal(err)
 	}
-	path := filepath.Join(f.t.TempDir(), "snapshot.db")
-	if err = os.WriteFile(path, database, 0600); err != nil {
-		f.t.Fatal(err)
-	}
-	if err = startupPoisonSnapshotFormat(ctx, path); err != nil {
-		f.t.Fatal(err)
-	}
-	database, err = os.ReadFile(path)
+	dir, err := os.OpenRoot(f.t.TempDir())
 	if err != nil {
+		f.t.Fatal(err)
+	}
+	err = dir.WriteFile("snapshot.db", database, 0o600)
+	if err == nil {
+		err = startupPoisonSnapshotFormat(ctx, filepath.Join(dir.Name(), "snapshot.db"))
+	}
+	if err == nil {
+		database, err = dir.ReadFile("snapshot.db")
+	}
+	if err = errors.Join(err, dir.Close()); err != nil {
 		f.t.Fatal(err)
 	}
 	hash := sha256.Sum256(database)
@@ -496,15 +490,18 @@ func startupPoisonSnapshotFormat(ctx context.Context, path string) (err error) {
 	if err = db.QueryRowContext(ctx, "SELECT value FROM jfs_setting WHERE name='format'").Scan(&encoded); err != nil {
 		return err
 	}
-	var format meta.Format
-	if err = json.Unmarshal([]byte(encoded), &format); err != nil {
+	// A map keeps every other field as stored; UseNumber keeps big integers exact.
+	var format map[string]any
+	decoder := json.NewDecoder(strings.NewReader(encoded))
+	decoder.UseNumber()
+	if err = decoder.Decode(&format); err != nil {
 		return err
 	}
-	format.Bucket = "http://old-snapshot-destination.invalid:1/old-bucket"
-	format.AccessKey = "old-snapshot-access-key"
-	format.SecretKey = "old-snapshot-secret-key"
-	format.SessionToken = "old-snapshot-token"
-	data, err := json.Marshal(&format)
+	format["Bucket"] = "http://old-snapshot-destination.invalid:1/old-bucket"
+	format["AccessKey"] = "old-snapshot-access-key"
+	format["SecretKey"] = "old-snapshot-secret-key"
+	format["SessionToken"] = "old-snapshot-token"
+	data, err := json.Marshal(format)
 	if err != nil {
 		return err
 	}
@@ -525,25 +522,21 @@ func TestIdentityMissingRecoveryUsesCurrentConfig(t *testing.T) {
 			startupDelete(f, "s3-smb/juicefs_uuid")
 			f.freshLocal()
 			d := f.start()
-			share, closeShare := f.share()
+			share, disconnect := f.share()
 			verifyFiles(t, share, files)
 			writeFile(t, share, "resumed.txt", []byte("writes with current connection config"))
-			closeShare()
+			disconnect()
 			d.stop()
-			for _, log := range d.logs {
-				data, err := os.ReadFile(log.Name())
-				if err != nil {
-					t.Fatal(err)
-				}
-				for _, secret := range []string{"old-snapshot-access-key", "old-snapshot-secret-key", "old-snapshot-token"} {
-					if bytes.Contains(data, []byte(secret)) {
-						t.Fatalf("old snapshot credential leaked in %s", log.Name())
-					}
+			output := d.output()
+			for _, secret := range []string{"old-snapshot-access-key", "old-snapshot-secret-key", "old-snapshot-token"} {
+				if bytes.Contains(output, []byte(secret)) {
+					t.Fatalf("old snapshot credential leaked; logs %s", d.path())
 				}
 			}
 		})
 	}
 }
+
 func TestReadOnlyColdRecoveryDoesNotMutateS3(t *testing.T) {
 	for _, encrypted := range []bool{false, true} {
 		name := "plaintext"
@@ -556,13 +549,12 @@ func TestReadOnlyColdRecoveryDoesNotMutateS3(t *testing.T) {
 			f.freshLocal()
 			f.readonly = true
 			d := f.start()
-			share, closeShare := f.share()
+			share, disconnect := f.share()
 			verifyFiles(t, share, files)
 			if file, err := share.Create("forbidden.txt"); err == nil {
-				file.Close()
-				t.Fatal("read-only recovered volume accepted CREATE")
+				t.Fatal(errors.Join(errors.New("read-only recovered volume accepted CREATE"), file.Close()))
 			}
-			closeShare()
+			disconnect()
 			// Exceed the configured native backup interval: readonly must not schedule it.
 			time.Sleep(2500 * time.Millisecond)
 			d.stop()

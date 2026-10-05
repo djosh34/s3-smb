@@ -1,283 +1,286 @@
 package state
 
 import (
-	"slices"
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
-// LeaseBreakTimeout bounds an unacknowledged break, as in MS-SMB2.
+// LeaseBreakTimeout bounds an unacknowledged break (MS-SMB2 3.3.2.5).
 const LeaseBreakTimeout = 35 * time.Second
 
-func validLeaseState(state uint32) bool {
-	return state == 0 || state == smb.LeaseRead || state == smb.LeaseRead|smb.LeaseHandle || state == smb.LeaseRead|smb.LeaseHandle|smb.LeaseWrite
+// handle reports whether the lease keeps H, counting a pending break as done.
+func (lease *Lease) handle() bool {
+	if lease.Breaking {
+		return lease.BreakTo&smb.LeaseHandle != 0
+	}
+	return lease.State&smb.LeaseHandle != 0
 }
 
-func (table *Table) validateLease(request OpenRequest, reservation Reservation, grant Grant) smb.Status {
-	lease := grant.Lease
-	if !validLeaseState(lease.State) || lease.Breaking {
-		return smb.StatusInvalidParameter
+func (lease *Lease) is(clientGUID, key GUID) bool {
+	return lease.ClientGUID == clientGUID && lease.Key == key
+}
+
+// otherLease returns the lease on object unless it belongs to clientGUID and key.
+func (table *Table) otherLease(object smb.ObjectKey, clientGUID, key GUID) *Lease {
+	record := table.objects[object]
+	if record == nil || record.lease == nil || record.lease.is(clientGUID, key) {
+		return nil
 	}
-	if !table.leasesAllow(request, lease) {
-		return smb.StatusSharingViolation
+	return record.lease
+}
+
+// LeaseKeyElsewhere reports whether the lease key of clientGUID names a file
+// other than object. A CREATE checks it before it changes storage; Commit
+// checks it again for a CREATE that raced another one with the same key.
+func (table *Table) LeaseKeyElsewhere(object smb.ObjectKey, clientGUID, key GUID) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	return table.leaseKeyElsewhere(object, leaseIdentity{client: clientGUID, key: key})
+}
+
+// leaseKeyElsewhere requires mu.
+func (table *Table) leaseKeyElsewhere(object smb.ObjectKey, identity leaseIdentity) bool {
+	held, exists := table.leaseObjects[identity]
+	return exists && held != object
+}
+
+// grantLease gives the new open of request the requested lease, joins the
+// existing lease of the same key, or gives it none. It returns the lease key
+// the open joins. W needs every other open of the file to share the lease.
+// A held lease only grows, and not while it is breaking. Requires mu.
+func (table *Table) grantLease(request OpenRequest, reservation Reservation, requested Lease) (GUID, smb.Status) {
+	if requested.Key == (GUID{}) {
+		return GUID{}, smb.StatusSuccess
 	}
-	if lease.State == 0 {
-		return smb.StatusSuccess
+	identity := leaseIdentity{client: requested.ClientGUID, key: requested.Key}
+	if table.leaseKeyElsewhere(request.Object, identity) {
+		return GUID{}, smb.StatusInvalidParameter
 	}
-	if grant.Directory || request.Object.Stream != "" || lease.Key == (GUID{}) || lease.ClientGUID != request.ClientGUID {
-		return smb.StatusInvalidParameter
+	record := table.object(request.Object)
+	current := record.lease
+	if current != nil && !current.is(requested.ClientGUID, requested.Key) {
+		return GUID{}, smb.StatusSuccess
 	}
-	identity := leaseIdentity{client: lease.ClientGUID, key: lease.Key}
-	if object, exists := table.leaseObjects[identity]; exists && object != request.Object {
-		return smb.StatusInvalidParameter
+	allowed := requested.State
+	if !table.onlyLeaseOpens(request.Object, reservation, identity) {
+		allowed &^= smb.LeaseWrite
 	}
-	if current := table.lease(request.Object, identity); current != nil {
-		if (current.Breaking && lease.State & ^current.BreakTo != 0) || (!current.Breaking && current.State & ^lease.State != 0) {
-			return smb.StatusInvalidParameter
+	if current == nil {
+		if allowed == 0 {
+			return GUID{}, smb.StatusSuccess
 		}
+		lease := Lease{ClientGUID: requested.ClientGUID, Key: requested.Key, ParentKey: requested.ParentKey, State: allowed, Epoch: requested.Epoch + 1}
+		record.lease = &lease
+		table.leaseObjects[identity] = request.Object
+		return requested.Key, smb.StatusSuccess
 	}
-	for _, open := range table.opens {
-		if open.Object == request.Object && (open.ClientGUID != lease.ClientGUID || open.LeaseKey != lease.Key) && !leaseCompatible(lease.State, open.SharingIntent) {
-			return smb.StatusInvalidParameter
+	if !current.Breaking && allowed&current.State == current.State && allowed != current.State {
+		current.State = allowed
+		current.Epoch++
+	}
+	return requested.Key, smb.StatusSuccess
+}
+
+// onlyLeaseOpens reports whether every other open and reservation of object
+// belongs to the lease identity. Requires mu.
+func (table *Table) onlyLeaseOpens(object smb.ObjectKey, reservation Reservation, identity leaseIdentity) bool {
+	for _, id := range table.objects[object].Opens {
+		open := table.opens[id]
+		if open.ClientGUID != identity.client || open.LeaseKey != identity.key {
+			return false
 		}
 	}
 	for token, reserved := range table.reservations {
-		if token != reservation && reserved.Object == request.Object && !leaseCompatible(lease.State, reserved.SharingIntent) {
-			return smb.StatusInvalidParameter
-		}
-	}
-	return smb.StatusSuccess
-}
-
-func (table *Table) leasesAllow(request OpenRequest, joining Lease) bool {
-	record := table.objects[request.Object]
-	if record == nil {
-		return true
-	}
-	for _, held := range record.Leases {
-		if held.ClientGUID == joining.ClientGUID && held.Key == joining.Key && joining.State != 0 {
-			continue
-		}
-		if !leaseCompatible(held.State, request.SharingIntent) {
+		if token != reservation && reserved.Object == object {
 			return false
 		}
 	}
 	return true
 }
 
-func leaseCompatible(state uint32, rights Rights) bool {
-	return state&smb.LeaseWrite == 0 && (state&smb.LeaseRead == 0 || rights&RightWrite == 0)
-}
-
-func (table *Table) lease(object smb.ObjectKey, identity leaseIdentity) *Lease {
-	record := table.objects[object]
-	if record != nil {
-		for index := range record.Leases {
-			lease := &record.Leases[index]
-			if lease.ClientGUID == identity.client && lease.Key == identity.key {
-				return lease
-			}
-		}
-	}
-	return nil
-}
-
-func (table *Table) commitLease(object smb.ObjectKey, grant Lease) {
-	identity := leaseIdentity{client: grant.ClientGUID, key: grant.Key}
-	if current := table.lease(object, identity); current != nil {
-		// Joining a pending lease cannot change its captured state or deadline.
-		if !current.Breaking {
-			if grant.State != current.State {
-				current.State = grant.State
-				current.Epoch++
-			}
-		}
+// releaseLease drops the lease once no open of its key is left. Requires mu.
+func (table *Table) releaseLease(record *objectEntry) {
+	lease := record.lease
+	if lease == nil {
 		return
 	}
-	grant.BreakTo = 0
-	grant.Deadline = time.Time{}
-	table.object(object).Leases = append(table.object(object).Leases, grant)
-	table.leaseObjects[identity] = object
-}
-
-func (table *Table) releaseLeases(record *objectEntry) {
-	record.Leases = slices.DeleteFunc(record.Leases, func(lease Lease) bool {
-		for _, id := range record.Opens {
-			open := table.opens[id]
-			if open.ClientGUID == lease.ClientGUID && open.LeaseKey == lease.Key {
-				return false
-			}
+	for _, id := range record.Opens {
+		if table.opens[id].LeaseKey == lease.Key {
+			return
 		}
-		delete(table.leaseObjects, leaseIdentity{client: lease.ClientGUID, key: lease.Key})
-		return true
-	})
+	}
+	record.lease = nil
+	delete(table.leaseObjects, leaseIdentity{client: lease.ClientGUID, key: lease.Key})
+	table.signalBreakChanges()
 }
 
-func (table *Table) leaseBinding(record *objectEntry, lease Lease) Binding {
+// leaseBinding returns the binding of an attached open of the lease, or zero.
+func (table *Table) leaseBinding(record *objectEntry) Binding {
 	for _, id := range record.Opens {
 		open := table.opens[id]
-		if open.ClientGUID == lease.ClientGUID && open.LeaseKey == lease.Key && validBinding(open.Binding) {
+		if open.LeaseKey == record.lease.Key && validBinding(open.Binding) {
 			return open.Binding
 		}
 	}
 	return Binding{}
 }
 
-// BreakLeases downgrades other leases and returns notifications and cleanup.
-// The supplied client and key identify the requesting lease, which is excluded.
-// When all members are detached and the break removes H, cleanup is immediate.
-func (table *Table) BreakLeases(object smb.ObjectKey, clientGUID GUID, leaseKey GUID, target uint32) ([]Break, []CloseAction) {
+// BreakLease starts breaking the lease on object down to target, unless the
+// lease belongs to clientGUID and key, already fits target or is breaking.
+// It reports the notification to send, if any. Losing only R needs no
+// acknowledgment. A lease whose opens are all detached has nobody to tell, so
+// it drops to target at once. Opens that lose H stop being durable; detached
+// ones are closed and returned for cleanup.
+func (table *Table) BreakLease(object smb.ObjectKey, clientGUID, key GUID, target uint32) (Break, bool, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if !validLeaseState(target) && target != smb.LeaseRead|smb.LeaseWrite {
-		return nil, nil
+	lease := table.otherLease(object, clientGUID, key)
+	if lease == nil || lease.Breaking || lease.State&^target == 0 {
+		return Break{}, false, nil
 	}
-	record := table.objects[object]
-	if record == nil {
-		return nil, nil
+	newState := lease.State & target
+	lease.Epoch++
+	binding := table.leaseBinding(table.objects[object])
+	notification := Break{
+		Binding: binding, ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
+		CurrentState: lease.State, NewState: newState, Epoch: lease.Epoch,
+		AckRequired: lease.State&(smb.LeaseWrite|smb.LeaseHandle) != 0,
 	}
-	var breaks []Break
-	var detached []leaseRef
-	for index := range record.Leases {
-		lease := &record.Leases[index]
-		if lease.ClientGUID == clientGUID && lease.Key == leaseKey {
-			continue
-		}
-		newState := lease.State & target
-		if newState == lease.State || (lease.Breaking && lease.BreakTo & ^newState == 0) {
-			continue
-		}
-		if lease.Breaking {
-			newState &= lease.BreakTo
-		}
-		binding := table.leaseBinding(record, *lease)
-		if !validBinding(binding) && newState&smb.LeaseHandle == 0 {
-			detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
-			continue
-		}
-		lease.Epoch++
-		ack := lease.State&(smb.LeaseHandle|smb.LeaseWrite) != 0
-		breaks = append(breaks, Break{
-			Binding: binding, ClientGUID: lease.ClientGUID, LeaseKey: lease.Key,
-			CurrentState: lease.State, NewState: newState, Epoch: lease.Epoch, AckRequired: ack,
-		})
-		lease.BreakTo = newState
-		lease.Breaking = ack
-		if ack {
-			lease.Deadline = table.now().Add(LeaseBreakTimeout)
-		} else {
-			lease.State = newState
-			lease.Deadline = time.Time{}
-		}
+	notify := validBinding(binding)
+	if notify && notification.AckRequired {
+		lease.Breaking, lease.BreakTo, lease.Deadline = true, newState, table.now().Add(LeaseBreakTimeout)
+	} else {
+		lease.State = newState
 	}
-	return breaks, table.revokeLeases(detached)
+	table.signalBreakChanges()
+	return notification, notify, table.dropDurability(object, lease)
 }
 
-// AckBreak accepts only a pending break's identity and a subset of its target.
-// Dropping H returns cleanup for any detached members of the lease.
-func (table *Table) AckBreak(binding Binding, clientGUID GUID, key GUID, leaseState uint32) ([]CloseAction, smb.Status) {
+// AckBreak accepts the acknowledgment of a pending break to a subset of its
+// target. Opens that lose H stop being durable; detached ones are closed.
+func (table *Table) AckBreak(clientGUID, key GUID, leaseState uint32) ([]CloseAction, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	identity := leaseIdentity{client: clientGUID, key: key}
-	if !validBinding(binding) {
-		return nil, smb.StatusInvalidParameter
-	}
-	object, exists := table.leaseObjects[identity]
+	object, exists := table.leaseObjects[leaseIdentity{client: clientGUID, key: key}]
 	if !exists {
 		return nil, smb.StatusObjectNameNotFound
 	}
-	lease := table.lease(object, identity)
-	if lease == nil {
-		return nil, smb.StatusObjectNameNotFound
-	}
-	if !table.ownsLease(binding, object, identity) {
-		return nil, smb.StatusInvalidParameter
-	}
+	lease := table.objects[object].lease
 	if !lease.Breaking {
 		return nil, smb.StatusUnsuccessful
 	}
-	if leaseState & ^lease.BreakTo != 0 {
+	if leaseState&^lease.BreakTo != 0 {
 		return nil, smb.StatusRequestNotAccepted
 	}
-	lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = leaseState, leaseState, false, time.Time{}
-	return table.dropDurability(object, identity, leaseState), smb.StatusSuccess
+	lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = leaseState, 0, false, time.Time{}
+	table.signalBreakChanges()
+	return table.dropDurability(object, lease), smb.StatusSuccess
 }
 
-func (table *Table) ownsLease(binding Binding, object smb.ObjectKey, identity leaseIdentity) bool {
-	for _, id := range table.objects[object].Opens {
-		open := table.opens[id]
-		if open.Binding == binding && open.ClientGUID == identity.client && open.LeaseKey == identity.key {
-			return true
+// ExpireBreaks revokes every lease whose break was not acknowledged in time.
+// Attached opens lose durability but stay usable; detached opens close.
+func (table *Table) ExpireBreaks() []CloseAction {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	now := table.now()
+	var expired []smb.ObjectKey
+	for object, record := range table.objects {
+		if lease := record.lease; lease != nil && lease.Breaking && !lease.Deadline.After(now) {
+			expired = append(expired, object)
 		}
 	}
-	return false
+	var actions []CloseAction
+	for _, object := range expired {
+		lease := table.objects[object].lease
+		lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = 0, 0, false, time.Time{}
+		table.signalBreakChanges()
+		actions = append(actions, table.dropDurability(object, lease)...)
+	}
+	return actions
 }
 
-func (table *Table) dropDurability(object smb.ObjectKey, identity leaseIdentity, state uint32) []CloseAction {
-	if state&smb.LeaseHandle != 0 {
+// dropDurability ends durability of the lease's opens once it loses H.
+// Detached opens close, because nothing could reconnect them. Requires mu.
+func (table *Table) dropDurability(object smb.ObjectKey, lease *Lease) []CloseAction {
+	if lease.handle() {
 		return nil
 	}
 	var actions []CloseAction
 	for _, id := range table.openIDs() {
 		open := table.opens[id]
-		if open.Object != object || open.ClientGUID != identity.client || open.LeaseKey != identity.key || !open.Durable {
+		if open.Object != object || open.LeaseKey != lease.Key || !open.Durable {
 			continue
 		}
 		if open.Binding.SessionID == 0 {
 			actions = append(actions, table.closeOpen(open))
 		} else {
-			open.Durable = false
-			open.DurableTimeout = 0
+			open.Durable, open.DurableTimeout = false, 0
 		}
 	}
 	return actions
 }
 
-type leaseRef struct {
-	object   smb.ObjectKey
-	identity leaseIdentity
-}
-
-// Closing members can remove leases, so callers capture references first.
-func (table *Table) revokeLeases(leases []leaseRef) []CloseAction {
-	var actions []CloseAction
-	for _, ref := range leases {
-		lease := table.lease(ref.object, ref.identity)
-		if lease == nil {
-			continue
-		}
-		lease.State, lease.BreakTo, lease.Breaking, lease.Deadline = 0, 0, false, time.Time{}
-		actions = append(actions, table.dropDurability(ref.object, ref.identity, 0)...)
-	}
-	return actions
-}
-
-func (table *Table) closeDetachedBreaks() []CloseAction {
-	var detached []leaseRef
-	for object, record := range table.objects {
-		for _, lease := range record.Leases {
-			if lease.Breaking && lease.BreakTo&smb.LeaseHandle == 0 && !validBinding(table.leaseBinding(record, lease)) {
-				detached = append(detached, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
-			}
-		}
-	}
-	return table.revokeLeases(detached)
-}
-
-// ExpireBreaks revokes the whole lease when an acknowledgment times out.
-// Attached opens lose durability but remain usable; detached opens close.
-func (table *Table) ExpireBreaks() []CloseAction {
+// LeaseNeedsBreak reports whether the lease on object, unless it belongs to
+// clientGUID and key, holds rights outside target or is breaking.
+func (table *Table) LeaseNeedsBreak(object smb.ObjectKey, clientGUID, key GUID, target uint32) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	now := table.now()
-	var expired []leaseRef
-	for object, record := range table.objects {
-		for _, lease := range record.Leases {
-			if lease.Breaking && !lease.Deadline.After(now) {
-				expired = append(expired, leaseRef{object: object, identity: leaseIdentity{client: lease.ClientGUID, key: lease.Key}})
-			}
+	lease := table.otherLease(object, clientGUID, key)
+	return lease != nil && (lease.Breaking || lease.State&^target != 0)
+}
+
+// LeaseBreaking reports whether the lease on object, unless it belongs to
+// clientGUID and key, waits for an acknowledgment.
+func (table *Table) LeaseBreaking(object smb.ObjectKey, clientGUID, key GUID) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	lease := table.otherLease(object, clientGUID, key)
+	return lease != nil && lease.Breaking
+}
+
+// BreakChanges returns a channel closed at the next change of a lease's
+// breaking state or removal. Fetch it before checking LeaseBreaking.
+func (table *Table) BreakChanges() <-chan struct{} {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	return table.breakChanges
+}
+
+func (table *Table) signalBreakChanges() {
+	close(table.breakChanges)
+	table.breakChanges = make(chan struct{})
+}
+
+// SharingLease reports the file whose H lease holds an open that conflicts
+// with request's sharing. Breaking H lets the client close cached handles.
+func (table *Table) SharingLease(request OpenRequest) (smb.ObjectKey, bool) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	request = sharingIntent(request)
+	for _, open := range table.opens {
+		if sharingCompatible(request, openRequest(open.Open)) || open.LeaseKey == (GUID{}) {
+			continue
+		}
+		if lease := table.objects[open.Object].lease; lease.State&smb.LeaseHandle != 0 {
+			return open.Object, true
 		}
 	}
-	return table.revokeLeases(expired)
+	return smb.ObjectKey{}, false
+}
+
+// LeaseForOpen finds the open like Find and returns it with a copy of its
+// lease, or a zero lease for an open without one.
+func (table *Table) LeaseForOpen(id FileID, binding Binding) (Open, Lease, smb.Status) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	open, status := table.find(id, binding)
+	if status != smb.StatusSuccess {
+		return Open{}, Lease{}, status
+	}
+	var lease Lease
+	if current := table.objects[open.Object].lease; current != nil && open.LeaseKey != (GUID{}) {
+		lease = *current
+	}
+	return open.Open, lease, smb.StatusSuccess
 }

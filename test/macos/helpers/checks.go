@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
+
 package helpers
 
 import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"regexp"
 	"slices"
 	"strconv"
@@ -46,7 +46,8 @@ var (
 	bytesPattern   = regexp.MustCompile(`(?m)^\s*bytes\s*=\s*"?([+\-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+\-]?\d+)?)"?\s*;`)
 )
 
-// Running rejects an unknown native status format.
+// Running reports whether tmutil status output shows a running backup. It
+// rejects output without a Running field.
 func Running(text string) (bool, error) {
 	match := runningPattern.FindStringSubmatch(text)
 	if match == nil {
@@ -58,12 +59,20 @@ func Running(text string) (bool, error) {
 // Copying requires a running backup, the Copying phase and positive copied bytes.
 func Copying(text string) bool {
 	running, err := Running(text)
+	return err == nil && running && copyingPattern.MatchString(text) && copiedBytes(text) > 0
+}
+
+// copiedBytes reads the copied byte count from tmutil status output, or zero.
+func copiedBytes(text string) float64 {
 	match := bytesPattern.FindStringSubmatch(text)
-	if err != nil || !running || !copyingPattern.MatchString(text) || match == nil {
-		return false
+	if match == nil {
+		return 0
 	}
-	number, err := strconv.ParseFloat(match[1], 64)
-	return err == nil && !math.IsNaN(number) && !math.IsInf(number, 0) && number > 0
+	value, err := strconv.ParseFloat(match[1], 64)
+	if err != nil {
+		return 0
+	}
+	return value
 }
 
 // CheckRemoteChange requires new or changed remote chunks, not just deletions.

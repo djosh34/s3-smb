@@ -1,17 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
-// Package helpers contains the platform-independent Mac harness checks.
+// Package helpers holds the parsers and pass or fail checks of the Mac
+// harness that do not need a Mac, so they can be tested on Linux.
 package helpers
 
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
 	"os"
-	"path/filepath"
 	"slices"
 )
 
@@ -23,40 +22,35 @@ type Entry struct {
 	Bytes  int64  `json:"bytes,omitempty"`
 }
 
-// Counts summarizes the restored fixture.
+// Counts summarizes a manifest.
 type Counts struct {
 	Entries int
 	Files   int
 	Bytes   int64
 }
 
-// Manifest hashes regular files without following symlinks.
-func Manifest(root string) ([]Entry, Counts, error) {
+// Manifest hashes the regular files under tree without following symlinks.
+func Manifest(tree string) ([]Entry, Counts, error) {
+	root, err := os.OpenRoot(tree)
+	if err != nil {
+		return nil, Counts{}, err
+	}
 	var rows []Entry
 	var counts Counts
-	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		relative, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		row := Entry{Path: filepath.ToSlash(relative), Type: "unexpected:" + d.Type().String()}
+		row := Entry{Path: path, Type: "unexpected:" + d.Type().String()}
 		switch {
 		case d.IsDir():
 			row.Type = "directory"
 		case d.Type().IsRegular():
-			file, err := os.Open(path) //nolint:gosec // WalkDir selected a regular file in the explicitly supplied fixture tree.
-			if err != nil {
-				return err
+			size, sum, hashErr := hashFile(root, path)
+			if hashErr != nil {
+				return hashErr
 			}
-			digest := sha256.New()
-			size, readErr := io.Copy(digest, file)
-			if err := errors.Join(readErr, file.Close()); err != nil {
-				return err
-			}
-			row.Type, row.Bytes, row.SHA256 = "file", size, hex.EncodeToString(digest.Sum(nil))
+			row.Type, row.Bytes, row.SHA256 = "file", size, sum
 			counts.Files++
 			counts.Bytes += size
 		}
@@ -64,44 +58,38 @@ func Manifest(root string) ([]Entry, Counts, error) {
 		counts.Entries++
 		return nil
 	})
-	return rows, counts, err
+	return rows, counts, errors.Join(err, root.Close())
 }
 
-// WriteManifest writes a JSON reference with hashes only, refusing to overwrite it.
-func WriteManifest(path string, rows []Entry) error {
-	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // The caller chooses an exclusive run-owned output, not a user request.
+func hashFile(root *os.Root, name string) (int64, string, error) {
+	file, err := root.Open(name)
 	if err != nil {
-		return err
+		return 0, "", err
 	}
-	return errors.Join(json.NewEncoder(file).Encode(rows), file.Close())
-}
-
-// ReadManifest reads one JSON reference. Compare validates empty and duplicate paths.
-func ReadManifest(path string) ([]Entry, error) {
-	data, err := os.ReadFile(path) //nolint:gosec // The caller chooses a reference in the run-owned evidence or transfer directory.
-	if err != nil {
-		return nil, err
+	digest := sha256.New()
+	size, err := io.Copy(digest, file)
+	if err = errors.Join(err, file.Close()); err != nil {
+		return 0, "", err
 	}
-	var rows []Entry
-	err = json.Unmarshal(data, &rows)
-	return rows, err
+	return size, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
 func index(rows []Entry) (map[string]Entry, error) {
 	if len(rows) == 0 {
-		return nil, errors.New("empty created-tree reference")
+		return nil, errors.New("empty manifest")
 	}
 	result := make(map[string]Entry, len(rows))
 	for _, row := range rows {
 		if _, exists := result[row.Path]; exists {
-			return nil, fmt.Errorf("duplicate created-tree path %q", row.Path)
+			return nil, fmt.Errorf("duplicate manifest path %q", row.Path)
 		}
 		result[row.Path] = row
 	}
 	return result, nil
 }
 
-// Compare returns differing paths, ignoring row order but checking every type, size and hash.
+// Compare returns the sorted paths whose type, size or hash differ, or that
+// only one manifest has.
 func Compare(expected, actual []Entry) ([]string, error) {
 	left, err := index(expected)
 	if err != nil {

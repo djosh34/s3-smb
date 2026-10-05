@@ -69,19 +69,9 @@ type WriteResponse struct {
 	Remaining uint32
 }
 
-// QueryResponse carries class bytes or directory entries encoded by the typed
-// functions in info_api.go. Unsupported classes are not decoded as another class.
+// QueryResponse carries encoded information class bytes or directory entries.
 type QueryResponse struct {
 	Data []byte
-}
-
-// IOCTLResponse carries a validated control reply; unsupported codes use ErrorResponse.
-type IOCTLResponse struct {
-	Input       []byte
-	Output      []byte
-	ID          FileID
-	ControlCode uint32
-	Flags       uint32
 }
 
 // LeaseBreakNotification is the server's V2 break message, not an acknowledgement.

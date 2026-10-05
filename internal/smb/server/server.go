@@ -10,7 +10,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/djosh34/s3-smb/internal/smb/auth"
-	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
 // New validates the supplied modules and server identity. It does not own storage.
@@ -31,8 +30,8 @@ func New(options Options) (*Server, error) {
 		return nil, fmt.Errorf("server account: %w", err)
 	}
 	return &Server{
-		options: options, handlers: map[wire.Command]handler{wire.Echo: handleEcho},
-		connections: make(map[*connection]struct{}), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
+		options: options, handlers: commandHandlers(), activeOpens: make(map[uint64]*openUses),
+		connections: make(map[*connection]struct{}), sessions: make(map[uint64]*connection), listeners: make(map[*ownedListener]struct{}), shutdownDone: make(chan struct{}),
 	}, nil
 }
 
@@ -49,9 +48,6 @@ func (listener *ownedListener) close() error {
 
 // Serve owns listener. Cancellation or an accept error shuts down the server.
 func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
-	if listener == nil {
-		return errors.New("nil listener")
-	}
 	owned := &ownedListener{Listener: listener}
 	server.mu.Lock()
 	if server.stopping {
@@ -59,6 +55,7 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 		return errors.Join(net.ErrClosed, owned.close())
 	}
 	server.listeners[owned] = struct{}{}
+	server.startScavenger(ctx)
 	server.mu.Unlock()
 	stop := context.AfterFunc(ctx, func() {
 		if err := owned.close(); err != nil {
@@ -77,7 +74,9 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		// Registration happens before starting the goroutine, so Shutdown cannot
 		// finish while an accepted connection is still waiting to be registered.
-		connCtx, cancel := context.WithCancel(ctx)
+		// Canceling ctx only closes the listener: connections end in Shutdown,
+		// so their cleanup failures count in its result.
+		connCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 		connection, err := server.addConnection(connCtx, cancel, conn)
 		if err != nil {
 			acceptErr = err
@@ -94,9 +93,6 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 // ServeConn owns conn and serves framed requests until EOF, cancellation or error.
 func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error {
-	if conn == nil {
-		return errors.New("nil connection")
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	connection, err := server.addConnection(ctx, cancel, conn)
 	if err != nil {
@@ -112,6 +108,7 @@ func (server *Server) addConnection(ctx context.Context, cancel context.CancelFu
 		cancel()
 		return nil, errors.Join(net.ErrClosed, conn.Close())
 	}
+	server.startScavenger(ctx)
 	connection := newConnection(ctx, cancel, server, conn)
 	server.connections[connection] = struct{}{}
 	server.workers.Add(1)
@@ -133,6 +130,7 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	server.mu.Lock()
 	if !server.stopping {
 		server.stopping = true
+		server.stopScavenger()
 		var closeErr error
 		for listener := range server.listeners {
 			closeErr = errors.Join(closeErr, listener.close())
@@ -151,8 +149,24 @@ func (server *Server) Shutdown(ctx context.Context) error {
 	}
 }
 
+// connectionCleanupFailed logs that the opens of an ended connection were not
+// cleaned up, which can lose data, and adds it to Shutdown's result while the
+// server stops.
+func (server *Server) connectionCleanupFailed(err error) {
+	server.options.Logger.Error("clean up connection opens", "error", err)
+	server.mu.Lock()
+	defer server.mu.Unlock()
+	if server.stopping {
+		server.connectionCleanupErr = errors.Join(server.connectionCleanupErr, err)
+	}
+}
+
 func (server *Server) drain(ctx context.Context, closeErr error) {
 	server.workers.Wait()
-	server.shutdownErr = errors.Join(closeErr, server.cleanup(ctx, server.options.State.CloseAll()))
+	server.waitScavenger()
+	server.mu.Lock()
+	connectionErr := server.connectionCleanupErr
+	server.mu.Unlock()
+	server.shutdownErr = errors.Join(closeErr, connectionErr, server.cleanup(ctx, server.options.State.CloseAll()))
 	close(server.shutdownDone)
 }

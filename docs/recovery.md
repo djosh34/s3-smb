@@ -95,87 +95,41 @@ back to an older backup on its own. Keep the logs and the bucket as they are.
 
 ## Measured snapshot costs and limits
 
-On 4 October 2026, the Linux ARM64 daemon backed up a namespace
-of 524,288 eight-MiB band files, each with two four-MiB slices. That represents
-a fully allocated four-TiB sparsebundle, larger than a typical one-to-three-TiB
-Time Machine dataset. The fixture seeds metadata offline, not four TiB of data.
-It also backs up and restores a real file over SMB. Encryption is enabled so
-publication and readback exercise the whole-object buffers.
-
-The run used local MinIO on an eight-CPU, 11-GiB shared Linux VM:
+`TestNamespaceBackupMeasurements` backs up and recovers a namespace of 524,288
+eight-MiB band files, each with two four-MiB slices: a fully allocated four-TiB
+sparsebundle, larger than a typical Time Machine dataset of one to three TiB.
+It seeds the metadata offline, not four TiB of data, and checks a real file
+over SMB. Encryption is on. On 4 October 2026, against local MinIO on an
+eight-CPU, 11-GiB Linux ARM64 VM:
 
 | Measurement | Result |
 | --- | --- |
-| Encrypted snapshot size | 21,304,223 bytes (20.3 MiB) |
-| Final attempt's snapshot start to receipt write | 1.09 s |
-| Backup daemon startup to SMB readiness | 1.43 s |
+| Encrypted snapshot size | 20.3 MiB |
+| Snapshot start to receipt write | 1.09 s |
+| Daemon startup to SMB readiness, with the backup | 1.43 s |
 | Cold recovery to SMB readiness | 2.09 s |
-| Backup daemon peak RSS | 291,102,720 bytes (278 MiB) |
-| Recovery daemon peak RSS | 282,988,544 bytes (270 MiB) |
-| Backup staging disk high-water sample | 134,287,360 bytes (128 MiB) |
-| Recovery staging disk high-water sample | 134,152,192 bytes (128 MiB) |
+| Peak daemon memory (`VmHWM`), backup | 278 MiB |
+| Peak daemon memory (`VmHWM`), recovery | 270 MiB |
 
-RSS comes from the daemon's Linux `VmHWM`, not the test runner's Go heap. The
-4,096-band PR run used 160 MiB for backup and 161 MiB for recovery. Receipt mtime
-marks the write, before file sync, rename and directory sync. It also omits failed
-attempts. The time bound uses startup through SMB readiness, after the whole
-backup has completed durably. Cold recovery uses empty local state and read-only
-startup; its time includes key unlocking, identity inspection, download,
-validation, session cleanup and SMB startup, with no new backup.
+The 4,096-band PR run used 160 MiB for backup and 161 MiB for recovery. Startup
+to SMB readiness includes the whole durable backup. Cold recovery starts
+read-only with empty local state, so it includes key unlocking, identity
+checks, download, validation and SMB startup, with no new backup. The test
+fails above 1 GiB of peak memory or 60 s for either path, well above these
+results. Client latency during a backup is not measured: JuiceFS opens SQLite
+in WAL mode and the snapshot reads on its own connection, so it does not block
+writers. Slice history, extended attributes and larger namespaces raise these
+costs. The encrypted wrapper holds whole objects in memory while it encrypts,
+decrypts and publishes them.
 
-Staging measurements sample allocated file blocks every 5 ms in the backup and
-recovery staging directories, including SQLite sidecars. They can miss a short
-peak; a missed observation is recorded as `null`, not a failed backup. They
-exclude the source database, file data and unrelated temporary files. Client
-latency during backup is not measured: JuiceFS opens SQLite in WAL mode and the
-snapshot reads on its own connection, so the snapshot does not block writers.
-Concurrent clients can still compete for CPU and disk. Slice history, extended
-attributes and larger namespaces can increase these quiet-daemon costs.
-
-`TestNamespaceBackupMeasurements` runs 524,288 bands in gate mode and 4,096 in
-PR mode. Both fail above 1 GiB peak daemon RSS or 60 s for backup startup or
-cold recovery through SMB readiness. The memory ceiling is over 3.6 times the
-measured peak; the time ceiling is over 28 times the slower measured path. The
-test records JSON in the check's log directory and CI saves it as
-`namespace-measurement`.
-
-The encrypted wrapper still holds whole compressed objects during encryption,
-decryption and conditional publication. This run found no memory problem that
-justifies changing those paths. It does not establish a namespace cap.
-
-Keep the existing time limits. A backup may use the whole `backup.interval`
-(one hour by default), leaving ample room over this 1.43 s local startup and a
-five-minute S3 outage. The 30 s dial and response-header limits do not cap
-streaming body time. Each chunk read or write still has 60 s.
-
-Reduce `MaxUpload` from 20 to 4. Four concurrent four-MiB uploads need about
-2.2 Mbit/s of total upload bandwidth to finish in 60 s, or 4.5 Mbit/s by JuiceFS's
-half-timeout warning, before overhead and other traffic. Twenty uploads needed
-about 11 to 22 Mbit/s, which does not fit an ordinary home uplink. Four still
-keeps several uploads in flight on a fast link. Local MinIO results do not
-establish remote S3 latency and give no reason to raise the time limits.
-
-Retry values remain `Meta.Retries=53` and chunk `MaxRetries=12`, as decided in
-[The data path survives a 5-minute S3 outage](https://github.com/djosh34/s3-smb/issues/284).
-They cover uploads, flushes and one slice reader at a time. Concurrent cold reads
-are tracked in
-[Adapter reads survive a 5-minute S3 outage when several block reads fail together](https://github.com/djosh34/s3-smb/issues/297).
-Recovery still returns the last metadata backup, not writes made after it.
-
-The Mac acceptance
-[run 37169493777](https://github.com/djosh34/s3-smb/actions/runs/37169493777)
-passed on 4 October 2026, including recovery on fresh Macs and all five failure
-scenarios. The backup job's `acceptance.jsonl` records a 40,977-byte encrypted
-snapshot (40.0 KiB) and 0.1 s from snapshot start to receipt write, rounded to
-tenths, in its `native-point-after-completion` event. This is receipt-write
-timing, not the full durable completion time bounded by the Linux test.
-
-The Mac run used a small Time Machine dataset and local MinIO. It preceded the
-`MaxUpload` reduction, so it does not test the new upload concurrency. Together
-with the larger Linux measurement, its snapshot size and timing give no reason
-to raise the backup budget, 30 s dial/header limits or 60 s chunk limits. Neither
-run establishes remote S3 latency; the four-upload pool and its uplink
-requirement above still apply. The outage retry settings remain unchanged.
+A backup may use the whole `backup.interval` (one hour by default). The 30 s
+dial and response-header limits do not cap streaming body time; each chunk read
+or write has 60 s. At most four uploads run at once: four four-MiB uploads need
+about 2.2 Mbit/s of upload bandwidth to finish in 60 s, which fits an ordinary
+home uplink. The retry settings, `Meta.Retries=53` and chunk `MaxRetries=12`,
+cover a five-minute S3 outage for uploads, flushes and one slice reader at a
+time; several cold reads failing at once may not be covered. Recovery returns
+the last metadata backup, not writes made after it.
 
 ## Why retention matters
 
@@ -186,8 +140,10 @@ metadata points at C. A and B go to the trash and are deleted after
 still points at A and B. Once they are deleted, that backup can no longer restore
 those files.
 
-s3-smb deletes nothing while its newest metadata backup is older than two backup
-intervals. If a scheduled backup fails after three attempts, the writer stops.
+A failed metadata backup retries with delays from one to 30 seconds. Writes and
+cleanup continue while the last verified backup is younger than two backup
+intervals. A backup that succeeds within that window renews protection without a
+restart. If the window expires, the writer stops and deletes nothing.
 
 Do not add S3 lifecycle rules that delete or expire objects under `s3-smb/`. They
 bypass this protection and can delete data, metadata backups or the key.

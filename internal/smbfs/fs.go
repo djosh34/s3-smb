@@ -43,6 +43,7 @@ type FS struct {
 	flushes    atomic.Uint64
 	capacity   uint64
 	volumeID   uint64
+	readWindow time.Duration
 	readOnly   bool
 }
 
@@ -81,7 +82,7 @@ var _ smb.Storage = (*FS)(nil)
 // New constructs an adapter. The caller owns the JuiceFS runtime and chunk store,
 // and calls Shutdown after draining requests and closing storage references.
 func New(options Options) (*FS, error) {
-	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil {
+	if options.Filesystem == nil || options.Barrier == nil || options.Config == nil || options.Config.Meta == nil || options.Config.Chunk == nil || options.Store == nil || options.ReadRetryWindow < 0 {
 		return nil, smb.ErrInvalidParameter
 	}
 	m := options.Filesystem.Meta()
@@ -93,12 +94,16 @@ func New(options Options) (*FS, error) {
 	if err != nil {
 		return nil, storageError(err)
 	}
+	window := options.ReadRetryWindow
+	if window == 0 {
+		window = readRetryWindow
+	}
 	reader := vfs.NewDataReader(options.Config, m, options.Store)
 	writer := vfs.NewDataWriter(options.Config, m, options.Store, reader)
 	return &FS{
 		filesystem: options.Filesystem, metadata: m, barrier: options.Barrier, reader: reader, writer: writer,
 		inodes: make(map[smb.Inode]*inodeState), parents: make(map[smb.Inode]*parentGuard), directory: directory,
-		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly,
+		capacity: options.Capacity, volumeID: volumeID, readOnly: options.ReadOnly, readWindow: window,
 	}, nil
 }
 
@@ -208,7 +213,7 @@ func (s *FS) selected(ctx context.Context, ref smb.Handle, write bool) (*handle,
 		release()
 		return nil, nil, smb.ErrReadOnly
 	}
-	if write && h.access&smb.AccessWrite == 0 {
+	if write && h.access&(smb.AccessWrite|smb.AccessAppend) == 0 {
 		release()
 		return nil, nil, smb.ErrAccessDenied
 	}
@@ -217,10 +222,10 @@ func (s *FS) selected(ctx context.Context, ref smb.Handle, write bool) (*handle,
 
 // Open retains a JuiceFS inode reference without creating or truncating data.
 func (s *FS) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (smb.Handle, error) {
-	if access & ^(smb.AccessRead|smb.AccessWrite) != 0 {
+	if access & ^(smb.AccessRead|smb.AccessWrite|smb.AccessAppend) != 0 {
 		return nil, smb.ErrInvalidParameter
 	}
-	if s.readOnly && access&smb.AccessWrite != 0 {
+	if s.readOnly && access&(smb.AccessWrite|smb.AccessAppend) != 0 {
 		return nil, smb.ErrReadOnly
 	}
 	st, release := s.acquire(key.Inode)
@@ -376,7 +381,7 @@ func (s *FS) ReadAt(ctx context.Context, ref smb.Handle, dst []byte, offset uint
 			h.state.reader = nil
 		}
 		return n, eno
-	}, readRetryWindow)
+	}, s.readWindow)
 	if err != nil {
 		return n, err
 	}
@@ -399,13 +404,20 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 	if h.kind == smb.KindDirectory {
 		return 0, smb.ErrIsDirectory
 	}
-	if len(src) == 0 {
+	appendOnly := h.access&smb.AccessAppend != 0
+	if len(src) == 0 && !appendOnly {
 		return 0, nil
 	}
 	if h.key.Stream != "" {
-		return s.writeStream(ctx, h.key, src, offset)
+		return s.writeStream(ctx, h.key, h.state, src, offset, appendOnly)
 	}
 	live := h.state.snapshot()
+	if appendOnly && offset < live.size {
+		return 0, smb.ErrAccessDenied
+	}
+	if len(src) == 0 {
+		return 0, nil
+	}
 	if h.state.writer == nil {
 		h.state.writer = s.writer.Open(meta.Ino(h.key.Inode), live.size, 0)
 	}
@@ -419,14 +431,20 @@ func (s *FS) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uin
 	return len(src), nil
 }
 
-func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, offset uint64) (int, error) {
-	end := offset + uint64(len(src))
-	if end > maxStreamSize {
-		return 0, smb.ErrFileTooLarge
-	}
+func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, st *inodeState, src []byte, offset uint64, appendOnly bool) (int, error) {
 	data, err := s.stream(ctx, key)
 	if err != nil {
 		return 0, err
+	}
+	if appendOnly && offset < uint64(len(data)) {
+		return 0, smb.ErrAccessDenied
+	}
+	if len(src) == 0 {
+		return 0, nil
+	}
+	end := offset + uint64(len(src))
+	if end > maxStreamSize {
+		return 0, smb.ErrFileTooLarge
 	}
 	data = append([]byte{}, data...)
 	if end > uint64(len(data)) {
@@ -436,7 +454,7 @@ func (s *FS) writeStream(ctx context.Context, key smb.ObjectKey, src []byte, off
 	if err = s.saveStream(ctx, key, data); err != nil {
 		return 0, err
 	}
-	if err = s.touchStream(ctx, key.Inode); err != nil {
+	if err = s.touchStream(ctx, key.Inode, st); err != nil {
 		return 0, err
 	}
 	return len(src), nil
@@ -470,7 +488,7 @@ func (s *FS) truncate(ctx context.Context, key smb.ObjectKey, st *inodeState, si
 		if err = s.saveStream(ctx, key, data); err != nil {
 			return err
 		}
-		return s.touchStream(ctx, key.Inode)
+		return s.touchStream(ctx, key.Inode, st)
 	}
 	if err = s.flush(ctx, st); err != nil {
 		return err
@@ -499,5 +517,8 @@ func (s *FS) Truncate(ctx context.Context, ref smb.Handle, size uint64) error {
 		return err
 	}
 	defer release()
+	if h.access&smb.AccessWrite == 0 {
+		return smb.ErrAccessDenied
+	}
 	return s.truncate(ctx, h.key, h.state, size)
 }
