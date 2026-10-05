@@ -76,9 +76,6 @@ func expandCreateAccess(desired uint32) uint32 {
 	if desired&(genericAll|maximumAllowed) != 0 {
 		granted |= fileAllAccess
 	}
-	if granted&fileExecute != 0 {
-		granted |= fileReadData
-	}
 	return granted
 }
 
@@ -142,7 +139,7 @@ func openRequestForCreate(request RequestContext, create wire.CreateRequest, con
 
 func createStorageAccess(granted uint32, destructive bool) smb.Access {
 	var access smb.Access
-	if granted&fileReadData != 0 {
+	if granted&(fileReadData|fileExecute) != 0 {
 		access |= smb.AccessRead
 	}
 	if destructive || granted&fileWriteData != 0 {

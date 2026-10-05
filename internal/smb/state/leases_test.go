@@ -163,14 +163,17 @@ func TestSharingLeaseFindsHandleHolder(t *testing.T) {
 	writer.ClientGUID, writer.SharingIntent = state.GUID{2}, state.RightWrite
 	_, status := table.Reserve(writer)
 	statusIs(t, status, smb.StatusSharingViolation)
-	object, found := table.SharingLease(writer)
+	if _, found := table.SharingLease(writer, req.ClientGUID, state.GUID{3}); found {
+		t.Fatal("the opener's own lease would be broken")
+	}
+	object, found := table.SharingLease(writer, opener, opener)
 	if !found || object != open.Object {
 		t.Fatalf("sharing lease = %+v, %v", object, found)
 	}
-	table.BreakLease(object, state.GUID{}, state.GUID{}, leaseR)
+	table.BreakLease(object, opener, opener, leaseR)
 	_, status = table.AckBreak(req.ClientGUID, state.GUID{3}, leaseR)
 	statusIs(t, status, smb.StatusSuccess)
-	if _, found = table.SharingLease(writer); found {
+	if _, found = table.SharingLease(writer, opener, opener); found {
 		t.Fatal("sharing lease reported after H ended")
 	}
 }

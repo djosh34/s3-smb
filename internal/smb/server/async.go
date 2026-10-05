@@ -40,14 +40,24 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 	}
 	result, err := connection.dispatch(ctx, message, previous)
 	if err != nil {
-		level, text := slog.LevelError, "request failed"
+		status := smb.StatusFromError(err)
+		level, text := slog.LevelDebug, "request refused"
 		if errors.Is(err, context.Canceled) {
-			level, text = slog.LevelDebug, "request canceled"
+			text = "request canceled"
+		} else if serverFault(status) {
+			level, text = slog.LevelError, "request failed"
 		}
 		connection.server.options.Logger.Log(ctx, level, text, "command", message.Header.Command, "message_id", message.Header.MessageID, "error", err)
-		return reply{status: smb.StatusFromError(err), fileID: result.fileID}
+		return reply{status: status, fileID: result.fileID}
 	}
 	return result
+}
+
+// serverFault reports whether a failed request is the server's fault rather
+// than an answer to what the client asked, such as a name that is not there.
+func serverFault(status smb.Status) bool {
+	return status == smb.StatusInternalError || status == smb.StatusIODeviceError || status == smb.StatusIOTimeout ||
+		status == smb.StatusInsufficientResources || status == smb.StatusDiskFull
 }
 
 func (connection *connection) startWork(ctx context.Context, message wire.Message, prerequisite *work, previous compoundState) *work {

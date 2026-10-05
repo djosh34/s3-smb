@@ -143,8 +143,8 @@ func runCreate(ctx context.Context, request RequestContext, create wire.CreateRe
 func reserveCreate(request RequestContext, open state.OpenRequest, lease state.Lease, target uint32) (state.Reservation, *leaseBreak, smb.Status, error) {
 	reservation, status := request.Opens.Reserve(open)
 	if status == smb.StatusSharingViolation {
-		if object, found := request.Opens.SharingLease(open); found {
-			return 0, &leaseBreak{object: object, target: target &^ smb.LeaseHandle}, status, nil
+		if object, found := request.Opens.SharingLease(open, lease.ClientGUID, lease.Key); found {
+			return 0, &leaseBreak{object: object, client: lease.ClientGUID, key: lease.Key, target: target &^ smb.LeaseHandle}, status, nil
 		}
 	}
 	if status != smb.StatusSuccess {

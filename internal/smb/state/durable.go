@@ -55,6 +55,19 @@ func (table *Table) Disconnect(sessionID uint64) []CloseAction {
 	return table.closeMatching(func(open Open) bool { return open.Binding.SessionID == sessionID })
 }
 
+// OtherClient reports whether an attached or detached open of a client other
+// than clientGUID exists.
+func (table *Table) OtherClient(clientGUID GUID) bool {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	for _, open := range table.opens {
+		if open.ClientGUID != clientGUID {
+			return true
+		}
+	}
+	return false
+}
+
 // CloseSession closes attached session opens, including durable opens, on LOGOFF.
 func (table *Table) CloseSession(sessionID uint64) []CloseAction {
 	table.mu.Lock()

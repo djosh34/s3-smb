@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"net/http"
+	"os"
 	"testing"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
+	"github.com/djosh34/s3-smb/internal/storage"
 )
 
 // newS3Server serves storage whose objects sit behind an S3 fault proxy.
@@ -97,11 +99,19 @@ func TestSlowS3UploadRepliesAsync(t *testing.T) {
 }
 
 // During an S3 outage READ, WRITE and FLUSH wait with an interim reply while
-// the connection serves cached data, and finish once S3 is back.
+// the connection serves cached data, and finish once S3 is back. The gate
+// check uses the full outage a backup must survive and the daemon's retries.
 func TestS3OutageRepliesAsync(t *testing.T) {
+	outage := 3 * time.Second
+	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
+		outage = smb.S3OutageWindow
+	}
 	for _, test := range ioCommands {
+		// The outages run in parallel, but JuiceFS setup writes a global, so
+		// the servers start one at a time.
+		srv, proxy := newS3Server(t, smbtest.S3Config{MetaRetries: storage.FilesystemRetries, ChunkRetries: storage.UploadRetries})
 		t.Run(test.name, func(t *testing.T) {
-			srv, proxy := newS3Server(t, smbtest.S3Config{ChunkRetries: 5})
+			t.Parallel()
 			client := srv.connect(t)
 			cached := client.open(t, "cached")
 			cachedData := []byte("cached during the outage")
@@ -122,16 +132,18 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 			if test.command == wire.Flush {
 				writeFile(t, client, id, data)
 			}
-			proxy.FailS3For(time.Hour)
+			start := proxy.FailS3For(outage)
 			request := sendIO(t, client, test.command, id, offset, data)
 			client.interim(t, request)
 			<-proxy.OutageSeen()
 			client.echo(t)
 			readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
-			proxy.RestoreS3()
 			final := client.receive(t, request)
 			if final.Header.Status != smb.StatusSuccess {
 				t.Fatalf("final status %#x", final.Header.Status)
+			}
+			if time.Since(start) < outage {
+				t.Fatal("finished before S3 returned")
 			}
 			if test.command != wire.Read {
 				srv.expectContent(t, map[string]string{"file": string(data)})

@@ -252,9 +252,11 @@ func (table *Table) signalBreakChanges() {
 	table.breakChanges = make(chan struct{})
 }
 
-// SharingLease reports the file whose H lease holds an open that conflicts
-// with request's sharing. Breaking H lets the client close cached handles.
-func (table *Table) SharingLease(request OpenRequest) (smb.ObjectKey, bool) {
+// SharingLease reports the file whose H lease, unless it belongs to
+// clientGUID and key, holds an open that conflicts with request's sharing.
+// Breaking H lets the client close cached handles; the opener's own lease is
+// never broken.
+func (table *Table) SharingLease(request OpenRequest, clientGUID, key GUID) (smb.ObjectKey, bool) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	request = sharingIntent(request)
@@ -262,7 +264,7 @@ func (table *Table) SharingLease(request OpenRequest) (smb.ObjectKey, bool) {
 		if sharingCompatible(request, openRequest(open.Open)) || open.LeaseKey == (GUID{}) {
 			continue
 		}
-		if lease := table.objects[open.Object].lease; lease.State&smb.LeaseHandle != 0 {
+		if lease := table.objects[open.Object].lease; !lease.is(clientGUID, key) && lease.State&smb.LeaseHandle != 0 {
 			return open.Object, true
 		}
 	}

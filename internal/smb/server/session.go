@@ -110,6 +110,11 @@ func (connection *connection) authenticate(message wire.Message, request wire.Se
 	flags := uint16(0)
 	status := smb.StatusMoreProcessingRequired
 	if result.Done {
+		if !connection.server.claimClient(connection) {
+			delete(connection.sessions, id)
+			connection.server.options.Logger.Info("login refused", "reason", "another client is connected")
+			return reply{status: smb.StatusRequestNotAccepted, sessionID: id}, nil
+		}
 		protector, protectErr := crypt.NewProtector(crypt.Options{SessionKey: result.SessionKey, Preauth: session.preauth.Sum(), SessionID: id, Cipher: connection.cipher, Signing: connection.signing, Role: crypt.RoleServer})
 		if protectErr != nil {
 			delete(connection.sessions, id)

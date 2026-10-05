@@ -6,6 +6,7 @@ import (
 	"context"
 	"debug/buildinfo"
 	_ "embed"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -34,8 +35,6 @@ func TestSambaInterop(t *testing.T) {
 	if err := os.WriteFile(auth, []byte("username = backup\npassword = "+f.password+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
-	defer cancel()
 	host, port, err := net.SplitHostPort(f.addr)
 	if err != nil {
 		t.Fatal(err)
@@ -46,16 +45,18 @@ func TestSambaInterop(t *testing.T) {
 		"--option=client min protocol=SMB3_11", "--option=client max protocol=SMB3_11",
 	}
 	// quit authenticates and connects to the share, then sends no file requests.
-	samba(t, exec.CommandContext(ctx, "smbclient"), append(args, "-c", "quit")...)
+	if _, err := samba(t, "smbclient", args, "-c", "quit"); err != nil {
+		t.Fatal(err)
+	}
 	for line := range strings.Lines(smbtortureTests) {
 		name := strings.TrimSpace(line)
 		if name == "" || strings.HasPrefix(name, "#") {
 			continue
 		}
-		output := samba(t, exec.CommandContext(ctx, "smbtorture"), append(args, "--fullname", "--format=subunit", name)...)
+		output, err := samba(t, "smbtorture", args, "--fullname", "--format=subunit", name)
 		// A skipped test or a name that matches nothing does not pass.
-		if !slices.Contains(strings.Split(output, "\n"), "success: "+name) {
-			t.Errorf("smbtorture %s did not report success", name)
+		if err != nil || !slices.Contains(strings.Split(output, "\n"), "success: "+name) {
+			t.Errorf("smbtorture %s did not report success: %v", name, err)
 		}
 	}
 }
@@ -82,16 +83,23 @@ func requireRaceSmbnextBuild(t *testing.T) {
 	}
 }
 
-// samba runs a Samba tool with args in a temporary directory, where
-// smbtorture creates its own temporary files.
-func samba(t *testing.T, cmd *exec.Cmd, args ...string) string {
+// samba runs smbclient or smbtorture with the connection args and test args
+// for at most five minutes in a temporary directory, where smbtorture creates
+// its own temporary files, and logs its output.
+func samba(t *testing.T, tool string, args []string, test ...string) (string, error) {
 	t.Helper()
-	cmd.Args = append(cmd.Args, args...)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Minute)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "smbtorture")
+	if tool == "smbclient" {
+		cmd = exec.CommandContext(ctx, "smbclient")
+	}
+	cmd.Args = append(append(cmd.Args, args...), test...)
 	cmd.Dir = t.TempDir()
 	output, err := cmd.CombinedOutput()
 	t.Logf("%s output:\n%s", cmd.Path, output)
 	if err != nil {
-		t.Fatalf("%s: %v", cmd.Path, err)
+		return string(output), fmt.Errorf("%s: %w", cmd.Path, err)
 	}
-	return string(output)
+	return string(output), nil
 }

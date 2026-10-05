@@ -44,8 +44,8 @@ func OpenMetadata(path string, conf *meta.Config) (meta.Meta, error) {
 // with margin, even when requests fail immediately. Concurrent block reads
 // share one retry counter per open file, so the SMB adapter retries reads too.
 const (
-	filesystemRetries = 53
-	uploadRetries     = 12
+	FilesystemRetries = 53
+	UploadRetries     = 12
 )
 
 // CacheConfig returns the JuiceFS defaults with our data-path retry budget and
@@ -55,7 +55,7 @@ func CacheConfig(format *meta.Format, dir string, capacity *uint64) (chunk.Confi
 	if err := validateFormat(format); err != nil {
 		return chunk.Config{}, err
 	}
-	c := chunk.Config{CacheDir: dir, CacheMode: 0o600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 4, MaxDownload: 200, MaxRetries: uploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
+	c := chunk.Config{CacheDir: dir, CacheMode: 0o600, CacheSize: 100 << 30, CacheChecksum: chunk.CsExtend, CacheScanInterval: time.Hour, FreeSpace: 0.1, AutoCreate: true, Compress: format.Compression, MaxUpload: 4, MaxDownload: 200, MaxRetries: UploadRetries, BlockSize: format.BlockSize << 10, GetTimeout: 60 * time.Second, PutTimeout: 60 * time.Second, CacheFullBlock: true, BufferSize: 300 << 20, Prefetch: 1, HashPrefix: format.HashPrefix}
 	if capacity != nil {
 		c.CacheSize = *capacity
 	}
@@ -135,7 +135,7 @@ func OpenFilesystem(m meta.Meta, blob object.ObjectStorage, format *meta.Format,
 
 func filesystemConfig(format *meta.Format, c *chunk.Config) *vfs.Config {
 	conf := &vfs.Config{Meta: meta.DefaultConf(), Format: *format, Chunk: c, AttrTimeout: time.Second, EntryTimeout: time.Second, DirEntryTimeout: time.Second}
-	conf.Meta.Retries = filesystemRetries
+	conf.Meta.Retries = FilesystemRetries
 	return conf
 }
 

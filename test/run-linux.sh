@@ -20,7 +20,7 @@ export S3_SMB_E2E_BINARY=/tmp/s3-smb
 go test -race -shuffle=on -count=1 -timeout=30m ./...
 go test -race -shuffle=on -count=1 -tags smbnext ./internal/app/...
 
-echo '== Samba checks against the new server =='
+echo '== Integration and Samba checks against the new server =='
 go build -race -tags smbnext -buildvcs=false -o /tmp/s3-smb-next .
 GORACE=halt_on_error=1 S3_SMB_SAMBA=1 S3_SMB_E2E_BINARY=/tmp/s3-smb-next \
-  go test -race -shuffle=on -count=1 -timeout=10m -run '^TestSambaInterop$' ./test/e2e
+  go test -race -shuffle=on -count=1 -timeout=60m ./test/e2e

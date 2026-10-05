@@ -271,6 +271,25 @@ func TestSharingConflictBreaksHandleLease(t *testing.T) {
 	}
 }
 
+// A conflicting open under the opener's own lease breaks nothing: the client
+// knows its own cached handles.
+func TestSharingConflictKeepsOpenersLease(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	options := leasedCreate("file", 1, leaseRH)
+	options.Request.ShareAccess = 1
+	mustCreate(t, client, options)
+	writer := writerCreate(fileOpen)
+	writer.Lease = options.Lease
+	if _, status := client.create(t, writer); status != smb.StatusSharingViolation {
+		t.Fatalf("CREATE status %#x", status)
+	}
+	reader := leasedCreate("file", 1, leaseRH)
+	reader.Request.DesiredAccess = fileReadData
+	if lease := mustCreate(t, client, reader).Lease; lease == nil || lease.State != leaseRH {
+		t.Fatalf("lease after the conflict = %+v", lease)
+	}
+}
+
 func TestLeaseBreakNotificationProtection(t *testing.T) {
 	for _, test := range []struct {
 		name       string
@@ -317,7 +336,6 @@ func TestLeaseAcknowledgmentErrors(t *testing.T) {
 		want   smb.Status
 	}{
 		{holder, "unknown key", 9, leaseR, smb.StatusObjectNameNotFound},
-		{opener, "another client", 1, leaseRH, smb.StatusObjectNameNotFound},
 		{holder, "more than the break leaves", 1, leaseRWH, smb.StatusRequestNotAccepted},
 		{holder, "valid", 1, leaseRH, smb.StatusSuccess},
 		{holder, "no break pending", 1, leaseRH, smb.StatusUnsuccessful},
