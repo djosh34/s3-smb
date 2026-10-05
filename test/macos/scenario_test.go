@@ -46,9 +46,12 @@ func (h *harness) baseline() result {
 		h.shareFeatures()
 		h.t.Log("share-features-passed")
 	}
-	h.destinationSetup()
 	// Temporary for #528: can the harness turn on "Encrypt backups"?
 	h.try(2*time.Minute, "/bin/sh", "-c", "/usr/bin/tmutil help setdestination 2>&1; MANPAGER=cat /usr/bin/man tmutil | /usr/bin/col -b")
+	// Temporary for #528: the new server allows one client, so drop the
+	// harness mount before tmutil opens its own session.
+	h.must(h.detachShares())
+	h.destinationSetup()
 	h.try(2*time.Minute, "/usr/bin/defaults", "read", "/Library/Preferences/com.apple.TimeMachine")
 	h.createTree()
 	h.checkExclusions()
