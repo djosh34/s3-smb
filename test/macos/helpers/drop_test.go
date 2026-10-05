@@ -4,6 +4,7 @@ package helpers
 
 import (
 	"embed"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -42,9 +43,19 @@ func TestParseDropLog(t *testing.T) {
 	if err != nil || got.BackupStarts != 2 || got.Failed {
 		t.Fatal(got, err)
 	}
-	got, err = ParseDropLog([]byte(`[{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":"Backup failed: BACKUP_FAILED_DISCONNECTED_NETWORK (26)"}]`))
-	if err != nil || !got.Failed {
-		t.Fatal(got, err)
+	// A failure counts only after the attempt's own start.
+	backupd := `{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":%q}`
+	start, failed := fmt.Sprintf(backupd, `Starting backup with mode "manual backup"`), fmt.Sprintf(backupd, "Backup failed: BACKUP_FAILED_DISCONNECTED_NETWORK (26)")
+	for _, test := range []struct {
+		records string
+		want    bool
+	}{
+		{"[" + start + "," + failed + "]", true},
+		{"[" + failed + "," + start + "]", false},
+	} {
+		if got, err = ParseDropLog([]byte(test.records)); err != nil || got.Failed != test.want {
+			t.Fatal(test.records, got, err)
+		}
 	}
 }
 

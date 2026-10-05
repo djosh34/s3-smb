@@ -42,7 +42,9 @@ func ParseDropLog(data []byte) (DropLog, error) {
 		if strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Starting backup with mode ") {
 			result.BackupStarts++
 		}
-		if strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Backup failed") {
+		// The window opens before the attempt, so an earlier backup's end can
+		// be in it. Only a failure after this attempt's start counts.
+		if result.BackupStarts > 0 && strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Backup failed") {
 			result.Failed = true
 		}
 	}
