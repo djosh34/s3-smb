@@ -129,6 +129,7 @@ func run() error {
 		{"parallel_distinct", r.testParallelDistinct},
 		{"parallel_same_key", r.testParallelSameKey},
 		{"if_none_match", r.testConditional},
+		{"versions_paging", r.testVersionsPaging},
 	}
 	durations := map[string]string{}
 	only := os.Getenv("B2C_ONLY")
@@ -938,6 +939,53 @@ func (r *runner) testConditional(ctx context.Context) {
 	r.note("conditional_put", results)
 }
 
+// Does ListObjectVersions mark a version as latest when the key's versions
+// are split across pages? Each key gets PUT, PUT, DELETE: 3 entries, of which
+// only the marker is latest. Recorded per page size, for the record.
+func (r *runner) testVersionsPaging(ctx context.Context) {
+	dir := r.prefix + "vpage/"
+	for i := range 5 {
+		key := fmt.Sprintf("%s%02d", dir, i)
+		if _, err := r.put(ctx, key, randBody(100)); err != nil {
+			return
+		}
+		if _, err := r.put(ctx, key, randBody(200)); err != nil {
+			return
+		}
+		if r.del(ctx, key) != nil {
+			return
+		}
+	}
+	results := map[string]any{}
+	for _, size := range []int32{0, 1, 2, 4} {
+		vs, err := r.versionsPaged(ctx, dir, size)
+		if err != nil {
+			continue
+		}
+		latest := map[string]int{}
+		markerLatest := 0
+		for _, v := range vs {
+			if v.latest {
+				latest[v.key]++
+				if v.marker {
+					markerLatest++
+				}
+			}
+		}
+		wrong, total := 0, 0
+		for _, n := range latest {
+			total += n
+			if n != 1 {
+				wrong++
+			}
+		}
+		results[fmt.Sprintf("page_size_%d", size)] = map[string]int{"entries": len(vs),
+			"latest_entries": total,
+			"latest_markers": markerLatest, "keys_with_not_one_latest": wrong}
+	}
+	r.note("versions_paging", results)
+}
+
 // ---- end checks and cleanup ----
 
 type version struct {
@@ -956,8 +1004,17 @@ func (v version) String() string {
 }
 
 func (r *runner) versions(ctx context.Context, prefix string) ([]version, error) {
+	return r.versionsPaged(ctx, prefix, 0)
+}
+
+// versionsPaged lists versions with pageSize entries per page; 0 means the server default.
+func (r *runner) versionsPaged(ctx context.Context, prefix string, pageSize int32) ([]version, error) {
 	var vs []version
-	p := s3.NewListObjectVersionsPaginator(r.w, &s3.ListObjectVersionsInput{Bucket: &r.bucket, Prefix: &prefix})
+	in := &s3.ListObjectVersionsInput{Bucket: &r.bucket, Prefix: &prefix}
+	if pageSize > 0 {
+		in.MaxKeys = aws.Int32(pageSize)
+	}
+	p := s3.NewListObjectVersionsPaginator(r.w, in)
 	for p.HasMorePages() {
 		page, err := p.NextPage(ctx)
 		if r.failed("list_versions", err) {
