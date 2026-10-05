@@ -88,10 +88,15 @@ TREE_DISCONNECT closes every open of the tree, including durable opens.
 `internal/smb/features.go` holds the exact masks the server advertises; each
 contains only features whose handlers work. The share is case-sensitive and
 supports named streams up to 64 KiB. The AAPL volume capabilities are
-case-sensitive and full sync (0x06). The NEGOTIATE reply does not advertise
-leasing. Hard links, open by file ID, sparse files, change notification,
+case-sensitive and full sync (0x06). The NEGOTIATE reply advertises leasing
+and large MTU, so macOS asks for leases and durable handles. Hard links, open by file ID, sparse files, change notification,
 classic oplocks, directory leases, durable v1 and persistent handles are not
 granted.
+
+The server lets one client in at a time. Login is refused while another
+client is connected or one of its durable opens waits for a reconnect. Any
+number of connections with the same client GUID are let in, so a Mac can
+reconnect before the server notices its old connection is gone.
 
 SMB 3.1.1 negotiates encryption only through its encryption context. GCM is
 required by default. The encryption setting can allow signed plaintext, but
@@ -170,7 +175,7 @@ deletes.
 
 A file has at most one lease. A conflicting open breaks it, waits for the
 acknowledgment or a 35-second timeout, and tries once more; a lease still in
-the way gives SHARING_VIOLATION. A timed-out break revokes the whole lease. A
+the way gives SHARING_VIOLATION. An open never breaks its own lease. A timed-out break revokes the whole lease. A
 lease whose opens are all detached drops at once, closing durable opens that
 lose H.
 

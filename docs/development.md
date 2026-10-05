@@ -144,11 +144,14 @@ checks peak daemon memory and elapsed time and writes
 runs too. See the measured costs in
 [recovery](recovery.md#measured-snapshot-costs-and-limits).
 
-Last, the step builds the new server with `-race -tags smbnext` and runs
-`TestSambaInterop` against it with `GORACE=halt_on_error=1`. The test refuses a
-daemon without `-race` and `smbnext` in its build information. Samba's
-smbclient connects to the share with SMB 3.1.1 and encryption, then each test
-in `test/e2e/smbtorture.allowlist` runs on its own and must report success.
+Last, the step builds the new server with `-race -tags smbnext` and runs all
+of `test/e2e` against it with `GORACE=halt_on_error=1`, including
+`TestSambaInterop`. That test refuses a daemon without `-race` and `smbnext` in
+its build information. Samba's smbclient connects to the share with SMB 3.1.1
+and encryption, then each test in `test/e2e/smbtorture.allowlist` runs on its
+own, with a five-minute limit, and must report success. Every Samba connection
+uses the same client GUID, because the new server lets one client in at a
+time.
 
 The script prints the directory that holds each daemon's stdout, stderr and
 prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
