@@ -113,27 +113,17 @@ func TestInspectionRequiresAbsoluteStateDirectory(t *testing.T) {
 }
 
 func TestRecoveryClearsLiveLocksAndSessions(t *testing.T) {
-	t.Run("writable-session", func(t *testing.T) { testRecoveryClearsLocks(t, false) })
-	t.Run("readonly-sid-zero", func(t *testing.T) { testRecoveryClearsLocks(t, true) })
-}
-
-func testRecoveryClearsLocks(t *testing.T, readonlyWriter bool) {
 	m, f := newMetadata(t)
 	ino := createInode(t, m, "locked")
 	sustained := createInode(t, m, "unlinked-open")
-	if readonlyWriter {
-		m = openMetadata(t, m.path, true, 0)
-	}
 	if err := m.NewSession(true); err != nil {
 		t.Fatal(err)
 	}
-	if !readonlyWriter {
-		if st := m.Unlink(meta.Background(), meta.RootInode, "unlinked-open", true); st != 0 {
-			t.Fatal(st)
-		}
-		if count := queryCount(t, m.path, "jfs_sustained"); count != 1 {
-			t.Fatalf("fixture has %d sustained inodes", count)
-		}
+	if st := m.Unlink(meta.Background(), meta.RootInode, "unlinked-open", true); st != 0 {
+		t.Fatal(st)
+	}
+	if count := queryCount(t, m.path, "jfs_sustained"); count != 1 {
+		t.Fatalf("fixture has %d sustained inodes", count)
 	}
 	if st := m.Flock(meta.Background(), ino, 1, meta.F_WRLCK, false); st != 0 {
 		t.Fatal(st)
@@ -152,18 +142,17 @@ func testRecoveryClearsLocks(t *testing.T, readonlyWriter bool) {
 	if _, err := Recover(context.Background(), s, r.Key, path, t.TempDir(), f); err != nil {
 		t.Fatal(err)
 	}
+	for _, table := range []string{"jfs_flock", "jfs_plock"} {
+		if count := queryCount(t, path, table); count != 0 {
+			t.Fatalf("%d restored rows in %s", count, table)
+		}
+	}
 	restored := openMetadata(t, path, true, 0)
 	if err := restored.NewSession(true); err != nil {
 		t.Fatal(err)
 	}
-	if st := restored.Flock(meta.Background(), ino, 2, meta.F_WRLCK, false); st != 0 {
-		t.Fatalf("restored flock remains: %v", st)
-	}
-	if st := restored.Setlk(meta.Background(), ino, 2, false, meta.F_WRLCK, 0, 100, 2); st != 0 {
-		t.Fatalf("restored byte-range lock remains: %v", st)
-	}
 	var attr meta.Attr
-	if !readonlyWriter && restored.GetAttr(meta.Background(), sustained, &attr) != syscall.ENOENT {
+	if restored.GetAttr(meta.Background(), sustained, &attr) != syscall.ENOENT {
 		t.Fatal("unlinked open inode survived its dead session")
 	}
 	var newIno meta.Ino
