@@ -292,14 +292,18 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=discover
 
 There are no release candidates.
 
-1. Pick the latest `main` commit. On it, the `check` workflow passes in gate
-   mode (`gh workflow run check.yml -f gate=true`) and the Time Machine
-   workflow passes with `-f mode=acceptance`.
+1. Pick the latest `main` commit. On it, every workflow passes: `check` in gate
+   mode (`gh workflow run check.yml --ref main -f gate=true`), the Time Machine
+   workflow (`gh workflow run macos.yml --ref main -f mode=acceptance`) and
+   `Publish MinIO`.
 2. Install that exact commit from the Go proxy with empty caches:
    `scripts/check-public-install.sh <pseudo-version>`.
    `go list -m github.com/djosh34/s3-smb@<sha>` prints the pseudo-version. If
    the install fails, fix it in a pull request and start again.
-3. Tag the commit `vX.Y.Z`, push the tag and create the GitHub release.
+3. Tag the commit `vX.Y.Z`, push the tag and create the GitHub release. Its
+   notes say what s3-smb is, the install command, what was tested with a link
+   to the Mac run, a link to the limits, and whether the release needs a fresh
+   bucket.
 
 Never move or reuse a tag. The Go checksum database keeps the first hash.
 

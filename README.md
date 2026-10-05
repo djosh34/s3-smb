@@ -5,8 +5,8 @@ and keeps the filesystem metadata in a local SQLite database, which it backs up
 to the same bucket every hour. It is meant for a Mac user who wants Time Machine
 backups in S3 without a NAS. It runs in the foreground as one process.
 
-v0.2.0 starts on a fresh bucket. It cannot read the buckets, metadata backups or
-local state of v0.1.0.
+v0.2.0 needs a fresh bucket and state directory. It does not support a bucket,
+metadata backups or local state from v0.1.0.
 
 ## Install
 
@@ -95,19 +95,20 @@ Time Machine needs:
 - Signing on every session, and AES-GCM encryption by default.
 - One disk share and no share list. Connect with a `smb://host:port/share` URL
   or `tmutil setdestination`. There is no Bonjour advertisement.
-- File leases, durable v2 handles and reconnect. A durable handle waits 120
-  seconds for its client to come back, or what the client asks for, up to 16
-  minutes.
-- Byte-range locks that never wait, named streams for extended attributes and
-  Finder info, and Apple's full sync.
+- File leases, durable v2 handles and reconnect. A durable handle waits for its
+  client as long as the client asks, up to 16 minutes, or 120 seconds if it asks
+  for none.
+- Byte-range locks that never wait, and named streams for extended attributes
+  and Finder info.
+- A full sync from the Mac waits until the data is in S3.
 - No change notification, directory leases, oplocks, hard links or persistent
   handles.
 
 One client at a time: while one client is logged in, or one of its durable
 handles waits for a reconnect, the server refuses any other client. A reconnect
-from the same Mac is let in. So a second Mac recovering from the share may wait
-until the first Mac's durable handles expire, at most 16 minutes. Mounting the
-share in Finder during a backup may be refused.
+from the same SMB client is let in. So a new Mac restoring from the share may
+wait until the first Mac's durable handles expire, at most 16 minutes. Mounting
+the share in Finder during a backup may be refused.
 [The SMB server design](docs/smb-design.md) has the details.
 
 ## What survives a failure
@@ -119,8 +120,8 @@ share in Finder during a backup may be refused.
   local disk. Time Machine treats that backup as failed and the next one
   succeeds.
 - The machine is lost and you recover on a new one: you get the state of the
-  last metadata backup, taken every hour. Changes after it are lost. Earlier
-  backups are intact.
+  last metadata backup, taken every `backup.interval`, one hour by default.
+  Changes after it are lost. Earlier backups are intact.
 
 A network drop of up to about 30 seconds during normal backup traffic does not
 end the backup: the Mac reconnects, gets back the files it had open, and the
@@ -184,7 +185,7 @@ bucket layout are in [recovery](docs/recovery.md).
 
 ## Limits
 
-- One SMB client at a time, as described above.
+- One SMB client at a time.
 - Only one s3-smb may write a bucket, on any machine. Stop every other one
   first. The state lock only stops a second process with the same
   `storage.state_dir`.
