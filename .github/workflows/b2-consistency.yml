@@ -1,0 +1,34 @@
+name: B2 consistency
+# Research for issue #604. The push trigger only registers this workflow from
+# its branch; the job runs only when started by hand.
+on:
+  workflow_dispatch:
+  push:
+    branches: [research/b2-consistency]
+permissions:
+  contents: read
+concurrency:
+  group: b2-consistency
+  cancel-in-progress: false
+jobs:
+  b2:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+      - run: go build -o b2c ./research/b2consistency
+      - run: ./b2c
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+          B2_ENDPOINT: ${{ vars.B2_ENDPOINT }}
+          B2_BUCKET: ${{ vars.B2_BUCKET }}
+      - if: always() && hashFiles('results.json') != ''
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: b2-consistency-results
+          path: results.json
