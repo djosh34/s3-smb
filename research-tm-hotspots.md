@@ -250,6 +250,141 @@ Bytes in scratch at the same moment (MiB). p99 is over time: the level that is e
 - **In incrementals, scratch stays under 360 MiB.** The largest is inc2, which copied 500 MiB of new files. Hot-spot chunks add little, because they are FLUSHed within seconds.
 - **The peak follows the data written between FLUSHes, not the tree size.** Here that was 27 seconds at 42 MiB/s. A faster link or disk, or a client that FLUSHes less often, would give a higher peak. A first backup of a real Mac may write for longer between FLUSHes. This run does not show an upper limit. **I**
 
+## 7. Larger tree, wide incrementals (second round)
+
+Asked after the first report: a much larger tree, and incrementals that change 10% to 30% of all files. Two Mac runs, same model and scripts as above. Labels as before.
+
+### Runs and runner limits
+
+| Run | Tree | Backups | Result |
+|---|---|---|---|
+| [37380880797](https://github.com/djosh34/s3-smb/actions/runs/37380880797), `hotspots-large` | 15.7 GiB, 85,390 files (scale 0.585, sized from free disk) | first, inc1, inc2 complete. inc3 stopped after 30 minutes | Failed: free disk below 20 GiB during inc3 |
+| [37393029984](https://github.com/djosh34/s3-smb/actions/runs/37393029984), `hotspots-medium` | 7.0 GiB, 36,464 files (scale 0.25, fixed) | first and 5 incrementals | Passed, 2 h 7 min of test time |
+
+Both: `macos-15-intel`, image 20260824.0482.1, macOS 15.7.9, encryption off, MinIO, server `smbnext`.
+
+What was tried, and why the tree was cut:
+
+1. **Disk.** The runner starts with about 112 GB free. A new workflow step deletes the extra Xcode copies, simulator runtimes, Android SDK and .NET. That frees about 60 GB, to 172 GB, and takes 11 minutes. **M**
+2. **The store grows much faster than the backup.** MinIO under the JuiceFS-backed test server grew 5 to 7 times the bytes macOS wrote: 126 GiB of objects for about 17 GiB written in the medium run. During the large run's inc3 it grew 29 GB while Time Machine copied 3.5 GB. This is the old engine's write amplification, not Time Machine. **M**
+3. **The large run** sized its tree from free disk, assuming 6.5 times the tree. That was too little. inc3 hit the harness's 20 GiB floor at 19% done, and Time Machine's speed had dropped to about 0.3 MB/s. Its first backup, inc1 and inc2 are complete and used below. inc3 is used as a partial window up to the failure (backupd "Failed copy" at 00:09:24).
+4. **The medium run** used a fixed quarter-size tree with the same changes. It passed, but ended with 20.5 GB free, so this is about the largest that fits. **M**
+5. **Time.** Incrementals took 7 to 31 minutes, much longer than the first round. Time Machine copied at 4 to 30 MB/s. The 6-hour job limit was not hit.
+
+Time Machine's own log says how much it copied per backup (medium run): 7.52 GB, then 2.09, 6.40, 3.26, 1.72 and 0.29 GB. Its "estimated full backup" of 177 to 282 GB in the log is the whole disk, not what it copies. **M**
+
+### What changed before each incremental (medium run)
+
+| Backup | Change | Files added | Files changed | Files deleted | Tree after |
+|---|---|---:|---:|---:|---|
+| inc1 | 10% of files edited in every group (4 KiB in small files, 1 MiB in large ones), 2 GiB added, 2% deleted | 2,640 | 3,646 | 1,559 | 38,322 files, 8.4 GiB |
+| inc2 | 30% edited, 4 GiB added, 5% deleted | 4,130 | 11,497 | 3,371 | 40,330, 11.2 GiB |
+| inc3 | 20% edited, 1 GiB added, 10% deleted | 8 | 8,065 | 4,034 | 36,304, 11.4 GiB |
+| inc4 | 10% of photos and docs rewritten in full, 10% of the rest edited, 1 GiB added, 3% deleted | 1,024 | 3,627 | 1,121 | 36,207, 12.1 GiB |
+| inc5 | 30% of notes and code edited, 10,000 notes added, 5% of notes deleted | 10,000 | 10,016 | 1,597 | 44,610, 12.1 GiB |
+
+The large run's inc1 and inc2 made the same changes on the bigger tree: 8,540 and 25,880 files changed.
+
+### Uploads per backup, 8 MiB chunks (C)
+
+| Backup | Written (M) | 8 MiB upload | 1 MiB upload | 256 KiB upload | 8 MiB upload / written |
+|---|---:|---:|---:|---:|---:|
+| medium first | 7.9 GiB | 9.5 GiB | 8.2 GiB | 8.0 GiB | 1.2 |
+| medium inc1 | 1.8 GiB | 5.2 GiB | 2.4 GiB | 2.0 GiB | 2.9 |
+| medium inc2 | 4.0 GiB | 12.3 GiB | 5.5 GiB | 4.5 GiB | 3.1 |
+| medium inc3 | 1.5 GiB | 12.9 GiB | 3.5 GiB | 2.2 GiB | 8.8 |
+| medium inc4 | 1.6 GiB | 18.8 GiB | 4.7 GiB | 2.6 GiB | 11.6 |
+| medium inc5 | 0.4 GiB | 12.5 GiB | 2.6 GiB | 1.1 GiB | 30.1 |
+| large first | 16.8 GiB | 20.6 GiB | 17.5 GiB | 17.0 GiB | 1.2 |
+| large inc1 | 2.1 GiB | 13.5 GiB | 4.0 GiB | 2.7 GiB | 6.5 |
+| large inc2 | 4.9 GiB | 26.8 GiB | 8.6 GiB | 6.1 GiB | 5.5 |
+| large inc3, partial | 1.7 GiB | 15.7 GiB | 4.3 GiB | 2.6 GiB | 9.1 |
+
+"Written" is also what JuiceFS would upload. The worst case is many small files: medium inc5 wrote 427 MiB and would upload 12.5 GiB at 8 MiB.
+
+### Trash, 8 MiB chunks (C)
+
+Bytes sent to the trash per backup, and how much of it is hot chunks (10 or more versions in that backup):
+
+| Backup | Sent to trash | from hot chunks | 1 MiB | 256 KiB |
+|---|---:|---:|---:|---:|
+| medium inc1 | 3.5 GiB | 62% | 0.8 GiB | 0.3 GiB |
+| medium inc2 | 8.5 GiB | 83% | 1.6 GiB | 0.6 GiB |
+| medium inc3 | 11.6 GiB | 88% | 2.2 GiB | 0.8 GiB |
+| medium inc4 | 17.3 GiB | 92% | 3.2 GiB | 1.1 GiB |
+| medium inc5 | 12.4 GiB | 77% | 2.4 GiB | 0.9 GiB |
+| large inc1 | 11.5 GiB | 76% | 2.0 GiB | 0.7 GiB |
+| large inc2 | 22.1 GiB | 89% | 3.9 GiB | 1.4 GiB |
+| large inc3, partial | 14.1 GiB | 82% | 2.7 GiB | 1.0 GiB |
+
+**Short wait** (the decision on #597: keep the last 4 copies, copies every 15 minutes, delete a replaced version once 5 newer copies have landed). Peak bytes held at one time, mean over 15 copy-grid offsets, min to max:
+
+| Chunk size | Medium, as run | Medium, hourly | Large, hourly (first 2 incrementals and part of inc3) |
+|---|---:|---:|---:|
+| 8 MiB | 40.9 GiB | 26.4 GiB (24.2 to 28.3) | 29.2 GiB (28.5 to 29.7) |
+| 1 MiB | 7.7 GiB | 4.9 GiB (4.4 to 5.2) | 5.4 GiB (5.3 to 5.5) |
+| 256 KiB | 2.8 GiB | 1.7 GiB (1.5 to 1.9) | 1.9 GiB (1.8 to 2.0) |
+
+- As run, backups were back to back, so the wait spanned two to four backups. Hourly is the same events with one backup per hour, or a minute after the last one if it ran over an hour. **C**
+- **Extrapolated to hourly backups for 7 days (E):** the short-wait trash does not grow with time. It stays at one or two backups' worth. If every hour looked like the medium incrementals, that is about 21 GiB on average and 30 GiB at worst at 8 MiB, 4 to 6 GiB at 1 MiB, and 1.5 to 2 GiB at 256 KiB. For comparison, A would hold about 1.7 TiB and B-lite about 170 GiB at 8 MiB.
+- Changing 10% to 30% of files every hour is far above a normal Mac. The first round's light incrementals gave 2.8 GiB on average. Real use lies between, closer to the first round. **I**
+
+### Hot spots (C)
+
+Versions per 8 MiB chunk, medium run, top 8:
+
+| File | Offset (MiB) | first | inc1 | inc2 | inc3 | inc4 | inc5 |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `bands/0` | 0 | 103 | 101 | 155 | 181 | 212 | 214 |
+| `mapped/0` | 0 | 59 | 70 | 98 | 112 | 162 | 129 |
+| `bands/0` | 112 | 57 | 70 | 98 | 112 | 162 | 129 |
+| `bands/5` | 240 | 44 | 61 | 74 | 75 | 107 | 78 |
+| `bands/0` | 120 | 0 | 23 | 65 | 90 | 143 | 109 |
+| `bands/5` | 248 | 1 | 5 | 45 | 72 | 115 | 91 |
+| `bands/6` | 32 | 3 | 14 | 29 | 53 | 72 | 45 |
+| `bands/24` | 240 | 0 | 16 | 48 | 53 | 78 | 14 |
+
+- The four spots from round one are hot in every backup again, now with 44 to 214 versions per backup. Their neighbours (`bands/0` at 120 MiB, `bands/5` at 248 MiB) join from inc1 on.
+- Chunks with 10 or more versions: medium 15, 39, 42, 46 and 41 per incremental. Large: 54, 91, and 49 in the partial inc3. Round one had 1 to 13.
+- Hot spots grow with the number of files changed, not bytes. Medium inc5 changed 289 MB of small files and has as many hot chunks as inc3.
+
+### Peak unflushed data and the 256 MiB RAM budget (C)
+
+Unflushed data: dirty chunks at object size, held until their file's FLUSH or CLOSE (`scratch.py`, as in section 6).
+
+| Backup | Peak | p99 over time | Over 256 MiB: WRITEs | Uploaded early | Extra versions (MiB) |
+|---|---:|---:|---:|---:|---:|
+| medium first | 838 MiB | 819 MiB | 464 | 3.6 GiB | 34 (259) |
+| medium inc1 | 527 MiB | 511 MiB | 56 | 448 MiB | 15 (120) |
+| medium inc2 | 541 MiB | 439 MiB | 181 | 1.4 GiB | 33 (264) |
+| medium inc3 | 842 MiB | 637 MiB | 99 | 791 MiB | 28 (223) |
+| medium inc4 | 611 MiB | 420 MiB | 55 | 440 MiB | 2 (16) |
+| medium inc5 | 190 MiB | 108 MiB | 0 | 0 | 0 |
+| large first | 1,668 MiB | 1,636 MiB | 1,024 | 8.0 GiB | 90 (718) |
+| large inc1 | 738 MiB | 563 MiB | 92 | 736 MiB | 10 (80) |
+| large inc2 | 821 MiB | 546 MiB | 211 | 1.7 GiB | 36 (282) |
+| large inc3, partial | 504 MiB | 240 MiB | 44 | 352 MiB | 10 (80) |
+
+- The budget model: when a WRITE pushes the dirty total over 256 MiB, the least recently written chunks are uploaded early until it fits. An early chunk that is written again before its FLUSH costs one extra version. Sparse zero chunks change nothing here, because the peaks fall in data copy, not the erase.
+- **The budget is exceeded in every backup except the small-file one.** The first backup uploads 46% to 48% of its bytes early. Incrementals upload 0.4 to 1.7 GiB early.
+- **Early upload is cheap in versions.** Only 2 to 90 early chunks per backup were written again before their FLUSH, at most 0.7 GiB. That is under 4% of the upload of the same backup.
+- The peak grew with the tree, 0.8 GiB with a 7 GiB tree and 1.7 GiB with a 15.7 GiB tree. It follows how long macOS writes before FLUSH. **I**
+
+### Database rows at the end (C)
+
+| Run | Image | 8 MiB rows | 1 MiB rows | 256 KiB rows | Files |
+|---|---:|---:|---:|---:|---:|
+| medium, after inc5 | 16.0 GiB | 2,122 | 16,480 | 65,708 | 135 |
+| large, in inc3 | 24.3 GiB | 3,220 | 25,037 | 99,839 | 201 |
+
+Per TiB of image (E): about 136,000, 1.05 million and 4.2 million rows, the same as round one.
+
+### Summary of round two
+
+- With 10% to 30% of files changed per backup, 8 MiB chunks upload about 3 to 30 times the bytes written, and send 3.5 to 22 GiB per backup to the trash.
+- Short wait holds about 26 to 29 GiB at peak at 8 MiB with hourly backups like these, 5 GiB at 1 MiB, and under 2 GiB at 256 KiB. It does not grow with time.
+- A 256 MiB RAM budget forces early uploads in almost every backup, but adds under 4% extra versions.
+
 ## Limits
 
 - **Back to back, not hourly.** The 6 backups ran 1 to 2 minutes apart. The hourly numbers move the measured events onto an hourly grid. macOS might write a bit differently after an hour of idle time.
@@ -266,6 +401,8 @@ Bytes in scratch at the same moment (MiB). p99 is over time: the level that is e
 - `test/macos/hotspots_test.go`, and small changes in `scenario_test.go`, `harness_test.go`, `run.sh` and `.github/workflows/macos.yml`: the `hotspots` scenario and longer budgets.
 - `research-tm-hotspots/hotspots.py`: replays the trace into chunk tables and writes JSON.
 - `research-tm-hotspots/report.py`: prints the tables from that JSON.
-- `research-tm-hotspots/scratch.py`: bytes waiting in local scratch until FLUSH (section 6).
+- `research-tm-hotspots/scratch.py`: bytes waiting in local scratch until FLUSH, and early uploads under a RAM budget (sections 6 and 7).
+- `research-tm-hotspots/out-medium.json`, `out-large.json`: the output for runs 37393029984 and 37380880797 (section 7). The large run needs the extra window `inc3-partial=2026-10-05T23:39:02.497165Z,2026-10-06T00:09:24Z`.
+- `test/macos/hotspots_large_test.go` and a free-disk step in the workflow: the `hotspots-large` and `hotspots-medium` scenarios.
 - `research-tm-hotspots/out.json`: the output for run 37361509487.
 - Input: `application-1-initialize.log` and `mac-harness.log` from the `mac-hotspots-*` artifact of run 37361509487 (kept 14 days).

@@ -23,8 +23,8 @@ MiB = 1 << 20
 
 
 def main():
-    log, harness = sys.argv[1], sys.argv[2]
-    wins = windows_from([harness])
+    log = sys.argv[1]
+    wins = windows_from(sys.argv[2:])
     fsize = defaultdict(int)
     dirty = defaultdict(set)  # path -> chunks
     nonzero = defaultdict(set)  # path -> chunks with nonzero data, ever
@@ -217,7 +217,7 @@ def budget(log, wins, limit=256 << 20):
 
 if __name__ == "__main__":
     main()
-    wins = windows_from([sys.argv[2]])
+    wins = windows_from(sys.argv[2:])
     print("\nRAM budget 256 MiB: WRITEs over budget, chunks and MiB uploaded early, extra versions and MiB")
     for label, d in budget(sys.argv[1], wins).items():
         print(f"  {label:10} {d['triggers']:6} {d['early_chunks']:6} {d['early_bytes'] / MiB:9.0f} {d['extra_versions']:6} {d['extra_bytes'] / MiB:8.0f}")
