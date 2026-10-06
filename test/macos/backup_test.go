@@ -76,10 +76,10 @@ func (h *harness) startBackup(label string) {
 }
 
 func (h *harness) completeBackup(label string) error {
-	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
+	deadline, next := time.Now().Add(150*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
-			h.t.Fatal("full backup exceeded 90 minute stage budget")
+			h.t.Fatal("full backup exceeded 150 minute stage budget")
 		}
 		if time.Now().After(next) {
 			var stat syscall.Statfs_t
@@ -89,6 +89,7 @@ func (h *harness) completeBackup(label string) error {
 			if free < 20<<30 {
 				h.t.Fatal("free space below 20 GiB")
 			}
+			h.storage(label)
 			next = time.Now().Add(time.Minute)
 		}
 		h.pause(time.Second)
@@ -101,6 +102,7 @@ func (h *harness) completeBackup(label string) error {
 		return errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
 	}
 	h.t.Log("time-machine-command-completed", label)
+	h.storage(label + "-end")
 	// A command exit is not enough. remoteBackup must also find a completed native backup.
 	return nil
 }

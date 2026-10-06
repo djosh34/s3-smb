@@ -68,8 +68,8 @@ func defaultTuning() tuning {
 	return tuning{
 		chunkSize:    8 << 20,
 		dirtyChunks:  (256 << 20) / (8 << 20),
-		copiesKept:   4,
-		copyInterval: 15 * time.Minute,
+		copiesKept:   keptCopies,
+		copyInterval: copyEvery,
 		stopAge:      30 * time.Minute,
 		renewEvery:   time.Minute,
 		lease:        8 * time.Minute,

@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/djosh34/s3-smb/internal/netfault"
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
@@ -133,6 +134,18 @@ func (h *harness) scenario(name string) result {
 	switch name {
 	case "network-drop", "network-outage":
 		return h.networkScenario(name)
+	case "incrementals":
+		return h.incrementals()
+	case "b2":
+		return h.b2Backup()
+	case "s3-outage":
+		return h.s3Outage()
+	case "thinning":
+		return h.thinning()
+	case "rollback":
+		return h.rollback()
+	case "large":
+		return h.large()
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
@@ -269,8 +282,10 @@ func (h *harness) finish() {
 			h.t.Error(err)
 		}
 	}
-	if h.proxy != nil {
-		h.proxy.Restore()
+	for _, proxy := range []*netfault.Proxy{h.proxy, h.s3Proxy} {
+		if proxy != nil {
+			proxy.Restore()
+		}
 	}
 	// Clients get five minutes, which leaves two for the launchd job and services.
 	clientCtx, cancelClients := context.WithTimeout(ctx, 5*time.Minute)
@@ -293,6 +308,13 @@ func (h *harness) finish() {
 	if h.daemon != nil {
 		report(stop(h.daemon, false))
 		h.daemon = nil
+	}
+	if h.s3Proxy != nil {
+		report(h.s3Proxy.Close())
+		h.s3Proxy = nil
+	}
+	if len(h.samples) > 0 {
+		report(writeJSON(h.evidenceDir, "storage.json", h.samples))
 	}
 	if h.minio != nil {
 		report(stop(h.minio, false))

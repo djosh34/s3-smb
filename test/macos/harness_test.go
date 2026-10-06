@@ -34,7 +34,7 @@ import (
 const (
 	minioUser     = "mac-acceptance"
 	minioPassword = "synthetic-mac-acceptance-secret"
-	bucket        = "time-machine"
+	minioEndpoint = "http://127.0.0.1:19000"
 )
 
 type harness struct {
@@ -45,14 +45,22 @@ type harness struct {
 	workDir, evidenceDir, transferDir, proofDir        *os.Root
 	destination, launchdPlist, smbAddress              string
 	// smbLogLevel is the kernel SMB log level to restore, if it was changed.
-	smbLogLevel               string
-	proxy                     *netfault.Proxy
-	s3                        *s3.Client
-	daemon, minio, backup     *process
-	backupDirectory           *os.Root
-	attachments               []string
+	smbLogLevel string
+	// The bucket that s3-smb uses: MinIO, or B2 when b2 is set.
+	endpoint, bucket, region string
+	// proxy cuts SMB connections, s3Proxy the connections to MinIO.
+	proxy, s3Proxy        *netfault.Proxy
+	s3                    *s3.Client
+	daemon, minio, backup *process
+	backupDirectory       *os.Root
+	attachments           []string
+	// prepare adds to the test tree before the first backup.
+	prepare func()
+	// uploaded holds every chunk object listed in this run, with its size.
+	uploaded                  map[string]int64
+	samples                   []storageSample
 	serial, applicationSerial int
-	finished                  bool
+	finished, b2              bool
 }
 
 func (h *harness) must(err error) {
@@ -122,11 +130,18 @@ func TestTimeMachine(t *testing.T) {
 	if !ok {
 		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
 	}
+	scenario := os.Getenv("MAC_SCENARIO")
+	if phase == "scenario" && scenario == "large" {
+		budget = 335 * time.Minute
+	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	h := &harness{t: t, ctx: ctx, smbAddress: "127.0.0.1:1445"}
+	h := &harness{t: t, ctx: ctx, smbAddress: "127.0.0.1:1445", endpoint: minioEndpoint, bucket: "time-machine", region: "us-east-1", uploaded: map[string]int64{}}
+	if phase == "scenario" && scenario == "b2" {
+		h.useB2()
+	}
 	for name, target := range map[string]*string{"MAC_WORK": &h.work, "MAC_ARTIFACTS": &h.evidence, "MAC_TRANSFER": &h.transfer} {
 		*target = os.Getenv(name)
 		if !filepath.IsAbs(*target) || filepath.Clean(*target) == "/" {
@@ -159,13 +174,13 @@ func TestTimeMachine(t *testing.T) {
 	case "backup":
 		outcome = h.baseline()
 	case "scenario":
-		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))
+		outcome = h.scenario(scenario)
 	}
 	h.finish()
 	if t.Failed() {
 		return
 	}
-	if phase == "backup" || (phase == "scenario" && os.Getenv("MAC_SCENARIO") == "machine-loss") {
+	if phase == "backup" || (phase == "scenario" && scenario == "machine-loss") {
 		if h.backup != nil || len(h.attachments) != 0 || h.daemon != nil || h.minio != nil {
 			t.Fatal("cannot export active storage")
 		}
@@ -255,7 +270,13 @@ func (h *harness) checkExclusions() {
 	}
 }
 
+// services starts MinIO and connects to it, or connects to B2 in the b2
+// scenario. A fresh bucket must be empty.
 func (h *harness) services(fresh bool) {
+	if h.b2 {
+		h.connectB2()
+		return
+	}
 	for _, port := range []string{"1445", "19000", "19003"} {
 		listener, err := (&net.ListenConfig{}).Listen(h.ctx, "tcp", "127.0.0.1:"+port)
 		h.must(err)
@@ -279,15 +300,15 @@ func (h *harness) services(fresh bool) {
 		return response.StatusCode == http.StatusOK, response.Body.Close()
 	}))
 	h.s3 = s3.New(s3.Options{
-		Region:       "us-east-1",
-		BaseEndpoint: aws.String("http://127.0.0.1:19000"),
+		Region:       h.region,
+		BaseEndpoint: aws.String(minioEndpoint),
 		UsePathStyle: true,
 		Credentials:  credentials.NewStaticCredentialsProvider(minioUser, minioPassword, ""),
 	})
 	if fresh {
 		ctx, cancel := context.WithTimeout(h.ctx, 2*time.Minute)
 		defer cancel()
-		_, err := h.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)})
+		_, err := h.s3.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(h.bucket)})
 		h.must(err)
 		if len(h.objects("")) != 0 {
 			h.t.Fatal("initial bucket is not empty")
@@ -295,17 +316,22 @@ func (h *harness) services(fresh bool) {
 	}
 }
 
-// objects returns the size of every object in the bucket under prefix.
+// objects returns the size of every object in the bucket under prefix. It
+// adds the chunk objects it sees to uploaded.
 func (h *harness) objects(prefix string) map[string]int64 {
 	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Minute)
 	defer cancel()
 	objects := map[string]int64{}
-	pages := s3.NewListObjectsV2Paginator(h.s3, &s3.ListObjectsV2Input{Bucket: aws.String(bucket), Prefix: aws.String(prefix)})
+	pages := s3.NewListObjectsV2Paginator(h.s3, &s3.ListObjectsV2Input{Bucket: aws.String(h.bucket), Prefix: aws.String(prefix)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		h.must(err)
 		for _, object := range page.Contents {
-			objects[aws.ToString(object.Key)] = aws.ToInt64(object.Size)
+			key, size := aws.ToString(object.Key), aws.ToInt64(object.Size)
+			objects[key] = size
+			if strings.HasPrefix(key, "chunks/") {
+				h.uploaded[key] = size
+			}
 		}
 	}
 	h.t.Log("bucket-objects", prefix, len(objects))
@@ -331,6 +357,9 @@ func (h *harness) createTree() {
 	h.randomFile("original.bin", 4_000_000)
 	h.must(h.proofDir.WriteFile("nested/message.txt", []byte("independent baseline contents\n"), 0o600))
 	h.must(h.proofDir.WriteFile("nested/deeper/zero-length", nil, 0o600))
+	if h.prepare != nil {
+		h.prepare()
+	}
 	h.must(h.transferDir.Mkdir("reference", 0o700))
 	h.manifest(h.proof, h.transferDir, "reference/tree.json")
 }

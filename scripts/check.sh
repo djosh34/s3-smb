@@ -76,6 +76,7 @@ check_lint() {
   xargs -0 -r "$tools/actionlint" -shellcheck "$tools/shellcheck" -pyflakes '' < "$work/workflows"
   go mod tidy -diff
   go vet ./...
+  go vet -tags testcopies ./internal/engine
   GOOS=darwin go vet -tags macos ./test/macos/...
   find . -type d -path './.git' -prune -o -type f -name '*.go' -print0 > "$work/go-files"
   xargs -0 gofmt -l < "$work/go-files" > "$work/unformatted"

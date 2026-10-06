@@ -24,13 +24,33 @@ func NewestCopy(objects map[string]int64) string {
 func RestoredCopy(log string) string {
 	restored := ""
 	for line := range strings.Lines(log) {
-		var entry struct {
-			Msg  string `json:"msg"`
-			Copy string `json:"copy"`
-		}
-		if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == "restoring the newest database copy" {
-			restored = entry.Copy
+		if copy, ok := logCopy(line, "restoring the newest database copy"); ok {
+			restored = copy
 		}
 	}
 	return restored
+}
+
+// LandedCopies returns the database copies that the application's JSON log
+// says landed, in order.
+func LandedCopies(log string) []string {
+	var landed []string
+	for line := range strings.Lines(log) {
+		if copy, ok := logCopy(line, "database copy landed"); ok {
+			landed = append(landed, copy)
+		}
+	}
+	return landed
+}
+
+// logCopy returns the copy of a JSON log line with message msg.
+func logCopy(line, msg string) (string, bool) {
+	var entry struct {
+		Msg  string `json:"msg"`
+		Copy string `json:"copy"`
+	}
+	if json.Unmarshal([]byte(line), &entry) != nil || entry.Msg != msg {
+		return "", false
+	}
+	return entry.Copy, true
 }

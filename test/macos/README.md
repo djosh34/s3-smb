@@ -11,6 +11,25 @@ Time Machine with Apple's own commands.
 - `helpers`: parsers and pass or fail checks that do not need a Mac. They have
   Linux unit tests.
 
+Scenarios beyond the failed-backup ones:
+
+- `incrementals`: a first backup, three incrementals and two restores.
+- `s3-outage`: S3 is cut for 5 minutes in the middle of a backup, which must
+  go on as the same backup.
+- `thinning`: `tmutil delete` removes the only backup of a file, whose chunks
+  must reach the trash and then be deleted.
+- `rollback`: s3-smb is killed right after a copy lands in the middle of a
+  backup and loses its data folder. The next server restores that copy.
+  Backup A must restore and backup C must work.
+- `large`: about 7 GiB in 36,000 files and three wide incrementals.
+- `b2`: a small backup, an incremental and a restore against the B2 test
+  bucket. It runs as its own job, `mode: b2`, which empties the bucket after,
+  also when the run fails.
+
+`thinning` and `rollback` build s3-smb with the `testcopies` tag, which keeps
+2 copies and makes one every 2 minutes. Each run saves the sizes of uploaded,
+live and trashed chunks in `storage.json`.
+
 The harness takes a database copy in the bucket as evidence that a backup is
 safe in S3. It restarts s3-smb on its data folder to get one, because every
 start uploads a copy before it serves. A start with a new data folder after a

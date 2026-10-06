@@ -101,6 +101,30 @@ func TestCopies(t *testing.T) {
 	if got := RestoredCopy(`{"msg":"keeping the local database","copy":"` + newest + `"}`); got != "" {
 		t.Fatal(got)
 	}
+	log += `{"msg":"database copy landed","copy":"db/1"}` + "\n" + `{"msg":"database copy upload failed; retrying the same copy","copy":"db/2"}` + "\n" + `{"msg":"database copy landed","copy":"db/2"}` + "\n"
+	if got := LandedCopies(log); !slices.Equal(got, []string{"db/1", "db/2"}) {
+		t.Fatal(got)
+	}
+}
+
+func TestStorage(t *testing.T) {
+	objects := map[string]int64{"chunks/a": 8, "chunks/b": 3, "chunks/c": 1}
+	if got := Bytes(objects, map[string]bool{"chunks/a": true, "chunks/c": true, "chunks/gone": true}); got != 9 {
+		t.Fatal(got)
+	}
+	region, err := B2Region("https://s3.eu-central-003.backblazeb2.com")
+	if region != "eu-central-003" || err != nil {
+		t.Fatal(region, err)
+	}
+	for _, endpoint := range []string{"", "http://s3.eu-central-003.backblazeb2.com", "https://s3..backblazeb2.com", "https://s3.eu-central-003.example.com"} {
+		if _, err := B2Region(endpoint); err == nil {
+			t.Error("accepted", endpoint)
+		}
+	}
+	block := append(append([]byte("random"), Marker...), "more"...)
+	if !HoldsMarker(block) || HoldsMarker(Marker[1:]) {
+		t.Fatal("marker misread")
+	}
 }
 
 func TestSelectBackup(t *testing.T) {
