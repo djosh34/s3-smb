@@ -366,15 +366,17 @@ func (e *Engine) uploadDirty(ctx context.Context, st *inode) (map[uint64]upload,
 	return result, group.Wait()
 }
 
-// admit makes room for one more dirty chunk of st, whose I/O lock is held,
-// by uploading the oldest dirty chunks early: those of st, or of a file whose
-// lock is free. When every chunk belongs to a busy file it goes over the
-// budget by one rather than wait for that lock, which could deadlock. So the
-// budget is exceeded by at most one chunk per file being written at once.
+// admit reserves room for one more dirty chunk of st, whose I/O lock is
+// held. While the budget is full, it uploads the oldest dirty chunk early:
+// one of st, or of a file whose lock is free. When every chunk belongs to a
+// busy file it waits. That file's holder is not waiting here, since it would
+// evict its own chunks, so it finishes and frees the lock. The caller ends
+// the reservation by adding the chunk, or giving up, under Engine.mu.
 func (e *Engine) admit(ctx context.Context, st *inode) error {
 	for {
 		e.mu.Lock()
-		if len(e.dirty) < e.tune.dirtyChunks {
+		if len(e.dirty)+e.admitting < e.tune.dirtyChunks {
+			e.admitting++
 			e.mu.Unlock()
 			return nil
 		}
@@ -392,7 +394,10 @@ func (e *Engine) admit(ctx context.Context, st *inode) error {
 		}
 		e.mu.Unlock()
 		if victim == nil {
-			return nil
+			if !sleep(ctx, time.Millisecond) {
+				return ctx.Err()
+			}
+			continue
 		}
 		err := e.evict(ctx, victim.owner, victim)
 		if victim.owner != st {
@@ -496,20 +501,18 @@ func (e *Engine) dirtyChunk(ctx context.Context, st *inode, idx, within, n uint6
 	}
 	var data []byte
 	stored, err := e.stored(ctx, st, idx)
-	if err != nil {
-		return nil, err
-	}
-	if stored.length > 0 && (within > 0 || n < stored.length) {
-		if data, err = e.readStored(ctx, stored, 0, stored.length); err != nil {
-			return nil, err
-		}
+	if err == nil && stored.length > 0 && (within > 0 || n < stored.length) {
+		data, err = e.readStored(ctx, stored, 0, stored.length)
 	}
 	c := &dirtyChunk{owner: st, idx: idx, data: data}
-	st.dirty[idx] = c
 	e.mu.Lock()
-	e.dirty = append(e.dirty, c)
+	e.admitting--
+	if err == nil {
+		st.dirty[idx] = c
+		e.dirty = append(e.dirty, c)
+	}
 	e.mu.Unlock()
-	return c, nil
+	return c, err
 }
 
 // stored returns the uploaded object of a chunk that is not dirty: its early

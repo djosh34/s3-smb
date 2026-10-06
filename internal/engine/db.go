@@ -74,6 +74,7 @@ CREATE TABLE state (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	history TEXT NOT NULL,
 	published TEXT NOT NULL,
+	published_commits INTEGER NOT NULL,
 	commits INTEGER NOT NULL,
 	volume TEXT NOT NULL
 );
@@ -180,7 +181,7 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 			_, err = tx.ExecContext(ctx, schema+fmt.Sprintf("PRAGMA user_version=%d;", schemaVersion))
 		}
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO state (id, history, published, commits, volume) VALUES (1, ?, '', 0, ?)`, history, volume)
+			_, err = tx.ExecContext(ctx, `INSERT INTO state (id, history, published, published_commits, commits, volume) VALUES (1, ?, '', 0, 0, ?)`, history, volume)
 		}
 	}
 	if err == nil {
@@ -230,11 +231,14 @@ type stateRow struct {
 	published string
 	volume    string
 	commits   int64
+	// publishedCommits is the commit counter of that copy.
+	publishedCommits int64
 }
 
 func readState(ctx context.Context, db *sql.DB) (stateRow, error) {
 	var s stateRow
-	err := db.QueryRowContext(ctx, `SELECT history, published, commits, volume FROM state WHERE id = 1`).Scan(&s.history, &s.published, &s.commits, &s.volume)
+	err := db.QueryRowContext(ctx, `SELECT history, published, published_commits, commits, volume FROM state WHERE id = 1`).Scan(
+		&s.history, &s.published, &s.publishedCommits, &s.commits, &s.volume)
 	return s, err
 }
 

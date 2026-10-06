@@ -199,8 +199,8 @@ func TestFailedFlushTrashesItsUploads(t *testing.T) {
 	}
 }
 
-// Concurrent writers to several files stay within the RAM budget, give or
-// take one chunk per file being written at once.
+// Concurrent writers to several files, some reading cold chunks first, stay
+// within the RAM budget.
 func TestConcurrentWritersKeepTheBudget(t *testing.T) {
 	f := newFixture(t)
 	e := f.open()
@@ -208,9 +208,16 @@ func TestConcurrentWritersKeepTheBudget(t *testing.T) {
 	var handles [files]smb.Handle
 	for i := range files {
 		name := string(rune('a' + i))
-		create(t, e, name, smb.KindFile)
+		writeFile(t, e, name, strings.Repeat("x", 400))
 		handles[i] = openFile(t, e, name, smb.AccessRead|smb.AccessWrite)
 	}
+	// Each write covers half a stored chunk, so it reads the chunk first.
+	f.bucket.setFault(func(op, key string) error {
+		if op == "get" && strings.HasPrefix(key, chunkPrefix) {
+			time.Sleep(time.Millisecond)
+		}
+		return nil
+	})
 	var most atomic.Int64
 	var group sync.WaitGroup
 	for i := range files {
@@ -229,7 +236,7 @@ func TestConcurrentWritersKeepTheBudget(t *testing.T) {
 		})
 	}
 	group.Wait()
-	if n := most.Load(); n > int64(f.tune.dirtyChunks+files) {
+	if n := most.Load(); n > int64(f.tune.dirtyChunks) {
 		t.Fatalf("%d dirty chunks with a budget of %d", n, f.tune.dirtyChunks)
 	}
 	for i := range files {

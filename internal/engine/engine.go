@@ -115,12 +115,13 @@ type Engine struct {
 	group      sync.WaitGroup
 	capacity   uint64
 	volumeID   uint64
+	admitting  int   // dirty chunks admitted but not yet added, guarded by mu
 	captureSeq int64 // highest copy sequence whose capture has started
 	startSeen  int64 // highest copy sequence seen at start
 	failOnce   sync.Once
 	commitMu   sync.Mutex // serializes commits and copy captures
 	copyMu     sync.Mutex // one copy at a time
-	mu         sync.Mutex // inodes and dirty
+	mu         sync.Mutex // inodes, dirty and admitting
 	timesMu    sync.Mutex // newest and leaseUntil
 	readOnly   bool
 }
@@ -220,7 +221,12 @@ func (e *Engine) newTimeline(ctx context.Context, highest int64, newest copyName
 	}
 	err = e.commit(ctx, func(tx *sql.Tx) error {
 		return execAll(ctx, tx, []statement{
-			{`UPDATE state SET history = ?, published = coalesce(nullif(?, ''), published) WHERE id = 1`, []any{history, newest.history}},
+			{
+				`UPDATE state SET history = ?,
+				published = coalesce(nullif(?, ''), published),
+				published_commits = CASE WHEN ? = '' THEN published_commits ELSE ? END WHERE id = 1`,
+				[]any{history, newest.history, newest.history, newest.counter},
+			},
 			{`INSERT INTO trash (name, seq) SELECT name, ? FROM pending`, []any{highest}},
 			{`DELETE FROM pending`, nil},
 			{`INSERT INTO trash (name, seq) SELECT c.name, ? FROM chunks c JOIN files f ON f.id = c.file
@@ -282,10 +288,13 @@ type localDatabase struct {
 	damaged bool // found but failed the check
 }
 
-// holds reports a good local database of c's history, either its current
-// one or the one it last published, that is not behind c.
+// holds reports a good local database that holds copy c: c is of its
+// current history and not ahead of it, or of the history it last published
+// and not ahead of that copy. Each history is one database's line of
+// commits, so only counters of the same history compare.
 func (l localDatabase) holds(c copyName) bool {
-	return l.ok && (c.history == l.state.history || c.history == l.state.published) && l.state.commits >= c.counter
+	return l.ok && (c.history == l.state.history && c.counter <= l.state.commits ||
+		c.history == l.state.published && c.counter <= l.state.publishedCommits)
 }
 
 func inspectLocal(ctx context.Context, path string) (localDatabase, error) {

@@ -133,7 +133,7 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	err = errors.Join(os.Remove(temp), e.commit(ctx, func(tx *sql.Tx) error {
 		return execAll(ctx, tx, []statement{
 			{`UPDATE copies SET landed = 1 WHERE seq = ?`, []any{seq}},
-			{`UPDATE state SET published = ? WHERE id = 1`, []any{state.history}},
+			{`UPDATE state SET published = ?, published_commits = ? WHERE id = 1`, []any{state.history, state.commits}},
 		})
 	}))
 	if err != nil {

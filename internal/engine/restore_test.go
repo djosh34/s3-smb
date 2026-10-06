@@ -268,3 +268,44 @@ func TestCrashDuringRestartKeepsFlushedData(t *testing.T) {
 		t.Error("never crashed after the new timeline began")
 	}
 }
+
+// A server restores copy 3 of an old run, then fails three starts before its
+// start copy lands. The old run's copy 4 then lands late. Those starts
+// raised the local commit counter, but only counters of the same history
+// compare, so the next start restores copy 4.
+func TestInterruptedStartsDoNotOutrankANewerCopy(t *testing.T) {
+	f := newFixture(t)
+	old := f.open()
+	writeFile(t, old, "f", "older copy")
+	copyNow(t, old)
+	writeFile(t, old, "f", "newer copy")
+	f.bucket.hold(holdPrefix("put", copyPrefix))
+	stopped := make(chan error, 1)
+	go func() { stopped <- old.makeCopy(t.Context(), 0) }()
+	waitFor(t, "copy 4 to be held", func() bool {
+		f.bucket.mu.Lock()
+		defer f.bucket.mu.Unlock()
+		return len(f.bucket.held) > 0
+	})
+	kill(t, old)
+	<-stopped
+	f.bucket.hold(nil)
+
+	next := &fixture{t: t, bucket: f.bucket, dir: t.TempDir(), tune: testTuning()}
+	next.tune.stopAge = 20 * time.Millisecond
+	f.bucket.setFault(func(op, key string) error {
+		if op == "put" && strings.HasPrefix(key, copyPrefix) {
+			return errors.New("injected copy failure")
+		}
+		return nil
+	})
+	for range 3 {
+		if _, err := next.tryOpen(); err == nil {
+			t.Fatal("started without its start copy")
+		}
+	}
+	f.bucket.setFault(nil)
+	f.bucket.release()
+	next.tune = testTuning()
+	requireTree(t, next.open(), map[string]string{"f": "newer copy"})
+}
