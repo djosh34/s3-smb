@@ -1167,14 +1167,14 @@ func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
 	f := newFixture(t)
 	f.tune.readChunks = 2
 	e := f.open()
-	data := "0123456789abcdefghijklmnopqrstuvABCDEFGHIJKLMNOP"
+	const data = "0123456789abcdefghijklmnopqrstuvABCDEFGHIJKLMNOP"
 	writeFile(t, e, "data", data)
 	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
-	readBytes := func(from, to int) {
+	readBytes := func(from, to uint64) {
 		t.Helper()
 		b := make([]byte, 1)
 		for i := from; i < to; i++ {
-			if _, err := e.ReadAt(t.Context(), h, b, uint64(i)); err != nil || b[0] != data[i] {
+			if _, err := e.ReadAt(t.Context(), h, b, i); err != nil || b[0] != data[i] {
 				t.Fatalf("byte %d = %q, %v", i, b, err)
 			}
 		}
