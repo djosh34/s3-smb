@@ -2,18 +2,14 @@
 
 ## Layout
 
-- `internal/app`: command line, prompt, state lock, startup, shutdown.
+- `internal/app`: command line, folder lock, startup, shutdown.
 - `internal/config`: YAML loading, validation, secret sources and TLS files.
-- `internal/storage`: S3 connection, volume identity, encryption key, JuiceFS setup.
-- `internal/engine`: the SQLite chunk engine that replaces JuiceFS. Files are
-  immutable chunk objects in S3, a local SQLite database maps them, and full
-  copies of it go to S3. Not wired into the server yet.
-- `internal/backup`: scheduled metadata backups, delete protection, recovery.
-- `internal/logging`: `log/slog` setup, secret removal, bridges for JuiceFS logs.
-- `internal/smb`, `internal/smbfs`: the SMB server and its JuiceFS
-  filesystem, described in [the SMB server design](smb-design.md).
-- `internal/juicefs`, `internal/thirdparty`: patched upstream code, described
-  in [vendored source](vendored.md).
+- `internal/engine`: the storage engine. File data goes to S3 as immutable
+  chunk objects, a local SQLite database maps files to chunks, and full copies
+  of it go to S3. It also holds the bucket lock.
+- `internal/logging`: `log/slog` setup and secret removal.
+- `internal/smb`: the SMB server, described in
+  [the SMB server design](smb-design.md).
 - `internal/netfault`, `internal/s3fault`: TCP and S3 fault proxies for tests,
   which cut, slow, stall and fail traffic.
 - `test/e2e`: tests that run the built binary against MinIO over SMB.
@@ -22,50 +18,51 @@
 ## Startup
 
 1. Take an exclusive lock on `state_dir/state.lock`. A second process with the
-   same state directory exits.
-2. Connect to S3 and list one object. If the listing returns an object, the
-   bucket is not empty, even if the listing was truncated. Only a complete,
-   empty listing counts as an empty bucket. A failed listing, or a truncated one
-   that returned nothing, stops startup.
-3. Decide what to do. An empty bucket with no local database asks to initialize.
-   A bucket with data and no local database asks to recover from the newest
-   metadata backup. Both prompts read `yes` from `/dev/tty`. A local database
-   must match the volume identity in the bucket.
-4. Recover the chosen backup into a new SQLite file, or open the existing one.
-5. Take a metadata backup, or reuse the last one if it is younger than
-   `backup.interval` and its object in S3 still matches. If this fails, SMB does
-   not start.
-6. Open the JuiceFS filesystem and session, then listen for SMB and start the
-   backup schedule.
+   same data folder exits.
+2. Take the bucket lock: put this run's key `lock/<server ID>/<run ID>`, then
+   list the lock keys. Another server's key counts as live while its last
+   change is less than 10 minutes older than this run's own key, in the same
+   listing. Then wait and try again. A key with the same server ID, from the
+   same data folder, does not count.
+3. List the database copies. Keep the local database if `PRAGMA quick_check`
+   passes and it holds the newest copy's history up to that copy. Otherwise
+   restore the newest copy.
+4. Start a new timeline with a new history ID, move leftover pending uploads to
+   the trash, and upload a start copy numbered two above the highest sequence
+   seen.
+5. Listen for SMB.
 
-Read-only mode skips the backups and never deletes data. The SMB server keeps
-byte-range locks in memory, so they end with the process.
+A start never prompts and never refuses to start because the local database is
+behind. Read-only mode refuses every change to files.
 
 ## Shutdown
 
-On SIGINT or SIGTERM, or when metadata backup protection expires:
+On SIGINT or SIGTERM, or when the engine stops:
 
-1. Close delete protection and cancel the backup schedule.
-2. Close the listener and drain SMB requests.
-3. Flush and close every open file handle.
-4. Wait for a running metadata backup to finish.
-5. Close the JuiceFS filesystem and session, then the metadata engine.
-6. Close the S3 connection, then release the state lock.
+1. Close the listener and drain SMB requests.
+2. Close every open file handle.
+3. Flush what is still dirty, stop the engine and delete this run's lock key.
+4. Release the folder lock.
 
-If any step fails, s3-smb exits with status 1 and keeps the lock until the
-process ends. A watchdog ends the process if shutdown takes more than 30 seconds.
+If any step fails, s3-smb exits with status 1 and keeps the folder lock until
+the process ends. A watchdog ends the process if shutdown takes more than 30
+seconds.
 
-## Delete protection
+## When the engine stops on its own
 
-JuiceFS deletes data blocks once deleted files and blocks replaced by compaction
-have been in the trash for `backup.trash_days`. Separately, s3-smb removes old
-metadata backup objects by the rotation in [recovery](recovery.md); that never
-deletes data blocks. Both run only while the newest successful metadata backup
-started less than two backup intervals ago. Every delete transaction and every
-S3 delete checks this, so a stopped backup schedule stops all deletes. Failed
-metadata backups retry with exponential backoff capped at 30 seconds. They do
-not close protection early. A successful retry renews protection; expiry stops
-the writer.
+The bucket lock is renewed every minute and lasts 8 minutes from the send. The
+engine checks it before every SQLite commit and every S3 write or delete. Once
+it has expired the engine stops for good and s3-smb exits with an error, since
+another server may own the bucket now. A separate timer also stops it when the
+newest copy this run landed was captured more than 30 minutes ago.
+
+## Deletes
+
+A replaced or deleted chunk goes to the `trash` table in the same commit, with
+the highest copy sequence captured at that moment. It is deleted from S3 once
+the oldest of the 4 kept copies has a higher sequence, so every kept copy can
+still be restored. Cleanup reads only committed trash rows, never deletes a
+name a live row uses, never reads the clock and never deletes unknown objects.
 
 ## Tests
 
@@ -109,16 +106,14 @@ shell. To update a tool, change its version and both archive hashes in the
 installer.
 
 `.golangci.yml` enables the strict Go linters and the gofumpt and goimports
-formatters. It excludes only JuiceFS in `internal/juicefs` and the other
-vendored code under `internal/thirdparty`; every other file gets all checks. The
-formatters skip the same directories.
+formatters for every file.
 
 Fix lint findings rather than suppressing them. nolintlint requires any
 `//nolint` to name the linter and give a reason. Panic, recover and fatal
 logging are banned; `fmt.Print*` is allowed in tests. `os.Exit` is allowed only
-in the root `main.go`, `cmd/<command>/main.go` and `test/macos/fullsync/main.go`.
+in the root `main.go` and `cmd/<command>/main.go`.
 
-`test/lint_config_test.sh` checks the exclusions and the suppression rules in a
+`test/lint_config_test.sh` checks these rules and the suppression rules in a
 throwaway module. `test/lint_tools_test.sh` checks the installer with mock
 downloads.
 
@@ -126,7 +121,7 @@ downloads.
 
 The Docker step mounts the source read-only and starts MinIO and a test runner
 in their own containers and network. It builds the binary with the race
-detector, then runs the storage integration tests and `test/e2e` with
+detector, then runs the engine's real-backend tests and `test/e2e` with
 `-race -shuffle=on`, MinIO available and `GORACE=halt_on_error=1`.
 
 The tests in `test/e2e` start the built binary, answer its prompt, and read and
@@ -208,8 +203,8 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance
 ```
 
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
-MinIO locally. [test/macos/README.md](../test/macos/README.md) describes the layout
-and the `features` mode. `test/macos/run.sh` runs `go test -tags macos` as
+MinIO locally. [test/macos/README.md](../test/macos/README.md) describes the
+layout. `test/macos/run.sh` runs `go test -tags macos` as
 root, which Apple's administrative commands need. The test stops itself at
 least ten minutes before its Go timeout and keeps a separate seven-minute
 cleanup budget; the workflow leaves time for uploads before the job timeout.
@@ -225,29 +220,34 @@ both pragma values on four live connections and four replacements. The same
 test runs in the Linux checks; SQLite uses full fsync only on macOS.
 
 One Mac backs up a small test directory with Time Machine, with most of the
-disk excluded. A second, fresh Mac gets only the MinIO store, recovers the
-dataset, restores the directory with `tmutil restore` and compares it. Eight
-more Macs each interrupt a later backup by killing s3-smb or the Time Machine
-client, or by cutting its TCP connection. Five of them then restart or recover
-s3-smb and restore the first backup. In `machine-loss` the Mac exports the
-stopped store, and a further fresh Mac recovers it and restores the first
-backup. No scenario cuts power or removes objects from S3. Every interruption
-requires a nonempty change in remote chunk objects, and the resumed backup must
-complete and restore the changed tree. The test uses a five-minute metadata
-backup interval, or one minute for `server-kill-cold-midpoint`; the product
-default is one hour.
+disk excluded, and waits for a database copy that holds the backup. A second,
+fresh Mac gets only the MinIO store, starts s3-smb with a new data folder,
+which restores the newest copy, restores the directory with `tmutil restore`
+and compares it. Eight more Macs each interrupt a later backup by killing
+s3-smb or the Time Machine client, or by cutting its TCP connection. Five of
+them then restart s3-smb, or start it with a new data folder, and restore the
+first backup. A start with a new data folder must restore the newest copy in
+the bucket; after a kill it first waits 10 minutes for the killed server's
+lock to go stale. In `server-kill-cold-midpoint`, a restart on the old data
+folder first uploads a start copy that holds what the interrupted backup
+flushed, so the new data folder restores a copy from the middle of a backup.
+In `machine-loss` the Mac exports the store after the kill, and a further fresh
+Mac recovers it and restores the first backup. No scenario cuts power or
+removes objects from S3. Every interruption requires a nonempty change in
+remote chunk objects, and the resumed backup must complete and restore the
+changed tree.
 
 The scenarios are `server-kill-restart`, `launchd-kill-restart`,
 `server-kill-cold`, `server-kill-cold-midpoint`, `client-abort-cold`,
 `machine-loss`, `network-drop` and `network-outage`.
 
-`launchd-kill-restart` initializes in the foreground, then loads
-[the shipped plist](com.s3-smb.plist) into the system domain with test paths.
-It kills s3-smb with SIGKILL while Time Machine is copying and requires a new
-launchd PID and a new SMB serving log entry without consent. It captures
-changed S3 chunks after the kill and before the new process serves, then
-requires the next backup to complete with a matching restore and the same PID.
-Cleanup unloads the job before stopping MinIO, also on failure or timeout.
+`launchd-kill-restart` makes the first backup with s3-smb in the foreground,
+then loads [the shipped plist](com.s3-smb.plist) into the system domain with
+test paths. It kills s3-smb with SIGKILL while Time Machine is copying and
+requires a new launchd PID and a new SMB serving log entry. It captures changed
+S3 chunks after the kill and before the new process serves, then requires the
+next backup to complete with a matching restore and the same PID. Cleanup
+unloads the job before stopping MinIO, also on failure or timeout.
 
 The network scenarios put `internal/netfault` between every SMB client on the
 Mac and the server, including Time Machine and restore mounts, and turn on the
@@ -313,9 +313,10 @@ Never move or reuse a tag. The Go checksum database keeps the first hash.
 
 ## Left out on purpose
 
-- An S3 heartbeat to detect a second writer. It cannot stop a writer that keeps
-  running, so the rule stays one writer per dataset.
+- Conditional writes. The bucket lock uses only PUT and LIST, so it cannot
+  promise that two servers never write at once. One server per bucket stays the
+  rule.
 - A full data scan after recovery. A missing object shows up as a read error.
-- A separate key file that you must keep. The key is in the bucket, protected by
-  the passphrase.
-- SlateDB, Litestream or restic in place of SQLite and JuiceFS metadata backups.
+- A sweep of unknown chunks. Chunks left by a crash or a lost data folder stay
+  in the bucket as waste.
+- Encryption and compression in s3-smb. Time Machine encrypts its backups.

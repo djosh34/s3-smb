@@ -10,14 +10,13 @@ SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption.
 - `internal/smb/wire`: typed codecs for SMB messages.
 - `internal/smb/auth`: NTLMv2 inside SPNEGO for the one configured user.
 - `internal/smb/crypt`: preauth hashing, key derivation, signing and GCM.
-- `internal/smb/state`: opens, sharing, deletion, byte ranges and leases, in
-  memory.
+- `internal/smb/state`: opens, sharing, deletion and leases, in memory.
 - `internal/smb/server`: transport, sessions, trees, credits, compounds, async
   replies and the command handlers. It joins the packages above with
   `smb.Storage`.
-- `internal/smbfs`: `smb.Storage` on JuiceFS.
-- `internal/smb/smbtest`: a raw SMB test client and fixtures that serve a real
-  JuiceFS adapter.
+- `internal/engine`: `smb.Storage` on the SQLite chunk engine.
+- `internal/smb/smbtest`: a raw SMB test client, and a real engine on an
+  in-memory S3 server for tests.
 
 `internal/app` constructs the server in `smb.go`.
 
@@ -25,21 +24,21 @@ SMB 3.1.1 only, with NTLMv2 login, signing and AES-GCM encryption.
 
 Storage access describes data permissions, not granted SMB masks.
 `AccessRead` permits reads; `AccessWrite` permits writes and truncate.
-`AccessAppend` restricts writes to offsets at or beyond the selected object's
-live end of file, also when combined with `AccessWrite` for a destructive
-CREATE. Alone, `AccessAppend` does not permit truncate. `Open` keeps these
-permissions without creating or truncating data. `WriteAt` checks append access
-inside the adapter's per-inode lock, together with every write and length
-change. Each stream has its own end of file. The server still checks the
-granted SMB access for each operation.
+`AccessAppend` restricts writes to offsets at or beyond the file's live end of
+file, also when combined with `AccessWrite` for a destructive CREATE. Alone,
+`AccessAppend` does not permit truncate. `Open` keeps these permissions without
+creating or truncating data. `WriteAt` checks append access inside the
+engine's per-inode lock, together with every write and length change. The
+server still checks the granted SMB access for each operation.
 
 The wire codecs keep FILETIME sentinels until the handler interprets them.
 
-`smbtest.NewStorage(testing.TB)` supplies a real JuiceFS adapter and registers
-its cleanup; `smbtest.NewS3Storage` puts its objects behind an S3 fault proxy.
-Server tests share one fixture in `server/fixture_test.go`: it serves such an
-adapter on loopback through a hook-based fault storage and a fake clock, and
-shuts the server down before the storage helper's cleanup runs.
+`smbtest.NewStorage(testing.TB)` supplies a real engine on an in-memory S3
+server and registers its cleanup; `smbtest.NewS3Storage` puts that server
+behind an S3 fault proxy. Server tests share one fixture in
+`server/fixture_test.go`: it serves such an engine on loopback through a
+hook-based fault storage and a fake clock, and shuts the server down before the
+storage helper's cleanup runs.
 
 ## Handler request context
 
@@ -61,10 +60,10 @@ cleanup follows the drain.
 
 ## CREATE and cleanup
 
-The server holds the parent namespace guard during CREATE. The adapter resolves
+The server holds the parent namespace guard during CREATE. Storage resolves
 the name and selects the object once. The server reserves sharing before
-changing an existing object. A missing file is created exclusively by the
-adapter before the server reserves its identity. The server commits the
+changing an existing object. A missing file is created exclusively by storage
+before the server reserves its identity. The server commits the
 reservation only after the storage open succeeds; on failure it aborts the
 reservation and closes every storage reference it took. The open table never
 calls storage while holding its mutex.
@@ -72,22 +71,21 @@ calls storage while holding its mutex.
 A pending delete stays pending until CompleteDelete on every cleanup outcome,
 including failure or cancellation. Cleanup resolves the inode's current path
 under its parent guard and retries if a rename changed it. An inode without a
-unique path is left alone. The adapter checks the expected inode before
-deleting a name. The server drains active request references before closing a
-storage handle, never while holding a namespace guard. A base-file rename locks
-both parents in inode order. Open state follows the inode, not a cached path.
-Renaming a named stream returns STATUS_NOT_SUPPORTED and changes nothing.
-TREE_DISCONNECT closes every open of the tree, including durable opens.
+unique path is left alone. Storage checks the expected inode before deleting a
+name. The server drains active request references before closing a storage
+handle, never while holding a namespace guard. A rename locks both parents in
+inode order. Open state follows the inode, not a cached path. TREE_DISCONNECT closes every open of the tree, including durable opens.
 
 ## Features
 
 `internal/smb/features.go` holds the exact masks the server advertises; each
 contains only features whose handlers work. The share is case-sensitive and
-supports named streams up to 64 KiB. The AAPL volume capabilities are
-case-sensitive and full sync (0x06). The NEGOTIATE reply advertises leasing
-and large MTU, so macOS asks for leases and durable handles. Hard links, open
-by file ID, sparse files, change notification, classic oplocks, directory
-leases, durable v1 and persistent handles are not granted.
+has no named streams; a path with stream syntax gets STATUS_NOT_SUPPORTED. The
+AAPL volume capabilities are case-sensitive and full sync (0x06). The
+NEGOTIATE reply advertises leasing and large MTU, so macOS asks for leases and
+durable handles. LOCK returns STATUS_NOT_SUPPORTED. Hard links, open by file
+ID, sparse files, change notification, classic oplocks, directory leases,
+durable v1 and persistent handles are not granted.
 
 The server lets one client in at a time. Login is refused while another
 client is logged in or one of its durable opens waits for a reconnect. Any
@@ -104,8 +102,8 @@ The server sends an interim STATUS_PENDING when READ, WRITE or FLUSH waits on
 S3, after a short bounded wait for local work. A request that finishes locally
 gets one synchronous reply. Each pending request owns its async ID and
 completion state. The server keeps serving other requests and ECHO while S3 is
-slow. The adapter retries transient S3 failures for five minutes; after that
-the server returns the storage error.
+slow. The engine retries each S3 request for up to six minutes; after that the
+server returns the storage error.
 
 The server validates the whole compound and checks request signatures and
 credit charges before changing any state. A missing or bad signature, or
@@ -142,8 +140,7 @@ An error from a predecessor fails a following related FileId command with the
 same status; warnings do not. Completed replies are sent once. Unrelated
 members need not wait on S3. CANCEL has no reply. It cancels the named pending
 request; a member without a pending reply is named by its MessageId, and the
-first member's async ID also cancels the rest of its compound. Byte-range lock
-requests never wait.
+first member's async ID also cancels the rest of its compound.
 
 ## Protection and reconnect
 
@@ -165,12 +162,12 @@ replies after LOGOFF stay protected.
 
 A connection drop detaches durable opens at once, without waiting for S3. The
 server cancels the old requests but keeps acknowledged data and durable
-handles. Detached opens keep their granted access, sharing, pending delete,
-byte ranges and lease. Non-durable opens close after their active requests
+handles. Detached opens keep their granted access, sharing, pending delete and
+lease. Non-durable opens close after their active requests
 drain. Old requests cannot publish grants or replies on the new connection.
 
-Durable v2 handles are granted only for regular unnamed files that hold a lease
-with H. A zero timeout gets 120 seconds; requests above 16 minutes get 16
+Durable v2 handles are granted only for regular files that hold a lease with
+H. A zero timeout gets 120 seconds; requests above 16 minutes get 16
 minutes, reported in the reply. DH2C checks the file ID, CreateGuid, client
 GUID, user, share and lease key, and the open gets a new volatile ID. A
 CREATE whose CreateGuid is in use returns DUPLICATE_OBJECTID, also when marked
@@ -186,13 +183,14 @@ drops at once, closing durable opens that lose H.
 ## What survives a failure
 
 - A connection drop of about 30 seconds can continue the same backup. An
-  unanswered CREATE, LOCK or SET_INFO can make macOS refuse to reconnect.
+  unanswered CREATE or SET_INFO can make macOS refuse to reconnect.
 - A longer drop fails the current backup visibly; earlier backups stay intact.
 - A connection drop keeps acknowledged work.
 - A crash with the local disk intact keeps flushed work.
-- Recovery on a new Mac returns the last hourly metadata backup.
-- FULL_SYNC waits for the S3 data, the local metadata commit and a full-fsync
-  barrier, not for a metadata backup.
+- A lost data folder rolls the share back to the newest database copy, at most
+  15 minutes old, or 30 when copies fail.
+- FULL_SYNC waits until every file's data is in S3 and committed to the local
+  database, not for a database copy.
 
 ## Tests
 
