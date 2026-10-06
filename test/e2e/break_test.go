@@ -32,8 +32,9 @@ import (
 // every slot: a clean stop flushes, so every acknowledged byte must be there.
 // Then, after a full FLUSH and a copy, it starts on a new data folder, which
 // must restore the newest copy from S3 alone and show every byte again. The
-// connections then go straight to the daemon's new address.
-func restartAndCheck(l *macLoad, f *fixture, d *daemon) *daemon {
+// connections then go straight to the daemon's new address. Each check in also
+// runs after the load's checks, through its first connection.
+func restartAndCheck(l *macLoad, f *fixture, d *daemon, also ...func(*macConn)) *daemon {
 	l.t.Helper()
 	ctx := l.t.Context()
 	l.closeAll(ctx)
@@ -41,6 +42,9 @@ func restartAndCheck(l *macLoad, f *fixture, d *daemon) *daemon {
 	d = f.start()
 	l.connect(ctx)
 	l.check(ctx, "a restart")
+	for _, check := range also {
+		check(l.conns[0])
+	}
 	if err := l.flush(ctx, 0, nil, true); err != nil {
 		l.t.Fatal(err)
 	}
@@ -58,6 +62,9 @@ func restartAndCheck(l *macLoad, f *fixture, d *daemon) *daemon {
 	}
 	l.connect(ctx)
 	l.check(ctx, "a cold start from S3")
+	for _, check := range also {
+		check(l.conns[0])
+	}
 	return d
 }
 
@@ -181,6 +188,7 @@ func TestBreakKillUnderLoad(t *testing.T) {
 			case <-time.After(90 * time.Second):
 				t.Error("coverage: no FLUSH of one file succeeded before the kill")
 			}
+			l.cutting(-1)
 			sigkill(t, d)
 		})
 		faults.stop()
@@ -226,6 +234,7 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 			switch round % 3 {
 			case 0:
 				mode = "drop"
+				l.cutting(0)
 				if err := network.Drop(); err != nil {
 					t.Error(err)
 				}
@@ -286,10 +295,10 @@ func daemonResources(t *testing.T, d *daemon) resources {
 }
 
 // TestBreakFileChurn creates, writes, closes and deletes as many small files
-// as it can on one connection, offering about a thousand a second, while S3
-// misbehaves and goes away for a while. Flushes come in batches. Every file
-// must be there with its bytes, and every deleted one gone, also after a
-// restart.
+// as it can over both connections of the Mac load, offering about a thousand
+// a second, while S3 misbehaves and goes away for a while. Flushes come in
+// batches. Every file must be there with its bytes, and every deleted one
+// gone, also after a restart and a cold start from S3.
 func TestBreakFileChurn(t *testing.T) {
 	rng := chaosRand(t)
 	length := 30 * time.Second
@@ -302,52 +311,50 @@ func TestBreakFileChurn(t *testing.T) {
 	t.Cleanup(proxy.RestoreS3)
 	d := f.start()
 	ctx := t.Context()
-	conn, err := f.macConnect(ctx, f.addr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	c := &fileChurn{t: t, conn: conn, files: map[string][]byte{}, gone: map[string]bool{}}
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	for w := range 32 {
-		source := rand.New(rand.NewPCG(rng.Uint64(), uint64(w))) //nolint:gosec // Test faults need a replayable source.
-		wg.Go(func() { c.work(ctx, w, source, stop) })
-	}
-	wg.Go(func() {
-		for !stopped(stop) && c.flush(ctx) == nil {
-			time.Sleep(time.Second)
-		}
-	})
-	faults := startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))
+	l := newMacLoad(t, f, rng, f.addr, f.addr)
+	l.connect(ctx)
+	c := &fileChurn{t: t, files: map[string][]byte{}, gone: map[string]bool{}}
 	start := time.Now()
-	time.Sleep(between(rng, 0, length/2))
-	proxy.FailS3For(between(rng, 5*time.Second, length/3))
-	time.Sleep(length - time.Since(start))
-	close(stop)
-	wg.Wait()
-	faults.stop()
-	proxy.RestoreS3()
-	if err = c.flush(ctx); err != nil {
+	l.loadRound(ctx, func() {
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for w := range 32 {
+			conn, source := l.conns[w%len(l.conns)], rand.New(rand.NewPCG(rng.Uint64(), uint64(w))) //nolint:gosec // Test faults need a replayable source.
+			wg.Go(func() { c.work(ctx, conn, w, source, stop) })
+		}
+		wg.Go(func() {
+			for !stopped(stop) && c.flush(ctx, l.conns[0]) == nil {
+				time.Sleep(time.Second)
+			}
+		})
+		faults := startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))
+		time.Sleep(between(rng, 0, length/2))
+		proxy.FailS3For(between(rng, 5*time.Second, length/3))
+		time.Sleep(length - time.Since(start))
+		close(stop)
+		wg.Wait()
+		faults.stop()
+		proxy.RestoreS3()
+	})
+	if err := c.flush(ctx, l.conns[0]); err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("churn: %d files made and %d deleted in %v, %.0f a second", c.made.Load(), c.deleted.Load(), time.Since(start), float64(c.made.Load()+c.deleted.Load())/time.Since(start).Seconds())
-	c.check(ctx)
-	if err = conn.close(ctx); err != nil {
-		t.Fatal(err)
+	// A CREATE that waits for an upload of the file it opens holds up every
+	// CREATE in the folder, which once brought the churn down to one a second.
+	rate := float64(c.made.Load()+c.deleted.Load()) / time.Since(start).Seconds()
+	t.Logf("churn: %d files made and %d deleted in %v, %.0f a second", c.made.Load(), c.deleted.Load(), time.Since(start), rate)
+	if rate < 5 {
+		t.Errorf("churn: %.1f files made or deleted a second, want at least 5", rate)
 	}
-	d.stop()
-	d = f.start()
-	if c.conn, err = f.macConnect(ctx, f.addr); err != nil {
-		t.Fatal(err)
-	}
-	c.check(ctx)
+	l.check(ctx, "S3 faults")
+	c.check(ctx, l.conns[0])
+	d = restartAndCheck(l, f, d, func(conn *macConn) { c.check(ctx, conn) })
 	d.alive()
 }
 
-// fileChurn makes and deletes small files on one connection.
+// fileChurn makes and deletes small files.
 type fileChurn struct {
 	t             *testing.T
-	conn          *macConn
 	files         map[string][]byte
 	gone          map[string]bool
 	made, deleted atomic.Int64
@@ -356,11 +363,11 @@ type fileChurn struct {
 
 // work creates a file with data in one compound, then now and then deletes
 // one of its older files on close in another.
-func (c *fileChurn) work(ctx context.Context, w int, source *rand.Rand, stop <-chan struct{}) {
+func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand.Rand, stop <-chan struct{}) {
 	for n := 0; !stopped(stop); n++ {
 		name := fmt.Sprintf("churn-%d-%d", w, n)
 		data := chaosData(source, source.IntN(64<<10))
-		if _, err := c.conn.call(ctx, []wire.Message{
+		if _, err := conn.call(ctx, []wire.Message{
 			createMessage(c.t, smbtest.CreateOptions{Request: wire.CreateRequest{Name: name, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 2}}),
 			relatedTo(writeMessage(c.t, related, 0, data)), relatedTo(closeMessage(c.t, related)),
 		}); err != nil {
@@ -376,7 +383,7 @@ func (c *fileChurn) work(ctx context.Context, w int, source *rand.Rand, stop <-c
 		}
 		old := fmt.Sprintf("churn-%d-%d", w, source.IntN(n))
 		request := wire.CreateRequest{Name: old, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 1, Options: 0x1000}
-		replies, err := c.conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request}), relatedTo(closeMessage(c.t, related))}, smbproto.StatusObjectNameNotFound)
+		replies, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request}), relatedTo(closeMessage(c.t, related))}, smbproto.StatusObjectNameNotFound)
 		if err != nil {
 			c.t.Errorf("delete %s: %v", old, err)
 			return
@@ -392,9 +399,9 @@ func (c *fileChurn) work(ctx context.Context, w int, source *rand.Rand, stop <-c
 }
 
 // flush flushes every file, through the share's root.
-func (c *fileChurn) flush(ctx context.Context) error {
+func (c *fileChurn) flush(ctx context.Context, conn *macConn) error {
 	root := wire.CreateRequest{Name: "", DesiredAccess: 0x80, ShareAccess: 7, Disposition: 1}
-	_, err := c.conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: root}), relatedTo(flushMessage(c.t, related, true)), relatedTo(closeMessage(c.t, related))})
+	_, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: root}), relatedTo(flushMessage(c.t, related, true)), relatedTo(closeMessage(c.t, related))})
 	if err != nil {
 		c.t.Errorf("full FLUSH: %v", err)
 	}
@@ -403,12 +410,12 @@ func (c *fileChurn) flush(ctx context.Context) error {
 
 // check reads every file the churn made and did not delete, and checks that
 // every deleted one is gone.
-func (c *fileChurn) check(ctx context.Context) {
+func (c *fileChurn) check(ctx context.Context, conn *macConn) {
 	c.t.Helper()
 	for name, want := range c.files {
 		request := wire.CreateRequest{Name: name, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 1}
 		messages := []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request}), relatedTo(readMessage(c.t, related, 0, 64<<10)), relatedTo(closeMessage(c.t, related))}
-		replies, err := c.conn.call(ctx, messages, smbproto.StatusEndOfFile)
+		replies, err := conn.call(ctx, messages, smbproto.StatusEndOfFile)
 		if err != nil {
 			c.t.Fatalf("%s: %v", name, err)
 		}
@@ -418,7 +425,7 @@ func (c *fileChurn) check(ctx context.Context) {
 	}
 	for name := range c.gone {
 		request := wire.CreateRequest{Name: name, DesiredAccess: 0x80, ShareAccess: 7, Disposition: 1}
-		replies, err := c.conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request})}, smbproto.StatusObjectNameNotFound)
+		replies, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request})}, smbproto.StatusObjectNameNotFound)
 		if err != nil {
 			c.t.Fatalf("%s: %v", name, err)
 		}
@@ -429,7 +436,7 @@ func (c *fileChurn) check(ctx context.Context) {
 }
 
 // TestBreakLogoffDuringOutage logs off and disconnects trees on connections
-// whose FLUSH waits on S3, while the Mac load runs on its own connection.
+// whose FLUSH waits on S3, while the Mac load runs on its own connections.
 // LOGOFF and TREE_DISCONNECT close every open of their session or tree, so
 // they wait for its requests. They must still get a reply or STATUS_PENDING
 // within the patience.
@@ -449,10 +456,17 @@ func TestBreakLogoffDuringOutage(t *testing.T) {
 	for round := range rounds {
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, 2*time.Second, 5*time.Second))
+			var leavers []*leaver
+			for i, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect} {
+				leavers = append(leavers, prepareLeave(ctx, t, f, fmt.Sprintf("leaving-%d-%d", round, i), command))
+			}
 			start := proxy.FailS3For(outage)
 			l.waitStuck(ctx, rng)
-			for i, command := range []wire.Command{wire.Logoff, wire.TreeDisconnect} {
-				leaveDuringOutage(ctx, t, f, fmt.Sprintf("leaving-%d-%d", round, i), command)
+			for _, leaving := range leavers {
+				leaving.leave(ctx)
+			}
+			if time.Since(start) >= outage {
+				t.Error("coverage: the cleanup came after the outage")
 			}
 			time.Sleep(outage - time.Since(start))
 		})
@@ -462,16 +476,22 @@ func TestBreakLogoffDuringOutage(t *testing.T) {
 	d.alive()
 }
 
-// leaveDuringOutage writes a file on a new connection and starts a FLUSH of
-// it that waits on S3, and a READ of a band that waits for the band's I/O,
-// which the load's stuck uploads hold. Then it sends command without waiting
-// for either.
-func leaveDuringOutage(ctx context.Context, t *testing.T, f *fixture, name string, command wire.Command) {
+// leaver is a connection that is about to log off or disconnect its tree.
+type leaver struct {
+	t       *testing.T
+	conn    *macConn
+	ids     []wire.FileID // its own file, then every band
+	command wire.Command
+}
+
+// prepareLeave connects and opens a file of its own and every band before
+// the outage starts.
+func prepareLeave(ctx context.Context, t *testing.T, f *fixture, name string, command wire.Command) *leaver {
 	conn, err := f.macConnect(ctx, f.addr)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var ids []wire.FileID
+	l := &leaver{t: t, conn: conn, command: command}
 	files := []string{name}
 	for b := range loadBands {
 		files = append(files, bandName(b))
@@ -486,25 +506,38 @@ func leaveDuringOutage(ctx context.Context, t *testing.T, f *fixture, name strin
 		if decodeErr != nil {
 			t.Fatal(decodeErr)
 		}
-		ids = append(ids, created.Reply.ID)
+		l.ids = append(l.ids, created.Reply.ID)
 	}
-	if _, err = conn.call(ctx, []wire.Message{writeMessage(t, ids[0], 0, slotData(99, 0, 1))}); err != nil {
-		t.Fatal(err)
+	return l
+}
+
+// leave starts a WRITE and a FLUSH of its file, which wait on S3, and a READ
+// of every band, which waits for the band's I/O while the load's stuck
+// uploads hold it. Once the FLUSH has waited a second, it sends its command
+// without waiting for any of them.
+func (l *leaver) leave(ctx context.Context) {
+	if _, err := l.conn.start(ctx, []wire.Message{writeMessage(l.t, l.ids[0], 0, slotData(99, 0, 1))}); err != nil {
+		l.t.Fatal(err)
 	}
-	if _, err = conn.start(ctx, []wire.Message{flushMessage(t, ids[0], false)}); err != nil {
-		t.Fatal(err)
+	flush, err := l.conn.start(ctx, []wire.Message{flushMessage(l.t, l.ids[0], false)})
+	if err != nil {
+		l.t.Fatal(err)
 	}
-	for _, id := range ids[1:] {
-		if _, err = conn.start(ctx, []wire.Message{readMessage(t, id, slotSize, slotSize)}); err != nil {
-			t.Fatal(err)
+	for _, id := range l.ids[1:] {
+		if _, err = l.conn.start(ctx, []wire.Message{readMessage(l.t, id, slotSize, slotSize)}); err != nil {
+			l.t.Fatal(err)
 		}
 	}
+	time.Sleep(time.Second)
+	if !l.conn.waiting(flush[0]) {
+		l.t.Errorf("coverage: the FLUSH before %v did not wait on S3", l.command)
+	}
 	encode := wire.EncodeLogoffRequest
-	if command == wire.TreeDisconnect {
+	if l.command == wire.TreeDisconnect {
 		encode = wire.EncodeTreeDisconnectRequest
 	}
-	if _, err = conn.start(ctx, []wire.Message{emptyMessage(t, command, encode)}); err != nil {
-		t.Fatal(err)
+	if _, err = l.conn.start(ctx, []wire.Message{emptyMessage(l.t, l.command, encode)}); err != nil {
+		l.t.Fatal(err)
 	}
 }
 
@@ -552,6 +585,7 @@ func TestBreakDisk(t *testing.T) {
 			case <-time.After(90 * time.Second):
 				t.Error("coverage: no FLUSH of one file succeeded after the disk faults")
 			}
+			l.cutting(-1)
 			sigkill(t, d)
 		})
 		if failed := l.failed.Swap(0); round%len(faults) > 0 && failed == 0 {

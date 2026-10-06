@@ -58,7 +58,7 @@ func slotVersion(file, slot int, data []byte) (uint32, error) {
 // slotState tracks one slot. Versions only grow. since holds the versions sent
 // since the last flush that could be the slot's content after a crash. A
 // racy slot is written by two writers at once, so any version sent since
-// the last flush may win.
+// the last check may win, but never the zeros once a write is certain.
 type slotState struct {
 	since         []uint32
 	next          uint32 // last version handed out
@@ -77,7 +77,13 @@ func (s *slotState) allowed(mode string) []uint32 {
 		return append([]uint32{0, s.flushed, s.done}, s.since...)
 	}
 	switch {
-	case mode == "kill" || s.racy:
+	case s.racy:
+		certain := s.done
+		if mode == "kill" {
+			certain = s.flushed
+		}
+		return slices.DeleteFunc(append([]uint32{s.flushed, s.done}, s.since...), func(v uint32) bool { return v == 0 && certain > 0 })
+	case mode == "kill":
 		return append([]uint32{s.flushed, s.done}, s.since...)
 	case mode == "drop":
 		return append([]uint32{s.done}, slices.DeleteFunc(slices.Clone(s.since), func(v uint32) bool { return v < s.done })...)
@@ -103,8 +109,10 @@ type macLoad struct {
 	handles [][]wire.FileID // per connection, one per band with a lease, then the side file
 	addrs   []string        // per connection
 	slow    []bool          // per connection: its link is slowed on purpose
-	leases  [][16]byte
-	slots   [][]slotState // per band, and the side file last
+	// cut is set for a connection the test ends on purpose.
+	cut    []atomic.Bool
+	leases [][16]byte
+	slots  [][]slotState // per band, and the side file last
 	// fired holds the operations started once writes were stuck.
 	fired   sync.WaitGroup
 	seed    uint64
@@ -154,7 +162,7 @@ const sideName = "side"
 // on each connection, and the side file.
 func (l *macLoad) connect(ctx context.Context) {
 	l.t.Helper()
-	l.conns, l.handles = nil, nil
+	l.conns, l.handles, l.cut = nil, nil, make([]atomic.Bool, len(l.addrs))
 	for i, addr := range l.addrs {
 		limit := patience
 		if l.slow[i] {
@@ -193,8 +201,8 @@ func (l *macLoad) open(ctx context.Context, conn *macConn, options smbtest.Creat
 // closeAll logs off every connection.
 func (l *macLoad) closeAll(ctx context.Context) {
 	l.t.Helper()
-	for _, conn := range l.conns {
-		if err := conn.close(ctx); err != nil && !conn.done() {
+	for c, conn := range l.conns {
+		if err := conn.close(ctx); err != nil && (!l.cut[c].Load() || !conn.done()) {
 			l.t.Fatal(err)
 		}
 	}
@@ -232,18 +240,28 @@ func stopped(stop <-chan struct{}) bool {
 	}
 }
 
-// report fails the test for err from connection c, unless the connection is
-// gone or the test lets requests fail.
+// report fails the test for err from connection c, unless the test ended the
+// connection on purpose or lets requests fail.
 func (l *macLoad) report(c int, format string, err error) {
 	var failed statusError
 	if l.failures && errors.As(err, &failed) {
 		l.failed.Add(1)
 		return
 	}
-	if err == nil || l.conns[c].lost() {
+	if err == nil || l.cut[c].Load() && l.conns[c].lost() {
 		return
 	}
 	l.t.Errorf(format, err)
+}
+
+// cutting tells the load that the test is about to end connection c, or
+// every connection with -1.
+func (l *macLoad) cutting(c int) {
+	for i := range l.cut {
+		if c < 0 || i == c {
+			l.cut[i].Store(true)
+		}
+	}
 }
 
 // pick chooses a connection that still works, or returns -1.
@@ -278,20 +296,25 @@ func (l *macLoad) sendSlot(ctx context.Context, c, file, slot int, extra ...wire
 }
 
 // write keeps one WRITE in flight, to the slots writer w owns or, now and
-// then, to a racy slot that another writer also writes.
+// then, to a racy slot that another writer also writes. Each writer keeps to
+// one band, as Time Machine fills one band at a time, and owns every n-th of
+// its slots, where n is the number of writers of the band. A FLUSH that waits
+// on S3 so stops only its band's writers, and the others fill the RAM budget.
 func (l *macLoad) write(ctx context.Context, rng *rand.Rand, w int, stop <-chan struct{}) {
-	c := w % len(l.conns)
-	for !stopped(stop) && !l.conns[c].done() {
-		band, index := rng.IntN(loadBands), rng.IntN(loadSlots/7)*7
-		if rng.IntN(8) != 0 {
-			// One of its own slots, never racy.
-			for slot := w + l.writers*rng.IntN(loadBands*loadSlots/l.writers); ; slot = (slot + l.writers) % (loadBands * loadSlots) {
-				if band, index = slot/loadSlots, slot%loadSlots; index%7 != 0 {
-					break
-				}
-			}
+	c, band := w%len(l.conns), w%loadBands
+	rank, writers := w/loadBands, (l.writers-band+loadBands-1)/loadBands
+	var own []int
+	for index := rank; index < loadSlots; index += writers {
+		if index%7 != 0 {
+			own = append(own, index)
 		}
-		l.report(c, fmt.Sprintf("WRITE band %d slot %d: %%v", band, index), l.sendSlot(ctx, c, band, index))
+	}
+	for !stopped(stop) && !l.conns[c].done() {
+		file, index := band, own[rng.IntN(len(own))]
+		if rng.IntN(8) == 0 {
+			file, index = rng.IntN(loadBands), rng.IntN(loadSlots/7)*7
+		}
+		l.report(c, fmt.Sprintf("WRITE band %d slot %d: %%v", file, index), l.sendSlot(ctx, c, file, index))
 	}
 }
 
@@ -320,8 +343,8 @@ func (l *macLoad) read(ctx context.Context, rng *rand.Rand, stop <-chan struct{}
 		switch {
 		case err != nil:
 			l.t.Errorf("READ during the load: %v", err)
-		case s.racy && got > s.next:
-			l.t.Errorf("READ during the load: racy band %d slot %d holds version %d, beyond %d sent", band, slot, got, s.next)
+		case s.racy && (got > s.next || got == 0 && low > 0):
+			l.t.Errorf("READ during the load: racy band %d slot %d holds version %d, with %d acknowledged and %d sent", band, slot, got, low, s.next)
 		case !s.racy && (got < low || got > s.next):
 			l.t.Errorf("READ during the load: band %d slot %d holds version %d, outside %d to %d", band, slot, got, low, s.next)
 		}
@@ -403,18 +426,24 @@ var operationNames = []string{
 	"truncate", "rename", "lease break", "CLOSE behind its own WRITE", "conflicting open",
 }
 
-// waitStuck waits until writes are stuck on S3, which means uploads hold file
-// locks and the RAM budget is full, then starts every operation but FLUSH
-// once, each on its own. loadRound waits for them.
+// waitStuck waits until WRITEs to three bands at once are stuck on S3, then
+// starts every operation but FLUSH once, each on its own. Only one operator
+// flushes, so at least two of those WRITEs wait for room in the RAM budget:
+// it is full, and the early uploads that would make room wait on S3.
+// loadRound waits for the operations.
 func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand) {
 	l.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
 	for {
-		stuck := 0
-		for _, conn := range l.conns {
-			stuck += conn.stuckWrites()
+		bands := map[int]bool{}
+		for c, conn := range l.conns {
+			for _, file := range conn.stuckWrites() {
+				if band := slices.Index(l.handles[c][:loadBands], file); band >= 0 {
+					bands[band] = true
+				}
+			}
 		}
-		if stuck >= 4 {
+		if len(bands) >= 3 {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -462,10 +491,12 @@ func (l *macLoad) flush(ctx context.Context, c int, files []int, full bool) erro
 	for _, file := range files {
 		for i := range l.slots[file] {
 			s := &l.slots[file][i]
-			// A racy slot's acknowledged version may have been overtaken.
-			if v := acknowledged[file][i]; v > s.flushed && !s.racy {
+			if v := acknowledged[file][i]; v > s.flushed {
 				s.flushed = v
-				s.since = slices.DeleteFunc(s.since, func(x uint32) bool { return x <= v })
+				// An older write to a racy slot may still overtake v.
+				if !s.racy {
+					s.since = slices.DeleteFunc(s.since, func(x uint32) bool { return x <= v })
+				}
 			}
 		}
 	}

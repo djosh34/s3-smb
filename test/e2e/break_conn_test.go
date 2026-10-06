@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -63,7 +64,9 @@ type macConn struct {
 type macRequest struct {
 	queued, sent time.Time
 	reply        chan wire.Message
-	compound     []*macRequest
+	compound     []*macRequest // every member, this one too
+	id           uint64
+	file         wire.FileID // of a WRITE
 	command      wire.Command
 	pending      bool // got STATUS_PENDING, or its compound did
 	late         bool // already reported
@@ -141,10 +144,14 @@ func (c *macConn) start(ctx context.Context, messages []wire.Message) ([]*macReq
 		h := &messages[i].Header
 		h.MessageID, h.SessionID, h.TreeID, h.Credit = c.next, c.session.SessionID, c.session.TreeID, 64
 		c.next += uint64(h.CreditCharge)
-		requests[i] = &macRequest{command: h.Command, queued: now, reply: make(chan wire.Message, 1)}
+		requests[i] = &macRequest{id: h.MessageID, command: h.Command, queued: now, reply: make(chan wire.Message, 1), compound: requests}
 		c.inFlight[h.MessageID] = requests[i]
+		if h.Command == wire.Write {
+			if write, err := wire.DecodeWriteRequest(messages[i]); err == nil {
+				requests[i].file = write.ID
+			}
+		}
 	}
-	requests[0].compound = requests
 	c.sent += len(messages)
 	c.mu.Unlock()
 	err := c.client.Send(ctx, messages)
@@ -179,15 +186,16 @@ func (c *macConn) call(ctx context.Context, messages []wire.Message, allowed ...
 		return nil, err
 	}
 	replies := make([]wire.Message, len(requests))
+	var failed error
 	for i, r := range requests {
 		if replies[i], err = c.wait(r); err != nil {
 			return nil, err
 		}
 		if status := replies[i].Header.Status; status != smbproto.StatusSuccess && !containsStatus(allowed, status) {
-			err = errors.Join(err, statusError{command: r.command, status: status})
+			failed = errors.Join(failed, statusError{command: r.command, status: status})
 		}
 	}
-	return replies, err
+	return replies, failed
 }
 
 // statusError is a request the server answered with a failure.
@@ -225,7 +233,7 @@ func (c *macConn) receive(ctx context.Context) {
 			c.mu.Unlock()
 			return
 		}
-		for _, m := range reply.Messages {
+		for j, m := range reply.Messages {
 			c.credits += int(m.Header.Credit)
 			r := c.inFlight[m.Header.MessageID]
 			if r == nil {
@@ -234,6 +242,9 @@ func (c *macConn) receive(ctx context.Context) {
 			}
 			if !r.pending && !r.sent.IsZero() {
 				c.slowest = max(c.slowest, time.Since(r.sent))
+			}
+			if !whole(reply.Messages, j, r) {
+				c.t.Errorf("%v message %d: its compound came back split, which macOS cannot read", r.command, r.id)
 			}
 			if m.Header.Status == smbproto.StatusPending && m.Header.Flags&wire.FlagAsync != 0 {
 				r.pending = true
@@ -249,6 +260,28 @@ func (c *macConn) receive(ctx context.Context) {
 		c.credit.Broadcast()
 		c.mu.Unlock()
 	}
+}
+
+// whole reports whether the reply at index j of a frame comes as macOS reads
+// it: an interim reply to the first member of its compound alone, or the
+// final replies to every member together and in order.
+func whole(messages []wire.Message, j int, r *macRequest) bool {
+	if len(r.compound) == 1 {
+		return true
+	}
+	if messages[j].Header.Status == smbproto.StatusPending && messages[j].Header.Flags&wire.FlagAsync != 0 {
+		return r == r.compound[0] && len(messages) == 1
+	}
+	start := j - slices.Index(r.compound, r)
+	if start < 0 || start+len(r.compound) > len(messages) {
+		return false
+	}
+	for i, member := range r.compound {
+		if m := messages[start+i]; m.Header.MessageID != member.id || m.Header.Status == smbproto.StatusPending && m.Header.Flags&wire.FlagAsync != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // watch fails the test for every request that outlasts the patience with
@@ -316,18 +349,25 @@ func (c *macConn) keepAlive(ctx context.Context) {
 	}
 }
 
-// stuckWrites counts the WRITEs that went async more than a second ago and
-// still wait: a sign that the RAM budget is full and uploads hold locks.
-func (c *macConn) stuckWrites() int {
+// stuckWrites returns the files of the WRITEs that went async more than a
+// second ago and still wait.
+func (c *macConn) stuckWrites() []wire.FileID {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	n := 0
+	var files []wire.FileID
 	for _, r := range c.inFlight {
 		if r.command == wire.Write && r.pending && time.Since(r.sent) > time.Second {
-			n++
+			files = append(files, r.file)
 		}
 	}
-	return n
+	return files
+}
+
+// waiting reports whether r still waits for its final reply.
+func (c *macConn) waiting(r *macRequest) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.inFlight[r.id] == r
 }
 
 // summary returns the counts since the last summary, and resets them.
