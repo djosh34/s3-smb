@@ -150,8 +150,8 @@ cut responses, a 5-minute S3 outage (10 seconds in PR mode), a slow, unsteady
 and stalling network, connections cut during reads and writes, durable
 reconnects inside and beyond the reconnect window, kills and restarts under
 faults with recovery on new data folders after them, and misbehaving connections next to
-the Mac. They check exactly the promises of "What survives which failure",
-"S3 outage a backup must survive" and "What reconnect promises". Network
+the Mac. They check the promises in the README's "What survives a failure"
+(#263, #264, #266). Network
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
 nothing needs privileges. The gate runs more rounds and longer faults.
 
@@ -225,9 +225,9 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance
 ```
 
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
-MinIO locally. [test/macos/README.md](../test/macos/README.md) describes the
-layout. `test/macos/run.sh` runs `go test -tags macos` as
-root, which Apple's administrative commands need. The test stops itself at
+MinIO locally, or uses the B2 test bucket in `mode=b2`.
+[test/macos/README.md](../test/macos/README.md) describes the layout.
+`test/macos/run.sh` runs `go test -tags macos` as root, which Apple's administrative commands need. The test stops itself at
 least ten minutes before its Go timeout and keeps a separate seven-minute
 cleanup budget; the workflow leaves time for uploads before the job timeout.
 
@@ -264,7 +264,8 @@ The scenarios are `server-kill-restart`, `launchd-kill-restart`,
 `server-kill-cold`, `server-kill-cold-midpoint`, `client-abort-cold`,
 `machine-loss`, `network-drop` and `network-outage`. Six more Macs run
 `incrementals`, `s3-outage`, `s3-outage-long`, `thinning`, `rollback` and
-`large`, and `mode=b2` runs one small backup against B2.
+`large`, and `mode=b2` runs a small backup, an incremental and a restore
+against B2.
 [test/macos/README.md](../test/macos/README.md) describes them.
 
 `launchd-kill-restart` makes the first backup with s3-smb in the foreground,
@@ -333,9 +334,9 @@ There are no release candidates.
    `go list -m github.com/djosh34/s3-smb@<sha>` prints the pseudo-version. If
    the install fails, fix it in a pull request and start again.
 3. Tag the commit `vX.Y.Z`, push the tag and create the GitHub release. Its
-   notes say what s3-smb is, the install command, what was tested with a link
-   to the Mac run, a link to the limits, and whether the release needs a fresh
-   bucket.
+   notes say what s3-smb is, the install command, what was tested with links
+   to the Mac runs on MinIO and B2, a link to the limits, and whether the
+   release needs a fresh bucket.
 
 Never move or reuse a tag. The Go checksum database keeps the first hash.
 

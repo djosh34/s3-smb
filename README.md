@@ -83,10 +83,9 @@ tmutil startbackup --block
 
 Each release is tested on macOS 15 on Intel, on GitHub's `macos-15-intel`
 runners, with MinIO as the S3 server, and with one smaller run against B2. The
-test also restores the backup on a second Mac that has only the bucket. The
-release notes link the runs. With the
-defaults, macOS 12 and later should work. macOS 11.3 to 11.5 need
-`smb.encryption: false`. Older versions cannot connect.
+MinIO run also restores the backup on a second Mac that has only the bucket.
+The release notes link the runs. With the defaults, macOS 12 and later should
+work. macOS 11.3 to 11.5 need `smb.encryption: false`. Older versions cannot connect.
 
 ## What the SMB server supports
 
