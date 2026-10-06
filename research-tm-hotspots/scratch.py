@@ -132,5 +132,92 @@ def main():
                 print(f"  {label:10} {s['peak_mib']:8} {s['p99_time_mib']:8} {s['p99_requests_mib']:8}  {when} {s['peak_path']}")
 
 
+
+
+def budget(log, wins, limit=256 << 20):
+    """Early uploads with a fixed RAM budget for dirty chunks (#598).
+
+    Dirty chunks live in RAM, each at its object size. When a WRITE pushes the
+    total over the limit, the chunks written longest ago are uploaded early
+    until the total fits. A chunk that is written again before its file's FLUSH
+    costs one extra version, compared with uploading only at FLUSH.
+    """
+    labels = [w[0] for w in wins] + ["other"]
+    out = {l: {"triggers": 0, "early_chunks": 0, "early_bytes": 0, "extra_versions": 0, "extra_bytes": 0, "peak_mib": 0} for l in labels}
+    fsize = defaultdict(int)
+    dirty = defaultdict(dict)  # path -> chunk -> last write time
+    early = defaultdict(set)  # path -> chunks uploaded early since the last FLUSH
+    pending_delete = {}
+
+    def size(path, c):
+        return max(0, min(CHUNK, fsize[path] - c * CHUNK))
+
+    def total():
+        return sum(size(p, c) for p, cs in dirty.items() for c in cs)
+
+    for line in open(log, errors="replace"):
+        if '"smb trace"' not in line:
+            continue
+        r = json.loads(line)
+        if r.get("status") != 0:
+            continue
+        t, cmd, path = ts(r["time"]), r["cmd"], norm(r.get("path", ""))
+        ph = out[phase_of(t, wins)]
+        if cmd == "CREATE":
+            if r.get("action") in (0, 3):
+                dirty.pop(path, None)
+                early.pop(path, None)
+                fsize[path] = 0
+            elif r.get("action") == 2:
+                fsize[path] = r.get("size", 0)
+            else:
+                fsize[path] = max(fsize[path], r.get("size", 0))
+        elif cmd == "WRITE" and r["len"] > 0:
+            off, n = r["off"], r["len"]
+            fsize[path] = max(fsize[path], off + n)
+            for c in range(off // CHUNK, (off + n - 1) // CHUNK + 1):
+                if c in early[path] and c not in dirty[path]:
+                    ph["extra_versions"] += 1
+                    ph["extra_bytes"] += size(path, c)
+                dirty[path][c] = t
+            held = total()
+            ph["peak_mib"] = max(ph["peak_mib"], round(held / MiB, 1))
+            if held > limit:
+                ph["triggers"] += 1
+                for lw, p, c in sorted((lw, p, c) for p, cs in dirty.items() for c, lw in cs.items()):
+                    if held <= limit:
+                        break
+                    b = size(p, c)
+                    del dirty[p][c]
+                    early[p].add(c)
+                    held -= b
+                    ph["early_chunks"] += 1
+                    ph["early_bytes"] += b
+        elif cmd in ("FLUSH", "CLOSE"):
+            dirty.pop(path, None)
+            early.pop(path, None)
+            if cmd == "CLOSE" and pending_delete.pop(r["fid"], False):
+                fsize.pop(path, None)
+        elif cmd == "SET_INFO":
+            if "delete" in r:
+                pending_delete[r["fid"]] = r["delete"]
+            elif "eof" in r:
+                if r["eof"] < fsize[path]:
+                    first = -(-r["eof"] // CHUNK)
+                    dirty[path] = {c: v for c, v in dirty[path].items() if c < first}
+                fsize[path] = r["eof"]
+            elif "target" in r:
+                dst = norm(r["target"])
+                if dst != path:
+                    for m in (dirty, early, fsize):
+                        if path in m:
+                            m[dst] = m.pop(path)
+    return out
+
+
 if __name__ == "__main__":
     main()
+    wins = windows_from([sys.argv[2]])
+    print("\nRAM budget 256 MiB: WRITEs over budget, chunks and MiB uploaded early, extra versions and MiB")
+    for label, d in budget(sys.argv[1], wins).items():
+        print(f"  {label:10} {d['triggers']:6} {d['early_chunks']:6} {d['early_bytes'] / MiB:9.0f} {d['extra_versions']:6} {d['extra_bytes'] / MiB:8.0f}")

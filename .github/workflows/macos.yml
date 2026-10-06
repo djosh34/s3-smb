@@ -247,7 +247,7 @@ jobs:
           cache: false
       # Temporary for #598: make room for a large tree.
       - name: Free runner disk
-        if: matrix.scenario == 'hotspots-large'
+        if: startsWith(matrix.scenario, 'hotspots-')
         run: |
           df -k /
           keep=$(cd "$(xcode-select -p)/../.." && pwd -P)

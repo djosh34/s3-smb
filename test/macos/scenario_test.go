@@ -63,6 +63,10 @@ func (h *harness) baseline() result {
 		scale := min(1.4, max(0.25, float64(free-(55<<30))/6.5/float64(28<<30)))
 		h.t.Log("hotspots-large-scale", "free_bytes", free, "scale", scale)
 		h.hotspots = h.largeTree(scale)
+	case "hotspots-medium":
+		// The large run filled the disk in inc3 (MinIO grew 4.7 times the
+		// bytes written), so this one uses a fixed quarter-size tree.
+		h.hotspots = h.largeTree(0.25)
 	}
 	if h.hotspots != nil {
 		h.hotspotStart = time.Now().UTC()
@@ -154,7 +158,7 @@ func (h *harness) scenario(name string) result {
 		return h.networkScenario(name)
 	case "trace-streams", "trace-nostreams":
 		return h.traceScenario(name)
-	case "hotspots", "hotspots-large":
+	case "hotspots", "hotspots-large", "hotspots-medium":
 		return h.hotspotScenario()
 	case "server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss":
 	default:

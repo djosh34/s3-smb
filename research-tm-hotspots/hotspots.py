@@ -215,7 +215,19 @@ def phase_of(t, wins):
 
 
 def retime(wins):
-    """Map trace time to a timeline with one backup per hour (computed)."""
+    """Map trace time to a timeline with one backup per hour (computed).
+
+    Backup i starts an hour after backup i-1, or a minute after it ended if
+    it ran longer than an hour.
+    """
+    starts = []
+    for i, (label, s, e) in enumerate(wins):
+        if i == 0:
+            starts.append(0.0)
+        else:
+            ps, pe = wins[i - 1][1], wins[i - 1][2]
+            starts.append(max(starts[-1] + 3600, starts[-1] + (pe - ps) + 60))
+
     def f(t):
         for i, (label, s, e) in enumerate(wins):
             nxt = wins[i + 1][1] if i + 1 < len(wins) else float("inf")
@@ -223,8 +235,9 @@ def retime(wins):
                 return t - s
             if s <= t < nxt:
                 if t <= e:
-                    return i * 3600 + (t - s)
-                return i * 3600 + (e - s) + min(t - e, 3600 - (e - s) - 1)
+                    return starts[i] + (t - s)
+                room = (starts[i + 1] if i + 1 < len(wins) else starts[i] + 3600) - starts[i] - (e - s) - 1
+                return starts[i] + (e - s) + min(t - e, room)
         return t - wins[0][1]
     return f
 
