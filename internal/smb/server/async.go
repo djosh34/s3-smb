@@ -31,8 +31,10 @@ type pendingRequest struct {
 	asyncID uint64
 }
 
+// asyncEligible reports the commands that may wait on storage. CLOSE uploads
+// the file's dirty data, so it waits for S3 like FLUSH.
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo || command == wire.Close
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {

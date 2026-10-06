@@ -62,9 +62,14 @@ func readOK(t *testing.T, client *testClient, request wire.ReadRequest, want []b
 
 // S3 holds the upload's response, so the request stays in storage until the
 // test releases it. Meanwhile the connection keeps serving other requests.
-// The engine uploads at FLUSH, so the WRITE is a write-through one.
+// The engine uploads at FLUSH and CLOSE, so the WRITE is a write-through one.
+// macOS drops a connection that answers nothing for about a minute, so a
+// CLOSE held by an S3 outage must go async too.
 func TestSlowS3UploadRepliesAsync(t *testing.T) {
-	for _, test := range ioCommands[1:] {
+	for _, test := range append(ioCommands[1:], struct {
+		name    string
+		command wire.Command
+	}{"CLOSE", wire.Close}) {
 		t.Run(test.name, func(t *testing.T) {
 			srv, proxy := newS3Server(t)
 			client := srv.connect(t)
@@ -80,11 +85,16 @@ func TestSlowS3UploadRepliesAsync(t *testing.T) {
 			}
 			// More than one credit also checks credits for multi-credit async I/O.
 			data := bytes.Repeat([]byte("slow storage bytes\n"), 4000)
-			if test.command == wire.Flush {
+			if test.command != wire.Write {
 				data = data[:32]
 				writeFile(t, client, slow, data)
 			}
-			request := sendIO(t, client, test.command, slow, 0, data)
+			var request wire.Header
+			if test.command == wire.Close {
+				request = client.send(t, wire.Close, encode(t, wire.EncodeCloseRequest, wire.CloseRequest{ID: slow}), 1)
+			} else {
+				request = sendIO(t, client, test.command, slow, 0, data)
+			}
 			<-held
 			// The interim reply grants the request's credits; the final one grants none.
 			if interim := client.interim(t, request); interim.Credit != request.Credit {
@@ -95,6 +105,9 @@ func TestSlowS3UploadRepliesAsync(t *testing.T) {
 			proxy.Release()
 			if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
 				t.Fatalf("final status %#x", status)
+			}
+			if test.command == wire.Close {
+				slow = client.open(t, "slow")
 			}
 			readOK(t, client, wire.ReadRequest{ID: slow, Length: 1 << 17}, data)
 		})
