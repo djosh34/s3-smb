@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/djosh34/s3-smb/internal/netfault"
+	"github.com/djosh34/s3-smb/internal/s3fault"
 
 	smbproto "github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
@@ -25,8 +26,11 @@ import (
 // The break tests run the Mac load of macLoad, or a file churn, under one
 // kind of fault each. scripts/check.sh runs them in shards of their own.
 
-// restartAndCheck stops the daemon cleanly, starts it again and checks every
-// slot. A clean stop flushes, so every acknowledged byte must be there.
+// restartAndCheck stops the daemon cleanly, starts it again and checks
+// every slot: a clean stop flushes, so every acknowledged byte must be there.
+// Then, after a full FLUSH and a copy, it starts on a new data folder, which
+// must restore the newest copy from S3 alone and show every byte again. The
+// connections then go straight to the daemon's new address.
 func restartAndCheck(l *macLoad, f *fixture, d *daemon) *daemon {
 	l.t.Helper()
 	ctx := l.t.Context()
@@ -34,7 +38,24 @@ func restartAndCheck(l *macLoad, f *fixture, d *daemon) *daemon {
 	d.stop()
 	d = f.start()
 	l.connect(ctx)
-	l.check(ctx, "restart")
+	l.check(ctx, "a restart")
+	if err := l.flush(ctx, 0, nil, true); err != nil {
+		l.t.Fatal(err)
+	}
+	l.closeAll(ctx)
+	f.copyDatabase(d)
+	f.expireKilledLocks()
+	f.freshLocal()
+	newest := f.newestCopy()
+	d = f.start()
+	if restored := d.restoredCopy(); restored != newest {
+		l.t.Fatalf("a new data folder restored copy %q, want the newest %q", restored, newest)
+	}
+	for i := range l.addrs {
+		l.addrs[i], l.slow[i] = f.addr, false
+	}
+	l.connect(ctx)
+	l.check(ctx, "a cold start from S3")
 	return d
 }
 
@@ -73,8 +94,11 @@ func TestBreakS3OutageUnderLoad(t *testing.T) {
 	d.alive()
 }
 
-// TestBreakFaultyS3UnderLoad runs the Mac load while S3 fails, throttles,
-// stalls and cuts requests, with a short outage in each round.
+// TestBreakFaultyS3UnderLoad runs the Mac load while S3 misbehaves, with an
+// outage in each round. Even rounds draw a fault for every request on its
+// own, so requests in flight end out of order, some fail while others
+// succeed, and some are cut after S3 accepted them. Odd rounds switch
+// errors, throttling, stalls and cuts for all requests every few seconds.
 func TestBreakFaultyS3UnderLoad(t *testing.T) {
 	rng := chaosRand(t)
 	rounds, length := 2, 30*time.Second
@@ -89,14 +113,25 @@ func TestBreakFaultyS3UnderLoad(t *testing.T) {
 	ctx := t.Context()
 	l := newMacLoad(t, f, rng, f.addr, f.addr)
 	l.connect(ctx)
-	for range rounds {
+	for round := range rounds {
 		l.loadRound(ctx, func() {
-			faults := startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))
+			stopFaults := func() {
+				if err := proxy.SetMix(s3fault.Mix{}); err != nil {
+					t.Error(err)
+				}
+			}
+			if round%2 == 0 {
+				if err := proxy.SetMix(s3fault.Mix{Fail: 0.3, Cut: 0.2, MaxDelay: 3 * time.Second}); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				stopFaults = startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy)).stop
+			}
 			time.Sleep(between(rng, 0, length/2))
 			start := proxy.FailS3For(between(rng, 15*time.Second, 25*time.Second))
 			l.waitStuck(ctx, rng)
 			time.Sleep(length/2 - time.Since(start))
-			faults.stop()
+			stopFaults()
 		})
 		l.check(ctx, "S3 faults")
 		if err := l.flush(ctx, 0, nil, true); err != nil {
@@ -123,11 +158,23 @@ func TestBreakKillUnderLoad(t *testing.T) {
 	d := f.start()
 	ctx := t.Context()
 	l := newMacLoad(t, f, rng, f.addr, f.addr)
+	l.fileFlushes = true
 	l.connect(ctx)
 	for range rounds {
 		faults := startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy))
 		l.loadRound(ctx, func() {
-			time.Sleep(between(rng, 2*time.Second, 12*time.Second))
+			time.Sleep(between(rng, 2*time.Second, 8*time.Second))
+			// Kill right after a FLUSH of one file, so that a FLUSH that
+			// replied before its data was durable loses it.
+			select {
+			case <-l.flushed:
+			default:
+			}
+			select {
+			case <-l.flushed:
+			case <-time.After(90 * time.Second):
+				t.Error("coverage: no FLUSH of one file succeeded before the kill")
+			}
 			sigkill(t, d)
 		})
 		faults.stop()

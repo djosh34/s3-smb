@@ -102,12 +102,16 @@ type macLoad struct {
 	leases  [][16]byte
 	slots   [][]slotState // per band, and the side file last
 	// fired holds the operations started once writes were stuck.
-	fired   sync.WaitGroup
-	seed    uint64
-	writers int
-	serial  int
-	mu      sync.Mutex
-	sideMu  sync.Mutex // one operator at a time uses the side file
+	fired sync.WaitGroup
+	// flushed hears of each FLUSH of one file that succeeded. With
+	// fileFlushes, the flushing operator flushes only one file at a time.
+	flushed     chan struct{}
+	fileFlushes bool
+	seed        uint64
+	writers     int
+	serial      int
+	mu          sync.Mutex
+	sideMu      sync.Mutex // one operator at a time uses the side file
 }
 
 // loadBands is the number of band files, and loadSlots the slots of each:
@@ -122,7 +126,7 @@ const (
 
 // newMacLoad prepares a load on one connection per address.
 func newMacLoad(t *testing.T, f *fixture, rng *rand.Rand, addrs ...string) *macLoad {
-	l := &macLoad{t: t, f: f, addrs: addrs, slow: make([]bool, len(addrs)), seed: rng.Uint64(), writers: 16, scratch: map[string][]byte{}}
+	l := &macLoad{t: t, f: f, addrs: addrs, slow: make([]bool, len(addrs)), seed: rng.Uint64(), writers: 16, scratch: map[string][]byte{}, flushed: make(chan struct{}, 1)}
 	for range loadBands {
 		l.leases = append(l.leases, [16]byte(chaosData(rng, 16)))
 		slots := make([]slotState, loadSlots)
@@ -330,6 +334,9 @@ func (l *macLoad) operate(ctx context.Context, rng *rand.Rand, flushes bool, sto
 		op := 2 + rng.IntN(9)
 		if flushes {
 			op = rng.IntN(2)
+			if l.fileFlushes {
+				op = 0
+			}
 		}
 		if err := l.operation(ctx, c, rng, op); err != nil && !l.conns[c].lost() {
 			l.t.Errorf("%s on connection %d: %v", operationNames[op], c, err)
@@ -430,6 +437,12 @@ func (l *macLoad) flush(ctx context.Context, c int, files []int, full bool) erro
 	l.mu.Unlock()
 	if _, err := l.conns[c].call(ctx, []wire.Message{flushMessage(l.t, l.handles[c][files[0]], full)}); err != nil {
 		return err
+	}
+	if !full {
+		select {
+		case l.flushed <- struct{}{}:
+		default:
+		}
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
