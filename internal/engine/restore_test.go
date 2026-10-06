@@ -309,3 +309,43 @@ func TestInterruptedStartsDoNotOutrankANewerCopy(t *testing.T) {
 	next.tune = testTuning()
 	requireTree(t, next.open(), map[string]string{"f": "newer copy"})
 }
+
+// Copy 4's upload hangs while newer writes are flushed, then the server
+// crashes with its disk intact. The next start is interrupted before its
+// start copy, and copy 4 lands. The local database holds everything copy 4
+// does and more, so the start after that keeps it.
+func TestLocalWritesAfterAHeldCopySurvive(t *testing.T) {
+	f := newFixture(t)
+	e := f.open()
+	writeFile(t, e, "f", "copy 3")
+	copyNow(t, e)
+	writeFile(t, e, "f", "copy 4")
+	f.bucket.hold(holdPrefix("put", copyPrefix))
+	stopped := make(chan error, 1)
+	go func() { stopped <- e.makeCopy(t.Context(), 0) }()
+	waitFor(t, "copy 4 to be held", func() bool {
+		f.bucket.mu.Lock()
+		defer f.bucket.mu.Unlock()
+		return len(f.bucket.held) > 0
+	})
+	writeFile(t, e, "f", "flushed after copy 4")
+	f.dir = snapshot(t, e)
+	kill(t, e)
+	<-stopped
+	f.bucket.hold(nil)
+
+	f.tune.stopAge = 20 * time.Millisecond
+	f.bucket.setFault(func(op, key string) error {
+		if op == "put" && strings.HasPrefix(key, copyPrefix) {
+			return errors.New("injected copy failure")
+		}
+		return nil
+	})
+	if _, err := f.tryOpen(); err == nil {
+		t.Fatal("started without its start copy")
+	}
+	f.bucket.setFault(nil)
+	f.bucket.release()
+	f.tune = testTuning()
+	requireTree(t, f.open(), map[string]string{"f": "flushed after copy 4"})
+}

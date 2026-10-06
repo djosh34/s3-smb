@@ -212,8 +212,8 @@ func (e *Engine) start(ctx context.Context) error {
 
 // newTimeline gives the database a new history ID and sends what no row uses
 // to the trash: pending early uploads and files unlinked while open. It
-// records newest, the copy the database was kept against or restored from,
-// as published.
+// records which history the database is known to hold, and up to which
+// commit, as published.
 func (e *Engine) newTimeline(ctx context.Context, highest int64, newest copyName) error {
 	history, err := randomID()
 	if err != nil {
@@ -221,11 +221,15 @@ func (e *Engine) newTimeline(ctx context.Context, highest int64, newest copyName
 	}
 	err = e.commit(ctx, func(tx *sql.Tx) error {
 		return execAll(ctx, tx, []statement{
+			// When the database is of newest's history, all of that history up
+			// to its own counter is in it. Otherwise it was kept by its
+			// published history, which stays as it is.
 			{
-				`UPDATE state SET history = ?,
-				published = coalesce(nullif(?, ''), published),
-				published_commits = CASE WHEN ? = '' THEN published_commits ELSE ? END WHERE id = 1`,
-				[]any{history, newest.history, newest.history, newest.counter},
+				`UPDATE state SET
+				published = CASE WHEN history = ? THEN history ELSE published END,
+				published_commits = CASE WHEN history = ? THEN commits ELSE published_commits END,
+				history = ? WHERE id = 1`,
+				[]any{newest.history, newest.history, history},
 			},
 			{`INSERT INTO trash (name, seq) SELECT name, ? FROM pending`, []any{highest}},
 			{`DELETE FROM pending`, nil},
