@@ -3,6 +3,7 @@
 package helpers
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -169,5 +170,22 @@ func TestSMBMountpoints(t *testing.T) {
 //timemachine@127.0.0.1:54321/TimeMachine on /wrong-type (apfs)`
 	if got := SMBMountpoints(text, "127.0.0.1:54321"); !slices.Equal(got, []string{"/proxy share"}) {
 		t.Fatal(got)
+	}
+}
+
+func TestDiffBlocks(t *testing.T) {
+	dir := t.TempDir()
+	data := bytes.Repeat([]byte{7}, 5*4096+100)
+	changed := bytes.Clone(data)
+	clear(changed[4096 : 3*4096])
+	changed[4*4096+5] = 1
+	changed[len(changed)-1] = 2
+	must(t, os.WriteFile(filepath.Join(dir, "a"), data, 0o600))
+	must(t, os.WriteFile(filepath.Join(dir, "b"), changed, 0o600))
+	ranges, err := DiffBlocks(filepath.Join(dir, "a"), filepath.Join(dir, "b"))
+	must(t, err)
+	want := []Range{{4096, 3 * 4096, true}, {4 * 4096, 5*4096 + 100, false}}
+	if !slices.Equal(ranges, want) {
+		t.Fatal(ranges)
 	}
 }

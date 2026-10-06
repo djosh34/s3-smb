@@ -414,8 +414,25 @@ func (h *harness) restore(selected string, expected []helpers.Entry, name string
 	h.must(err)
 	h.save(name+"-differences.json", differences)
 	if len(differences) != 0 {
+		h.diffBlocks(output, differences, name)
 		h.t.Fatalf("%d created-tree differences; see %s-differences.json", len(differences), name)
 	}
 	h.t.Log("native-created-tree-restore-verified", filepath.Base(selected), counts)
 	return counts
+}
+
+// diffBlocks saves where each differing restored file differs from the file
+// in the test tree, when both are there. The test tree may have changed
+// since the backup, so this is evidence, not a verdict.
+func (h *harness) diffBlocks(output string, differences []string, name string) {
+	blocks := map[string]any{}
+	for _, path := range differences {
+		ranges, err := helpers.DiffBlocks(filepath.Join(h.proof, path), filepath.Join(output, path))
+		if err != nil {
+			blocks[path] = err.Error()
+			continue
+		}
+		blocks[path] = ranges
+	}
+	h.save(name+"-blocks.json", blocks)
 }
