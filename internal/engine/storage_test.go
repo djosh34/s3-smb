@@ -1216,3 +1216,54 @@ func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
 		t.Fatalf("read %q", got)
 	}
 }
+
+// Close and Remove run inside an SMB CLOSE, so they must not wait for a
+// file's I/O lock, which an upload holds for the whole of an S3 outage. The
+// file is dropped once the upload ends.
+func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
+	f := newFixture(t)
+	bucket := &pausable{objects: f.bucket}
+	e, err := open(t.Context(), Options{Dir: f.dir}, bucket, f.tune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { kill(t, e) })
+	r := create(t, e, "data", smb.KindFile)
+	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
+	other := openFile(t, e, "data", smb.AccessRead)
+	writeAt(t, e, h, "uploaded during an outage", 0)
+	bucket.gate.Lock()
+	flushed := make(chan error, 1)
+	go func() { flushed <- e.Flush(t.Context(), h, smb.SyncData) }()
+	// Wait until the FLUSH holds the I/O lock and waits on S3.
+	for st, _ := e.pin(r.Object); st.mu.TryLock(); {
+		st.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- errors.Join(e.Close(t.Context(), other), e.Remove(t.Context(), r.Name, r.Object), e.Close(t.Context(), h))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("close and remove waited for the upload")
+	}
+	bucket.gate.Unlock()
+	if err := <-flushed; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Lookup(t.Context(), "data"); err != nil || got.Exists {
+		t.Fatal("removed file still in the namespace", err)
+	}
+	// The drop runs once the FLUSH has let go of the I/O lock.
+	for deadline := time.Now().Add(5 * time.Second); countRows(t, e, "files") != 1 || countRows(t, e, "chunks") != 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the removed file was not dropped after the upload")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

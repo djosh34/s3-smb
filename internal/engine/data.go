@@ -187,8 +187,8 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 
 // Close releases the handle, even when ctx is canceled. Dirty data waits for
 // the next FLUSH: CLOSE promises nothing about durability. It must never
-// wait on S3, so it does not wait for the file's I/O, which can. Only the
-// last close of an unlinked file takes the I/O lock, to drop the file.
+// wait on S3, so it does not wait for the file's I/O, which can. The last
+// close of an unlinked file drops it once its I/O lock is free.
 func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
 	h, ok := ref.(*handle)
 	if !ok || h == nil {
@@ -207,11 +207,31 @@ func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
 	e.mu.Unlock()
 	var err error
 	if last {
-		st.mu.Lock()
-		err = e.dropUnlinked(context.WithoutCancel(ctx), st)
-		st.mu.Unlock()
+		err = e.dropWhenFree(ctx, st)
 	}
 	return errors.Join(err, ctx.Err())
+}
+
+// dropWhenFree drops an unlinked file that nothing has open. It does not wait
+// for the file's I/O lock, which an upload can hold for a whole S3 outage:
+// while the lock is busy, a goroutine drops the file once it is free. A crash
+// before that leaves the unlinked row, which the next start drops.
+func (e *Engine) dropWhenFree(ctx context.Context, st *inode) error {
+	ctx = context.WithoutCancel(ctx)
+	if st.mu.TryLock() {
+		defer st.mu.Unlock()
+		return e.dropUnlinked(ctx, st)
+	}
+	_, unpin := e.pin(st.id)
+	e.group.Go(func() {
+		defer unpin()
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if err := e.dropUnlinked(ctx, st); err != nil && e.Err() == nil {
+			e.log.Error("dropping an unlinked file failed; the next start drops it", "error", err)
+		}
+	})
+	return nil
 }
 
 // dropUnlinked drops an unlinked file that nothing has open anymore. The I/O

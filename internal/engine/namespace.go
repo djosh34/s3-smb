@@ -303,6 +303,8 @@ func (e *Engine) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, 
 
 // Remove deletes name if it is still expect. Its chunks go to the trash in
 // the same commit. An open file is only unlinked; its last close drops it.
+// Remove runs inside CLOSE, so it does not wait for the file's I/O lock: when
+// an upload holds it, the file is only unlinked, and dropped once it is free.
 func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error {
 	if e.readOnly {
 		return smb.ErrReadOnly
@@ -313,8 +315,12 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 	if expect == 0 {
 		return smb.ErrInvalidParameter
 	}
-	st, release := e.acquire(expect)
-	defer release()
+	st, unpin := e.pin(expect)
+	defer unpin()
+	locked := st.mu.TryLock()
+	if locked {
+		defer st.mu.Unlock()
+	}
 	var drop bool
 	err := e.commit(ctx, func(tx *sql.Tx) error {
 		r, exists, err := childRow(ctx, tx, name.Parent, name.Base)
@@ -324,7 +330,7 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 		if !exists || r.id != expect {
 			return smb.ErrIdentityChanged
 		}
-		if drop, err = e.unlink(ctx, tx, r, st); err != nil {
+		if drop, err = e.unlink(ctx, tx, r, st, locked); err != nil {
 			return err
 		}
 		return touch(ctx, tx, timeValue(wallClock()), name.Parent)
@@ -332,12 +338,19 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 	if err != nil {
 		return err
 	}
+	if !locked {
+		e.mu.Lock()
+		st.unlinked = true
+		e.mu.Unlock()
+		return e.dropWhenFree(ctx, st)
+	}
 	return e.settleUnlink(ctx, st, drop)
 }
 
 // unlink removes r from the namespace inside tx. It drops the file at once
-// when nothing has it open, and reports whether it did.
-func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode) (bool, error) {
+// when nothing has it open and the caller holds its I/O lock, and reports
+// whether it did.
+func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode, locked bool) (bool, error) {
 	if r.directory {
 		var children bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM files WHERE parent = ?)`, r.id).Scan(&children); err != nil {
@@ -350,7 +363,7 @@ func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode) (bool
 	e.mu.Lock()
 	open := st.refs > 0
 	e.mu.Unlock()
-	if open {
+	if open || !locked {
 		_, err := tx.ExecContext(ctx, `UPDATE files SET parent = NULL, name = NULL WHERE id = ?`, r.id)
 		return false, err
 	}
@@ -456,7 +469,7 @@ func (e *Engine) rename(ctx context.Context, tx *sql.Tx, request smb.RenameReque
 		case !destination.directory && source.directory:
 			return false, smb.ErrNotDirectory
 		}
-		if drop, err = e.unlink(ctx, tx, destination, target); err != nil {
+		if drop, err = e.unlink(ctx, tx, destination, target, true); err != nil {
 			return false, err
 		}
 	}
