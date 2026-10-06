@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -23,9 +24,9 @@ import (
 )
 
 // thinning backs up a file that only the oldest backup holds and deletes
-// that backup with tmutil. Time Machine reaps a deleted backup during its
-// next backup, and compacting the image gives the freed bands back to the
-// share, as Time Machine does to reclaim space. Then every chunk of a band
+// that backup with tmutil. APFS frees its blocks while the image is mounted.
+// The next backup and compacting the image, as Time Machine does to reclaim
+// space, give the freed bands back to the share. Then every chunk of a band
 // that the file filled must go to the trash and be deleted. A band that also
 // holds other data stays, as SMB cannot punch holes. s3-smb keeps 2 copies
 // and makes one every 2 minutes here. The remaining backups must restore.
@@ -45,7 +46,7 @@ func (h *harness) thinning() result {
 	if len(holders)*(8<<20) < size/2 {
 		h.t.Fatalf("only %d chunks of whole bands hold the oldest backup's file", len(holders))
 	}
-	h.deleteBackup(outcome.Baseline)
+	h.deleteBackup(outcome.Baseline, size/2)
 	fourth, fourthTree := h.incremental("fourth", third, func() {
 		h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed in the fourth backup\n"), 0o600))
 	})
@@ -157,8 +158,10 @@ func (h *harness) holderStates(holders map[string]bool) (holderCount, error) {
 }
 
 // deleteBackup deletes one backup with tmutil on the destination image
-// attached read-write.
-func (h *harness) deleteBackup(backup string) {
+// attached read-write. APFS frees the backup's blocks in the background while
+// the volume is mounted, so the image stays attached until its used space
+// has dropped by at least freed bytes.
+func (h *harness) deleteBackup(backup string, freed uint64) {
 	h.mount()
 	bundle := h.bundle()
 	devices, volumes := h.attach(bundle, false)
@@ -166,10 +169,16 @@ func (h *harness) deleteBackup(backup string) {
 		h.t.Fatal("unknown Time Machine image volume layout", devices, volumes)
 	}
 	h.attachments = append(h.attachments, devices[0])
+	before := h.used(volumes[0])
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
 	}
+	h.must(h.waitFor("APFS freeing the deleted backup", 15*time.Minute, 10*time.Second, func() (bool, error) {
+		used := h.used(volumes[0])
+		h.t.Log("backup-volume-used", used, "before", before)
+		return used+freed <= before, nil
+	}))
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)
 }
@@ -189,4 +198,11 @@ func (h *harness) bundle() string {
 		h.t.Fatal("expected one real Time Machine sparsebundle", bundles)
 	}
 	return bundles[0]
+}
+
+// used returns the bytes in use on a mounted volume.
+func (h *harness) used(volume string) uint64 {
+	var stat syscall.Statfs_t
+	h.must(syscall.Statfs(volume, &stat))
+	return (stat.Blocks - stat.Bfree) * uint64(stat.Bsize)
 }
