@@ -362,16 +362,17 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	return action
 }
 
-// CleanupDone ends the cleanup of a close action. A failed cleanup keeps its
-// client present for the one-client rule until the server restarts, since
-// its storage may still be in use.
-func (table *Table) CleanupDone(action CloseAction, err error) {
+// CleanupDone ends the cleanup of a close action. A cleanup that failed for
+// a storage fault keeps its client present for the one-client rule until the
+// server restarts, since its storage may still be in use. A refusal, such as
+// a delete of a folder that is no longer empty, does not.
+func (table *Table) CleanupDone(action CloseAction, fault bool) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	if table.cleaning[action.ClientGUID]--; table.cleaning[action.ClientGUID] <= 0 {
 		delete(table.cleaning, action.ClientGUID)
 	}
-	if err != nil {
+	if fault {
 		table.failed[action.ClientGUID] = true
 	}
 }

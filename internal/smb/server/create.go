@@ -273,7 +273,7 @@ func closeFailedCreate(ctx context.Context, request RequestContext, open state.O
 	if status != smb.StatusSuccess {
 		return fmt.Errorf("close failed CREATE: status %#x", status)
 	}
-	defer func() { request.Opens.CleanupDone(action, err) }()
+	defer func() { request.Opens.CleanupDone(action, storageFault(err)) }()
 	err = request.Storage.Close(ctx, action.Handle)
 	if action.Remove {
 		defer request.Opens.CompleteDelete(action.Object)

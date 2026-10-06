@@ -21,7 +21,7 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 }
 
 func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction) (result error) {
-	defer func() { server.options.State.CleanupDone(action, result) }()
+	defer func() { server.options.State.CleanupDone(action, storageFault(result)) }()
 	if action.Remove {
 		defer server.options.State.CompleteDelete(action.Object)
 	}
@@ -35,6 +35,12 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 		result = errors.Join(result, server.removeClosed(ctx, action))
 	}
 	return result
+}
+
+// storageFault reports whether a cleanup failed for a fault of storage rather
+// than a refusal.
+func storageFault(err error) bool {
+	return err != nil && serverFault(smb.StatusFromError(err))
 }
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
