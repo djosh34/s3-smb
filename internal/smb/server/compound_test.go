@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
@@ -50,6 +51,38 @@ func TestCompoundRelatedFileID(t *testing.T) {
 		srv.expectContent(t, map[string]string{"file": "data"})
 		client.noExtraReplies(t)
 	}
+}
+
+// Members of a compound run in order, related or not: once one goes async,
+// the rest wait for it. A READ after a WRITE that waits on storage reads the
+// written data, and a CLOSE after a WRITE cannot close the file before the
+// WRITE has started.
+func TestCompoundMembersRunInOrder(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	entered, release := srv.holdWrites()
+	data := []byte("written before the READ")
+	messages := []wire.Message{
+		message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: data}),
+		message(t, client, wire.Read, wire.EncodeReadRequest, wire.ReadRequest{ID: id, Length: 64}),
+	}
+	if err := client.raw.Send(t.Context(), messages); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	client.interim(t, messages[0].Header)
+	// Out of order, the READ would end now, before the WRITE.
+	time.Sleep(100 * time.Millisecond)
+	close(release)
+	if status := client.receive(t, messages[0].Header).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("WRITE status %#x", status)
+	}
+	read, status := decodeReply(t, client.receive(t, messages[1].Header), wire.DecodeReadResponse)
+	if status != smb.StatusSuccess || string(read.Data) != string(data) {
+		t.Fatalf("READ after the WRITE = %q, %#x; want %q", read.Data, status, data)
+	}
+	client.noExtraReplies(t)
 }
 
 // A related member that needs a file fails with the error of the member

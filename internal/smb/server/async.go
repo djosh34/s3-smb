@@ -86,7 +86,9 @@ func (connection *connection) startWork(ctx context.Context, message wire.Messag
 		if prerequisite != nil {
 			select {
 			case <-prerequisite.done:
-				previous = prerequisite.compound
+				if message.Header.Flags&wire.FlagRelated != 0 {
+					previous = prerequisite.compound
+				}
 			case <-ctx.Done():
 				operation.result.status = smb.StatusCancelled
 				operation.compound = previous.after(operation.result)

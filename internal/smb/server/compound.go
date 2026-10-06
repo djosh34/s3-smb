@@ -53,10 +53,12 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 	var previous compoundState
 	chainRejection := rejection
 	for index, message := range messages {
-		dependency := (*work)(nil)
+		// Members run in order: once one goes async, the rest wait for it.
+		// Otherwise a CLOSE could close the file before the WRITE before it
+		// has started.
+		dependency := prerequisite
 		if index > 0 && message.Header.Flags&wire.FlagRelated != 0 {
 			message.Header.SessionID, message.Header.TreeID = preceding.SessionID, preceding.TreeID
-			dependency = prerequisite
 		} else {
 			previous = compoundState{}
 			chainRejection = rejection
@@ -71,7 +73,6 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 			}
 			continue
 		}
-		prerequisite = nil
 		operation, completed, err := connection.runMember(ctx, message, chainRejection, dependency, previous)
 		if err != nil {
 			return err
@@ -190,8 +191,8 @@ func (connection *connection) runMember(ctx context.Context, message wire.Messag
 		return &work{result: reply{status: rejection}}, true, nil
 	}
 	if dependency != nil {
-		// A related suffix owns its own pending identity and starts only after
-		// its predecessor completes. Even a quick dependent reply stays async.
+		// A member after an async one starts only after it completes. Even a
+		// quick dependent reply stays async.
 		return connection.startWork(ctx, message, dependency, previous), false, nil
 	}
 	if asyncEligible(message.Header.Command) {
