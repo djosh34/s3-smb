@@ -19,9 +19,10 @@ import (
 )
 
 // large backs up the medium tree of the second hot spot measurement (#598),
-// about 7 GiB in 36,000 files, then three incrementals that each edit 10% to
-// 30% of all files, add up to 2 GiB and delete up to 10%. The latest backup
-// must restore.
+// about 7 GiB in 36,000 files, then five incrementals that, as there, each
+// edit 10% to 30% of all files, add up to 4 GiB and delete 2% to 10%. The
+// latest backup must restore. The #598 large tree of 15.7 GiB ran the
+// runner's disk out in its third incremental.
 func (h *harness) large() result {
 	tree := &largeTree{h: h, rng: mathrand.New(mathrand.NewPCG(620, 1)), files: map[string]int64{}} //nolint:gosec // The tree only needs a replayable shape.
 	h.prepare = tree.create
@@ -29,7 +30,13 @@ func (h *harness) large() result {
 	outcome.Scenario = "large"
 	latest := outcome.Baseline
 	var updated []helpers.Entry
-	for step, change := range []largeChange{{edit: 0.10, add: 1 << 30, drop: 0.02}, {edit: 0.30, add: 2 << 30, drop: 0.05}, {edit: 0.20, add: 512 << 20, drop: 0.10}} {
+	for step, change := range []largeChange{
+		{edit: 0.10, add: 1 << 30, drop: 0.02},
+		{edit: 0.30, add: 4 << 30, drop: 0.05},
+		{edit: 0.20, add: 512 << 20, drop: 0.10},
+		{edit: 0.10, add: 1 << 30, drop: 0.03},
+		{edit: 0.30, add: 2 << 30, drop: 0.05},
+	} {
 		label := fmt.Sprintf("large-%d", step+1)
 		latest, updated = h.incremental(label, latest, func() { tree.change(label, change) })
 	}
@@ -45,7 +52,7 @@ type largeTree struct {
 	files map[string]int64
 }
 
-// largeGroups are the tree's file groups at a quarter of the #598 large tree.
+// largeGroups are the file groups of the #598 medium tree.
 var largeGroups = []struct {
 	dir   string
 	count int

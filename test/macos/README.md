@@ -24,7 +24,8 @@ Scenarios beyond the failed-backup ones:
 - `rollback`: s3-smb is killed right after a copy lands in the middle of a
   backup and loses its data folder. The next server restores that copy.
   Backup A must restore and backup C must work.
-- `large`: about 7 GiB in 36,000 files and three wide incrementals.
+- `large`: about 7 GiB in 36,000 files and five wide incrementals, the
+  medium tree of #598.
 - `b2`: a small backup, an incremental and a restore against the B2 test
   bucket. It runs as its own job, `mode: b2`, which empties the bucket after,
   also when the run fails.
