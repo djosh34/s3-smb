@@ -29,9 +29,7 @@ func TestDataPathS3Outage(t *testing.T) {
 
 func testDataPathOutage(t *testing.T, operation string, outage time.Duration) {
 	data := bytes.Repeat([]byte("S3 outage byte-correct fixture\n"), 1024)
-	f := newFixture(t, false)
-	// This test covers data retries, not scheduled metadata backups.
-	f.interval = "1h"
+	f := newFixture(t)
 	proxy := f.newFaultProxy()
 	ctx, cancel := context.WithTimeout(context.Background(), outage+3*time.Minute)
 	t.Cleanup(cancel)

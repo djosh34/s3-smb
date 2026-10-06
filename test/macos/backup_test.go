@@ -106,9 +106,8 @@ func (h *harness) completeBackup(label string) error {
 }
 
 // newCopy waits until a database copy newer than every copy now in the
-// bucket has landed, and returns its key. s3-smb uploads a copy every 15
-// minutes.
-func (h *harness) newCopy(label string) string {
+// bucket has landed. s3-smb uploads a copy every 15 minutes.
+func (h *harness) newCopy(label string) {
 	previous := helpers.NewestCopy(h.objects("db/"))
 	var landed string
 	h.must(h.waitFor("database copy after "+previous, 20*time.Minute, 10*time.Second, func() (bool, error) {
@@ -116,7 +115,6 @@ func (h *harness) newCopy(label string) string {
 		return landed > previous, nil
 	}))
 	h.t.Log("database-copy-landed", label, landed)
-	return landed
 }
 
 func (h *harness) mountpoints(text string) []string {

@@ -22,11 +22,11 @@ import (
 // Config is the parsed file. Secrets are still sources here. It prints as a
 // placeholder in logs.
 type Config struct {
-	SMB     SMBConfig     `yaml:"smb"`
-	Storage StorageConfig `yaml:"storage"`
 	S3      S3Config      `yaml:"s3"`
+	SMB     SMBConfig     `yaml:"smb"`
 	Logging LoggingConfig `yaml:"logging"`
 	path    string
+	Storage StorageConfig `yaml:"storage"`
 }
 
 // SMBConfig is the smb section: the listener, the share and its account.

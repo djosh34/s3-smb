@@ -96,16 +96,6 @@ func (f *fixture) chaosShare(addr string) (*smb.Share, func()) {
 	return share.WithContext(ctx), disconnect
 }
 
-// chaosFixture is an encrypted fixture with backups every 5 minutes. A
-// metadata backup protects writes for twice the interval, so like the hourly
-// default this keeps protection valid through each fault.
-func chaosFixture(t *testing.T) *fixture {
-	t.Helper()
-	f := newFixture(t, true)
-	f.interval = "5m"
-	return f
-}
-
 // networkProxy puts a network fault proxy in front of the daemon's SMB port.
 func (f *fixture) networkProxy() *netfault.Proxy {
 	f.t.Helper()

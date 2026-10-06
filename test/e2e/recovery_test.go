@@ -3,93 +3,181 @@
 package e2e
 
 import (
-	"bytes"
+	"crypto/sha256"
+	"database/sql"
 	"errors"
-	"io"
-	"strings"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
-	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/service/s3"
+	_ "github.com/mattn/go-sqlite3"
 )
 
-// TestRecovery recovers twice from S3 with no local state and checks that
-// metadata backups are gzip only when encryption is off.
+// TestRecovery recovers twice on a new data folder from the database copies
+// in the bucket.
 func TestRecovery(t *testing.T) {
-	for _, encrypted := range []bool{false, true} {
-		name := "plaintext"
-		if encrypted {
-			name = "encrypted"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t, encrypted)
-			d := f.start()
-			share, disconnect := f.share()
-			large := make([]byte, 5_000_003)
-			for i := range large {
-				large[i] = byte((i*31 + i/257) % 251)
-			}
-			files := map[string][]byte{"empty": {}, "unicode-文件.txt": []byte("all expected files are checked\n"), "large.bin": large}
-			for name, data := range files {
-				writeFile(t, share, name, data)
-			}
-			verifyFiles(t, share, files)
-			disconnect()
-			f.protectedAfter(time.Now())
-			d.stop()
-			f.freshLocal()
-			d = f.start()
-			share, disconnect = f.share()
-			verifyFiles(t, share, files)
-			files["resumed.txt"] = []byte("writes after fresh-install recovery\n")
-			writeFile(t, share, "resumed.txt", files["resumed.txt"])
-			disconnect()
-			f.protectedAfter(time.Now())
-			d.stop()
-			f.freshLocal()
-			d = f.start()
-			share, disconnect = f.share()
-			verifyFiles(t, share, files)
-			disconnect()
-			d.stop()
-			checkSnapshotEncoding(t, f)
-		})
+	f := newFixture(t)
+	d := f.start()
+	share, disconnect := f.share()
+	large := make([]byte, 17_000_003)
+	for i := range large {
+		large[i] = byte((i*31 + i/257) % 251)
 	}
+	files := map[string][]byte{"empty": {}, "unicode-文件.txt": []byte("all expected files are checked\n"), "large.bin": large}
+	for name, data := range files {
+		writeFile(t, share, name, data)
+	}
+	verifyFiles(t, share, files)
+	disconnect()
+	f.copyDatabase(d)
+	recoverTwice(t, f, files)
 }
 
-func checkSnapshotEncoding(t *testing.T, f *fixture) {
+// recoverTwice starts on a new data folder, which restores the newest copy,
+// checks the files and writes a new one. Then it makes a copy that holds the
+// new file and does the same once more. No daemon may run, and the newest copy
+// must hold files.
+func recoverTwice(t *testing.T, f *fixture, files map[string][]byte) {
 	t.Helper()
-	objects, err := f.store.ListObjectsV2(t.Context(), &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
+	d := recoverFresh(t, f, files)
+	share, disconnect := f.share()
+	files["after-recovery.txt"] = []byte("written on top of the recovered state\n")
+	writeFile(t, share, "after-recovery.txt", files["after-recovery.txt"])
+	disconnect()
+	f.copyDatabase(d)
+	recoverFresh(t, f, files).stop()
+}
+
+// recoverFresh starts on a new data folder, checks that the start restored
+// the newest copy and that the share holds files, and returns the daemon.
+func recoverFresh(t *testing.T, f *fixture, files map[string][]byte) *daemon {
+	t.Helper()
+	f.freshLocal()
+	newest := f.newestCopy()
+	d := f.start()
+	if restored := d.restoredCopy(); restored != newest {
+		t.Fatalf("a new data folder restored copy %q, want the newest %q", restored, newest)
+	}
+	share, disconnect := f.share()
+	verifyFiles(t, share, files)
+	disconnect()
+	return d
+}
+
+// TestRecoveryWithoutServer reads a file back from the bucket without s3-smb,
+// the way docs/recovery.md describes. The file spans three chunks, the middle
+// one a hole, and ends in zeros after its last chunk.
+func TestRecoveryWithoutServer(t *testing.T) {
+	const name = "Mac.sparsebundle/bands/1"
+	want := make([]byte, 3*chunkSize+3<<20)
+	for i := range chunkSize {
+		want[i] = byte((i*7 + i/97) % 253)
+	}
+	tail := want[2*chunkSize+100 : 2*chunkSize+100+1<<20]
+	for i := range tail {
+		tail[i] = byte(i%241 + 1)
+	}
+	f := newFixture(t)
+	d := f.start()
+	share, disconnect := f.share()
+	if err := share.MkdirAll(filepath.Dir(name), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	file, err := share.Create(name)
 	if err != nil {
 		t.Fatal(err)
 	}
-	count := 0
-	for _, object := range objects.Contents {
-		if !strings.Contains(aws.ToString(object.Key), "meta/snapshot-") {
-			continue
-		}
-		count++
-		body, err := f.store.GetObject(t.Context(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: object.Key})
-		if err != nil {
-			t.Fatal(err)
-		}
-		header := make([]byte, 2)
-		_, err = io.ReadFull(body.Body, header)
-		if err = errors.Join(err, body.Body.Close()); err != nil {
-			t.Fatal(err)
-		}
-		if gzip := bytes.Equal(header, []byte{0x1f, 0x8b}); gzip == f.encrypted {
-			t.Fatalf("metadata backup %s: gzip header %t with encryption %t", aws.ToString(object.Key), gzip, f.encrypted)
-		}
+	if _, err = file.WriteAt(want[:chunkSize], 0); err == nil {
+		_, err = file.WriteAt(tail, 2*chunkSize+100)
 	}
-	if count == 0 {
-		t.Fatal("no metadata backups found")
+	if err == nil {
+		err = file.Truncate(int64(len(want)))
+	}
+	if err = errors.Join(err, file.Sync(), file.Close()); err != nil {
+		t.Fatal(err)
+	}
+	verifyFiles(t, share, map[string][]byte{name: want})
+	disconnect()
+	f.copyDatabase(d)
+
+	got, indexes := readWithoutServer(t, f, name)
+	if !slices.Equal(indexes, []int64{0, 2}) {
+		t.Fatalf("the file has chunks %v, want 0 and 2 around a hole", indexes)
+	}
+	if sha256.Sum256(got) != sha256.Sum256(want) {
+		t.Fatalf("SHA256 mismatch: got %x want %x", sha256.Sum256(got), sha256.Sum256(want))
 	}
 }
 
+// chunkSize is the chunk size of docs/recovery.md.
+const chunkSize = 8388608
+
+// The query of docs/recovery.md, with the path as a parameter.
+const chunksQuery = `WITH RECURSIVE path(id, name) AS (
+  SELECT id, name FROM files WHERE parent = 1
+  UNION ALL
+  SELECT files.id, path.name || '/' || files.name FROM files JOIN path ON files.parent = path.id
+)
+SELECT chunks.idx, chunks.name, chunks.length
+FROM path JOIN chunks ON chunks.file = path.id
+WHERE path.name = ?
+ORDER BY chunks.idx;`
+
+// sizeQuery reads the file's size from the files table.
+const sizeQuery = `WITH RECURSIVE path(id, name) AS (
+  SELECT id, name FROM files WHERE parent = 1
+  UNION ALL
+  SELECT files.id, path.name || '/' || files.name FROM files JOIN path ON files.parent = path.id
+)
+SELECT files.size FROM path JOIN files ON files.id = path.id WHERE path.name = ?;`
+
+// readWithoutServer downloads the newest copy, lists the file's chunks with
+// the documented query and puts the first length bytes of chunk idx at
+// idx * 8388608 in a file of the stored size. It returns the file and its
+// chunk indexes.
+func readWithoutServer(t *testing.T, f *fixture, name string) ([]byte, []int64) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "copy.db")
+	if err := os.WriteFile(path, f.object(f.newestCopy()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite3", "file:"+path+"?mode=ro")
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeOnCleanup(t, db)
+	var size int64
+	if err = db.QueryRowContext(t.Context(), sizeQuery, name).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.QueryContext(t.Context(), chunksQuery, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := make([]byte, size)
+	var indexes []int64
+	for rows.Next() {
+		var idx, length int64
+		var chunk string
+		if err = rows.Scan(&idx, &chunk, &length); err != nil {
+			break
+		}
+		object := f.object("chunks/" + chunk)
+		if int64(len(object)) < length {
+			t.Fatalf("chunk %s holds %d bytes, the copy says %d", chunk, len(object), length)
+		}
+		copy(data[idx*chunkSize:], object[:length])
+		indexes = append(indexes, idx)
+	}
+	if err = errors.Join(err, rows.Err(), rows.Close()); err != nil {
+		t.Fatal(err)
+	}
+	return data, indexes
+}
+
 func TestAuthentication(t *testing.T) {
-	f := newFixture(t, false)
+	f := newFixture(t)
 	d := f.start()
 	share, disconnect := f.share()
 	writeFile(t, share, "signed.txt", []byte("signed session"))
@@ -106,7 +194,7 @@ func TestAuthentication(t *testing.T) {
 // TestReadOnly restarts a written volume read-only and checks that it serves
 // the files and refuses changes.
 func TestReadOnly(t *testing.T) {
-	f := newFixture(t, false)
+	f := newFixture(t)
 	d := f.start()
 	share, disconnect := f.share()
 	data := []byte("read-only fixture")

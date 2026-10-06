@@ -27,7 +27,7 @@ func TestChaosSlowNetwork(t *testing.T) {
 	if gate() {
 		count, maxStall = 16, 20*time.Second
 	}
-	f := chaosFixture(t)
+	f := newFixture(t)
 	d := f.start()
 	proxy := f.networkProxy()
 	// Log in first: a long stall would outlast the login timeout.
@@ -50,7 +50,7 @@ func TestChaosConnectionCuts(t *testing.T) {
 	if gate() {
 		rounds = 12
 	}
-	f := chaosFixture(t)
+	f := newFixture(t)
 	d := f.start()
 	proxy := f.networkProxy()
 	for round := range rounds {

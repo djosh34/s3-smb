@@ -124,21 +124,16 @@ in their own containers and network. It builds the binary with the race
 detector, then runs the engine's real-backend tests and `test/e2e` with
 `-race -shuffle=on`, MinIO available and `GORACE=halt_on_error=1`.
 
-The tests in `test/e2e` start the built binary, answer its prompt, and read and
-write files over signed SMB. They cover authentication, read-only mode, file
-operations, missing data, uncompressed objects, startup with a damaged bucket,
-S3 outages, a failed scheduled backup, a kill during an S3 upload, and recovery
-after deleting all local state, including from a metadata backup taken while
-files were being written. A test daemon counts as ready only once its own log
-says it serves SMB. If another process takes its port first, the test picks a
-new port, at most twice.
-
-`TestNamespaceBackupMeasurements` seeds 4,096 bands in PR mode and 524,288 in
-gate mode, then measures the startup metadata backup and a cold recovery. It
-checks peak daemon memory and elapsed time and writes
-`namespace-measurement.json` to the log directory, which CI keeps on passing
-runs too. See the measured costs in
-[recovery](recovery.md#measured-snapshot-costs-and-limits).
+The tests in `test/e2e` start the built binary and read and write files over
+signed SMB. They cover authentication, read-only mode, file operations,
+missing data, sparse writes, the reported capacity, the bucket lock at
+startup, bad credentials, S3 outages, a kill during an S3 upload, recovery on
+a new data folder, and reading a file without s3-smb as
+[recovery](recovery.md#read-a-file-without-s3-smb) describes. A test gets a
+database copy that holds every flushed file by stopping the daemon and
+starting it again, because every start uploads one. A test daemon counts as
+ready only once its own log says it serves SMB. If another process takes its
+port first, the test picks a new port, at most twice.
 
 `TestSambaInterop` refuses a daemon without `-race` in its build information.
 Samba's smbclient connects to the share with SMB 3.1.1
@@ -151,7 +146,7 @@ The run also gets the chaos tests, `TestChaos*`, which skip without
 cut responses, a 5-minute S3 outage (10 seconds in PR mode), a slow, unsteady
 and stalling network, connections cut during reads and writes, durable
 reconnects inside and beyond the reconnect window, kills and restarts under
-faults with a cold recovery after them, and misbehaving connections next to
+faults with recovery on new data folders after them, and misbehaving connections next to
 the Mac. They check exactly the promises of "What survives which failure",
 "S3 outage a backup must survive" and "What reconnect promises". Network
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
@@ -164,11 +159,11 @@ and file comes from that seed, so a run replays with
 `S3_SMB_CHAOS_SEED=<seed> scripts/check.sh`, or in CI with
 `gh workflow run check.yml -f chaos_seed=<seed>`. Add `--gate` or
 `-f gate=true` to replay a gate run, which draws more rounds. Timing still
-differs between runs. Restarts under S3 faults model launchd KeepAlive: startup stops on some
-S3 errors, and the test starts the daemon again after a second.
+differs between runs. Restarts under S3 faults model launchd KeepAlive:
+startup stops on some S3 errors, and the test starts the daemon again after a
+second.
 
-The script prints the directory that holds each daemon's stdout, stderr and
-prompt log. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
+The script prints the directory that holds each daemon's stdout and stderr. Set `S3_SMB_TEST_LOGS` to choose it. Go caches persist in two Docker
 volumes: `docker volume rm s3-smb-test-gomod s3-smb-test-gobuild` removes them.
 
 `test/Dockerfile` pins the MinIO release and source commit as ARGs, copies

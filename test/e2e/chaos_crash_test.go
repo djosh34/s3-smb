@@ -14,18 +14,18 @@ import (
 )
 
 // TestChaosKillRestart kills the daemon at a random point of a backup while
-// S3 and the network misbehave, and starts it again under the same faults.
-// Until the kill the backup must succeed, and every flushed file must survive
-// each kill. After the run, cold recovery on
-// a new Mac returns every file of the last metadata backup.
+// S3 and the network misbehave, and starts it again on the same data folder
+// under the same faults. Until the kill the backup must succeed, and every
+// flushed file must survive each kill. After the run, a database copy holds
+// every flushed file, and a new data folder restores all of them.
 func TestChaosKillRestart(t *testing.T) {
 	rng := chaosRand(t)
 	rounds := 3
 	if gate() {
 		rounds = 8
 	}
-	f := chaosFixture(t)
-	// Startup refuses to run on some S3 errors, and launchd starts it again.
+	f := newFixture(t)
+	// Startup may stop on an S3 error, and launchd starts it again.
 	f.keepAlive, f.startupTimeout = true, 2*time.Minute
 	s3 := f.newFaultProxy()
 	d := f.start()
@@ -65,12 +65,8 @@ func TestChaosKillRestart(t *testing.T) {
 	s3Schedule.stop()
 	networkSchedule.stop()
 	d.alive()
-	// Back up soon, so the last metadata backup holds every flushed file.
-	d.stop()
-	f.interval = ""
-	d = f.start()
-	f.protectedAfter(time.Now())
-	d.stop()
+	f.copyDatabase(d)
+	f.expireKilledLocks()
 	recoverTwice(t, f, flushed)
 }
 

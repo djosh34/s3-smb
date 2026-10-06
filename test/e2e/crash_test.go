@@ -20,7 +20,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/s3fault"
 )
 
-// crashBaseline returns files written and backed up before a crash.
+// crashBaseline returns files written and flushed before a crash.
 func crashBaseline() map[string][]byte {
 	data := make([]byte, 1_000_003)
 	for i := range data {
@@ -97,46 +97,44 @@ func waitInterruptedSMB(t *testing.T, done <-chan error) {
 }
 
 // TestCrashDuringChunkPut kills the daemon while S3 holds the reply to a chunk
-// PUT, then recovers from S3 with no local state.
+// PUT. A restart on the same data folder keeps every flushed file, and so do
+// two recoveries on new data folders from the copy of a later start.
 func TestCrashDuringChunkPut(t *testing.T) {
-	for _, encrypted := range []bool{false, true} {
-		name := "plaintext"
-		if encrypted {
-			name = "encrypted"
-		}
-		t.Run(name, func(t *testing.T) {
-			f := newFixture(t, encrypted)
-			proxy := f.newFaultProxy()
-			d := f.start()
-			share, disconnect := f.share()
-			files := crashBaseline()
-			for name, data := range files {
-				writeFile(t, share, name, data)
-			}
-			verifyFiles(t, share, files)
-			disconnect()
-			f.protectedAfter(time.Now())
-			// The kill ends this connection, so it is never logged off.
-			share, _ = f.share()
-			held, err := proxy.HoldNextChunkResponse()
-			if err != nil {
-				t.Fatal(err)
-			}
-			pending := pendingSMBWrite(share, "interrupted-new-file.bin", bytes.Repeat([]byte("subsequent-SMB-write\n"), 500_000))
-			waitHeldPut(t, held, pending)
-			sigkill(t, d)
-			proxy.Release()
-			waitInterruptedSMB(t, pending)
-			recoverTwice(t, f, files)
-		})
+	f := newFixture(t)
+	proxy := f.newFaultProxy()
+	d := f.start()
+	share, disconnect := f.share()
+	files := crashBaseline()
+	for name, data := range files {
+		writeFile(t, share, name, data)
 	}
+	verifyFiles(t, share, files)
+	disconnect()
+	// The kill ends this connection, so it is never logged off.
+	share, _ = f.share()
+	held, err := proxy.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending := pendingSMBWrite(share, "interrupted-new-file.bin", bytes.Repeat([]byte("subsequent-SMB-write\n"), 500_000))
+	waitHeldPut(t, held, pending)
+	sigkill(t, d)
+	proxy.Release()
+	waitInterruptedSMB(t, pending)
+	d = f.start()
+	share, disconnect = f.share()
+	verifyFiles(t, share, files)
+	disconnect()
+	f.copyDatabase(d)
+	f.expireKilledLocks()
+	recoverTwice(t, f, files)
 }
 
-// TestStalledIOBoundedShutdown stops the daemon while a chunk PUT hangs. The
+// TestStalledIOBoundedShutdown stops the daemon while chunk PUTs hang. The
 // daemon must exit with an error within its 30 second shutdown limit and keep
-// the state lock until it exits.
+// the folder lock until it exits.
 func TestStalledIOBoundedShutdown(t *testing.T) {
-	f := newFixture(t, true)
+	f := newFixture(t)
 	proxy := f.newFaultProxy()
 	d := f.start()
 	// The shutdown ends this connection, so it is never logged off.
@@ -147,9 +145,14 @@ func TestStalledIOBoundedShutdown(t *testing.T) {
 	}
 	pending := pendingSMBWrite(share, "held-native-upload.bin", bytes.Repeat([]byte("stalled-native-upload\n"), 500_000))
 	waitHeldPut(t, held, pending)
+	// Shutdown cancels the held FLUSH and uploads the data again, so every
+	// later chunk PUT hangs too.
+	if err = proxy.SetFault(s3fault.Fault{Method: http.MethodPut, HeaderDelay: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
 	lock := openStateLock(t, f)
 	if !lock.held(t) {
-		t.Fatal("daemon did not hold the state lock before shutdown")
+		t.Fatal("daemon did not hold the folder lock before shutdown")
 	}
 	start := time.Now()
 	if err = d.cmd.Process.Signal(syscall.SIGTERM); err != nil {
@@ -165,17 +168,15 @@ func TestStalledIOBoundedShutdown(t *testing.T) {
 		t.Fatalf("shutdown took %s, more than the 30 second limit", time.Since(start))
 	}
 	if lock.held(t) {
-		t.Fatal("state lock still held after the daemon exited")
+		t.Fatal("folder lock still held after the daemon exited")
 	}
-	// The SMB shutdown context and the hard-exit timer both expire after 30
-	// seconds, and either one can report first.
-	output := d.output()
-	if !bytes.Contains(output, []byte("shutdown deadline exceeded")) && !bytes.Contains(output, []byte("SMB shutdown failed; state lock retained: context deadline exceeded")) {
+	if !bytes.Contains(d.output(), []byte("hard shutdown deadline exceeded; exiting with the folder lock retained")) {
 		t.Fatal("daemon did not report the shutdown deadline")
 	}
 	waitInterruptedSMB(t, pending)
 }
 
+// stateLock is the folder lock, state.lock in the data folder.
 type stateLock struct{ file *os.File }
 
 func openStateLock(t *testing.T, f *fixture) stateLock {
@@ -199,13 +200,13 @@ func (lock stateLock) held(t *testing.T) bool {
 		err = syscall.Flock(int(lock.file.Fd()), syscall.LOCK_UN)
 	}
 	if err != nil {
-		t.Fatalf("inspect state lock: %v", err)
+		t.Fatalf("inspect folder lock: %v", err)
 	}
 	return false
 }
 
 // waitLockedExit waits for the daemon to exit and fails if it releases the
-// state lock while still running.
+// folder lock while still running.
 func waitLockedExit(t *testing.T, d *daemon, lock stateLock) error {
 	t.Helper()
 	deadline := time.NewTimer(38 * time.Second)
@@ -225,7 +226,7 @@ func waitLockedExit(t *testing.T, d *daemon, lock stateLock) error {
 			case err := <-d.done:
 				return err
 			case <-time.After(250 * time.Millisecond):
-				t.Fatal("state lock released while the daemon kept running")
+				t.Fatal("folder lock released while the daemon kept running")
 			}
 		case <-deadline.C:
 			t.Fatal("daemon did not exit after its shutdown limit")

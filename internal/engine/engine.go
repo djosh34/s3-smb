@@ -96,6 +96,9 @@ const (
 
 var errLeaseExpired = errors.New("the bucket lease expired; another server may own the bucket now")
 
+// errClosed is Err after a clean Shutdown. It is not logged.
+var errClosed = errors.New("the storage engine is closed")
+
 // Engine is the storage engine. Its methods are safe for concurrent use.
 type Engine struct {
 	newest     time.Time // capture time of the newest copy this run landed, or of the start copy before it lands
@@ -417,7 +420,9 @@ func (e *Engine) fail(err error) {
 		e.failErr = err
 		close(e.dead)
 		e.cancel()
-		e.log.Error("storage engine stopped", "error", err)
+		if !errors.Is(err, errClosed) {
+			e.log.Error("storage engine stopped", "error", err)
+		}
 	})
 }
 
@@ -515,7 +520,7 @@ func (e *Engine) shutdown(ctx context.Context) error {
 	if e.check() == nil {
 		err = errors.Join(err, e.objs.remove(ctx, e.lockKey))
 	}
-	e.fail(errors.New("the storage engine is closed"))
+	e.fail(errClosed)
 	return err
 }
 

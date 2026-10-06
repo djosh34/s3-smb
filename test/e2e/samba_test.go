@@ -24,7 +24,7 @@ var smbtortureTests string
 // TestSambaInterop connects with Samba's smbclient over encrypted SMB 3.1.1
 // and runs the listed smbtorture tests against a race build of the server.
 func TestSambaInterop(t *testing.T) {
-	f := newFixture(t, false)
+	f := newFixture(t)
 	requireRaceBuild(t)
 	f.start()
 	auth := t.TempDir() + "/samba.auth"
