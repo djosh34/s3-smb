@@ -717,6 +717,8 @@ func TestStorageFlushUploadErrorReachesNonWriter(t *testing.T) {
 	}
 }
 
+// Close never waits on S3: dirty data stays for the next FLUSH, which
+// commits it once S3 works again.
 func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 	f := newFixture(t)
 	e := f.open()
@@ -724,8 +726,12 @@ func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 	h := openFile(t, e, "failing", smb.AccessWrite)
 	failChunkPuts(f)
 	writeAt(t, e, h, "data", 0)
-	requireError(t, e.Close(t.Context(), h), smb.ErrIO)
+	before := chunkRequests(f.bucket)
+	closeFile(t, e, h)
 	requireError(t, e.Close(t.Context(), h), smb.ErrInvalidHandle)
+	if n := chunkRequests(f.bucket); n != before {
+		t.Fatalf("close made %d chunk requests", n-before)
+	}
 	f.bucket.setFault(nil)
 
 	create(t, e, "canceled", smb.KindFile)
@@ -739,12 +745,14 @@ func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 		t.Fatalf("canceled close lost data: %q", got)
 	}
 
-	// The failed close kept the bytes, so a later flush commits them.
-	h = openFile(t, e, "failing", smb.AccessRead)
-	flush(t, e, h)
-	closeFile(t, e, h)
+	// The closes kept the bytes, so a later flush commits them.
+	for _, name := range []string{"failing", "canceled"} {
+		h = openFile(t, e, name, smb.AccessRead)
+		flush(t, e, h)
+		closeFile(t, e, h)
+	}
 	if got := readFile(t, e, "failing"); got != "data" {
-		t.Fatalf("failed close lost data: %q", got)
+		t.Fatalf("close lost data: %q", got)
 	}
 	if n := storageInodes(e); n != 0 {
 		t.Fatalf("%d closed references retained", n)

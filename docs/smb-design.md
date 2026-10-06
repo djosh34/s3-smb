@@ -98,11 +98,11 @@ never AES-CCM or an older dialect.
 
 ## Async I/O and credits
 
-The server sends an interim STATUS_PENDING when READ, WRITE, FLUSH or CLOSE
-waits on S3, and when CREATE or SET_INFO waits, after a short bounded wait for
-local work. CLOSE uploads the file's dirty data. macOS drops a connection that
-answers nothing for about a minute, so no request may wait on S3 without an
-interim reply. A request that finishes locally
+The server sends an interim STATUS_PENDING when READ, WRITE or FLUSH waits on
+S3, after a short bounded wait for local work. CLOSE never waits on S3: it
+leaves dirty data for the next FLUSH. macOS drops a connection that answers
+nothing for about a minute, and it cannot read a compound whose CLOSE comes
+back split, so CLOSE must stay quick. A request that finishes locally
 gets one synchronous reply. Each pending request owns its async ID and
 completion state. The server keeps serving other requests and ECHO while S3 is
 slow. The engine retries each S3 request for up to six minutes; after that the

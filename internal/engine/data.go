@@ -179,8 +179,9 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 	return &handle{st: st, key: ino, access: access, kind: kind}, nil
 }
 
-// Close flushes, then releases the handle even when ctx is canceled or the
-// flush fails. The last close of an unlinked file drops it.
+// Close releases the handle, even when ctx is canceled. Dirty data waits for
+// the next FLUSH: CLOSE promises nothing about durability, and it must never
+// wait on S3. The last close of an unlinked file drops it.
 func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
 	cleanup := context.WithoutCancel(ctx)
 	h, release, err := e.selected(cleanup, ref, false)
@@ -196,8 +197,6 @@ func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
 			st.unlinked = false
 			e.discard(st)
 		}
-	} else {
-		err = e.flush(cleanup, st)
 	}
 	st.refs--
 	return errors.Join(err, ctx.Err())

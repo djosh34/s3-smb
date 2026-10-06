@@ -65,12 +65,11 @@ func (m *model) handle(path string) smb.Handle {
 	return h
 }
 
-// closeHandle closes an open handle, which flushes it.
+// closeHandle closes an open handle. Its dirty data waits for a FLUSH.
 func (m *model) closeHandle(path string) {
 	if h := m.handles[path]; h != nil {
 		closeFile(m.t, m.e, h)
 		delete(m.handles, path)
-		m.durable[path] = bytes.Clone(m.live[path])
 	}
 }
 
@@ -165,9 +164,7 @@ func (m *model) flush(path string, full bool) {
 		m.t.Fatal(err)
 	}
 	if full {
-		for p := range m.handles {
-			m.durable[p] = bytes.Clone(m.live[p])
-		}
+		m.durable = clone(m.live)
 	}
 	m.durable[path] = bytes.Clone(m.live[path])
 }
@@ -179,6 +176,7 @@ func (m *model) restart(clean bool) {
 			m.closeHandle(p)
 		}
 		shutdown(m.t, m.e)
+		m.durable = clone(m.live)
 	} else {
 		m.f.dir = snapshot(m.t, m.e)
 		kill(m.t, m.e)
