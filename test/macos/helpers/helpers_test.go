@@ -189,3 +189,14 @@ func TestDiffBlocks(t *testing.T) {
 		t.Fatal(ranges)
 	}
 }
+
+func TestGaveUp(t *testing.T) {
+	log := `{"level":"ERROR","msg":"request failed","command":9,"error":"io error: put chunks/a: context deadline exceeded"}
+{"level":"ERROR","msg":"request failed","command":9,"error":"io error: put chunks/b: access denied"}
+{"level":"INFO","msg":"database copy landed","error":"context deadline exceeded"}
+not json
+`
+	if got := GaveUp(log); got != 1 {
+		t.Fatalf("GaveUp = %d, want 1", got)
+	}
+}

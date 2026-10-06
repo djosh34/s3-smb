@@ -113,7 +113,7 @@ func (e *Engine) acquire(id smb.Inode) (*inode, func()) {
 
 // load reads the committed size once. The I/O lock must be held.
 func (e *Engine) load(ctx context.Context, st *inode) (row, error) {
-	r, err := fileRow(ctx, e.db, st.id)
+	r, err := e.fileRow(ctx, st.id)
 	if err == nil {
 		st.update(func(l *live) {
 			if !l.loaded {
@@ -177,7 +177,7 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 	}
 	st, unpin := e.pin(ino)
 	defer unpin()
-	r, err := fileRow(ctx, e.db, ino)
+	r, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return nil, err
 	}
@@ -588,7 +588,7 @@ func (e *Engine) stored(ctx context.Context, st *inode, idx uint64) (upload, err
 		return upload{name: early.name, length: min(early.length, valid)}, nil
 	}
 	var u upload
-	err := e.db.QueryRowContext(ctx, `SELECT name, length FROM chunks WHERE file = ? AND idx = ?`, st.id, idx).Scan(&u.name, &u.length)
+	err := e.diskError(e.db.QueryRowContext(ctx, `SELECT name, length FROM chunks WHERE file = ? AND idx = ?`, st.id, idx).Scan(&u.name, &u.length))
 	if errors.Is(err, sql.ErrNoRows) {
 		return upload{}, nil
 	}
@@ -765,7 +765,7 @@ func (e *Engine) truncate(ctx context.Context, st *inode, size uint64) error {
 func (e *Engine) GetAttr(ctx context.Context, ino smb.Inode) (smb.Attr, error) {
 	st, unpin := e.pin(ino)
 	defer unpin()
-	r, err := fileRow(ctx, e.db, ino)
+	r, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return smb.Attr{}, err
 	}

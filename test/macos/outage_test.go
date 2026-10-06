@@ -68,17 +68,24 @@ func (h *harness) s3Outage(long bool) result {
 	}
 	attempt.Log = h.dropLog(started.Add(-30*time.Second), time.Now().UTC())
 	h.save(scenario+"-result.json", attempt)
-	h.t.Logf("%s: completed=%v failed=%v timed-out=%d failed-writes=%d", scenario, attempt.Completed, attempt.Log.Failed, attempt.Log.TimedOut, attempt.Log.FailedWrites)
-	failed := commandErr != nil || attempt.Log.Failed
-	switch {
-	case !long:
+	daemonLog, err := h.evidenceDir.ReadFile(h.daemon.name + ".log")
+	h.must(err)
+	gaveUp := helpers.GaveUp(string(daemonLog))
+	h.t.Logf("%s: completed=%v failed=%v timed-out=%d failed-writes=%d gave-up=%d", scenario, attempt.Completed, attempt.Log.Failed, attempt.Log.TimedOut, attempt.Log.FailedWrites, gaveUp)
+	// Only backupd's own failure is one that Time Machine shows.
+	failed := attempt.Log.Failed
+	if long {
+		if gaveUp == 0 {
+			h.t.Fatal("s3-smb never gave up on S3 during the long outage, so the run proves nothing about it")
+		}
+		if failed {
+			h.t.Log("s3-outage-long-visible-failure", attempt.CommandError)
+		}
+	} else {
 		h.must(commandErr)
 		if attempt.Log.Failed || attempt.Log.Refused || attempt.Log.BackupStarts != 1 || attempt.Log.TimedOut != 0 {
 			h.t.Fatalf("the backup did not go on through the S3 outage as one backup: %+v", attempt.Log)
 		}
-	case failed:
-		// Time Machine shows the failure. The earlier backup must still restore.
-		h.t.Log("s3-outage-long-visible-failure", attempt.CommandError)
 	}
 	h.must(h.detach())
 	// Any backup that is there after the outage must restore exactly, also

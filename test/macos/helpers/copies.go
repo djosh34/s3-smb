@@ -54,3 +54,19 @@ func logCopy(line, msg string) (string, bool) {
 	}
 	return entry.Copy, true
 }
+
+// GaveUp counts the requests that s3-smb failed because S3 did not answer
+// within its time limit: "request failed" lines whose error is the deadline.
+func GaveUp(log string) int {
+	n := 0
+	for line := range strings.Lines(log) {
+		var entry struct {
+			Msg   string `json:"msg"`
+			Error string `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == "request failed" && strings.Contains(entry.Error, "context deadline exceeded") {
+			n++
+		}
+	}
+	return n
+}

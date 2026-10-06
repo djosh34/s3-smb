@@ -85,7 +85,7 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	// VACUUM INTO needs a missing or empty file. An empty one keeps it private.
 	temp := filepath.Join(e.dir, copyTemp)
 	if err := writeSynced(temp, nil); err != nil {
-		return err
+		return e.diskError(err)
 	}
 	seq, captured, err := e.capture(ctx, seq, temp)
 	if err != nil {
@@ -93,11 +93,11 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	}
 	data, err := os.ReadFile(filepath.Clean(temp))
 	if err != nil {
-		return err
+		return e.diskError(err)
 	}
 	state, err := readFileState(ctx, temp)
 	if err != nil {
-		return fmt.Errorf("read the copy's state: %w", err)
+		return e.diskError(fmt.Errorf("read the copy's state: %w", err))
 	}
 	name := formatCopy(seq, state.commits, state.history)
 	err = e.commit(ctx, func(tx *sql.Tx) error {
@@ -236,6 +236,7 @@ func (e *Engine) cleanup(ctx context.Context, deadline time.Time) error {
 }
 
 func (e *Engine) expiredTrash(ctx context.Context, oldest int64) (names []string, err error) {
+	defer func() { err = e.diskError(err) }()
 	rows, err := e.db.QueryContext(ctx, `SELECT t.name FROM trash t WHERE t.seq < ?
 		AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.name = t.name)
 		AND NOT EXISTS (SELECT 1 FROM pending p WHERE p.name = t.name)

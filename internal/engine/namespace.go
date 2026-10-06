@@ -179,7 +179,7 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 		return smb.Resolved{Object: parent, Attr: a, Exists: attrErr == nil}, attrErr
 	}
 	for _, base := range parts[:len(parts)-1] {
-		r, ok, lookupErr := childRow(ctx, e.db, parent, base)
+		r, ok, lookupErr := e.childRow(ctx, parent, base)
 		switch {
 		case lookupErr != nil:
 			return smb.Resolved{}, lookupErr
@@ -191,7 +191,7 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 		parent = r.id
 	}
 	name := smb.Name{Parent: parent, Base: parts[len(parts)-1]}
-	r, ok, err := childRow(ctx, e.db, parent, name.Base)
+	r, ok, err := e.childRow(ctx, parent, name.Base)
 	if err != nil || !ok {
 		return smb.Resolved{Name: name}, err
 	}
@@ -270,10 +270,11 @@ func touch(ctx context.Context, tx *sql.Tx, now int64, dirs ...smb.Inode) error 
 // ReadDir returns up to limit entries after cookie, ordered by ID. A cookie
 // is the ID of the last entry returned, so removals do not move it.
 func (e *Engine) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limit uint32) (entries []smb.DirEntry, err error) {
+	defer func() { err = e.diskError(err) }()
 	if limit == 0 {
 		return nil, smb.ErrInvalidParameter
 	}
-	dir, err := fileRow(ctx, e.db, ino)
+	dir, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +514,7 @@ func (e *Engine) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	}
 	var names []string
 	for depth := 0; ino != rootInode; depth++ {
-		r, err := fileRow(ctx, e.db, ino)
+		r, err := e.fileRow(ctx, ino)
 		if err != nil {
 			return "", err
 		}
@@ -533,7 +534,7 @@ func (e *Engine) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 // StatFS reports the configured capacity, or caps free space at 1 TiB.
 func (e *Engine) StatFS(ctx context.Context) (smb.Space, error) {
 	var used float64
-	if err := e.db.QueryRowContext(ctx, `SELECT total(size) FROM files WHERE directory = 0`).Scan(&used); err != nil {
+	if err := e.diskError(e.db.QueryRowContext(ctx, `SELECT total(size) FROM files WHERE directory = 0`).Scan(&used)); err != nil {
 		return smb.Space{}, storageError(err)
 	}
 	total, free := uint64(used)+1<<40, uint64(1)<<40

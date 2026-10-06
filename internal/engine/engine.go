@@ -519,6 +519,18 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 // checkpointEvery is how many commits the WAL takes between checkpoints.
 const checkpointEvery = 64
 
+// fileRow reads a file's row outside a transaction.
+func (e *Engine) fileRow(ctx context.Context, id smb.Inode) (row, error) {
+	r, err := fileRow(ctx, e.db, id)
+	return r, e.diskError(err)
+}
+
+// childRow reads a name's row outside a transaction.
+func (e *Engine) childRow(ctx context.Context, parent smb.Inode, base string) (row, bool, error) {
+	r, ok, err := childRow(ctx, e.db, parent, base)
+	return r, ok, e.diskError(err)
+}
+
 // diskError stops the engine for good when err comes from the local disk,
 // and returns err. After a failed write or fsync, Linux can keep the new
 // data only in memory, and SQLite can then lose or corrupt it (Rebello et
