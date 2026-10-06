@@ -54,6 +54,13 @@ func (h *harness) thinning() result {
 	probeStart := time.Now().UTC()
 	h.deleteBackup(outcome.Baseline, freed)
 	h.storage("after-delete")
+	// Temporary probe: a backup after the delete may let backupd reap the
+	// deleted snapshot.
+	fourth, fourthTree := h.incremental("fourth", third, func() {
+		h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed in the fourth backup\n"), 0o600))
+	})
+	done, err := freed()
+	h.t.Log("reclaim-probe after the fourth backup", done, err)
 	h.reclaimProbe(probeStart, freed)
 	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, freed))
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
@@ -61,9 +68,10 @@ func (h *harness) thinning() result {
 		return count.live+count.trashed+count.leaked == 0, err
 	}))
 	h.storage("after-thinning")
-	outcome.Resumed = third
+	outcome.Resumed = fourth
 	h.restoreBackup(second, secondTree, "restore-second")
-	outcome.ResumedRestore = h.restoreBackup(third, thirdTree, "restore-third")
+	h.restoreBackup(third, thirdTree, "restore-third")
+	outcome.ResumedRestore = h.restoreBackup(fourth, fourthTree, "restore-fourth")
 	return outcome
 }
 
@@ -169,7 +177,9 @@ func (h *harness) deleteBackup(backup string, freed func() (bool, error)) {
 		h.t.Fatal("unknown Time Machine image volume layout", devices, volumes)
 	}
 	h.attachments = append(h.attachments, devices[0])
+	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
+	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
 	}
@@ -199,9 +209,13 @@ func (h *harness) reclaimProbe(start time.Time, freed func() (bool, error)) {
 	bands()
 	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
 	h.must(err)
-	devices, _ := h.attach(bundles[0], false)
+	devices, volumes := h.attach(bundles[0], false)
 	if len(devices) > 0 {
 		h.attachments = append(h.attachments, devices[0])
+	}
+	for _, volume := range volumes {
+		h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volume)
+		h.diagnostic("/bin/df", "-k", volume)
 	}
 	err = h.waitFor("chunks freed after a new attach", 3*time.Minute, 15*time.Second, freed)
 	h.t.Log("reclaim-probe reattached", err)
@@ -217,4 +231,11 @@ func (h *harness) reclaimProbe(start time.Time, freed func() (bool, error)) {
 	format := "2006-01-02 15:04:05-0700"
 	_, err = h.try(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--info", "--debug", "--predicate", `process == "diskimagesiod" OR process == "diskimages-helper" OR subsystem BEGINSWITH "com.apple.DiskImages" OR senderImagePath CONTAINS "smbfs" OR process == "apfsd" OR senderImagePath CONTAINS "apfs"`)
 	h.t.Log("reclaim-probe log", err)
+}
+
+// diagnostic runs a command for evidence only and logs a failure.
+func (h *harness) diagnostic(args ...string) {
+	if _, err := h.try(2*time.Minute, args...); err != nil {
+		h.t.Log("diagnostic failed", args, err)
+	}
 }
