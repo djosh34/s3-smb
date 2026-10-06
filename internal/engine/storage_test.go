@@ -1188,7 +1188,7 @@ func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
 	base := chunkRequests(f.bucket)
 	readBytes(0, 16)
 	gets(base + 1)
-	readBytes(0, len(data))
+	readBytes(0, uint64(len(data)))
 	gets(base + 3)
 	// Two chunks fit, so the first one was dropped.
 	readBytes(0, 1)
