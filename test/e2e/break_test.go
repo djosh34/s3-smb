@@ -75,10 +75,11 @@ func restartAndCheck(l *macLoad, f *fixture, d *daemon, also ...func(*macConn)) 
 // reply or STATUS_PENDING within the patience, and STATUS_PENDING again
 // while it waits longer than a minute. Nothing may be lost.
 func TestBreakS3OutageUnderLoad(t *testing.T) {
+	rounds := testRounds(t, 2, 4)
 	rng := chaosRand(t)
-	rounds, outage := 2, 75*time.Second
+	outage := 75 * time.Second
 	if gate() {
-		rounds, outage = 4, 5*time.Minute
+		outage = 5 * time.Minute
 	}
 	f := newFixture(t)
 	proxy := f.newFaultProxy()
@@ -116,10 +117,10 @@ func TestBreakS3OutageUnderLoad(t *testing.T) {
 // and every acknowledged byte must be there, also after a restart and a cold
 // start from S3. The outage alone takes 6.5 minutes, so only the gate runs it.
 func TestBreakLongOutage(t *testing.T) {
-	rng := chaosRand(t)
-	if !gate() {
+	if len(testRounds(t, 0, 1)) == 0 {
 		t.Skip("the 6.5-minute outage runs in the gate")
 	}
+	rng := chaosRand(t)
 	f := newFixture(t)
 	proxy := f.newFaultProxy()
 	t.Cleanup(proxy.RestoreS3)
@@ -155,10 +156,11 @@ func TestBreakLongOutage(t *testing.T) {
 // succeed, and some are cut after S3 accepted them. Odd rounds switch
 // errors, throttling, stalls and cuts for all requests every few seconds.
 func TestBreakFaultyS3UnderLoad(t *testing.T) {
+	rounds := testRounds(t, 2, 6)
 	rng := chaosRand(t)
-	rounds, length := 2, 30*time.Second
+	length := 30 * time.Second
 	if gate() {
-		rounds, length = 6, 3*time.Minute
+		length = 3 * time.Minute
 	}
 	f := newFixture(t)
 	f.keepAlive, f.startupTimeout = true, 2*time.Minute
@@ -168,7 +170,7 @@ func TestBreakFaultyS3UnderLoad(t *testing.T) {
 	ctx := t.Context()
 	l := newMacLoad(t, f, rng, f.addr, f.addr)
 	l.connect(ctx)
-	for round := range rounds {
+	for _, round := range rounds {
 		l.loadRound(ctx, func() {
 			stopFaults := func() {
 				if err := proxy.SetMix(s3fault.Mix{}); err != nil {
@@ -202,11 +204,8 @@ func TestBreakFaultyS3UnderLoad(t *testing.T) {
 // while S3 misbehaves, and starts it again on the same data folder. Every
 // slot must hold its last flushed version or one written after it.
 func TestBreakKillUnderLoad(t *testing.T) {
+	rounds := testRounds(t, 3, 10)
 	rng := chaosRand(t)
-	rounds := 3
-	if gate() {
-		rounds = 10
-	}
 	f := newFixture(t)
 	f.keepAlive, f.startupTimeout = true, 2*time.Minute
 	proxy := f.newFaultProxy()
@@ -250,11 +249,8 @@ func TestBreakKillUnderLoad(t *testing.T) {
 // every acknowledged WRITE must be there afterwards, and after the first
 // round the daemon's file descriptors and threads must not keep growing.
 func TestBreakNetworkUnderLoad(t *testing.T) {
+	rounds := testRounds(t, 3, 12)
 	rng := chaosRand(t)
-	rounds := 3
-	if gate() {
-		rounds = 12
-	}
 	f := newFixture(t)
 	s3 := f.newFaultProxy()
 	t.Cleanup(s3.RestoreS3)
@@ -267,7 +263,7 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 	// Pools and threads grow in the first round. Later rounds must not keep
 	// growing.
 	var baseline resources
-	for round := range rounds {
+	for i, round := range rounds {
 		mode := "quiet"
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 6*time.Second))
@@ -301,7 +297,7 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 		l.check(ctx, mode)
 		now := daemonResources(t, d)
 		t.Logf("round %d: the daemon holds %+v", round, now)
-		if round == 0 {
+		if i == 0 {
 			baseline = now
 		} else if now.fds > baseline.fds+8 || now.threads > baseline.threads+8 {
 			t.Errorf("the daemon holds %+v after round %d, from %+v after the first", now, round, baseline)
@@ -343,6 +339,7 @@ func daemonResources(t *testing.T, d *daemon) resources {
 // batches. Every file must be there with its bytes, and every deleted one
 // gone, also after a restart and a cold start from S3.
 func TestBreakFileChurn(t *testing.T) {
+	testRounds(t, 1, 1)
 	rng := chaosRand(t)
 	length := 30 * time.Second
 	if gate() {
@@ -403,6 +400,7 @@ func TestBreakFileChurn(t *testing.T) {
 // every file made must read back exactly, also after a restart and a cold
 // start from S3.
 func TestBreakOverload(t *testing.T) {
+	testRounds(t, 1, 1)
 	rng := chaosRand(t)
 	length := 30 * time.Second
 	if gate() {
@@ -562,10 +560,11 @@ func (c *fileChurn) check(ctx context.Context, conn *macConn) {
 // they wait for its requests. They must still get a reply or STATUS_PENDING
 // within the patience.
 func TestBreakLogoffDuringOutage(t *testing.T) {
+	rounds := testRounds(t, 2, 4)
 	rng := chaosRand(t)
-	rounds, outage := 2, 35*time.Second
+	outage := 35 * time.Second
 	if gate() {
-		rounds, outage = 4, 3*time.Minute
+		outage = 3 * time.Minute
 	}
 	f := newFixture(t)
 	proxy := f.newFaultProxy()
@@ -574,7 +573,7 @@ func TestBreakLogoffDuringOutage(t *testing.T) {
 	ctx := t.Context()
 	l := newMacLoad(t, f, rng, f.addr, f.addr)
 	l.connect(ctx)
-	for round := range rounds {
+	for _, round := range rounds {
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, 2*time.Second, 5*time.Second))
 			var leavers []*leaver
@@ -679,11 +678,8 @@ func (l *leaver) leave(ctx context.Context) *macRequest {
 // the restart must keep its database, and every flushed byte must be there,
 // also after a cold start from S3.
 func TestBreakDisk(t *testing.T) {
+	rounds := testRounds(t, 3, 9)
 	rng := chaosRand(t)
-	rounds := 3
-	if gate() {
-		rounds = 9
-	}
 	f := newFixture(t)
 	f.keepAlive, f.startupTimeout = true, 2*time.Minute
 	control := filepath.Join(t.TempDir(), "control")
@@ -700,7 +696,7 @@ func TestBreakDisk(t *testing.T) {
 	l.failures, l.fileFlushes = true, true
 	l.connect(ctx)
 	faults := []string{"sync 1500 0 0", "sync 0 5 30", "write 0 28 30"}
-	for round := range rounds {
+	for _, round := range rounds {
 		fault := faults[round%len(faults)]
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 4*time.Second))

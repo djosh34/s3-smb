@@ -25,29 +25,15 @@ cd /src
 go build -race -buildvcs=false -o /tmp/s3-smb .
 echo "Chaos seed $S3_SMB_CHAOS_SEED: replay with S3_SMB_CHAOS_SEED=$S3_SMB_CHAOS_SEED"
 # Only these packages need MinIO. The unit part of scripts/check.sh runs the rest.
-# S3_SMB_SHARD splits them: shard 1 runs all but the break tests, and every
-# later shard every (SHARDS-1)-th break test.
-shard=${S3_SMB_SHARD:-1/1}
-index=${shard%/*} shards=${shard#*/}
+# S3_SMB_JOB picks what this run covers: rest is every test but the chaos and
+# break tests, a test name runs that test, and NAME-ROUND runs one round of a
+# break test. Without it everything runs.
+job=${S3_SMB_JOB:-all}
 export GORACE=halt_on_error=1 S3_SMB_E2E_BINARY=/tmp/s3-smb
-if (( shards == 1 )); then
-  go test -race -shuffle=on -count=1 "-timeout=$timeout" ./internal/engine ./test/e2e
-elif (( index == 1 )); then
-  go test -race -shuffle=on -count=1 "-timeout=$timeout" -skip '^TestBreak' ./internal/engine ./test/e2e
-else
-  tests=$(go test -list '^TestBreak' ./test/e2e)
-  selected=()
-  position=0
-  while IFS= read -r test; do
-    if [[ $test == TestBreak* ]]; then
-      if (( position % (shards - 1) == index - 2 )); then selected+=("$test"); fi
-      position=$((position + 1))
-    fi
-  done <<< "$tests"
-  if (( ${#selected[@]} == 0 )); then
-    echo "No break tests for shard $shard"
-    exit 0
-  fi
-  pattern=$(IFS='|'; echo "${selected[*]}")
-  go test -race -count=1 "-timeout=$timeout" -run "^($pattern)\$" ./test/e2e
-fi
+case $job in
+  all) go test -race -shuffle=on -count=1 "-timeout=$timeout" ./internal/engine ./test/e2e ;;
+  rest) go test -race -shuffle=on -count=1 "-timeout=$timeout" -skip '^(TestBreak|TestChaos)' ./internal/engine ./test/e2e ;;
+  Test*-*) S3_SMB_ROUND=${job##*-} go test -race -count=1 "-timeout=$timeout" -run "^${job%-*}\$" ./test/e2e ;;
+  Test*) go test -race -count=1 "-timeout=$timeout" -run "^${job}\$" ./test/e2e ;;
+  *) echo "Unknown job $job" >&2; exit 2 ;;
+esac

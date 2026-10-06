@@ -11,8 +11,10 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"net/http"
+	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,6 +62,35 @@ func slotVersion(file, slot int, data []byte) (uint32, error) {
 		return 0, nil
 	}
 	return 0, fmt.Errorf("file %d slot %d holds neither zeros nor one whole version of itself", file, slot)
+}
+
+// testRounds returns the rounds a break test runs: prRounds of them, or
+// gateRounds in the gate. A CI job that runs a single round names it in
+// S3_SMB_ROUND, so each round can run as its own job. With
+// S3_SMB_LIST_ROUNDS set the test only prints its round count, for the list
+// of CI jobs, and skips.
+func testRounds(t *testing.T, prRounds, gateRounds int) []int {
+	t.Helper()
+	n := prRounds
+	if gate() {
+		n = gateRounds
+	}
+	if os.Getenv("S3_SMB_LIST_ROUNDS") != "" {
+		fmt.Printf("rounds %s %d\n", t.Name(), n) //nolint:forbidigo // The CI job list reads it.
+		t.SkipNow()
+	}
+	if round := os.Getenv("S3_SMB_ROUND"); round != "" {
+		k, err := strconv.Atoi(round)
+		if err != nil || k < 0 || k >= n {
+			t.Fatalf("S3_SMB_ROUND=%q is not a round below %d", round, n)
+		}
+		return []int{k}
+	}
+	rounds := make([]int, n)
+	for i := range rounds {
+		rounds[i] = i
+	}
+	return rounds
 }
 
 // slotState tracks one slot. Versions only grow. since holds the versions sent

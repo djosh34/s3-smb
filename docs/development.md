@@ -72,7 +72,8 @@ scripts/check.sh               # PR checks, including fuzz seed replay
 scripts/check.sh --gate        # release gate: full-length outage tests and fuzzing
 scripts/check.sh unit          # one part: lint, unit, fuzz or integration
 scripts/check.sh --gate fuzz 2/6  # every sixth fuzz target, from the second on
-scripts/check.sh integration 3/4  # the third of four integration shards
+scripts/check.sh integration rest  # one integration job, see below
+scripts/check.sh --gate jobs      # the list of integration jobs
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
@@ -170,8 +171,11 @@ STATUS_PENDING and drops its data. Every slot of every file is checked
 against a model, during the faults, after them, after a restart and after a
 cold start from S3 on a new data folder.
 
-With a shard, `integration SHARD/SHARDS` splits the Docker tests: shard 1 runs
-all but the break tests, and every later shard every (SHARDS-1)-th break test.
+With a job, `integration JOB` runs part of the Docker tests: `rest` runs all
+but the chaos and break tests, a test name runs that test, and a name with a
+round, like `TestBreakDisk-2`, runs one round of a break test. `jobs` prints
+the jobs CI runs: each chaos and break test in PR mode, each break test round
+in the gate, and `rest`.
 
 The Docker tests get 120 minutes in gate mode and 60 minutes in PR mode.
 
@@ -204,10 +208,11 @@ changes the pin.
 
 The `check` workflow runs on every pull request, on `main` and for merge queue
 groups. Each part of `scripts/check.sh` runs as its own job, in parallel: lint,
-unit tests and four integration shards, each with its own chaos seed. Dispatch
-it with `gate=true` for a gate run,
-which adds six fuzzing jobs, one per shard, so a gate run takes about as long as
-its slowest job. A last job named `check` passes only when every part passed;
+unit tests, and one integration job per entry of `scripts/check.sh jobs`, each
+with its own chaos seed. Dispatch it with `gate=true` for a gate run, which runs
+every break test round as its own job and adds six fuzzing jobs. GitHub queues
+the jobs over the account's limit, so a gate run takes about as long as its
+slowest job, a few times over. A last job named `check` passes only when every part passed;
 the name is fixed because branch protection requires it. A failed integration
 uploads daemon logs; test or fuzz failures upload any `testdata/fuzz` inputs.
 
