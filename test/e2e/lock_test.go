@@ -23,7 +23,15 @@ func TestBucketLockAtStartup(t *testing.T) {
 	d = f.start()
 	second := f.another()
 	waiting := second.launch()
-	waiting.waitLogged("another server holds the bucket; waiting until its lock goes stale", 30*time.Second)
+	// It must still wait after its next attempt, 15 to 45 seconds later.
+	wait := []byte(`"msg":"another server holds the bucket; waiting until its lock goes stale"`)
+	deadline := time.Now().Add(2 * time.Minute)
+	for bytes.Count(waiting.read("stderr.log"), wait) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the second server did not try again; logs %s", waiting.path())
+		}
+		time.Sleep(time.Second)
+	}
 	if waiting.logged("SMB serving") {
 		t.Fatal("the second server serves while the first runs")
 	}

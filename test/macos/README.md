@@ -11,10 +11,11 @@ Time Machine with Apple's own commands.
 - `helpers`: parsers and pass or fail checks that do not need a Mac. They have
   Linux unit tests.
 
-The harness takes a new database copy in the bucket as evidence that a backup
-is safe in S3. s3-smb uploads one every 15 minutes, so a wait for it can take
-that long. A start with a new data folder after a kill waits 10 minutes for
-the killed server's stale lock, so such starts get 15 minutes.
+The harness takes a database copy in the bucket as evidence that a backup is
+safe in S3. It restarts s3-smb on its data folder to get one, because every
+start uploads a copy before it serves. A start with a new data folder after a
+kill waits 10 minutes for the killed server's stale lock, so such starts get
+15 minutes.
 
 ## Linux checks
 

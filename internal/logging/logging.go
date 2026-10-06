@@ -106,8 +106,7 @@ func RegisterSecret(values ...string) {
 	sort.Slice(state.secrets, func(i, j int) bool { return len(state.secrets[i]) > len(state.secrets[j]) })
 }
 
-// Redact replaces registered secrets in value. The logrus bridge also uses it
-// on panic messages, which the Go runtime prints without slog.
+// Redact replaces registered secrets in value.
 func Redact(value string) string {
 	state.RLock()
 	defer state.RUnlock()

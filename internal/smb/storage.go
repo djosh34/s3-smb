@@ -170,7 +170,8 @@ type Storage interface {
 	WriteAt(ctx context.Context, handle Handle, src []byte, offset uint64) (int, error)
 	// Flush covers all writes completed before the call on this inode, even
 	// from other handles. Both modes return only after data is in S3 and local
-	// metadata is durable. SyncFull does this for every inode. The server maps FLUSH Reserved1=0xffff to SyncFull and 0 to SyncData.
+	// metadata is durable. SyncFull does this for every inode. The server
+	// maps FLUSH Reserved1=0xffff to SyncFull and 0 to SyncData.
 	Flush(ctx context.Context, handle Handle, mode SyncMode) error
 	// Truncate changes the file's length coherently. Pending writes
 	// cannot later resurrect removed bytes. Extensions read as zeroes.

@@ -62,7 +62,8 @@ A replaced or deleted chunk goes to the `trash` table in the same commit, with
 the highest copy sequence captured at that moment. It is deleted from S3 once
 the oldest of the 4 kept copies has a higher sequence, so every kept copy can
 still be restored. Cleanup reads only committed trash rows, never deletes a
-name a live row uses, never reads the clock and never deletes unknown objects.
+name a live row uses and never deletes unknown objects. The clock only limits
+how long one cleanup runs, never what it deletes.
 
 ## Tests
 
@@ -215,10 +216,11 @@ both pragma values on four live connections and four replacements. The same
 test runs in the Linux checks; SQLite uses full fsync only on macOS.
 
 One Mac backs up a small test directory with Time Machine, with most of the
-disk excluded, and waits for a database copy that holds the backup. A second,
-fresh Mac gets only the MinIO store, starts s3-smb with a new data folder,
-which restores the newest copy, restores the directory with `tmutil restore`
-and compares it. Eight more Macs each interrupt a later backup by killing
+disk excluded, then restarts s3-smb, whose start copy holds the backup. A
+second, fresh Mac gets only the MinIO store, starts s3-smb with a new data
+folder, which restores the newest copy, restores the directory with
+`tmutil restore` and compares it. Eight more Macs each interrupt a later
+backup by killing
 s3-smb or the Time Machine client, or by cutting its TCP connection. Five of
 them then restart s3-smb, or start it with a new data folder, and restore the
 first backup. A start with a new data folder must restore the newest copy in

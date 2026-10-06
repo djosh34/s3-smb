@@ -27,7 +27,7 @@ type result struct {
 }
 
 // baseline starts fresh storage and s3-smb, then makes and checks the first
-// Time Machine backup, and waits for a database copy that holds it.
+// Time Machine backup, and makes a database copy that holds it.
 func (h *harness) baseline() result {
 	h.must(absent(filepath.Join(h.work, "objects")))
 	h.must(absent(h.local))
@@ -52,7 +52,7 @@ func (h *harness) baseline() result {
 	selected := h.remoteBackup("baseline", "")
 	h.backupTree(selected)
 	h.must(h.detach())
-	h.newCopy("baseline")
+	h.copyNow("baseline")
 	return result{Baseline: filepath.Base(selected)}
 }
 
@@ -185,7 +185,7 @@ func (h *harness) scenario(name string) result {
 		h.startDaemon("restart")
 		outcome.RestoredFrom = h.cold()
 	case "client-abort-cold":
-		h.newCopy("after-abort")
+		h.copyNow("after-abort")
 		outcome.RestoredFrom = h.cold()
 	}
 	h.mount()

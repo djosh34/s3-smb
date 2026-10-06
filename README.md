@@ -135,8 +135,10 @@ backup succeeds.
 
 S3 may be slow or unreachable for up to 5 minutes: the backup gets slower but
 does not fail. After that the backup fails visibly and the next one succeeds.
-If no database copy reaches S3 for 30 minutes, s3-smb stops with an error
-rather than risk losing more.
+An outage longer than about 8 minutes lets the bucket lock expire, and s3-smb
+exits with an error, since another server could own the bucket by then. If no
+database copy reaches S3 for 30 minutes, s3-smb also exits rather than risk
+losing more. Start it again, or let launchd do it.
 
 ## Restart after a crash on a Mac
 
@@ -172,8 +174,8 @@ backup.
 ## What is stored and how recovery works
 
 The bucket holds the file data in chunks, the 4 newest copies of the database
-and one lock key per running server. s3-smb does not encrypt or compress
-anything; Time Machine's own encryption protects the data.
+and one lock key per run. A killed run's key stays behind. s3-smb does not
+encrypt or compress anything; Time Machine's own encryption protects the data.
 
 If the machine running s3-smb is lost, install s3-smb on a new one with the same
 config and an empty data folder. The first start waits until the old server's
@@ -192,9 +194,9 @@ read a file without s3-smb, are in [recovery](docs/recovery.md).
 - Time Machine needs a nonempty SMB password stored in the System keychain.
 - The bucket grows faster than the bytes Time Machine reports. A write to part
   of a chunk uploads the whole chunk again under a new name, and replaced chunks
-  stay until 4 newer database copies exist, about an hour. Unwritten gaps are
-  stored as zeros. The share reports at most 1 TiB free, so Time Machine uses
-  268.4 MB bands.
+  stay until 4 newer database copies exist, about an hour. Unwritten gaps
+  inside a chunk are stored as zeros. The share reports at most 1 TiB free, so
+  Time Machine uses 268.4 MB bands.
 - Writes wait in memory, up to 256 MiB, until the Mac flushes them.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
   On a Mac, the [launchd plist](docs/com.s3-smb.plist) can keep it running.

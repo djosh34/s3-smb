@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 case "$MAC_PHASE" in
   discover) timeout=25m ;;
-  backup) timeout=150m ;;
+  backup) timeout=140m ;;
   recover) timeout=95m ;;
   scenario) timeout=150m ;;
   *) echo 'MAC_PHASE must be discover, backup, recover or scenario' >&2; exit 1 ;;

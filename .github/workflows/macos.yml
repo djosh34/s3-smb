@@ -64,7 +64,7 @@ jobs:
     name: backup
     if: inputs.mode == 'acceptance'
     runs-on: macos-15-intel
-    timeout-minutes: 160
+    timeout-minutes: 150
     env:
       MAC_PHASE: backup
     steps:

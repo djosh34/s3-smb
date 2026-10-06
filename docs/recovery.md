@@ -12,7 +12,7 @@ serves. There is no prompt and no recovery command.
   copy is uploaded at every start and every 15 minutes after, and the 4 newest
   are kept. The highest sequence is the newest.
 - `lock/<server ID>/<run ID>`: the bucket lock of each run, renewed every
-  minute.
+  minute. A clean exit deletes its key; a killed run's key stays behind.
 
 A replaced or deleted chunk goes to a trash table in the database and is
 deleted from S3 only once the oldest of the 4 kept copies was taken after it.
@@ -58,9 +58,9 @@ database before it serves.
 
 ## Read a file without s3-smb
 
-Download the newest copy, the `db/` object with the highest sequence, and open
-it with `sqlite3`. This query lists the chunks of one file, given its path in
-the share:
+Download the newest copy, the `db/` object with the highest sequence, as
+`copy.db`, and open it with `sqlite3`. This query lists the chunks of one
+file, given its path in the share:
 
 ```sql
 WITH RECURSIVE path(id, name) AS (
@@ -74,9 +74,14 @@ WHERE path.name = 'Mac.sparsebundle/Info.plist'
 ORDER BY chunks.idx;
 ```
 
+The same `WITH RECURSIVE path` part, followed by
+`SELECT files.size FROM path JOIN files ON files.id = path.id WHERE path.name = '...';`,
+gives the file's size.
+
 Chunk `idx` holds the file's bytes from `idx * 8388608`. Only its first
 `length` bytes count. A missing index, and anything after the last chunk up to
-the file's `size` in the `files` table, reads as zeros. With the AWS CLI:
+the file's `size` in the `files` table, reads as zeros. With the AWS CLI,
+the chunk query in `QUERY` and the size in `SIZE`:
 
 ```sh
 sqlite3 -separator ' ' copy.db "$QUERY" | while read -r idx name length; do
@@ -84,7 +89,7 @@ sqlite3 -separator ' ' copy.db "$QUERY" | while read -r idx name length; do
   head -c "$length" chunk > part
   dd if=part of=file bs=8388608 seek="$idx" conv=notrunc
 done
-truncate -s "$SIZE" file
+dd if=/dev/null of=file bs=1 seek="$SIZE"
 ```
 
 Restore a whole Time Machine bundle the same way, file by file, then open it on

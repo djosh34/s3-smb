@@ -66,8 +66,8 @@ func recoverFresh(t *testing.T, f *fixture, files map[string][]byte) *daemon {
 }
 
 // TestRecoveryWithoutServer reads a file back from the bucket without s3-smb,
-// the way docs/recovery.md describes. The file spans three chunks, the middle
-// one a hole, and ends in zeros after its last chunk.
+// the way docs/recovery.md describes. Chunks 0 and 2 are stored, chunk 1 is a
+// hole, and the file ends in zeros after chunk 2.
 func TestRecoveryWithoutServer(t *testing.T) {
 	const name = "Mac.sparsebundle/bands/1"
 	want := make([]byte, 3*chunkSize+3<<20)
@@ -164,8 +164,8 @@ func readWithoutServer(t *testing.T, f *fixture, name string) ([]byte, []int64) 
 			break
 		}
 		object := f.object("chunks/" + chunk)
-		if int64(len(object)) < length {
-			t.Fatalf("chunk %s holds %d bytes, the copy says %d", chunk, len(object), length)
+		if int64(len(object)) < length || idx*chunkSize+length > size {
+			t.Fatalf("chunk %d (%s) of %d bytes does not fit: object %d bytes, file %d bytes", idx, chunk, length, len(object), size)
 		}
 		copy(data[idx*chunkSize:], object[:length])
 		indexes = append(indexes, idx)

@@ -115,9 +115,9 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", minioUser)
 	t.Setenv("MINIO_ROOT_PASSWORD", minioPassword)
 	phase := os.Getenv("MAC_PHASE")
-	// A database copy lands every 15 minutes, and a start with a new data
-	// folder may wait 10 minutes for the old server's stale lock.
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 140 * time.Minute, "recover": 85 * time.Minute, "scenario": 140 * time.Minute}
+	// A start with a new data folder may wait 10 minutes for the old
+	// server's stale lock.
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 85 * time.Minute, "scenario": 140 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
 		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
