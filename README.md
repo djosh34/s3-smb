@@ -82,10 +82,10 @@ tmutil startbackup --block
 - s3-smb must be running whenever Time Machine backs up.
 
 Each release is tested on macOS 15 on Intel, on GitHub's `macos-15-intel`
-runners, with MinIO as the S3 server. The test also restores the backup on a
-second Mac that has only the bucket. The release notes link the run. With the
-defaults, macOS 12 and later should work. macOS 11.3 to 11.5 need
-`smb.encryption: false`. Older versions cannot connect.
+runners, with MinIO as the S3 server, and with one smaller run against B2. The
+MinIO run also restores the backup on a second Mac that has only the bucket.
+The release notes link the runs. With the defaults, macOS 12 and later should
+work. macOS 11.3 to 11.5 need `smb.encryption: false`. Older versions cannot connect.
 
 ## What the SMB server supports
 
@@ -142,7 +142,9 @@ both cases the backup fails visibly, earlier backups stay intact and the next
 backup succeeds.
 
 S3 may be slow or unreachable for up to 5 minutes: the backup gets slower but
-does not fail. After that the backup fails visibly and the next one succeeds.
+does not fail. s3-smb gives up on an S3 request after about 6 minutes and
+returns an error, so a longer outage may fail the backup visibly rather than
+lose writes.
 An outage longer than about 8 minutes lets the bucket lock expire, and s3-smb
 exits with an error, since another server could own the bucket by then. If no
 database copy reaches S3 for 30 minutes, s3-smb also exits rather than risk
@@ -209,8 +211,8 @@ read a file without s3-smb, are in [recovery](docs/recovery.md).
 - The bucket grows faster than the bytes Time Machine reports. A write to part
   of a chunk uploads the whole chunk again under a new name, and replaced chunks
   stay until 4 newer database copies exist, about an hour. Unwritten gaps
-  inside a chunk are stored as zeros. The share reports at most 1 TiB free, so
-  Time Machine uses 268.4 MB bands.
+  inside a chunk are stored as zeros. With the default capacity the share
+  reports at most 1 TiB free, so Time Machine uses 268.4 MB bands.
 - Writes wait in memory, up to 256 MiB, until the Mac flushes them. The last
   16 chunks read from S3 stay in memory too, up to 128 MiB, so mounting the
   backup image over a slow link needs few requests.
