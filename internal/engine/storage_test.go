@@ -1233,13 +1233,17 @@ func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 	other := openFile(t, e, "data", smb.AccessRead)
 	writeAt(t, e, h, "uploaded during an outage", 0)
 	bucket.gate.Lock()
+	reopen := sync.OnceFunc(bucket.gate.Unlock)
+	defer reopen()
 	flushed := make(chan error, 1)
 	go func() { flushed <- e.Flush(t.Context(), h, smb.SyncData) }()
 	// Wait until the FLUSH holds the I/O lock and waits on S3.
-	for st, _ := e.pin(r.Object); st.mu.TryLock(); {
+	st, unpin := e.pin(r.Object)
+	for st.mu.TryLock() {
 		st.mu.Unlock()
 		time.Sleep(time.Millisecond)
 	}
+	unpin()
 	done := make(chan error, 1)
 	go func() {
 		done <- errors.Join(e.Close(t.Context(), other), e.Remove(t.Context(), r.Name, r.Object), e.Close(t.Context(), h))
@@ -1252,7 +1256,7 @@ func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("close and remove waited for the upload")
 	}
-	bucket.gate.Unlock()
+	reopen()
 	if err := <-flushed; err != nil {
 		t.Fatal(err)
 	}

@@ -31,8 +31,10 @@ type pendingRequest struct {
 	asyncID uint64
 }
 
+// asyncEligible reports the commands that can wait on storage. CLOSE waits
+// for the open's pending requests.
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo || command == wire.Close
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
@@ -122,15 +124,16 @@ func asyncResponse(request wire.Header, result reply, asyncID uint64, credits ui
 	return message, nil
 }
 
-// sendPending registers operation for CANCEL and sends its interim reply. The
-// caller starts the goroutine that sends the final reply.
-func (connection *connection) sendPending(header wire.Header, operation *work) (*pendingRequest, error) {
+// sendPending registers operation for CANCEL and sends its interim reply,
+// which grants credits. The caller starts the goroutine that sends the final
+// reply.
+func (connection *connection) sendPending(header wire.Header, operation *work, credits uint16) (*pendingRequest, error) {
 	pending := &pendingRequest{work: operation, header: header, asyncID: connection.nextAsyncID}
 	connection.nextAsyncID++
 	connection.pendingMu.Lock()
 	connection.pending[header.MessageID] = pending
 	connection.pendingMu.Unlock()
-	message, err := asyncResponse(header, reply{status: smb.StatusPending}, pending.asyncID, connection.credits.grant(header))
+	message, err := asyncResponse(header, reply{status: smb.StatusPending}, pending.asyncID, credits)
 	if err != nil {
 		return nil, err
 	}

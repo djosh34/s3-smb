@@ -215,9 +215,10 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 	}
 }
 
-// A READ waiting on S3 inside a compound holds back only the request related
-// to it. The request before it and an unrelated one after it answer at once,
-// and nothing is answered twice.
+// A READ waiting on S3 inside a compound puts the whole compound on hold:
+// macOS reads a compound reply only whole, or as an interim reply for its
+// first member followed by one chain. So the ECHO before the READ gets the
+// interim reply, and all four replies follow in one chain once S3 is back.
 func TestS3OutageInCompound(t *testing.T) {
 	srv, proxy := newS3Server(t)
 	client := srv.connect(t)
@@ -237,23 +238,27 @@ func TestS3OutageInCompound(t *testing.T) {
 	if err := client.raw.Send(t.Context(), []wire.Message{prefix, read, related, unrelated}); err != nil {
 		t.Fatal(err)
 	}
-	if status := client.receive(t, prefix.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("prefix status %#x", status)
-	}
-	readInterim, relatedInterim := client.interim(t, read.Header), client.interim(t, related.Header)
-	if readInterim.AsyncID == relatedInterim.AsyncID {
-		t.Fatal("related request shares the READ's async ID")
-	}
-	if status := client.receive(t, unrelated.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("unrelated status %#x", status)
-	}
+	interim := client.interim(t, prefix.Header)
 	<-proxy.OutageSeen()
 	proxy.RestoreS3()
-	if response, status := decodeReply(t, client.receive(t, read.Header), wire.DecodeReadResponse); status != smb.StatusSuccess || !bytes.Equal(response.Data, data) {
-		t.Fatalf("READ = %q, %#x", response.Data, status)
+	reply, err := client.raw.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if status := client.receive(t, related.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("related status %#x", status)
+	if len(reply.Messages) != 4 {
+		t.Fatalf("%d replies in the chain, want 4", len(reply.Messages))
+	}
+	for i, request := range []wire.Message{prefix, read, related, unrelated} {
+		got := reply.Messages[i].Header
+		if got.MessageID != request.Header.MessageID || got.Status != smb.StatusSuccess {
+			t.Fatalf("reply %d: %+v, want success for message %d", i, got, request.Header.MessageID)
+		}
+	}
+	if first := reply.Messages[0].Header; first.Flags&wire.FlagAsync == 0 || first.AsyncID != interim.AsyncID || first.Credit != 0 {
+		t.Fatalf("first reply %+v after interim %+v", first, interim)
+	}
+	if response, err := wire.DecodeReadResponse(reply.Messages[1]); err != nil || !bytes.Equal(response.Data, data) {
+		t.Fatalf("READ = %q, %v", response.Data, err)
 	}
 	client.noExtraReplies(t)
 }

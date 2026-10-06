@@ -32,19 +32,29 @@ type CreateResult struct {
 // allocate message IDs or wait for a reply. Receive and DecodeCreateReply read
 // the result, so tests can handle a lease break while CREATE is in flight.
 func (client *Client) SendCreate(ctx context.Context, header wire.Header, options CreateOptions) error {
-	request, err := createRequest(options)
+	message, err := CreateMessage(header, options)
 	if err != nil {
 		return err
 	}
+	return client.Send(ctx, []wire.Message{message})
+}
+
+// CreateMessage builds the CREATE request that SendCreate sends, for a
+// compound.
+func CreateMessage(header wire.Header, options CreateOptions) (wire.Message, error) {
+	request, err := createRequest(options)
+	if err != nil {
+		return wire.Message{}, err
+	}
 	body, err := wire.EncodeCreateRequest(request)
 	if err != nil {
-		return err
+		return wire.Message{}, err
 	}
 	header.Command = wire.Create
 	if options.Replay {
 		header.Flags |= wire.FlagReplay
 	}
-	return client.Send(ctx, []wire.Message{{Header: header, Body: body}})
+	return wire.Message{Header: header, Body: body}, nil
 }
 
 func createRequest(options CreateOptions) (wire.CreateRequest, error) {

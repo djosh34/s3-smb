@@ -13,17 +13,22 @@ import (
 // closes another handle on that band, and writes the next band. The WRITE
 // must get a reply, interim or final, at once: macOS fails a request with no
 // reply after 2 minutes, and the data of a failed write-behind is lost. The
-// CLOSE runs alone or second in a compound.
+// CLOSE runs alone or second in a compound, of another handle or of the
+// handle whose FLUSH waits.
 func TestCloseDuringOutageDoesNotStallConnection(t *testing.T) {
-	t.Run("alone", func(t *testing.T) { closeDuringOutage(t, false) })
-	t.Run("second in a compound", func(t *testing.T) { closeDuringOutage(t, true) })
+	t.Run("alone", func(t *testing.T) { closeDuringOutage(t, false, false) })
+	t.Run("second in a compound", func(t *testing.T) { closeDuringOutage(t, true, false) })
+	t.Run("same handle second in a compound", func(t *testing.T) { closeDuringOutage(t, true, true) })
 }
 
-func closeDuringOutage(t *testing.T, compound bool) {
+func closeDuringOutage(t *testing.T, compound, same bool) {
 	srv, proxy := newS3Server(t)
 	client := srv.connect(t)
 	band := client.open(t, "band")
 	other := client.open(t, "band")
+	if same {
+		other = band
+	}
 	next := client.open(t, "next")
 	writeFile(t, client, band, []byte("band data waiting for S3"))
 	held, err := proxy.HoldNextChunkResponse()
