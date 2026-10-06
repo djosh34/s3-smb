@@ -71,9 +71,9 @@ func TestCancel(t *testing.T) {
 	}
 }
 
-// A storage call that fails because its request was cancelled, as JuiceFS does
-// with EINTR, still answers STATUS_CANCELLED. WRITE returns the error;
-// SET_INFO turns it into a status itself.
+// A storage call that fails with ErrIO because its request was cancelled
+// still answers STATUS_CANCELLED. WRITE returns the error; SET_INFO turns it
+// into a status itself.
 func TestCancelledStorageErrorAnswersCancelled(t *testing.T) {
 	for _, test := range []struct {
 		hook func(hooks *storageHooks, fail func(context.Context) error)
@@ -250,7 +250,7 @@ func TestCleanupWaitsForRunningRequests(t *testing.T) {
 			srv.faults.set(func(hooks *storageHooks) {
 				hooks.WriteAt = func(ctx context.Context, handle smb.Handle, src []byte, offset uint64) (int, error) {
 					<-ctx.Done()
-					n, err := srv.adapter.WriteAt(context.WithoutCancel(ctx), handle, src, offset)
+					n, err := srv.storage.WriteAt(context.WithoutCancel(ctx), handle, src, offset)
 					written.Store(true)
 					return n, err
 				}
@@ -263,7 +263,7 @@ func TestCleanupWaitsForRunningRequests(t *testing.T) {
 						t.Error("the file closed while WRITE was using it")
 					}
 					closes.Add(1)
-					return srv.adapter.Close(ctx, handle)
+					return srv.storage.Close(ctx, handle)
 				}
 			})
 			write := message(t, client, wire.Write, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("data")})

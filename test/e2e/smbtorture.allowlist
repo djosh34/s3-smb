@@ -15,6 +15,8 @@
 # - smb2.dir.large-files, smb2.dir.sorted and
 #   smb2.compound_find.compound_find_close: create 2000 to 5000 files and run
 #   for minutes; smb2.dir.many covers large listings.
+# - smb2.lock and smb2.create.brlocked: there are no range locks; LOCK answers
+#   NOT_SUPPORTED.
 smb2.getinfo.granted.granted
 smb2.read.eof.eof
 smb2.read.dir.dir
@@ -49,17 +51,3 @@ smb2.create.mkdir-dup.mkdir-dup
 smb2.create.dir-alloc-size.dir-alloc-size
 smb2.create.dosattr_tmp_dir.dosattr_tmp_dir
 smb2.create.bench-path-contention-shared.bench-path-contention-shared
-smb2.create.brlocked.brlocked
-smb2.lock.rw-shared.rw-shared
-smb2.lock.rw-exclusive.rw-exclusive
-smb2.lock.auto-unlock.auto-unlock
-smb2.lock.lock.lock
-smb2.lock.errorcode.errorcode
-smb2.lock.zerobytelength.zerobytelength
-smb2.lock.unlock.unlock
-smb2.lock.stacking.stacking
-smb2.lock.contend.contend
-smb2.lock.context.context
-smb2.lock.range.range
-smb2.lock.overlap.overlap
-smb2.lock.truncate.truncate

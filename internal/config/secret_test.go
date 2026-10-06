@@ -68,14 +68,13 @@ func TestResolveRegistersSecretsAtOnce(t *testing.T) {
 	c := mustConfig(t)
 	c.SMB.Password = "smb-distinct-sensitive-marker"
 	c.S3.AccessKey = SecretSource{Value: ptr("access-distinct-sensitive-marker")}
+	c.S3.SecretKey = SecretSource{Command: printing("secret-distinct-sensitive-marker")}
 	c.S3.SessionToken = "token-distinct-sensitive-marker"
-	c.Encryption.Enabled = true
-	c.Encryption.Passphrase = SecretSource{Command: printing("phrase-distinct-sensitive-marker")}
 	r, err := c.Resolve(t.Context(), quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, secret := range []string{c.SMB.Password, r.AccessKey, r.SecretKey, r.SessionToken, r.Passphrase} {
+	for _, secret := range []string{c.SMB.Password, r.AccessKey, r.SecretKey, r.SessionToken} {
 		if logging.Redact(secret) != "[REDACTED]" {
 			t.Fatal("resolved secret not registered")
 		}
@@ -88,19 +87,6 @@ func TestResolveRegistersSecretsAtOnce(t *testing.T) {
 	}
 	if logging.Redact(*c.S3.AccessKey.Value) != "[REDACTED]" {
 		t.Fatal("first credential registration postponed past later failure")
-	}
-}
-
-func TestDisabledEncryptionResolvesNoPassphrase(t *testing.T) {
-	c := mustConfig(t)
-	c.Encryption.Passphrase = SecretSource{Command: []string{"/does-not-exist-private-marker"}, File: ptr("/also-not-present")}
-	var logs bytes.Buffer
-	r, err := c.Resolve(t.Context(), slog.New(slog.NewJSONHandler(&logs, nil)))
-	if err != nil || r.Passphrase != "" {
-		t.Fatal("disabled encryption resolved passphrase", err)
-	}
-	if !strings.Contains(logs.String(), "encryption is disabled") {
-		t.Fatalf("missing warning: %s", logs.String())
 	}
 }
 

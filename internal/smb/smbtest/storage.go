@@ -1,62 +1,37 @@
 package smbtest
 
 import (
-	"cmp"
+	"context"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/chunk"
-	jfs "github.com/djosh34/s3-smb/internal/juicefs/pkg/fs"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/object"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/vfs"
+	"github.com/djosh34/s3-smb/internal/engine"
 	"github.com/djosh34/s3-smb/internal/s3fault"
-	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
-// NewStorage builds a real JuiceFS adapter with SQLite metadata and a file
-// object store in t.TempDir. Cleanup shuts down the adapter, filesystem and
-// metadata in that order. Close any server fixtures before this cleanup runs.
-// Setup and cleanup errors are reported through t.
-func NewStorage(t testing.TB) *smbfs.FS {
+// NewStorage builds a real engine with its data folder in t.TempDir and its
+// bucket in a local in-memory S3 server. Cleanup shuts the engine down. Close
+// any server fixtures before this cleanup runs. Setup and cleanup errors are
+// reported through t.
+func NewStorage(t testing.TB) *engine.Engine {
 	t.Helper()
-	dir := t.TempDir()
-	return newStorage(t, dir, fileObjects(t, dir), S3Config{})
+	return newStorage(t, NewS3(t))
 }
 
-// S3Config sets the retry budget of NewS3Storage. Zero fields keep the values
-// NewStorage uses: no metadata retries, one chunk retry, one second chunk
-// timeouts and the adapter's default read retry window.
-type S3Config struct {
-	MetaRetries     int
-	ChunkRetries    int
-	Timeout         time.Duration
-	ReadRetryWindow time.Duration
-}
-
-// NewS3Storage is NewStorage with the objects behind a local S3 endpoint and
-// the returned fault proxy. JuiceFS talks to the proxy with its real S3 client,
-// so proxy faults reach it as S3 delays, errors and outages.
-func NewS3Storage(t testing.TB, config S3Config) (*smbfs.FS, *s3fault.Proxy) {
+// NewS3Storage is NewStorage with the bucket behind the returned fault proxy,
+// so proxy faults reach the engine as S3 delays, errors and outages.
+func NewS3Storage(t testing.TB) (*engine.Engine, *s3fault.Proxy) {
 	t.Helper()
-	dir := t.TempDir()
-	files := fileObjects(t, dir)
-	reads := http.StripPrefix("/bucket/", http.FileServer(http.Dir(filepath.Join(dir, "objects"))))
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut {
-			reads.ServeHTTP(w, r)
-			return
-		}
-		if err := files.Put(r.Context(), strings.TrimPrefix(r.URL.Path, "/bucket/"), r.Body); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	}))
-	t.Cleanup(backend.Close)
-	proxy, err := s3fault.New(t.Context(), backend.URL)
+	proxy, err := s3fault.New(t.Context(), NewS3(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,74 +40,140 @@ func NewS3Storage(t testing.TB, config S3Config) (*smbfs.FS, *s3fault.Proxy) {
 			t.Error(closeErr)
 		}
 	})
-	s3, err := object.CreateStorage("s3", proxy.URL()+"/bucket", "test-access", "test-secret", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return newStorage(t, dir, s3, config), proxy
+	return newStorage(t, proxy.URL()), proxy
 }
 
-func fileObjects(t testing.TB, dir string) object.ObjectStorage {
+func newStorage(t testing.TB, endpoint string) *engine.Engine {
 	t.Helper()
-	blob, err := object.CreateStorage("file", filepath.Join(dir, "objects")+"/", "", "", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return blob
-}
-
-func newStorage(t testing.TB, dir string, blob object.ObjectStorage, config S3Config) *smbfs.FS {
-	t.Helper()
-	mc := meta.DefaultConf()
-	mc.NoBGJob = true
-	mc.MaxDeletes = 0
-	mc.Retries = config.MetaRetries
-	database := filepath.Join(dir, "meta.db")
-	metadata, err := meta.NewSQLite(database, mc)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if shutdownErr := metadata.Shutdown(); shutdownErr != nil {
-			t.Error(shutdownErr)
-		}
+	bucket, err := engine.NewBucket(engine.BucketOptions{
+		Endpoint: endpoint, Region: "us-east-1", Bucket: "bucket",
+		AccessKey: "test-access", SecretKey: "test-secret", PathStyle: true,
 	})
-	format := meta.Format{Name: "smb-test", UUID: "smb-test", Storage: "file", BlockSize: 64, Compression: "none", DirStats: true}
-	if initErr := metadata.Init(&format, true); initErr != nil {
-		t.Fatal(initErr)
+	if err != nil {
+		t.Fatal(err)
 	}
-	root := meta.Attr{Uid: smbfs.UID, Gid: smbfs.GID, Mode: 0o700}
-	if eno := metadata.SetAttr(meta.Background(), meta.RootInode, meta.SetAttrUID|meta.SetAttrGID|meta.SetAttrMode, 0, &root); eno != 0 {
-		t.Fatal(eno)
-	}
-	if sessionErr := metadata.NewSession(true); sessionErr != nil {
-		t.Fatal(sessionErr)
-	}
-	timeout := cmp.Or(config.Timeout, time.Second)
-	cc := chunk.Config{BlockSize: 64 << 10, MaxUpload: 2, MaxDownload: 2, BufferSize: 1 << 20, CacheSize: 0, MaxRetries: cmp.Or(config.ChunkRetries, 1), GetTimeout: timeout, PutTimeout: timeout}
-	store := chunk.NewCachedStore(blob, cc, nil)
-	vfsConfig := &vfs.Config{Meta: mc, Format: format, Chunk: &cc}
-	native, err := jfs.NewFileSystem(vfsConfig, metadata, store, nil)
+	e, err := engine.Open(t.Context(), engine.Options{Bucket: bucket, Dir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if closeErr := native.Close(); closeErr != nil {
-			t.Error(closeErr)
-		}
-	})
-	barrier, err := smbfs.NewMetadataBarrier(database)
-	if err != nil {
-		t.Fatal(err)
-	}
-	adapter, err := smbfs.New(smbfs.Options{Filesystem: native, Barrier: barrier, MetadataPath: database, Config: vfsConfig, Store: store, ReadRetryWindow: config.ReadRetryWindow})
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := adapter.Shutdown(); err != nil {
+		if err := e.Shutdown(context.WithoutCancel(t.Context())); err != nil {
 			t.Error(err)
 		}
 	})
-	return adapter
+	return e
+}
+
+// NewS3 starts an in-memory S3 server for the bucket named "bucket" and
+// returns its URL. It knows path-style PUT, ranged GET, DELETE and
+// ListObjectsV2, which is all the engine asks for. Cleanup stops it.
+func NewS3(t testing.TB) string {
+	t.Helper()
+	s := &memS3{objects: make(map[string]memObject)}
+	server := httptest.NewServer(s)
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+type memObject struct {
+	modified time.Time
+	data     []byte
+}
+
+type memS3 struct {
+	objects map[string]memObject
+	mu      sync.Mutex
+}
+
+func (s *memS3) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	key, ok := strings.CutPrefix(r.URL.Path, "/bucket/")
+	switch {
+	case r.Method == http.MethodGet && r.URL.Path == "/bucket" && r.URL.Query().Get("list-type") == "2":
+		s.list(w, r.URL.Query().Get("prefix"))
+	case !ok || key == "":
+		http.Error(w, "unsupported request", http.StatusBadRequest)
+	case r.Method == http.MethodPut:
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		s.mu.Lock()
+		s.objects[key] = memObject{data: data, modified: time.Now().UTC()}
+		s.mu.Unlock()
+	case r.Method == http.MethodGet:
+		s.get(w, r, key)
+	case r.Method == http.MethodDelete:
+		s.mu.Lock()
+		delete(s.objects, key)
+		s.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "unsupported request", http.StatusBadRequest)
+	}
+}
+
+func (s *memS3) get(w http.ResponseWriter, r *http.Request, key string) {
+	s.mu.Lock()
+	object, ok := s.objects[key]
+	s.mu.Unlock()
+	if !ok {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(http.StatusNotFound)
+		reply(w, []byte(`<Error><Code>NoSuchKey</Code><Message>missing</Message></Error>`))
+		return
+	}
+	data := object.data
+	if spec := r.Header.Get("Range"); spec != "" {
+		var first, last int
+		if _, err := fmt.Sscanf(spec, "bytes=%d-%d", &first, &last); err != nil || first > last || first >= len(data) {
+			http.Error(w, "bad range", http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		data = data[first:min(last+1, len(data))]
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", first, first+len(data)-1, len(object.data)))
+		w.Header().Set("Content-Length", fmt.Sprint(len(data)))
+		w.WriteHeader(http.StatusPartialContent)
+	}
+	reply(w, data)
+}
+
+// reply writes a response body. It fails only when the client went away,
+// which some tests cause on purpose.
+func reply(w http.ResponseWriter, data []byte) {
+	if _, err := w.Write(data); err != nil {
+		log.Printf("in-memory S3: write response: %v", err)
+	}
+}
+
+type listEntry struct {
+	Key          string `xml:"Key"`
+	LastModified string `xml:"LastModified"`
+	Size         int    `xml:"Size"`
+}
+
+type listResult struct {
+	XMLName     xml.Name    `xml:"ListBucketResult"`
+	Name        string      `xml:"Name"`
+	Contents    []listEntry `xml:"Contents"`
+	IsTruncated bool        `xml:"IsTruncated"`
+}
+
+func (s *memS3) list(w http.ResponseWriter, prefix string) {
+	result := listResult{Name: "bucket"}
+	s.mu.Lock()
+	for key, object := range s.objects {
+		if strings.HasPrefix(key, prefix) {
+			result.Contents = append(result.Contents, listEntry{Key: key, LastModified: object.modified.Format(time.RFC3339Nano), Size: len(object.data)})
+		}
+	}
+	s.mu.Unlock()
+	slices.SortFunc(result.Contents, func(a, b listEntry) int { return strings.Compare(a.Key, b.Key) })
+	w.Header().Set("Content-Type", "application/xml")
+	data, err := xml.Marshal(result)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	reply(w, data)
 }

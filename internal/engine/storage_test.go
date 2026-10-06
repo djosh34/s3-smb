@@ -133,7 +133,7 @@ func zeros(n int) string { return strings.Repeat("\x00", n) }
 func TestStorageLookupPaths(t *testing.T) {
 	e := newFixture(t).open()
 	root, err := e.Lookup(t.Context(), "")
-	if err != nil || !root.Exists || root.Object.Inode != rootInode || root.Attr.Kind != smb.KindDirectory {
+	if err != nil || !root.Exists || root.Object != rootInode || root.Attr.Kind != smb.KindDirectory {
 		t.Fatalf("root = %+v, %v", root, err)
 	}
 	dir := create(t, e, "dir", smb.KindDirectory)
@@ -152,10 +152,10 @@ func TestStorageLookupPaths(t *testing.T) {
 	_, err = e.Lookup(t.Context(), "dir/a/leaf")
 	requireError(t, err, smb.ErrNotDirectory)
 	missing, err := e.Lookup(t.Context(), "dir/missing")
-	if err != nil || missing.Exists || missing.Name.Parent != dir.Object.Inode || missing.Name.Base != "missing" {
+	if err != nil || missing.Exists || missing.Name.Parent != dir.Object || missing.Name.Base != "missing" {
 		t.Fatalf("missing = %+v, %v", missing, err)
 	}
-	_, err = e.Open(t.Context(), smb.ObjectKey{}, smb.AccessRead)
+	_, err = e.Open(t.Context(), 0, smb.AccessRead)
 	requireError(t, err, smb.ErrInvalidParameter)
 }
 
@@ -166,7 +166,7 @@ func TestStorageCreateIsExclusive(t *testing.T) {
 		t.Fatalf("missing = %+v, %v", missing, err)
 	}
 	created, err := e.Create(t.Context(), missing.Name, smb.KindFile)
-	if err != nil || !created.Exists || created.Attr.Kind != smb.KindFile || created.Attr.Inode != created.Object.Inode {
+	if err != nil || !created.Exists || created.Attr.Kind != smb.KindFile || created.Attr.Inode != created.Object {
 		t.Fatalf("created = %+v, %v", created, err)
 	}
 	h, err := e.Open(t.Context(), created.Object, smb.AccessRead|smb.AccessWrite)
@@ -181,9 +181,9 @@ func TestStorageCreateIsExclusive(t *testing.T) {
 	}
 	requireContent(t, e, h, "created")
 	closeFile(t, e, h)
-	_, err = e.Create(t.Context(), smb.Name{Parent: created.Object.Inode, Base: "child"}, smb.KindFile)
+	_, err = e.Create(t.Context(), smb.Name{Parent: created.Object, Base: "child"}, smb.KindFile)
 	requireError(t, err, smb.ErrNotDirectory)
-	_, err = e.Create(t.Context(), smb.Name{Parent: created.Object.Inode + 100, Base: "child"}, smb.KindFile)
+	_, err = e.Create(t.Context(), smb.Name{Parent: created.Object + 100, Base: "child"}, smb.KindFile)
 	requireError(t, err, smb.ErrNameNotFound)
 }
 
@@ -195,63 +195,40 @@ func TestStorageNamespaceChangesRequireExpectedIdentities(t *testing.T) {
 	b := openFile(t, e, "destination", smb.AccessRead|smb.AccessWrite)
 	writeAt(t, e, a, "source", 0)
 	writeAt(t, e, b, "destination", 0)
-	requireError(t, e.Remove(t.Context(), source.Name, destination.Object.Inode), smb.ErrIdentityChanged)
-	request := smb.RenameRequest{Source: source.Name, Destination: destination.Name, SourceInode: source.Object.Inode, Replace: true}
+	requireError(t, e.Remove(t.Context(), source.Name, destination.Object), smb.ErrIdentityChanged)
+	request := smb.RenameRequest{Source: source.Name, Destination: destination.Name, SourceInode: source.Object, Replace: true}
 	requireError(t, e.Rename(t.Context(), request), smb.ErrIdentityChanged)
-	request.DestinationInode = destination.Object.Inode
-	request.SourceInode = destination.Object.Inode
+	request.DestinationInode = destination.Object
+	request.SourceInode = destination.Object
 	requireError(t, e.Rename(t.Context(), request), smb.ErrIdentityChanged)
 	requireContent(t, e, a, "source")
 	requireContent(t, e, b, "destination")
-	request.SourceInode = source.Object.Inode
+	request.SourceInode = source.Object
 	if err := e.Rename(t.Context(), request); err != nil {
 		t.Fatal(err)
 	}
-	path, err := e.PathOf(t.Context(), source.Object.Inode)
+	path, err := e.PathOf(t.Context(), source.Object)
 	if err != nil || path != "destination" {
 		t.Fatalf("path = %q, %v", path, err)
 	}
-	_, err = e.PathOf(t.Context(), destination.Object.Inode)
+	_, err = e.PathOf(t.Context(), destination.Object)
 	requireError(t, err, smb.ErrNameNotFound)
 	requireContent(t, e, a, "source")
 	requireContent(t, e, b, "destination")
-	if err = e.Remove(t.Context(), destination.Name, source.Object.Inode); err != nil {
+	if err = e.Remove(t.Context(), destination.Name, source.Object); err != nil {
 		t.Fatal(err)
 	}
-	_, err = e.PathOf(t.Context(), source.Object.Inode)
+	_, err = e.PathOf(t.Context(), source.Object)
 	requireError(t, err, smb.ErrNameNotFound)
 	requireContent(t, e, a, "source")
 }
 
-func TestStorageNamedStreamsAreNotSupported(t *testing.T) {
+func TestStorageStreamSyntaxIsNotSupported(t *testing.T) {
 	e := newFixture(t).open()
 	writeFile(t, e, "data", "payload")
-	r := lookup(t, e, "data")
 	for _, p := range []string{"data:fork", "data:fork:$DATA"} {
 		_, err := e.Lookup(t.Context(), p)
 		requireError(t, err, smb.ErrNotSupported)
-	}
-	stream := smb.Name{Parent: r.Name.Parent, Base: "data", Stream: "fork"}
-	key := smb.ObjectKey{Inode: r.Object.Inode, Stream: "fork"}
-	_, err := e.Create(t.Context(), stream, smb.KindFile)
-	requireError(t, err, smb.ErrNotSupported)
-	_, err = e.Open(t.Context(), key, smb.AccessRead)
-	requireError(t, err, smb.ErrNotSupported)
-	_, err = e.GetAttr(t.Context(), key)
-	requireError(t, err, smb.ErrNotSupported)
-	bits := uint32(0x02)
-	requireError(t, e.SetAttr(t.Context(), key, smb.AttrChange{Attributes: &bits}), smb.ErrNotSupported)
-	requireError(t, e.Remove(t.Context(), stream, r.Object.Inode), smb.ErrNotSupported)
-	for _, request := range []smb.RenameRequest{
-		{Source: stream, Destination: smb.Name{Parent: rootInode, Base: "data", Stream: "other"}, SourceInode: r.Object.Inode},
-		{Source: r.Name, Destination: stream, SourceInode: r.Object.Inode},
-		{Source: stream, Destination: smb.Name{Parent: rootInode, Base: "moved"}, SourceInode: r.Object.Inode},
-	} {
-		requireError(t, e.Rename(t.Context(), request), smb.ErrNotSupported)
-	}
-	streams, err := e.Streams(t.Context(), r.Object.Inode)
-	if err != nil || streams != nil {
-		t.Fatalf("streams = %+v, %v", streams, err)
 	}
 	if got := tree(t, e); !maps.Equal(got, map[string]string{"data": "payload"}) {
 		t.Fatalf("tree = %v", got)
@@ -263,15 +240,15 @@ func TestStorageDirectoryRenameRejectsDescendant(t *testing.T) {
 	source := create(t, e, "a", smb.KindDirectory)
 	create(t, e, "a/b", smb.KindDirectory)
 	descendant := create(t, e, "a/b/c", smb.KindDirectory)
-	for _, parent := range []smb.Inode{source.Object.Inode, descendant.Object.Inode} {
-		err := e.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: smb.Name{Parent: parent, Base: "moved"}, SourceInode: source.Object.Inode})
+	for _, parent := range []smb.Inode{source.Object, descendant.Object} {
+		err := e.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: smb.Name{Parent: parent, Base: "moved"}, SourceInode: source.Object})
 		requireError(t, err, smb.ErrInvalidParameter)
 	}
 	if r := lookup(t, e, "a/b/c"); r.Object != descendant.Object {
 		t.Fatalf("rejected move changed the subtree: %+v", r)
 	}
 	destination := create(t, e, "destination", smb.KindDirectory)
-	if err := e.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: smb.Name{Parent: destination.Object.Inode, Base: "moved"}, SourceInode: source.Object.Inode}); err != nil {
+	if err := e.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: smb.Name{Parent: destination.Object, Base: "moved"}, SourceInode: source.Object}); err != nil {
 		t.Fatal(err)
 	}
 	if r := lookup(t, e, "destination/moved/b/c"); r.Object != descendant.Object {
@@ -302,10 +279,10 @@ func TestStorageReadOnlyRejectsAllMutations(t *testing.T) {
 	for _, change := range []smb.AttrChange{{Size: &size}, {Modified: &stamp}} {
 		requireError(t, ro.SetAttr(t.Context(), r.Object, change), smb.ErrReadOnly)
 	}
-	requireError(t, ro.Remove(t.Context(), r.Name, r.Object.Inode), smb.ErrReadOnly)
+	requireError(t, ro.Remove(t.Context(), r.Name, r.Object), smb.ErrReadOnly)
 	_, err = ro.Create(t.Context(), smb.Name{Parent: rootInode, Base: "new"}, smb.KindFile)
 	requireError(t, err, smb.ErrReadOnly)
-	requireError(t, ro.Rename(t.Context(), smb.RenameRequest{Source: r.Name, Destination: smb.Name{Parent: rootInode, Base: "new"}, SourceInode: r.Object.Inode}), smb.ErrReadOnly)
+	requireError(t, ro.Rename(t.Context(), smb.RenameRequest{Source: r.Name, Destination: smb.Name{Parent: rootInode, Base: "new"}, SourceInode: r.Object}), smb.ErrReadOnly)
 	if err = ro.Flush(t.Context(), h, smb.SyncFull); err != nil {
 		t.Fatal(err)
 	}
@@ -325,10 +302,10 @@ func TestStorageRemovedOpenFileWorksUntilLastClose(t *testing.T) {
 	r := lookup(t, e, "data")
 	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
 	other := openFile(t, e, "data", smb.AccessRead)
-	if err := e.Remove(t.Context(), r.Name, r.Object.Inode); err != nil {
+	if err := e.Remove(t.Context(), r.Name, r.Object); err != nil {
 		t.Fatal(err)
 	}
-	_, err := e.PathOf(t.Context(), r.Object.Inode)
+	_, err := e.PathOf(t.Context(), r.Object)
 	requireError(t, err, smb.ErrNameNotFound)
 	if gone, lookupErr := e.Lookup(t.Context(), "data"); lookupErr != nil || gone.Exists {
 		t.Fatalf("removed name = %+v, %v", gone, lookupErr)
@@ -352,16 +329,16 @@ func TestStorageRemovedOpenFileWorksUntilLastClose(t *testing.T) {
 		t.Fatalf("retained attrs = %+v, %v", a, err)
 	}
 	closeFile(t, e, h)
-	chunks := storageCount(t, e, `SELECT count(*) FROM chunks WHERE file = ?`, r.Object.Inode)
+	chunks := storageCount(t, e, `SELECT count(*) FROM chunks WHERE file = ?`, r.Object)
 	trash := storageCount(t, e, `SELECT count(*) FROM trash`)
 	if chunks == 0 {
 		t.Fatal("the removed file has no chunks before its last close")
 	}
 	closeFile(t, e, other)
-	if n := storageCount(t, e, `SELECT count(*) FROM files WHERE id = ?`, r.Object.Inode); n != 0 {
+	if n := storageCount(t, e, `SELECT count(*) FROM files WHERE id = ?`, r.Object); n != 0 {
 		t.Fatalf("last close left %d file rows", n)
 	}
-	if n := storageCount(t, e, `SELECT count(*) FROM chunks WHERE file = ?`, r.Object.Inode); n != 0 {
+	if n := storageCount(t, e, `SELECT count(*) FROM chunks WHERE file = ?`, r.Object); n != 0 {
 		t.Fatalf("last close left %d chunk rows", n)
 	}
 	if n := storageCount(t, e, `SELECT count(*) FROM trash`); n != trash+chunks {
@@ -373,20 +350,20 @@ func TestStoragePathOfFollowsRenames(t *testing.T) {
 	e := newFixture(t).open()
 	dir := create(t, e, "dir", smb.KindDirectory)
 	file := create(t, e, "dir/file", smb.KindFile)
-	for ino, want := range map[smb.Inode]string{rootInode: "", dir.Object.Inode: "dir", file.Object.Inode: "dir/file"} {
+	for ino, want := range map[smb.Inode]string{rootInode: "", dir.Object: "dir", file.Object: "dir/file"} {
 		if path, err := e.PathOf(t.Context(), ino); err != nil || path != want {
 			t.Fatalf("path of %d = %q, %v; want %q", ino, path, err, want)
 		}
 	}
-	if err := e.Rename(t.Context(), smb.RenameRequest{Source: dir.Name, Destination: smb.Name{Parent: rootInode, Base: "moved"}, SourceInode: dir.Object.Inode}); err != nil {
+	if err := e.Rename(t.Context(), smb.RenameRequest{Source: dir.Name, Destination: smb.Name{Parent: rootInode, Base: "moved"}, SourceInode: dir.Object}); err != nil {
 		t.Fatal(err)
 	}
-	if path, err := e.PathOf(t.Context(), file.Object.Inode); err != nil || path != "moved/file" {
+	if path, err := e.PathOf(t.Context(), file.Object); err != nil || path != "moved/file" {
 		t.Fatalf("path after rename = %q, %v", path, err)
 	}
 	_, err := e.PathOf(t.Context(), 0)
 	requireError(t, err, smb.ErrInvalidParameter)
-	_, err = e.PathOf(t.Context(), file.Object.Inode+100)
+	_, err = e.PathOf(t.Context(), file.Object+100)
 	requireError(t, err, smb.ErrNameNotFound)
 }
 
@@ -397,19 +374,19 @@ func TestStorageDirectoryCookieSurvivesRemoval(t *testing.T) {
 	for _, name := range []string{"b", "c", "d"} {
 		create(t, e, "dir/"+name, smb.KindFile)
 	}
-	page, err := e.ReadDir(t.Context(), dir.Object.Inode, 0, 2)
+	page, err := e.ReadDir(t.Context(), dir.Object, 0, 2)
 	if err != nil || len(page) != 2 {
 		t.Fatalf("page = %+v, %v", page, err)
 	}
 	cookie := page[1].Next
-	if err = e.Remove(t.Context(), a.Name, a.Object.Inode); err != nil {
+	if err = e.Remove(t.Context(), a.Name, a.Object); err != nil {
 		t.Fatal(err)
 	}
-	page, err = e.ReadDir(t.Context(), dir.Object.Inode, cookie, 2)
+	page, err = e.ReadDir(t.Context(), dir.Object, cookie, 2)
 	if err != nil || len(page) != 2 || page[0].Name != "c" || page[1].Name != "d" {
 		t.Fatalf("continuation skipped entries: %+v, %v", page, err)
 	}
-	page, err = e.ReadDir(t.Context(), dir.Object.Inode, page[1].Next, 2)
+	page, err = e.ReadDir(t.Context(), dir.Object, page[1].Next, 2)
 	if err != nil || len(page) != 0 {
 		t.Fatalf("exhaustion = %+v, %v", page, err)
 	}
@@ -428,7 +405,7 @@ func TestStorageReadDirWithConcurrentRemoval(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		for _, r := range removed {
-			if err := e.Remove(t.Context(), r.Name, r.Object.Inode); err != nil {
+			if err := e.Remove(t.Context(), r.Name, r.Object); err != nil {
 				done <- err
 				return
 			}
@@ -438,7 +415,7 @@ func TestStorageReadDirWithConcurrentRemoval(t *testing.T) {
 	seen := make(map[string]bool)
 	var cookie smb.Cookie
 	for {
-		page, err := e.ReadDir(t.Context(), dir.Object.Inode, cookie, 7)
+		page, err := e.ReadDir(t.Context(), dir.Object, cookie, 7)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -705,7 +682,7 @@ func TestStorageFlushThroughNonWriterCommitsData(t *testing.T) {
 	payload := "durable payload across chunks"
 	writeAt(t, e, writer, payload, 0)
 	flush(t, e, other)
-	if size := storageCount(t, e, `SELECT size FROM files WHERE id = ?`, r.Object.Inode); size != len(payload) {
+	if size := storageCount(t, e, `SELECT size FROM files WHERE id = ?`, r.Object); size != len(payload) {
 		t.Fatalf("committed size = %d", size)
 	}
 	if n := len(f.bucket.keys(chunkPrefix)); n != 2 {
@@ -1122,10 +1099,6 @@ func TestStorageAttributesPersistAcrossRestart(t *testing.T) {
 		d, err := e.GetAttr(t.Context(), dir.Object)
 		if err != nil || d.Attributes != dirBits|attributeDirectory {
 			t.Fatalf("directory attr = %+v, %v", d, err)
-		}
-		streams, err := e.Streams(t.Context(), r.Object.Inode)
-		if err != nil || len(streams) != 0 {
-			t.Fatalf("streams = %+v, %v", streams, err)
 		}
 	}
 	check(e)

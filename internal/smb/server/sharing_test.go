@@ -3,7 +3,6 @@ package server
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -20,40 +19,35 @@ func openWith(t *testing.T, client *testClient, name string, access, share, disp
 }
 
 // Each open's access must pass every other open's share mode, both ways.
-// Reading attributes alone ignores sharing, and each stream has its own,
-// except that deleting a file needs every stream to share delete.
+// Reading attributes alone ignores sharing.
 func TestSharingModes(t *testing.T) {
 	const shareRead, shareWrite, shareDelete = 1, 2, 4
 	srv := newTestServer(t)
 	first, second := srv.connect(t), srv.connect(t)
 	for i, test := range []struct {
 		name                      string
-		firstName, secondName     string
 		firstAccess, firstShare   uint32
 		secondAccess, secondShare uint32
 		want                      smb.Status
 	}{
-		{"readers sharing read", "f", "f", fileReadData, shareRead, fileReadData, shareRead, smb.StatusSuccess},
-		{"writer after a reader denying write", "f", "f", fileReadData, shareRead, fileWriteData, 7, smb.StatusSharingViolation},
-		{"reader denying write after a writer", "f", "f", fileWriteData, 7, fileReadData, shareRead, smb.StatusSharingViolation},
-		{"readers and writers sharing both", "f", "f", fileReadData | fileWriteData, shareRead | shareWrite, fileReadData | fileWriteData, shareRead | shareWrite, smb.StatusSuccess},
-		{"delete after a reader denying delete", "f", "f", fileReadData, shareRead | shareWrite, fileDelete, 7, smb.StatusSharingViolation},
-		{"reader denying delete after a delete", "f", "f", fileDelete, 7, fileReadData, shareRead | shareWrite, smb.StatusSharingViolation},
-		{"append counts as write", "f", "f", fileReadData, shareRead | shareDelete, fileAppendData, 7, smb.StatusSharingViolation},
-		{"execute counts as read", "f", "f", fileWriteData, shareWrite | shareDelete, fileExecute, 7, smb.StatusSharingViolation},
-		{"attributes beside an exclusive writer", "f", "f", fileWriteData, 0, 0x80, 0, smb.StatusSuccess},
-		{"exclusive writer beside attributes", "f", "f", 0x80, 0, fileWriteData, 0, smb.StatusSuccess},
-		{"exclusive opens of two streams", "f:a", "f:b", fileReadData | fileWriteData, 0, fileReadData | fileWriteData, 0, smb.StatusSuccess},
-		{"file delete after a stream denying delete", "f:a", "f", fileReadData, shareRead | shareWrite, fileDelete, 7, smb.StatusSharingViolation},
-		{"stream denying delete after a file delete", "f", "f:a", fileDelete, 7, fileReadData, shareRead | shareWrite, smb.StatusSharingViolation},
+		{"readers sharing read", fileReadData, shareRead, fileReadData, shareRead, smb.StatusSuccess},
+		{"writer after a reader denying write", fileReadData, shareRead, fileWriteData, 7, smb.StatusSharingViolation},
+		{"reader denying write after a writer", fileWriteData, 7, fileReadData, shareRead, smb.StatusSharingViolation},
+		{"readers and writers sharing both", fileReadData | fileWriteData, shareRead | shareWrite, fileReadData | fileWriteData, shareRead | shareWrite, smb.StatusSuccess},
+		{"delete after a reader denying delete", fileReadData, shareRead | shareWrite, fileDelete, 7, smb.StatusSharingViolation},
+		{"reader denying delete after a delete", fileDelete, 7, fileReadData, shareRead | shareWrite, smb.StatusSharingViolation},
+		{"append counts as write", fileReadData, shareRead | shareDelete, fileAppendData, 7, smb.StatusSharingViolation},
+		{"execute counts as read", fileWriteData, shareWrite | shareDelete, fileExecute, 7, smb.StatusSharingViolation},
+		{"attributes beside an exclusive writer", fileWriteData, 0, 0x80, 0, smb.StatusSuccess},
+		{"exclusive writer beside attributes", 0x80, 0, fileWriteData, 0, smb.StatusSuccess},
 	} {
 		file := fmt.Sprint("file", i)
 		closeOK(t, first, first.open(t, file))
-		id, status := openWith(t, first, strings.Replace(test.firstName, "f", file, 1), test.firstAccess, test.firstShare, fileOpenIf)
+		id, status := openWith(t, first, file, test.firstAccess, test.firstShare, fileOpenIf)
 		if status != smb.StatusSuccess {
 			t.Fatalf("%s: first open status %#x", test.name, status)
 		}
-		other, status := openWith(t, second, strings.Replace(test.secondName, "f", file, 1), test.secondAccess, test.secondShare, fileOpenIf)
+		other, status := openWith(t, second, file, test.secondAccess, test.secondShare, fileOpenIf)
 		if status != test.want {
 			t.Errorf("%s: status %#x, want %#x", test.name, status, test.want)
 		}
@@ -113,15 +107,15 @@ func TestSharingFailedCreateReleasesItsShareMode(t *testing.T) {
 	closeOK(t, client, client.open(t, "file"))
 	var opened, closed atomic.Int32
 	srv.faults.set(func(hooks *storageHooks) {
-		hooks.Open = func(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error) {
+		hooks.Open = func(ctx context.Context, object smb.Inode, access smb.Access) (smb.Handle, error) {
 			opened.Add(1)
-			return srv.adapter.Open(ctx, object, access)
+			return srv.storage.Open(ctx, object, access)
 		}
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
 			closed.Add(1)
-			return srv.adapter.Close(ctx, handle)
+			return srv.storage.Close(ctx, handle)
 		}
-		hooks.GetAttr = func(context.Context, smb.ObjectKey) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
+		hooks.GetAttr = func(context.Context, smb.Inode) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
 	})
 	if _, status := openWith(t, client, "file", fileWriteData, 1, fileOpen); status != smb.StatusIODeviceError {
 		t.Fatalf("CREATE status %#x", status)

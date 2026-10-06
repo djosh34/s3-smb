@@ -69,8 +69,7 @@ check_lint() {
   "$tools/golangci-lint" config verify
   "$tools/golangci-lint" run ./...
   GOOS=darwin "$tools/golangci-lint" run --build-tags macos ./test/macos/...
-  find . -type d \( -path './.git' -o -path './internal/juicefs' -o -path './internal/thirdparty' \) -prune \
-    -o -type f -name '*.sh' -print0 > "$work/shell-files"
+  find . -type d -path './.git' -prune -o -type f -name '*.sh' -print0 > "$work/shell-files"
   xargs -0 -r "$tools/shellcheck" < "$work/shell-files"
   # actionlint also checks inline shell with our pinned shellcheck, not PATH tools.
   find .github/workflows -type f \( -name '*.yml' -o -name '*.yaml' \) -print0 > "$work/workflows"
@@ -78,9 +77,7 @@ check_lint() {
   go mod tidy -diff
   go vet ./...
   GOOS=darwin go vet -tags macos ./test/macos/...
-  # Vendored code is not ours to format.
-  find . -type d \( -path './.git' -o -path './internal/juicefs' -o -path './internal/thirdparty' \) -prune \
-    -o -type f -name '*.go' -print0 > "$work/go-files"
+  find . -type d -path './.git' -prune -o -type f -name '*.go' -print0 > "$work/go-files"
   xargs -0 gofmt -l < "$work/go-files" > "$work/unformatted"
   if [[ -s $work/unformatted ]]; then
     echo 'Run gofmt on these files:' >&2

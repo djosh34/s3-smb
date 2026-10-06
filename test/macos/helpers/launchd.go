@@ -51,10 +51,7 @@ func LaunchdPID(text string) (int, error) {
 	return 0, nil
 }
 
-// LaunchdServing requires a fresh serving log entry and refuses any consent prompt.
-func LaunchdServing(text string, starts int) (bool, error) {
-	if strings.Contains(text, "Continue? [yes/no]: ") {
-		return false, errors.New("launchd start asked for foreground consent")
-	}
-	return strings.Count(text, `"msg":"SMB serving"`) >= starts, nil
+// LaunchdServing reports whether the logs hold at least starts serving entries.
+func LaunchdServing(text string, starts int) bool {
+	return strings.Count(text, `"msg":"SMB serving"`) >= starts
 }

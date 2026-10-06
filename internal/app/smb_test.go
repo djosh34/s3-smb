@@ -12,7 +12,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/server"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
-	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
 // negotiateWithoutGCM sends one NEGOTIATE that offers no AES-GCM and returns
@@ -61,12 +60,12 @@ func negotiateWithoutGCM(ctx context.Context, t *testing.T, address string) smb.
 func TestSMBStartsAndStops(t *testing.T) {
 	for _, encryption := range []bool{true, false} {
 		t.Run(fmt.Sprintf("encryption=%t", encryption), func(t *testing.T) {
-			r, path := serverResources(t)
+			r := serverResources(t)
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			c := serverConfig()
 			c.Encryption = encryption
-			if err := r.startSMB(ctx, c, path); err != nil {
+			if err := r.startSMB(ctx, c); err != nil {
 				t.Fatal(err)
 			}
 			if _, ok := r.server.(*server.Server); !ok {
@@ -91,41 +90,14 @@ func TestSMBStartsAndStops(t *testing.T) {
 }
 
 // A rejected configuration leaves nothing open.
-func TestSMBConstructorFailureReleasesAdapter(t *testing.T) {
-	r, path := serverResources(t)
+func TestSMBConstructorFailureLeavesNothingOpen(t *testing.T) {
+	r := serverResources(t)
 	c := serverConfig()
 	c.Share = "IPC$"
-	if err := r.startSMB(t.Context(), c, path); err == nil {
+	if err := r.startSMB(t.Context(), c); err == nil {
 		t.Fatal("accepted an invalid share name")
 	}
-	if r.server != nil || r.adapter != nil || r.listener != nil {
+	if r.server != nil || r.listener != nil {
 		t.Fatal("constructor returned resources on failure")
-	}
-}
-
-func TestSMBAdapterConfig(t *testing.T) {
-	for _, readOnly := range []bool{false, true} {
-		r, path := serverResources(t)
-		c := serverConfig()
-		c.ReadOnly = readOnly
-		if err := r.startSMB(t.Context(), c, path); err != nil {
-			t.Fatal(err)
-		}
-		adapter, ok := r.adapter.(*smbfs.FS)
-		if !ok {
-			t.Fatalf("adapter type %T", r.adapter)
-		}
-		space, err := adapter.StatFS(t.Context())
-		if err != nil || space.Capacity != r.runtime.Config.Format.Capacity {
-			t.Fatalf("adapter capacity: %+v, %v", space, err)
-		}
-		resolved, err := adapter.Lookup(t.Context(), "fixture")
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = adapter.Create(t.Context(), resolved.Name, smb.KindFile)
-		if readOnly && !errors.Is(err, smb.ErrReadOnly) || !readOnly && err != nil {
-			t.Fatalf("read_only=%t: create error %v", readOnly, err)
-		}
 	}
 }

@@ -95,7 +95,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	h.randomFile("later.bin", 4<<30)
 	h.must(h.proofDir.WriteFile("nested/message.txt", []byte(label+"\n"), 0o600))
 	updated, _ := h.manifest(h.proof, h.evidenceDir, label+"-tree.json")
-	before := h.objects("s3-smb/chunks/")
+	before := h.objects("chunks/")
 	started := time.Now().UTC()
 	h.startBackup(label)
 	var previous, current string
@@ -112,7 +112,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 		// Prove this attempt uploaded chunks, then resample immediately before
 		// cutting. tmutil updates its byte count only every few seconds, so the
 		// resample is compared with the older sample, not the one just taken.
-		after := h.objects("s3-smb/chunks/")
+		after := h.objects("chunks/")
 		if err := helpers.CheckRemoteChange(before, after); err != nil {
 			h.t.Log("waiting for remote band data", err)
 			return false, nil
@@ -138,7 +138,7 @@ func (h *harness) dropBackup(number int, long bool) (helpers.DropAttempt, []help
 	}
 	h.proxy.Restore()
 	attempt.RestoredAt = time.Now().UTC()
-	_, commandErr := h.completeBackup(label)
+	commandErr := h.completeBackup(label)
 	attempt.Completed = commandErr == nil
 	if commandErr != nil {
 		attempt.CommandError = commandErr.Error()

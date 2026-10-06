@@ -11,16 +11,16 @@ import (
 	"testing"
 	"time"
 
+	"github.com/djosh34/s3-smb/internal/engine"
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/state"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
-	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
 // This file is the shared fixture for server tests. newTestServer serves a
-// real JuiceFS adapter over loopback TCP and connect logs a client in. Tests
+// real engine over loopback TCP and connect logs a client in. Tests
 // speak SMB through the client's per-command methods, make storage fail,
 // pause or block through server.faults, and move time with server.clock.
 //
@@ -32,35 +32,35 @@ import (
 //	}
 
 // testServer is one SMB server on real storage. Its fault storage sits between
-// the server and adapter. White-box checks may use server.options.State.
+// the server and the engine. White-box checks may use server.options.State.
 // shutdownErr is the error the final Shutdown must report, nil by default.
 type testServer struct {
 	shutdownErr error
 	listener    net.Listener
 	server      *Server
-	adapter     *smbfs.FS
+	storage     *engine.Engine
 	faults      *faultStorage
 	clock       *fakeClock
 }
 
-// newTestServer starts a server on a fresh file-backed JuiceFS runtime.
+// newTestServer starts a server on a fresh engine.
 func newTestServer(t *testing.T) *testServer {
 	t.Helper()
 	return newTestServerOn(t, smbtest.NewStorage(t))
 }
 
-// newTestServerOn starts a server on adapter, such as one from
+// newTestServerOn starts a server on storage, such as one from
 // smbtest.NewS3Storage. It accepts signed and encrypted sessions for the
 // account backup/password on share backup. Cleanup shuts the server down
-// before the adapter's own cleanup runs.
-func newTestServerOn(t *testing.T, adapter *smbfs.FS) *testServer {
+// before the engine's own cleanup runs.
+func newTestServerOn(t *testing.T, storage *engine.Engine) *testServer {
 	t.Helper()
 	clock := &fakeClock{now: time.Now()}
 	table, err := state.New(clock.Now)
 	if err != nil {
 		t.Fatal(err)
 	}
-	faults := &faultStorage{Storage: adapter}
+	faults := &faultStorage{Storage: storage}
 	server, err := New(Options{
 		Storage: faults, State: table, Logger: slog.New(slog.DiscardHandler), Now: clock.Now,
 		Account: auth.Account{User: "backup", Password: "password"}, ShareName: "backup",
@@ -73,7 +73,7 @@ func newTestServerOn(t *testing.T, adapter *smbfs.FS) *testServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &testServer{listener: listener, server: server, adapter: adapter, faults: faults, clock: clock}
+	srv := &testServer{listener: listener, server: server, storage: storage, faults: faults, clock: clock}
 	t.Cleanup(func() {
 		if err := listener.Close(); err != nil {
 			t.Error(err)
@@ -390,11 +390,6 @@ func (c *testClient) queryDirectory(t *testing.T, request wire.QueryDirectoryReq
 	return response.Data, status
 }
 
-func (c *testClient) lock(t *testing.T, request wire.LockRequest) smb.Status {
-	t.Helper()
-	return c.call(t, wire.Lock, encode(t, wire.EncodeLockRequest, request), 1).Header.Status
-}
-
 // ioctl returns only a status: the server refuses every control code.
 func (c *testClient) ioctl(t *testing.T, request wire.IOCTLRequest) smb.Status {
 	t.Helper()
@@ -615,7 +610,7 @@ func (s *testServer) holdWrites() (entered <-chan struct{}, release chan<- struc
 			}
 			select {
 			case <-releaseCh:
-				return s.adapter.WriteAt(ctx, handle, src, offset)
+				return s.storage.WriteAt(ctx, handle, src, offset)
 			case <-ctx.Done():
 				return 0, ctx.Err()
 			}
@@ -624,9 +619,9 @@ func (s *testServer) holdWrites() (entered <-chan struct{}, release chan<- struc
 	return enteredCh, releaseCh
 }
 
-// faultStorage passes every call to the real adapter unless the test sets a
+// faultStorage passes every call to the real engine unless the test sets a
 // hook for that method with set. A hook replaces the call: it can return an
-// error, block on a channel, or call srv.adapter itself before or after
+// error, block on a channel, or call srv.storage itself before or after
 // waiting. A blocking hook should also return when ctx ends, so a failing
 // test does not hang in cleanup. Hooks may change while the server runs.
 type faultStorage struct {
@@ -638,17 +633,16 @@ type faultStorage struct {
 // storageHooks has one optional hook per smb.Storage method; nil passes through.
 type storageHooks struct {
 	Lookup   func(ctx context.Context, path string) (smb.Resolved, error)
-	Open     func(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error)
+	Open     func(ctx context.Context, object smb.Inode, access smb.Access) (smb.Handle, error)
 	Create   func(ctx context.Context, name smb.Name, kind smb.Kind) (smb.Resolved, error)
 	Close    func(ctx context.Context, handle smb.Handle) error
 	ReadAt   func(ctx context.Context, handle smb.Handle, dst []byte, offset uint64) (int, error)
 	WriteAt  func(ctx context.Context, handle smb.Handle, src []byte, offset uint64) (int, error)
 	Flush    func(ctx context.Context, handle smb.Handle, mode smb.SyncMode) error
 	Truncate func(ctx context.Context, handle smb.Handle, size uint64) error
-	GetAttr  func(ctx context.Context, object smb.ObjectKey) (smb.Attr, error)
-	SetAttr  func(ctx context.Context, object smb.ObjectKey, change smb.AttrChange) error
+	GetAttr  func(ctx context.Context, object smb.Inode) (smb.Attr, error)
+	SetAttr  func(ctx context.Context, object smb.Inode, change smb.AttrChange) error
 	ReadDir  func(ctx context.Context, inode smb.Inode, cookie smb.Cookie, limit uint32) ([]smb.DirEntry, error)
-	Streams  func(ctx context.Context, inode smb.Inode) ([]smb.StreamInfo, error)
 	Remove   func(ctx context.Context, name smb.Name, expect smb.Inode) error
 	Rename   func(ctx context.Context, request smb.RenameRequest) error
 	PathOf   func(ctx context.Context, inode smb.Inode) (string, error)
@@ -677,7 +671,7 @@ func (f *faultStorage) Lookup(ctx context.Context, path string) (smb.Resolved, e
 	return f.Storage.Lookup(ctx, path)
 }
 
-func (f *faultStorage) Open(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error) {
+func (f *faultStorage) Open(ctx context.Context, object smb.Inode, access smb.Access) (smb.Handle, error) {
 	if hook := f.current().Open; hook != nil {
 		return hook(ctx, object, access)
 	}
@@ -726,14 +720,14 @@ func (f *faultStorage) Truncate(ctx context.Context, handle smb.Handle, size uin
 	return f.Storage.Truncate(ctx, handle, size)
 }
 
-func (f *faultStorage) GetAttr(ctx context.Context, object smb.ObjectKey) (smb.Attr, error) {
+func (f *faultStorage) GetAttr(ctx context.Context, object smb.Inode) (smb.Attr, error) {
 	if hook := f.current().GetAttr; hook != nil {
 		return hook(ctx, object)
 	}
 	return f.Storage.GetAttr(ctx, object)
 }
 
-func (f *faultStorage) SetAttr(ctx context.Context, object smb.ObjectKey, change smb.AttrChange) error {
+func (f *faultStorage) SetAttr(ctx context.Context, object smb.Inode, change smb.AttrChange) error {
 	if hook := f.current().SetAttr; hook != nil {
 		return hook(ctx, object, change)
 	}
@@ -745,13 +739,6 @@ func (f *faultStorage) ReadDir(ctx context.Context, inode smb.Inode, cookie smb.
 		return hook(ctx, inode, cookie, limit)
 	}
 	return f.Storage.ReadDir(ctx, inode, cookie, limit)
-}
-
-func (f *faultStorage) Streams(ctx context.Context, inode smb.Inode) ([]smb.StreamInfo, error) {
-	if hook := f.current().Streams; hook != nil {
-		return hook(ctx, inode)
-	}
-	return f.Storage.Streams(ctx, inode)
 }
 
 func (f *faultStorage) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error {

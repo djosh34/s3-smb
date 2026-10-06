@@ -75,7 +75,7 @@ func (h *harness) startBackup(label string) {
 	h.t.Log("time-machine-start", label)
 }
 
-func (h *harness) completeBackup(label string) (time.Time, error) {
+func (h *harness) completeBackup(label string) error {
 	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
@@ -98,37 +98,20 @@ func (h *harness) completeBackup(label string) (time.Time, error) {
 	p.cancel()
 	h.must(p.log.Close())
 	if p.err != nil || h.status() {
-		return time.Time{}, errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
+		return errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
 	}
 	h.t.Log("time-machine-command-completed", label)
 	// A command exit is not enough. remoteBackup must also find a completed native backup.
-	return time.Now().UTC(), nil
+	return nil
 }
 
-type receipt struct {
-	Snapshot time.Time
-	Key      string
-}
-
-func (h *harness) metadata(after time.Time, label string) receipt {
-	var point receipt
-	h.must(h.waitFor("metadata point after "+after.Format(time.RFC3339), 15*time.Minute, time.Second, func() (bool, error) {
-		err := readJSON(h.workDir, "daemon/state/backup-receipt.json", &point)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return point.Snapshot.After(after), nil
-	}))
-	size, exists := h.objects("s3-smb/meta/")["s3-smb/"+point.Key]
-	if !exists {
-		h.t.Fatal("receipt object absent from S3", point.Key)
-	}
-	h.save(label+"-receipt.json", point)
-	h.t.Log("native-point-after-completion", label, point, "object_bytes", size)
-	return point
+// copyNow restarts s3-smb on its data folder. Every start uploads a database
+// copy before it serves, so the newest copy then holds everything flushed.
+// A copy that merely lands later could have been captured earlier.
+func (h *harness) copyNow(label string) {
+	h.stopDaemon(false)
+	h.startDaemon("restart")
+	h.t.Log("database-copy-landed", label, helpers.NewestCopy(h.objects("db/")))
 }
 
 func (h *harness) mountpoints(text string) []string {

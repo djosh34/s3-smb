@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
-	"reflect"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -23,13 +22,11 @@ func TestQueryInfoFileClasses(t *testing.T) {
 	client := srv.connect(t)
 	directory := openDirectory(t, client, "directory")
 	file := client.open(t, "directory/file")
-	stream := client.open(t, "directory/file:fork")
 	// The file's data is still buffered; queries must report it.
 	if status := client.write(t, wire.WriteRequest{ID: file, Offset: 4096, Data: []byte("buffered length")}); status != smb.StatusSuccess {
 		t.Fatalf("WRITE status %#x", status)
 	}
-	writeFile(t, client, stream, []byte("fork"))
-	inode := uint64(srv.object(t, "directory/file").Inode)
+	inode := uint64(srv.object(t, "directory/file"))
 	basic := basicInfo(t, client, file)
 	standard := wire.FileStandardInformation{AllocationSize: 8192, EndOfFile: 4111, Links: 1}
 	name := wire.FileNameInformation{Name: "\\directory\\file"}
@@ -49,7 +46,7 @@ func TestQueryInfoFileClasses(t *testing.T) {
 	expectInfo(t, client, file, wire.ClassFileAll, wire.DecodeFileAllInformation, wire.FileAllInformation{
 		Name: name, Basic: basic, Standard: standard, Internal: wire.FileInternalInformation{Index: inode}, Access: wire.FileAccessInformation{Access: fileAllAccess},
 	})
-	space, err := srv.adapter.StatFS(t.Context())
+	space, err := srv.storage.StatFS(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,24 +55,8 @@ func TestQueryInfoFileClasses(t *testing.T) {
 	expectInfo(t, client, file, wire.ClassFileID, wire.DecodeFileIDInformation, fileID)
 	expectInfo(t, client, client.open(t, "directory/file"), wire.ClassFileID, wire.DecodeFileIDInformation, fileID)
 
-	// A stream open names the stream and reports its own length, but lists
-	// the same streams as the file.
-	expectInfo(t, client, stream, wire.ClassFileName, wire.DecodeFileNameInformation, wire.FileNameInformation{Name: "\\directory\\file:fork:$DATA"})
-	if got := endOfFile(t, client, stream); got != 4 {
-		t.Errorf("stream EOF %d", got)
-	}
-	streams := []wire.FileStreamEntry{{Name: "::$DATA", Size: 4111, AllocationSize: 8192}, {Name: ":fork:$DATA", Size: 4, AllocationSize: 4096}}
-	for _, id := range []wire.FileID{file, stream} {
-		if got := queryClass(t, client, id, wire.ClassFileStream, wire.DecodeFileStreamInformation); !reflect.DeepEqual(got.Entries, streams) {
-			t.Errorf("streams = %+v", got.Entries)
-		}
-	}
-
 	if got := queryClass(t, client, directory, wire.ClassFileStandard, wire.DecodeFileStandardInformation); !got.Directory {
 		t.Errorf("directory standard information %+v", got)
-	}
-	if got := queryClass(t, client, directory, wire.ClassFileStream, wire.DecodeFileStreamInformation); len(got.Entries) != 0 {
-		t.Errorf("directory streams %+v", got.Entries)
 	}
 }
 
@@ -98,11 +79,10 @@ func TestQueryInfoFollowsRenameAndDelete(t *testing.T) {
 }
 
 // Fixed-size classes need their whole size; the variable part of a name is
-// cut short with STATUS_BUFFER_OVERFLOW; a stream list keeps whole entries.
+// cut short with STATUS_BUFFER_OVERFLOW.
 func TestQueryInfoShortBuffers(t *testing.T) {
 	client := newTestServer(t).connect(t)
 	id := client.open(t, "a-long-file-name")
-	client.open(t, "a-long-file-name:fork")
 	query := func(class wire.FileInfoClass, length uint32) ([]byte, smb.Status) {
 		return client.queryInfo(t, wire.QueryInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(class), OutputLength: length})
 	}
@@ -130,31 +110,6 @@ func TestQueryInfoShortBuffers(t *testing.T) {
 			t.Errorf("class %d in %d bytes = %x, %#x; want %#x", test.class, test.length, data, status, test.want)
 		}
 	}
-	// The entries take 38 and 46 bytes; linking them pads the first to 40.
-	for _, test := range []struct {
-		length  uint32
-		want    smb.Status
-		entries int
-	}{
-		{23, smb.StatusInfoLengthMismatch, 0},
-		{37, smb.StatusBufferOverflow, 0},
-		{38, smb.StatusBufferOverflow, 1},
-		{85, smb.StatusBufferOverflow, 1},
-		{86, smb.StatusSuccess, 2},
-	} {
-		data, status := query(wire.ClassFileStream, test.length)
-		if status != test.want {
-			t.Errorf("streams in %d bytes: status %#x", test.length, status)
-			continue
-		}
-		if status == smb.StatusInfoLengthMismatch {
-			continue
-		}
-		decoded, err := wire.DecodeFileStreamInformation(data)
-		if err != nil || len(decoded.Entries) != test.entries {
-			t.Errorf("streams in %d bytes = %+v, %v", test.length, decoded, err)
-		}
-	}
 }
 
 func TestQueryInfoRefusals(t *testing.T) {
@@ -171,6 +126,7 @@ func TestQueryInfoRefusals(t *testing.T) {
 		want     smb.Status
 	}{
 		{"normalized name", id, wire.InfoFile, 48, 4096, smb.StatusNotSupported},
+		{"streams", id, wire.InfoFile, 22, 4096, smb.StatusInvalidInfoClass},
 		{"set-only class", id, wire.InfoFile, uint8(wire.ClassFileRename), 4096, smb.StatusInvalidInfoClass},
 		{"unknown file class", id, wire.InfoFile, 200, 4096, smb.StatusInvalidInfoClass},
 		{"object ID", id, wire.InfoFilesystem, 8, 4096, smb.StatusNotSupported},
@@ -199,7 +155,7 @@ func TestFilesystemInfo(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	id := client.open(t, "file")
-	actual, err := srv.adapter.StatFS(t.Context())
+	actual, err := srv.storage.StatFS(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -26,20 +27,17 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	smb "github.com/hirochachacha/go-smb2"
-	"golang.org/x/sys/unix"
 
-	"github.com/djosh34/s3-smb/internal/backup"
 	"github.com/djosh34/s3-smb/internal/s3fault"
 )
 
 // Test secrets. The daemon logs must never contain them.
 const (
-	smbLogin     = "smb-e2e-secret-marker"                     // SMB password
-	volumeKey    = "encryption-e2e-secret-marker-with-entropy" // encryption passphrase
+	smbLogin     = "smb-e2e-secret-marker" // SMB password
 	s3AccessKey  = "s3smb-test-access"
 	s3SigningKey = "s3smb-test-secret-only" // S3 secret key
-	// wrongVolumeKey is the passphrase of a test that expects recovery to fail.
-	wrongVolumeKey = "wrong-encryption-passphrase-e2e-marker"
+	// wrongSigningKey is the S3 secret key of a test that expects startup to fail.
+	wrongSigningKey = "wrong-s3-secret-e2e-marker"
 )
 
 // macGUID is the client GUID of the one Mac the tests play.
@@ -48,6 +46,9 @@ var macGUID = [16]byte{0x4d, 0x61, 0x63}
 // daemonBinary is the daemon under test, built by scripts/check.sh.
 var daemonBinary = os.Getenv("S3_SMB_E2E_BINARY")
 
+// runs numbers the daemon runs, so each run has its own log directory.
+var runs atomic.Int64
+
 // fixture is one disposable bucket and one local install of the daemon.
 type fixture struct {
 	t     *testing.T
@@ -55,13 +56,10 @@ type fixture struct {
 	// logs holds each daemon run's logs, under S3_SMB_TEST_ARTIFACTS when set.
 	logs                         *os.Root
 	bucket, root, addr, endpoint string
-	password, secret             string
-	cacheSize                    string        // Empty means 0 MB.
-	storageCapacity              string        // Empty means no volume limit.
-	interval                     string        // Metadata backup interval. Empty means 2s.
+	password                     string
+	signingKey                   string        // S3 secret key in the config.
+	storageCapacity              string        // Empty means the default.
 	startupTimeout               time.Duration // Zero means 45s.
-	generation                   int
-	encrypted                    bool
 	readonly                     bool
 	// failStart expects the daemon to exit during startup.
 	failStart bool
@@ -74,14 +72,12 @@ type daemon struct {
 	t       *testing.T
 	cmd     *exec.Cmd
 	done    chan error
-	tty     *os.File
-	prompts chan error
 	logs    *os.Root
 	dir     string // Log directory, relative to logs.
 	stopped bool
 }
 
-func newFixture(t *testing.T, encrypted bool) *fixture {
+func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	endpoint := os.Getenv("S3_SMB_E2E_ENDPOINT")
 	if endpoint == "" {
@@ -100,7 +96,7 @@ func newFixture(t *testing.T, encrypted bool) *fixture {
 	}
 	closeOnCleanup(t, logs)
 	f := &fixture{
-		t: t, logs: logs, endpoint: endpoint, encrypted: encrypted, password: smbLogin, secret: volumeKey,
+		t: t, logs: logs, endpoint: endpoint, password: smbLogin, signingKey: s3SigningKey,
 		bucket: fmt.Sprintf("smb-e2e-%d", time.Now().UnixNano()),
 	}
 	f.store = s3.New(s3.Options{
@@ -139,8 +135,8 @@ func (f *fixture) newFaultProxy() *s3fault.Proxy {
 	return proxy
 }
 
-// freshLocal replaces all local config, state, cache and keys, keeping the
-// bucket, and picks a new SMB port.
+// freshLocal replaces the config and the data folder, keeping the bucket, and
+// picks a new SMB port. The next start is a new server on the same bucket.
 func (f *fixture) freshLocal() {
 	f.t.Helper()
 	if f.root != "" {
@@ -150,6 +146,16 @@ func (f *fixture) freshLocal() {
 	}
 	f.root = f.t.TempDir()
 	f.addr = freeAddress(f.t)
+}
+
+// another returns a second install on the same bucket, with its own data
+// folder and port.
+func (f *fixture) another() *fixture {
+	f.t.Helper()
+	other := *f
+	other.root = ""
+	other.freshLocal()
+	return &other
 }
 
 func freeAddress(t *testing.T) string {
@@ -167,21 +173,9 @@ func freeAddress(t *testing.T) string {
 }
 
 func (f *fixture) config() string {
-	cacheSize := f.cacheSize
-	if cacheSize == "" {
-		cacheSize = "0 MB"
-	}
 	capacity := ""
 	if f.storageCapacity != "" {
 		capacity = fmt.Sprintf("  capacity: %q\n", f.storageCapacity)
-	}
-	interval := f.interval
-	if interval == "" {
-		interval = "2s"
-	}
-	key := fmt.Sprintf("{value: %q}", f.secret)
-	if !f.encrypted {
-		key = "{command: [/does-not-exist/encryption-disabled-must-not-execute]}"
 	}
 	return fmt.Sprintf(`smb:
   listen: %q
@@ -191,43 +185,34 @@ func (f *fixture) config() string {
   read_only: %t
 storage:
 %s  state_dir: ./state
-  cache_dir: ./cache
-  cache_size: %q
 s3:
   bucket: %q
   region: us-east-1
   endpoint: %q
   path_style: true
-  access_key: {value: %s}
-  secret_key: {value: %s}
-encryption:
-  enabled: %t
-  passphrase: %s
-backup:
-  interval: %s
-  trash_days: 14
+  access_key: {value: %q}
+  secret_key: {value: %q}
 logging:
   format: json
   level: info
-`, f.addr, f.password, f.readonly, capacity, cacheSize, f.bucket, f.endpoint, s3AccessKey, s3SigningKey, f.encrypted, key, interval)
+`, f.addr, f.password, f.readonly, capacity, f.bucket, f.endpoint, s3AccessKey, f.signingKey)
 }
 
 // logDir creates the log directory for the next daemon run and returns its
 // path relative to f.logs.
 func (f *fixture) logDir() string {
 	f.t.Helper()
-	f.generation++
-	dir := filepath.Join(strings.ReplaceAll(f.t.Name(), "/", "-"), f.bucket, fmt.Sprint(f.generation))
+	dir := filepath.Join(strings.ReplaceAll(f.t.Name(), "/", "-"), f.bucket, fmt.Sprint(runs.Add(1)))
 	if err := f.logs.MkdirAll(dir, 0o700); err != nil {
 		f.t.Fatal(err)
 	}
 	return dir
 }
 
-// start runs the daemon and waits until it serves SMB, answering "yes" to a
-// recovery prompt. The port from freshLocal can be taken by another process
-// before the daemon binds it; then start picks a new port, at most twice.
-// With keepAlive it starts the daemon again instead.
+// start runs the daemon and waits until it serves SMB. The port from
+// freshLocal can be taken by another process before the daemon binds it; then
+// start picks a new port, at most twice. With keepAlive it starts the daemon
+// again instead.
 func (f *fixture) start() *daemon {
 	f.t.Helper()
 	timeout := f.startupTimeout
@@ -255,31 +240,7 @@ func (f *fixture) start() *daemon {
 // port was taken or, with keepAlive, the daemon exited during startup.
 func (f *fixture) startOnce(deadline time.Time) (*daemon, bool) {
 	f.t.Helper()
-	if err := os.WriteFile(filepath.Join(f.root, "config.yaml"), []byte(f.config()), 0o600); err != nil {
-		f.t.Fatal(err)
-	}
-	master, slave := openPTY(f.t)
-	d := &daemon{
-		t: f.t, done: make(chan error, 1), tty: master, prompts: make(chan error, 1),
-		logs: f.logs, dir: f.logDir(),
-		cmd: exec.CommandContext(context.Background(), daemonBinary, "serve", "-c", "config.yaml"),
-	}
-	d.cmd.Dir = f.root
-	d.cmd.Stdin = slave
-	d.cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
-	stdout, stderr, prompts := d.create("stdout.log"), d.create("stderr.log"), d.create("prompts.log")
-	d.cmd.Stdout, d.cmd.Stderr = stdout, stderr
-	err := d.cmd.Start()
-	err = errors.Join(err, slave.Close())
-	// The child holds its own copies of the log files.
-	err = errors.Join(err, stdout.Close(), stderr.Close())
-	if err != nil {
-		f.t.Fatal(err)
-	}
-	go func() { d.done <- d.cmd.Wait() }()
-	go func() { d.prompts <- errors.Join(answerPrompts(master, prompts), prompts.Close()) }()
-	f.t.Cleanup(d.stop)
-
+	d := f.launch()
 	timer := time.NewTimer(time.Until(deadline))
 	defer timer.Stop()
 	ticker := time.NewTicker(50 * time.Millisecond)
@@ -300,7 +261,7 @@ func (f *fixture) startOnce(deadline time.Time) (*daemon, bool) {
 		case <-ticker.C:
 			// Only the daemon's own log proves readiness; another process
 			// may hold the port.
-			if bytes.Contains(d.read("stderr.log"), []byte(`"msg":"SMB serving"`)) {
+			if d.logged("SMB serving") {
 				if f.failStart {
 					d.stop()
 					f.t.Fatal("unsafe startup unexpectedly reached SMB readiness")
@@ -311,55 +272,27 @@ func (f *fixture) startOnce(deadline time.Time) (*daemon, bool) {
 	}
 }
 
-// openPTY returns a pseudo-terminal pair, so the daemon sees an interactive
-// recovery prompt.
-func openPTY(t *testing.T) (master, slave *os.File) {
-	t.Helper()
-	master, err := os.OpenFile("/dev/ptmx", os.O_RDWR|syscall.O_NOCTTY, 0)
-	if err != nil {
-		t.Fatal(err)
+// launch writes the config and runs the daemon without waiting for it.
+func (f *fixture) launch() *daemon {
+	f.t.Helper()
+	if err := os.WriteFile(filepath.Join(f.root, "config.yaml"), []byte(f.config()), 0o600); err != nil {
+		f.t.Fatal(err)
 	}
-	err = unix.IoctlSetPointerInt(int(master.Fd()), unix.TIOCSPTLCK, 0)
-	var number int
-	if err == nil {
-		number, err = unix.IoctlGetInt(int(master.Fd()), unix.TIOCGPTN)
+	d := &daemon{
+		t: f.t, done: make(chan error, 1), logs: f.logs, dir: f.logDir(),
+		cmd: exec.CommandContext(context.Background(), daemonBinary, "serve", "-c", "config.yaml"),
 	}
-	if err == nil {
-		slave, err = os.OpenFile(fmt.Sprintf("/dev/pts/%d", number), os.O_RDWR|syscall.O_NOCTTY, 0)
+	d.cmd.Dir = f.root
+	stdout, stderr := d.create("stdout.log"), d.create("stderr.log")
+	d.cmd.Stdout, d.cmd.Stderr = stdout, stderr
+	err := d.cmd.Start()
+	// The child holds its own copies of the log files.
+	if err = errors.Join(err, stdout.Close(), stderr.Close()); err != nil {
+		f.t.Fatal(err)
 	}
-	if err != nil {
-		t.Fatal(errors.Join(err, master.Close()))
-	}
-	return master, slave
-}
-
-// answerPrompts copies the terminal output to log and answers each recovery
-// prompt with "yes". It returns when the terminal closes.
-func answerPrompts(tty *os.File, log *os.File) error {
-	buf := make([]byte, 1024)
-	var pending string
-	for {
-		n, err := tty.Read(buf)
-		if n > 0 {
-			if _, writeErr := log.Write(buf[:n]); writeErr != nil {
-				return writeErr
-			}
-			pending += string(buf[:n])
-			if strings.Contains(pending, "Continue? [yes/no]:") {
-				if _, writeErr := tty.WriteString("yes\n"); writeErr != nil {
-					return writeErr
-				}
-				pending = ""
-			}
-		}
-		// EIO means the daemon closed its side; ErrClosed means closeLogs ran.
-		if errors.Is(err, syscall.EIO) || errors.Is(err, os.ErrClosed) {
-			return nil
-		}
-		if err != nil {
-			return err
-		}
-	}
+	go func() { d.done <- d.cmd.Wait() }()
+	f.t.Cleanup(d.stop)
+	return d
 }
 
 func (d *daemon) path() string { return filepath.Join(d.logs.Name(), d.dir) }
@@ -388,6 +321,49 @@ func (d *daemon) output() []byte {
 	return append(d.read("stdout.log"), d.read("stderr.log")...)
 }
 
+// logged reports whether the daemon has logged a line with message msg.
+func (d *daemon) logged(msg string) bool {
+	d.t.Helper()
+	return bytes.Contains(d.read("stderr.log"), []byte(`"msg":"`+msg+`"`))
+}
+
+// waitLogged waits until the daemon logs msg and fails if it exits first or
+// the timeout passes.
+func (d *daemon) waitLogged(msg string, timeout time.Duration) {
+	d.t.Helper()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for !d.logged(msg) {
+		select {
+		case err := <-d.done:
+			d.exited()
+			d.t.Fatalf("daemon exited before it logged %q: %v; logs %s", msg, err, d.path())
+		case <-timer.C:
+			d.t.Fatalf("daemon did not log %q within %s; logs %s", msg, timeout, d.path())
+		case <-ticker.C:
+		}
+	}
+}
+
+// restoredCopy returns the database copy that the daemon restored at start,
+// or "" when it kept its local database.
+func (d *daemon) restoredCopy() string {
+	d.t.Helper()
+	restored := ""
+	for line := range strings.Lines(string(d.read("stderr.log"))) {
+		var entry struct {
+			Msg  string `json:"msg"`
+			Copy string `json:"copy"`
+		}
+		if json.Unmarshal([]byte(line), &entry) == nil && entry.Msg == "restoring the newest database copy" {
+			restored = entry.Copy
+		}
+	}
+	return restored
+}
+
 // stop sends SIGTERM and expects a clean exit within the 30 second shutdown
 // limit.
 func (d *daemon) stop() {
@@ -406,19 +382,6 @@ func (d *daemon) stop() {
 		}
 	case <-time.After(35 * time.Second):
 		d.t.Errorf("daemon exceeded bounded shutdown: %v", d.kill())
-	}
-}
-
-// running waits for duration and fails if the daemon exits meanwhile.
-func (d *daemon) running(duration time.Duration) {
-	d.t.Helper()
-	timer := time.NewTimer(duration)
-	defer timer.Stop()
-	select {
-	case err := <-d.done:
-		d.exited()
-		d.t.Fatalf("daemon exited: %v", err)
-	case <-timer.C:
 	}
 }
 
@@ -448,12 +411,6 @@ func (d *daemon) kill() error {
 func (d *daemon) exited() {
 	d.t.Helper()
 	d.stopped = true
-	if err := d.tty.Close(); err != nil {
-		d.t.Error(err)
-	}
-	if err := <-d.prompts; err != nil {
-		d.t.Error(err)
-	}
 	for _, name := range []string{"stdout.log", "stderr.log"} {
 		checkDaemonLog(d.t, filepath.Join(d.path(), name), d.read(name))
 	}
@@ -473,7 +430,7 @@ func checkDaemonLog(t *testing.T, path string, data []byte) {
 		if !json.Valid(scan.Bytes()) {
 			t.Errorf("non-JSON daemon output %s line %d", path, line)
 		}
-		for _, marker := range []string{smbLogin, volumeKey, wrongVolumeKey, s3SigningKey, s3AccessKey} {
+		for _, marker := range []string{smbLogin, s3SigningKey, wrongSigningKey, s3AccessKey} {
 			if bytes.Contains(scan.Bytes(), []byte(marker)) {
 				t.Errorf("secret marker leaked in %s line %d", path, line)
 			}
@@ -565,31 +522,73 @@ func verifyFiles(t *testing.T, share *smb.Share, files map[string][]byte) {
 	}
 }
 
-// receipt returns the receipt of the last metadata backup.
-func (f *fixture) receipt() backup.Receipt {
+// copyDatabase stops d cleanly and starts and stops the daemon once more on
+// the same data folder. Every start uploads a copy of the database before it
+// serves, so afterwards the newest copy in the bucket holds every flushed file.
+func (f *fixture) copyDatabase(d *daemon) {
 	f.t.Helper()
-	data, err := os.ReadFile(filepath.Join(f.root, "state", "backup-receipt.json"))
+	d.stop()
+	d = f.start()
+	if !d.logged("keeping the local database") {
+		f.t.Fatalf("a restart on the same data folder did not keep its database; logs %s", d.path())
+	}
+	d.stop()
+}
+
+// keys returns the keys in the bucket under prefix.
+func (f *fixture) keys(prefix string) []string {
+	f.t.Helper()
+	var keys []string
+	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket), Prefix: aws.String(prefix)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(f.t.Context())
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		for _, object := range page.Contents {
+			keys = append(keys, aws.ToString(object.Key))
+		}
+	}
+	return keys
+}
+
+// newestCopy returns the key of the newest database copy in the bucket. Copy
+// names are zero-padded, so the highest name is the newest.
+func (f *fixture) newestCopy() string {
+	f.t.Helper()
+	newest := ""
+	for _, key := range f.keys("db/") {
+		newest = max(newest, key)
+	}
+	if newest == "" {
+		f.t.Fatal("the bucket holds no database copy")
+	}
+	return newest
+}
+
+// object returns the contents of the object at key.
+func (f *fixture) object(key string) []byte {
+	f.t.Helper()
+	out, err := f.store.GetObject(f.t.Context(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: aws.String(key)})
 	if err != nil {
 		f.t.Fatal(err)
 	}
-	var receipt backup.Receipt
-	if err := json.Unmarshal(data, &receipt); err != nil {
+	data, err := io.ReadAll(out.Body)
+	if err = errors.Join(err, out.Body.Close()); err != nil {
 		f.t.Fatal(err)
 	}
-	return receipt
+	return data
 }
 
-// protectedAfter waits for a metadata backup taken after the given time.
-func (f *fixture) protectedAfter(after time.Time) {
+// expireKilledLocks deletes every lock key in the bucket. Call it only while
+// no daemon runs, after a clean stop: then only killed runs have left keys
+// behind. A new data folder waits until such a key is 10 minutes old, and
+// deleting the keys stands in for that wait.
+func (f *fixture) expireKilledLocks() {
 	f.t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(filepath.Join(f.root, "state", "backup-receipt.json"))
-		var receipt backup.Receipt
-		if err == nil && json.Unmarshal(data, &receipt) == nil && receipt.Snapshot.After(after) {
-			return
+	for _, key := range f.keys("lock/") {
+		if _, err := f.store.DeleteObject(f.t.Context(), &s3.DeleteObjectInput{Bucket: aws.String(f.bucket), Key: aws.String(key)}); err != nil {
+			f.t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	f.t.Fatal("no metadata backup after the given time")
 }

@@ -17,8 +17,8 @@ func TestChaosS3Faults(t *testing.T) {
 	if gate() {
 		count = 24
 	}
-	f := chaosFixture(t)
-	// Startup stops on some S3 errors, and launchd starts it again.
+	f := newFixture(t)
+	// Startup may stop on an S3 error, and launchd starts it again.
 	f.keepAlive, f.startupTimeout = true, 2*time.Minute
 	proxy := f.newFaultProxy()
 	d := f.start()
@@ -49,7 +49,7 @@ func TestChaosS3Outage(t *testing.T) {
 	if gate() {
 		outage = 5 * time.Minute
 	}
-	f := chaosFixture(t)
+	f := newFixture(t)
 	proxy := f.newFaultProxy()
 	d := f.start()
 	share, disconnect := f.chaosShare(f.addr)

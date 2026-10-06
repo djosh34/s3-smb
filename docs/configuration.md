@@ -7,7 +7,7 @@ when that variable is unset. The same rule applies on macOS. A missing file is a
 error. `help` and `version` do not read the file.
 
 The file holds one YAML mapping. Unknown or duplicate fields, null values, aliases
-and merge keys are errors. The file may be at most 1,048,576 bytes. Nothing is
+and merge keys are errors. An unknown field is named in the error. The file may be at most 1,048,576 bytes. Nothing is
 expanded: no environment variables, no `~`, no shell. Relative paths are relative
 to the directory of the YAML file.
 
@@ -26,8 +26,6 @@ smb:
 
 storage:
   state_dir: ./state
-  cache_dir: ./cache
-  cache_size: "10 GB"
   capacity: "2 TB"
 
 s3:
@@ -39,15 +37,6 @@ s3:
     file: ./secrets/access-key
   secret_key:
     file: ./secrets/secret-key
-
-encryption:
-  enabled: true
-  passphrase:
-    file: ./secrets/encryption-passphrase
-
-backup:
-  interval: 1h
-  trash_days: 14
 
 logging:
   format: text
@@ -65,28 +54,30 @@ logging:
 | `smb.read_only` | `false` |
 | `smb.encryption` | `true`; requires GCM |
 | `storage.state_dir` | `$XDG_DATA_HOME/s3-smb`, otherwise `$HOME/.local/share/s3-smb` |
-| `storage.cache_dir` | `$XDG_CACHE_HOME/s3-smb`, otherwise `$HOME/.cache/s3-smb` |
-| `storage.cache_size` | 107,374,182,400 bytes (100 GiB) |
-| `storage.capacity` | `0` (no limit) |
+| `storage.capacity` | `0` (report 1 TiB free) |
 | `s3.bucket` | Required, must exist |
 | `s3.region` | `us-east-1`. Set the bucket's real region. |
 | `s3.endpoint` | AWS S3 for the region; otherwise an `http://` or `https://` origin |
-| `s3.path_style` | Chosen by JuiceFS; `true` forces path style, `false` virtual-host style |
+| `s3.path_style` | `true` with `s3.endpoint`, otherwise `false`; `true` forces path style, `false` virtual-host style |
 | `s3.access_key`, `s3.secret_key` | Required, one source each |
 | `s3.session_token` | Empty |
 | `s3.tls` | System CA roots |
-| `encryption.enabled` | `true`; then `encryption.passphrase` is required |
-| `backup.interval` | `1h`, any positive Go duration such as `30m` |
-| `backup.trash_days` | `14`, at most 106751 |
 | `logging.format` | `text`, or `json` |
 | `logging.level` | `info`, or `debug`, `warn`, `error` |
 
-`storage.cache_dir` is one directory, not a list or glob pattern. Its path must
-not contain `:`, `,`, `*`, `?`, `[` or a backslash. This also applies to paths
-inherited from `XDG_CACHE_HOME` or the config file's directory. Recovery deletes
-only the volume UUID directory under this root. The volume cache and
-`storage.state_dir` must be separate directories, with neither inside the other.
-Recovery refuses to wipe overlapping directories.
+## The data folder
+
+`storage.state_dir` is the data folder. It holds the SQLite database that maps
+files to their chunks in S3, the server ID and a lock file. The disk under it
+must honour flush: a file is flushed only once the database commit is on disk.
+If the folder is lost, the next start restores the newest database copy from
+S3, which may be up to 30 minutes old. [Recovery](recovery.md) explains what
+that means for Time Machine. Keep the folder out of the Time Machine backup.
+
+Only one process can use a data folder at a time. The folder also identifies the
+server to the bucket lock: a restart with the same folder takes over the bucket
+at once, and a new folder waits until the old server's lock has been silent for
+10 minutes.
 
 ## Sizes
 
@@ -95,43 +86,18 @@ without a unit is bytes. Fractions such as `"0.5 MB"` are allowed and round up t
 whole bytes. Negative sizes, binary units such as `MiB`, scientific notation and
 values above 9,223,372,036,854,775,807 bytes are errors. Quote sizes.
 
-`cache_size: 0` turns off the disk and memory block caches. s3-smb still needs
-memory for I/O buffers (300 MiB by default) and disk for the SQLite database and
-metadata backup staging. The cache does not need to hold the whole dataset.
-
 ## Capacity
 
-`storage.capacity` limits the total space used by the JuiceFS volume. It uses the
-same decimal sizes as `storage.cache_size`. Omitting it or setting it to `0` means
-no limit.
-
-`serve` stores the capacity when it initializes a volume and updates it on each
-writable start. Restart to change the limit. Removing the setting clears a stored
-limit. Lowering it below current usage does not delete files, but writes that
-need more space fail with a no-space error until usage falls below the limit.
-JuiceFS counts allocated file space, including files kept in trash, not the size
-of encrypted objects or metadata backups in S3. This is not a bucket quota.
-
-The current SMB adapter reports at most 1 TiB of free space. When the capacity
-leaves less free space than that, the share reports the capacity as its size.
-
-## Retention
-
-A writable server needs `trash_days` of at least 1 and
-
-```text
-2 * backup.interval < backup.trash_days * 24h
-```
-
-One metadata backup, with its retries, may take as long as `backup.interval`. If
-it has not finished by then, the writer stops. With `trash_days: 1` the interval
-must be shorter than 12 hours. Read-only serving does not check these bounds and
-accepts `trash_days: 0`. [Recovery](recovery.md#why-retention-matters) explains
-why the bound exists.
+`storage.capacity` is the size the share reports. Free space is the capacity
+minus the size of all files. Omitting it or setting it to `0` reports 1 TiB of
+free space above what the files use. It does not limit writes, and it is not a
+bucket quota: the bucket also holds replaced chunks for a while and the database
+copies. Time Machine uses the reported size to decide when to delete old
+backups. Restart to change it.
 
 ## Credentials
 
-Each S3 key, and the passphrase when encryption is on, takes exactly one source:
+Each S3 key takes exactly one source:
 
 ```yaml
 access_key: {value: "literal-access-key"}
@@ -145,7 +111,7 @@ source or to environment credentials. A session token is a fixed string and must
 stay valid while s3-smb runs.
 
 One trailing LF or CRLF is removed from a value. Other whitespace stays. S3 keys
-and the passphrase must be nonempty and contain no NUL byte. The SMB password is
+must be nonempty and contain no NUL byte. The SMB password is
 a plain string in the YAML and is not trimmed. An empty, null or missing SMB
 password fails to load.
 
@@ -157,8 +123,8 @@ literal values have the same limit. s3-smb never logs the output or the
 arguments. It is not a sandbox, so only use programs you trust.
 
 s3-smb warns, but still starts, when a secret or config file is not mode 0400 or
-0600 or has another owner, and when the state or cache directory is not mode 0700
-or has another owner. It never changes permissions, and creates new files private.
+0600 or has another owner, and when the data folder is not mode 0700 or has
+another owner. It never changes permissions, and creates new files private.
 
 ## S3 endpoint and TLS
 
@@ -172,29 +138,37 @@ only for a local test server. TLS files with an `http://` endpoint are an error.
 be at most 1,048,576 bytes. Changed files take effect after a restart. For
 virtual-host style, DNS and the certificate must cover `bucket.endpoint-host`.
 
-The bucket must exist. The provider must support list, get, put and delete, and
-`PutObject` with `If-None-Match: *`. s3-smb uses that header so that a key,
-identity or metadata backup is never overwritten. A provider that rejects it
-makes startup fail.
+The bucket must exist. s3-smb uses only PUT, GET (whole or ranged), DELETE and
+LIST. It needs no conditional writes, multipart uploads or versioning. A new
+s3-smb version may need a new bucket; there is no migration.
+
+## Backblaze B2
+
+B2 works through its S3 API. Set it up once:
+
+- Make a private bucket with Object Lock off.
+- Set its lifecycle rule to "Keep only the last version of the file". B2 keeps
+  every deleted or replaced object as a hidden version, and without this rule
+  deleted data stays billed forever.
+- Make an application key for this bucket only, with read and write access.
+- Use the bucket's S3 endpoint and region, for example
+  `endpoint: "https://s3.us-west-004.backblazeb2.com"` and
+  `region: us-west-004`.
 
 ## Encryption
 
 `smb.encryption` requires AES-GCM encryption between client and server by
 default. Set it to `false` to allow signed plaintext. Session keys come from the
-SMB login, not the S3 passphrase. This setting does not affect S3 encryption.
+SMB login.
 
-S3 encryption is on by default. `encryption.enabled: false` turns it off for data
-and metadata backups. Anyone who can read the bucket can then read your files,
-and s3-smb logs a warning at startup. In this mode s3-smb does not read the
-passphrase source. The setting is fixed when the dataset is created, and a
-different value stops startup. Encryption covers what is in S3. The local SQLite
-database, the cache and backup staging files are not encrypted.
+s3-smb does not encrypt what it stores in S3. Turn on "Encrypt backups" in Time
+Machine before the first backup: then every chunk in the bucket holds data that
+Time Machine encrypted. The database copies hold file names, sizes and times of
+the backup bundle, not file contents.
 
 ## Logging
 
 Logs go to stderr. `logging.format` is `text` or `json`, one JSON object per line.
 `--log-format text|json` on the command line overrides it and also applies to
-errors in the config file. Prompts go to the terminal (`/dev/tty`), never to the
-log. s3-smb removes registered secrets (S3 keys, the SMB password, the passphrase,
-the session token and the encryption key) from log lines. It never logs SQL
-arguments, xattr values or S3 request bodies.
+errors in the config file. s3-smb removes registered secrets (S3 keys, the SMB
+password and the session token) from log lines. It never logs S3 request bodies.

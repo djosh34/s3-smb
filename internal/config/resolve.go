@@ -11,16 +11,14 @@ import (
 	"github.com/djosh34/s3-smb/internal/logging"
 )
 
-// Resolved is the startup snapshot of credentials and TLS settings. A metadata
-// backup may hold older ones, so callers use these. It prints as a placeholder
-// in logs.
+// Resolved is the startup snapshot of credentials and TLS settings. It prints
+// as a placeholder in logs.
 type Resolved struct {
 	*Config
 	TLSConfig    *tls.Config
 	AccessKey    string
 	SecretKey    string
 	SessionToken string
-	Passphrase   string
 }
 
 func (*Resolved) String() string { return "[redacted resolved configuration]" }
@@ -40,7 +38,6 @@ func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, e
 	logging.RegisterSecret(c.SMB.Password, c.S3.SessionToken)
 	warnExisting(c.path, "configuration", logger)
 	warnExisting(c.Storage.StateDir, "storage.state_dir", logger)
-	warnExisting(c.Storage.CacheDir, "storage.cache_dir", logger)
 	r := &Resolved{Config: c, SessionToken: c.S3.SessionToken}
 	var err error
 	r.AccessKey, err = c.S3.AccessKey.resolve(ctx, c.secretDir(), "s3.access_key", logger)
@@ -50,14 +47,6 @@ func (c *Config) Resolve(ctx context.Context, logger *slog.Logger) (*Resolved, e
 	r.SecretKey, err = c.S3.SecretKey.resolve(ctx, c.secretDir(), "s3.secret_key", logger)
 	if err != nil {
 		return nil, err
-	}
-	if c.Encryption.Enabled {
-		r.Passphrase, err = c.Encryption.Passphrase.resolve(ctx, c.secretDir(), "encryption.passphrase", logger)
-		if err != nil {
-			return nil, err
-		}
-	} else {
-		logger.Warn("application encryption is disabled; S3 readers can read data and metadata")
 	}
 	r.TLSConfig, err = c.S3.TLS.load(logger)
 	if err != nil {

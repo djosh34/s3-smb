@@ -95,7 +95,7 @@ func TestServeAndShutdown(t *testing.T) {
 	srv.shutdownErr = failure
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
-			return errors.Join(srv.adapter.Close(ctx, handle), failure)
+			return errors.Join(srv.storage.Close(ctx, handle), failure)
 		}
 	})
 	cancel()
@@ -130,11 +130,11 @@ func TestShutdownClosesEveryOpen(t *testing.T) {
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
 			if closes.Add(1) == 1 {
-				return errors.Join(srv.adapter.Close(ctx, handle), failure)
+				return errors.Join(srv.storage.Close(ctx, handle), failure)
 			}
 			close(entered)
 			<-blocked
-			return srv.adapter.Close(ctx, handle)
+			return srv.storage.Close(ctx, handle)
 		}
 	})
 	ctx, cancel := context.WithCancel(t.Context())

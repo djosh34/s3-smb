@@ -74,12 +74,12 @@ func decoded[T any](value T, err error) (*T, error) {
 }
 
 // leaseRequest is the lease this CREATE asks for: a V2 lease on a regular
-// unnamed file. Only R, RH and RWH are granted; RW falls back to R and a
-// request without R asks for nothing, though it still joins a held lease of
-// the same key.
+// file. Only R, RH and RWH are granted; RW falls back to R and a request
+// without R asks for nothing, though it still joins a held lease of the same
+// key.
 func (contexts createContexts) leaseRequest(request RequestContext, create wire.CreateRequest, resolved smb.Resolved) state.Lease {
 	lease := contexts.lease
-	if lease == nil || lease.Version != 2 || create.OplockLevel != leaseOplockLevel || resolved.Attr.Kind != smb.KindFile || resolved.Object.Stream != "" {
+	if lease == nil || lease.Version != 2 || create.OplockLevel != leaseOplockLevel || resolved.Attr.Kind != smb.KindFile {
 		return state.Lease{}
 	}
 	leaseState := lease.State & (smb.LeaseRead | smb.LeaseWrite | smb.LeaseHandle)
@@ -112,7 +112,7 @@ func createLeaseTarget(create wire.CreateRequest, granted uint32) uint32 {
 // leaseBreak is a lease that must be broken before a CREATE can go on.
 // Client and key name the opener's own lease, which is never broken.
 type leaseBreak struct {
-	object smb.ObjectKey
+	object smb.Inode
 	client state.GUID
 	key    state.GUID
 	target uint32

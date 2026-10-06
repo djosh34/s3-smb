@@ -154,7 +154,7 @@ func TestChaosDurableReconnect(t *testing.T) {
 	if gate() {
 		rounds, window = 6, 30*time.Second
 	}
-	f := chaosFixture(t)
+	f := newFixture(t)
 	d := f.start()
 	proxy := f.networkProxy()
 	bands := make(map[string][]byte)
@@ -270,7 +270,7 @@ func TestChaosBadConnections(t *testing.T) {
 	if gate() {
 		count = 24
 	}
-	f := chaosFixture(t)
+	f := newFixture(t)
 	d := f.start()
 	share, disconnect := f.chaosShare(f.addr)
 	defer disconnect()

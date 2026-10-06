@@ -145,10 +145,6 @@ func TestNegotiateContextValidation(t *testing.T) {
 }
 
 func TestLinkedListValidation(t *testing.T) {
-	stream, err := EncodeFileStreamInformation(FileStreamInformation{Entries: []FileStreamEntry{{Name: "::$DATA"}, {Name: ":x:$DATA"}}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	both, err := EncodeDirectoryIDBothEntries([]DirectoryIDBothEntry{{Name: "one"}, {Name: "two"}})
 	if err != nil {
 		t.Fatal(err)
@@ -162,7 +158,6 @@ func TestLinkedListValidation(t *testing.T) {
 		data         []byte
 		lengthOffset int
 	}{
-		{func(b []byte) error { _, err := DecodeFileStreamInformation(b); return err }, stream, 4},
 		{func(b []byte) error { _, err := DecodeDirectoryIDBothEntries(b); return err }, both, 60},
 		{func(b []byte) error { _, err := DecodeDirectoryNamesEntries(b); return err }, names, 8},
 	} {

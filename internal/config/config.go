@@ -5,15 +5,16 @@ package config
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"syscall"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -21,13 +22,11 @@ import (
 // Config is the parsed file. Secrets are still sources here. It prints as a
 // placeholder in logs.
 type Config struct {
-	SMB        SMBConfig     `yaml:"smb"`
-	Storage    StorageConfig `yaml:"storage"`
-	S3         S3Config      `yaml:"s3"`
-	Logging    LoggingConfig `yaml:"logging"`
-	path       string
-	Encryption EncryptionConfig `yaml:"encryption"`
-	Backup     BackupConfig     `yaml:"backup"`
+	S3      S3Config      `yaml:"s3"`
+	SMB     SMBConfig     `yaml:"smb"`
+	Logging LoggingConfig `yaml:"logging"`
+	path    string
+	Storage StorageConfig `yaml:"storage"`
 }
 
 // SMBConfig is the smb section: the listener, the share and its account.
@@ -40,12 +39,11 @@ type SMBConfig struct {
 	Encryption bool   `yaml:"encryption"`
 }
 
-// StorageConfig is the storage section: local directories and sizes.
+// StorageConfig is the storage section: the local data folder and the
+// reported volume size.
 type StorageConfig struct {
-	CacheSize *ByteSize `yaml:"cache_size"`
-	StateDir  string    `yaml:"state_dir"`
-	CacheDir  string    `yaml:"cache_dir"`
-	Capacity  ByteSize  `yaml:"capacity"`
+	StateDir string   `yaml:"state_dir"`
+	Capacity ByteSize `yaml:"capacity"`
 }
 
 // S3Config is the s3 section: the bucket, the endpoint and its credentials.
@@ -65,18 +63,6 @@ type TLSConfig struct {
 	CAFile         string `yaml:"ca_file"`
 	ClientCertFile string `yaml:"client_cert_file"`
 	ClientKeyFile  string `yaml:"client_key_file"`
-}
-
-// EncryptionConfig is the encryption section for data and metadata in S3.
-type EncryptionConfig struct {
-	Passphrase SecretSource `yaml:"passphrase"`
-	Enabled    bool         `yaml:"enabled"`
-}
-
-// BackupConfig is the backup section for metadata backups and trash.
-type BackupConfig struct {
-	Interval  time.Duration `yaml:"interval"`
-	TrashDays int           `yaml:"trash_days"`
 }
 
 // LoggingConfig is the logging section.
@@ -149,24 +135,22 @@ func parse(data []byte, path string) (*Config, error) {
 	if err := dec.Decode(new(yaml.Node)); !errors.Is(err, io.EOF) {
 		return nil, errors.New("configuration must contain exactly one YAML document")
 	}
+	if field := unknownField(node.Content[0], reflect.TypeFor[Config](), ""); field != "" {
+		return nil, fmt.Errorf("unknown configuration field %s", field)
+	}
 	dataDir, err := xdg("XDG_DATA_HOME", ".local/share")
 	if err != nil {
 		return nil, err
 	}
-	cacheDir, err := xdg("XDG_CACHE_HOME", ".cache")
-	if err != nil {
-		return nil, err
-	}
 	c := &Config{
-		SMB:        SMBConfig{Listen: "127.0.0.1:445", Share: "TimeMachine", Encryption: true},
-		Storage:    StorageConfig{StateDir: filepath.Join(dataDir, "s3-smb"), CacheDir: filepath.Join(cacheDir, "s3-smb")},
-		Encryption: EncryptionConfig{Enabled: true}, Backup: BackupConfig{Interval: time.Hour, TrashDays: 14},
+		SMB:     SMBConfig{Listen: "127.0.0.1:445", Share: "TimeMachine", Encryption: true},
+		Storage: StorageConfig{StateDir: filepath.Join(dataDir, "s3-smb")},
 		Logging: LoggingConfig{Format: "text", Level: "info"}, path: path,
 	}
 	dec = yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(c); err != nil {
-		return nil, errors.New("invalid configuration YAML: unknown, duplicate or incorrectly typed field")
+		return nil, errors.New("invalid configuration YAML: duplicate or incorrectly typed field")
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -177,13 +161,10 @@ func parse(data []byte, path string) (*Config, error) {
 			*p = filepath.Join(dir, *p)
 		}
 	}
-	for _, p := range []*string{&c.Storage.StateDir, &c.Storage.CacheDir, &c.S3.TLS.CAFile, &c.S3.TLS.ClientCertFile, &c.S3.TLS.ClientKeyFile} {
+	for _, p := range []*string{&c.Storage.StateDir, &c.S3.TLS.CAFile, &c.S3.TLS.ClientCertFile, &c.S3.TLS.ClientKeyFile} {
 		absolute(p)
 	}
-	if err := validateCacheDirectory(c.Storage.CacheDir); err != nil {
-		return nil, err
-	}
-	for _, s := range []*SecretSource{&c.S3.AccessKey, &c.S3.SecretKey, &c.Encryption.Passphrase} {
+	for _, s := range []*SecretSource{&c.S3.AccessKey, &c.S3.SecretKey} {
 		if s.File != nil {
 			absolute(s.File)
 		}
@@ -206,11 +187,40 @@ func plainYAML(n *yaml.Node) bool {
 	return true
 }
 
-func validateCacheDirectory(path string) error {
-	if strings.ContainsAny(path, `:,*?[\`) {
-		return errors.New("storage.cache_dir must be one directory without path lists, glob characters or backslashes")
+// unknownField returns the dotted path of the first key in n that t has no
+// field for, or "" when every key is known. Only the key is named, never a
+// value, so no secret reaches the error.
+func unknownField(n *yaml.Node, t reflect.Type, path string) string {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
 	}
-	return nil
+	if n.Kind != yaml.MappingNode || t.Kind() != reflect.Struct {
+		return ""
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		key := n.Content[i].Value
+		name := key
+		if path != "" {
+			name = path + "." + key
+		}
+		field, ok := yamlField(t, key)
+		if !ok {
+			return name
+		}
+		if unknown := unknownField(n.Content[i+1], field.Type, name); unknown != "" {
+			return unknown
+		}
+	}
+	return ""
+}
+
+func yamlField(t reflect.Type, key string) (reflect.StructField, bool) {
+	for field := range t.Fields() {
+		if tag, _, _ := strings.Cut(field.Tag.Get("yaml"), ","); tag == key {
+			return field, true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 func (c *Config) validate() error {
@@ -222,17 +232,6 @@ func (c *Config) validate() error {
 	}
 	if err := c.S3.validate(); err != nil {
 		return err
-	}
-	if c.Encryption.Enabled {
-		if err := c.Encryption.Passphrase.validate("encryption.passphrase"); err != nil {
-			return err
-		}
-	}
-	if c.Backup.Interval <= 0 {
-		return errors.New("backup.interval must be a positive duration")
-	}
-	if c.Backup.TrashDays < 0 {
-		return errors.New("backup.trash_days must be nonnegative")
 	}
 	if c.Logging.Format != "text" && c.Logging.Format != "json" {
 		return errors.New("logging.format must be text or json")
@@ -267,10 +266,10 @@ func (c SMBConfig) validate() error {
 }
 
 func (c StorageConfig) validate() error {
-	if c.StateDir == "" || c.CacheDir == "" || strings.ContainsRune(c.StateDir+c.CacheDir, 0) {
-		return errors.New("storage directories must be nonempty paths without NUL")
+	if c.StateDir == "" || strings.ContainsRune(c.StateDir, 0) {
+		return errors.New("storage.state_dir must be a nonempty path without NUL")
 	}
-	return validateCacheDirectory(c.CacheDir)
+	return nil
 }
 
 func (c S3Config) validate() error {

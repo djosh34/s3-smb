@@ -59,8 +59,7 @@ func (server *Server) expire(ctx context.Context) {
 		server.scavengerCleanup.Go(func() {
 			if err := server.cleanup(ctx, []state.CloseAction{action}); err != nil {
 				server.options.Logger.Error("expire open", "persistent_id", action.FileID.Persistent,
-					"volatile_id", action.FileID.Volatile, "inode", action.Object.Inode,
-					"stream", action.Object.Stream, "error", err)
+					"volatile_id", action.FileID.Volatile, "inode", action.Object, "error", err)
 			}
 		})
 	}

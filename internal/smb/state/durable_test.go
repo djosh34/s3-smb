@@ -49,11 +49,10 @@ func TestDisconnectAndReconnectPreserveDurableState(t *testing.T) {
 	req.SharingIntent = state.RightWrite | state.RightDelete
 	req.GrantedAccess |= 0x10000
 	grant := durableGrant(req)
-	grant.DeleteOnClose, grant.DeleteName = true, deleteName("")
+	grant.DeleteOnClose, grant.DeleteName = true, deleteName()
 	open := commit(t, table, req, grant)
 	ordinary := commit(t, table, request(2), state.Grant{})
 	statusIs(t, table.SetDelete(open.ID, binding, grant.DeleteName, true), smb.StatusSuccess)
-	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Offset: 10, Length: 10, Exclusive: true}}, false), smb.StatusSuccess)
 	actions := table.Disconnect(binding.SessionID)
 	if len(actions) != 1 || actions[0].Handle != ordinary.Handle {
 		t.Fatalf("disconnect cleanup: %+v", actions)
@@ -71,7 +70,6 @@ func TestDisconnectAndReconnectPreserveDurableState(t *testing.T) {
 	}
 	_, status = table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusObjectNameNotFound)
-	statusIs(t, table.Lock(reattached.ID, reattached.Binding, []state.Range{{Offset: 10, Length: 10}}, true), smb.StatusSuccess)
 	if action := closeOpen(t, table, reattached); !action.Remove || action.Name != grant.DeleteName {
 		t.Fatalf("close after reconnect: %+v", action)
 	}
@@ -144,7 +142,6 @@ func TestExpiryClosesDetachedOpenAtItsDeadline(t *testing.T) {
 	grant := durableGrant(req)
 	grant.DurableTimeout = 5 * time.Minute
 	open := commit(t, table, req, grant)
-	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Length: 10, Exclusive: true}}, false), smb.StatusSuccess)
 	table.Disconnect(binding.SessionID)
 	*now = now.Add(time.Minute)
 	table.Disconnect(binding.SessionID)
@@ -161,8 +158,7 @@ func TestExpiryClosesDetachedOpenAtItsDeadline(t *testing.T) {
 	if actions := table.Expire(); len(actions) != 0 {
 		t.Fatalf("expired twice: %+v", actions)
 	}
-	peer := commit(t, table, request(1), state.Grant{})
-	statusIs(t, table.CheckIO(peer.ID, binding, 1, 1, true), smb.StatusSuccess)
+	commit(t, table, request(1), state.Grant{})
 }
 
 func TestDurabilityNeedsHandleLeaseAndCreateGUID(t *testing.T) {

@@ -30,24 +30,22 @@ const (
 	AdvertisedCapabilities        = CapabilityLeasing | CapabilityLargeMTU
 )
 
-// FileFsAttributeInformation and AAPL masks. Storage is case-sensitive,
-// preserves spelling and has named streams, which macOS uses for extended
-// attributes. ACLs, object IDs, sparse files, hard links, open-by-ID, quotas,
-// reparse points and server-side copy are not advertised.
+// FileFsAttributeInformation and AAPL masks. Storage is case-sensitive and
+// preserves spelling. Streams, ACLs, object IDs, sparse files, hard links,
+// open-by-ID, quotas, reparse points and server-side copy are not advertised.
 const (
 	FileCaseSensitiveSearch        uint32 = 0x00000001
 	FileCasePreservedNames         uint32 = 0x00000002
 	FileUnicodeOnDisk              uint32 = 0x00000004
-	FileNamedStreams               uint32 = 0x00040000
-	AdvertisedFilesystemAttributes        = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk | FileNamedStreams
+	AdvertisedFilesystemAttributes        = FileCaseSensitiveSearch | FileCasePreservedNames | FileUnicodeOnDisk
 	AAPLServerCapabilities         uint64 = 0
 	AAPLCaseSensitive              uint64 = 0x00000002
 	AAPLFullSync                   uint64 = 0x00000004
 	AAPLVolumeCapabilities         uint64 = AAPLCaseSensitive | AAPLFullSync
 )
 
-// Feature and resource limits. Durable v2 is only for regular unnamed files
-// holding an H lease. Requests above MaxDurableTimeout receive that maximum,
+// Feature and resource limits. Durable v2 is only for regular files holding an
+// H lease. Requests above MaxDurableTimeout receive that maximum,
 // reported in the reply. A zero request receives DefaultDurableTimeout.
 // Durable v1 and persistent contexts receive no grant, and classic oplock
 // requests are granted level none.
@@ -57,12 +55,10 @@ const (
 	LeaseWrite            uint32 = 0x04
 	DefaultDurableTimeout        = 120 * time.Second
 	MaxDurableTimeout            = 16 * time.Minute
-	MaxStreamSize         uint64 = 64 << 10
 	MaxReadSize           uint32 = 1 << 20
 	MaxWriteSize          uint32 = 1 << 20
 	MaxTransactSize       uint32 = 1 << 20
 	CreditUnit            uint32 = 64 << 10
 	TargetCredits         uint16 = 256
 	MinReconnectCredits   uint16 = 5
-	S3OutageWindow               = 5 * time.Minute
 )

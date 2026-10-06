@@ -1,11 +1,11 @@
-// Package smbtest owns the raw Go test client and the real JuiceFS storage
+// Package smbtest owns the raw Go test client and the real engine storage
 // that server tests run on. It must not emulate storage semantics or use fake
 // filesystems to prove data coherence. It can send exact invalid bytes without
 // weakening production codecs.
 //
 // NewClient rejects a nil connection and owns it on success. Login uses auth
 // and crypt against a running server. Raw I/O bypasses encoding and protection.
-// Each test closes its server before closing the JuiceFS runtime it owns.
+// Each test closes its server before closing the engine it owns.
 // Client constructors return every I/O and cleanup error. NewStorage and
 // NewS3Storage report setup and cleanup errors through testing.TB.
 package smbtest

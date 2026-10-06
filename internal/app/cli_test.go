@@ -6,10 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/logging"
@@ -80,43 +77,6 @@ func TestLogFormatAppliesToEarlyErrors(t *testing.T) {
 	}
 	if code, _, _ := runMain(t, "serve", "--log-format", "xml"); code != 2 {
 		t.Fatalf("invalid log format: code %d", code)
-	}
-}
-
-func TestConfirmation(t *testing.T) {
-	for _, input := range []string{"yes\n", " YES \n", "no\n", "y\n", "yes", "", "yes" + strings.Repeat(" ", 2048) + "\n"} {
-		var output bytes.Buffer
-		err := confirmOn(strings.NewReader(input), &output, "New dataset")
-		want := input == "yes\n" || input == " YES \n"
-		if (err == nil) != want {
-			t.Errorf("%q: confirmation success=%v want=%v", input, err == nil, want)
-		}
-		if !strings.Contains(output.String(), "Continue? [yes/no]: ") {
-			t.Fatal("missing prompt")
-		}
-	}
-}
-
-// The child runs without a controlling terminal and with "yes" on stdin, which
-// confirm must not read.
-func TestConfirmationNeedsControllingTerminal(t *testing.T) {
-	if os.Getenv("S3_SMB_APP_PROMPT_TEST") == "1" {
-		err := confirm("must not use redirected stdin")
-		if err == nil || !strings.Contains(err.Error(), "/dev/tty") {
-			t.Fatalf("confirmation without a terminal: %v", err)
-		}
-		return
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestConfirmationNeedsControllingTerminal$")
-	cmd.Env = append(os.Environ(), "S3_SMB_APP_PROMPT_TEST=1")
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
-	cmd.Stdin = strings.NewReader("yes\n")
-	if output, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("%v\n%s", err, output)
 	}
 }
 

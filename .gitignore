@@ -2,5 +2,4 @@
 *.test
 /test/**/artifacts/
 /test/**/state/
-/test/**/cache/
 /test/**/config.yaml

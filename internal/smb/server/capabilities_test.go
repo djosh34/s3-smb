@@ -117,14 +117,13 @@ func TestIOCTLRefused(t *testing.T) {
 }
 
 // Names are case sensitive, keep their case and store any Unicode, as the
-// filesystem attributes advertise. Named streams are advertised too and tested
-// in streams_test.go. Nothing else is advertised: no sparse files, hard links
-// or object IDs.
+// filesystem attributes advertise. Nothing else is advertised: no named
+// streams, sparse files, hard links or object IDs.
 func TestFilesystemNames(t *testing.T) {
 	client := newTestServer(t).connect(t)
 	root := openRoot(t, client).ID
 	data, status := queryFilesystem(t, client, root, wire.ClassFilesystemAttribute, 1024)
-	if attributes, err := wire.DecodeFilesystemAttributeInformation(data); status != smb.StatusSuccess || err != nil || attributes.Attributes != 0x40007 {
+	if attributes, err := wire.DecodeFilesystemAttributeInformation(data); status != smb.StatusSuccess || err != nil || attributes.Attributes != 0x7 {
 		t.Fatalf("filesystem attributes %+v, %#x, %v", attributes, status, err)
 	}
 	unicode := "資料-😀-café"

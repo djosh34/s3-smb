@@ -54,23 +54,21 @@ type heldResponse struct {
 // for concurrent use. Construct it with New and call Close to stop it, which
 // also ends delays and holds.
 type Proxy struct {
-	server       *http.Server
-	target       *url.URL
-	transport    *http.Transport
-	next         *heldResponse
-	active       *heldResponse
-	metadataSeen chan Event
-	outageSeen   chan Event
-	done         chan struct{}
-	served       chan error
-	closeErr     error
-	address      string
-	fault        Fault
-	chunkPuts    atomic.Int64
-	outageUntil  atomic.Int64
-	mu           sync.Mutex
-	closeOnce    sync.Once
-	metadataFail atomic.Bool
+	server      *http.Server
+	target      *url.URL
+	transport   *http.Transport
+	next        *heldResponse
+	active      *heldResponse
+	outageSeen  chan Event
+	done        chan struct{}
+	served      chan error
+	closeErr    error
+	address     string
+	fault       Fault
+	chunkPuts   atomic.Int64
+	outageUntil atomic.Int64
+	mu          sync.Mutex
+	closeOnce   sync.Once
 }
 
 // New starts a proxy for an http:// test backend.
@@ -89,8 +87,8 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	}
 	p := &Proxy{
 		target: target, transport: &http.Transport{Proxy: nil},
-		metadataSeen: make(chan Event, 32), outageSeen: make(chan Event, 32),
-		done: make(chan struct{}), served: make(chan error, 1),
+		outageSeen: make(chan Event, 32),
+		done:       make(chan struct{}), served: make(chan error, 1),
 		address: "http://" + listener.Addr().String(),
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
@@ -143,20 +141,10 @@ func (p *Proxy) SetFault(fault Fault) error {
 
 func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		chunk := strings.Contains(r.URL.Path, "/chunks/")
-		meta := strings.Contains(r.URL.Path, "/meta/")
 		if time.Now().UnixNano() < p.outageUntil.Load() {
-			if chunk {
+			if strings.Contains(r.URL.Path, "/chunks/") {
 				notify(p.outageSeen, r)
 			}
-			if meta {
-				notify(p.metadataSeen, r)
-			}
-			writeError(w, http.StatusServiceUnavailable, "")
-			return
-		}
-		if p.metadataFail.Load() && meta && (r.Method == http.MethodPut || r.Method == http.MethodGet) {
-			notify(p.metadataSeen, r)
 			writeError(w, http.StatusServiceUnavailable, "")
 			return
 		}
@@ -337,13 +325,6 @@ func (p *Proxy) RestoreS3() { p.outageUntil.Store(0) }
 // OutageSeen reports chunk requests rejected by an outage. Events are dropped
 // when its buffer is full.
 func (p *Proxy) OutageSeen() <-chan Event { return p.outageSeen }
-
-// SetMetadataFailure answers metadata GETs and PUTs with 503 while enabled.
-func (p *Proxy) SetMetadataFailure(enabled bool) { p.metadataFail.Store(enabled) }
-
-// MetadataFailureSeen reports metadata requests rejected by a metadata failure
-// or an outage. Events are dropped when its buffer is full.
-func (p *Proxy) MetadataFailureSeen() <-chan Event { return p.metadataSeen }
 
 // ChunkPuts returns the number of successful chunk PUT responses.
 func (p *Proxy) ChunkPuts() int64 { return p.chunkPuts.Load() }

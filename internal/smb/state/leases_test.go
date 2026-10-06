@@ -36,7 +36,7 @@ func TestCommitRefusesLeaseKeyOfAnotherFile(t *testing.T) {
 	reservation := reserve(t, table, request(2))
 	commit(t, table, req, leaseGrant(req, leaseR))
 	grant := leaseGrant(req, leaseR)
-	grant.Handle = &handle{key: smb.ObjectKey{Inode: 2}}
+	grant.Handle = &handle{key: 2}
 	_, status := table.Commit(reservation, grant)
 	statusIs(t, status, smb.StatusInvalidParameter)
 }

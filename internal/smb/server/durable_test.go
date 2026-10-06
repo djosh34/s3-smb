@@ -43,7 +43,7 @@ func createContext[T any](t *testing.T, encoder func(T) (wire.CreateContext, err
 
 func (s *testServer) exists(t *testing.T, name string) bool {
 	t.Helper()
-	resolved, err := s.adapter.Lookup(t.Context(), name)
+	resolved, err := s.storage.Lookup(t.Context(), name)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,6 @@ func TestDurableTimeouts(t *testing.T) {
 
 func TestDurableNeedsHandleLeaseOnRegularFile(t *testing.T) {
 	client := newTestServer(t).connect(t)
-	client.open(t, "base")
 	key := byte(0)
 	for _, test := range []struct {
 		modify func(*smbtest.CreateOptions)
@@ -77,7 +76,6 @@ func TestDurableNeedsHandleLeaseOnRegularFile(t *testing.T) {
 		{name: "no lease", modify: func(o *smbtest.CreateOptions) { o.Lease = nil }},
 		{name: "read lease", modify: func(o *smbtest.CreateOptions) { o.Lease.State = leaseR }},
 		{name: "directory", modify: func(o *smbtest.CreateOptions) { o.Request.Options = fileDirectoryFile }},
-		{name: "stream", modify: func(o *smbtest.CreateOptions) { o.Request.Name = "base:meta" }},
 		{name: "durable v1", modify: func(o *smbtest.CreateOptions) {
 			o.Durable = nil
 			o.Request.Contexts = []wire.CreateContext{{Name: "DHnQ", Data: make([]byte, 16)}}
@@ -153,7 +151,7 @@ func TestDuplicateCreateGUIDChangesNothing(t *testing.T) {
 
 // The Mac can come back on a new connection before the server notices that
 // the old one died. Its new session replaces the old one, which detaches the
-// durable open, and DH2C hands it back with its lease and byte ranges. The reply
+// durable open, and DH2C hands it back with its lease. The reply
 // has no DH2Q: macOS fails the reconnect when it gets one.
 func TestReconnectWhileOldConnectionLives(t *testing.T) {
 	srv := newTestServer(t)
@@ -161,10 +159,6 @@ func TestReconnectWhileOldConnectionLives(t *testing.T) {
 	options := durableCreate("file", 1)
 	options.Lease.Flags, options.Lease.ParentKey = leaseParentKeySet, [16]byte{8}
 	created := mustCreate(t, client, options)
-	lock := wire.LockRequest{ID: created.Reply.ID, Elements: []wire.LockElement{{Length: 10, Flags: 2}}}
-	if status := client.lock(t, lock); status != smb.StatusSuccess {
-		t.Fatalf("LOCK status %#x", status)
-	}
 	resumed := client.reconnect(t)
 	reopened := mustCreate(t, resumed, reclaimCreate(options, created))
 	id := reopened.Reply.ID
@@ -174,10 +168,6 @@ func TestReconnectWhileOldConnectionLives(t *testing.T) {
 	}
 	if _, status := resumed.read(t, wire.ReadRequest{ID: created.Reply.ID, Length: 1}); status != smb.StatusFileClosed {
 		t.Fatalf("READ on the old volatile ID: status %#x", status)
-	}
-	lock.ID, lock.Elements[0].Flags = id, 4
-	if status := resumed.lock(t, lock); status != smb.StatusSuccess {
-		t.Fatalf("unlock of the kept range: status %#x", status)
 	}
 }
 
@@ -235,19 +225,19 @@ func TestReconnectFollowsRename(t *testing.T) {
 			options := durableCreate("file", 1)
 			created := mustCreate(t, client, options)
 			client.drop(t)
-			source, err := srv.adapter.Lookup(t.Context(), "file")
+			source, err := srv.storage.Lookup(t.Context(), "file")
 			if err != nil {
 				t.Fatal(err)
 			}
-			destination, err := srv.adapter.Lookup(t.Context(), "renamed")
+			destination, err := srv.storage.Lookup(t.Context(), "renamed")
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err = srv.adapter.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: destination.Name, SourceInode: source.Object.Inode}); err != nil {
+			if err = srv.storage.Rename(t.Context(), smb.RenameRequest{Source: source.Name, Destination: destination.Name, SourceInode: source.Object}); err != nil {
 				t.Fatal(err)
 			}
 			if test.replace {
-				if _, err = srv.adapter.Create(t.Context(), source.Name, smb.KindFile); err != nil {
+				if _, err = srv.storage.Create(t.Context(), source.Name, smb.KindFile); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -286,7 +276,7 @@ func TestReconnectKeepsDeleteOnClose(t *testing.T) {
 }
 
 // A detached open lives exactly its durable timeout. Expiry closes it like a
-// CLOSE: its ranges go, acknowledged data stays, a pending delete happens.
+// CLOSE: acknowledged data stays, a pending delete happens.
 func TestDurableOpenExpiresAfterNetworkCut(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -301,9 +291,6 @@ func TestDurableOpenExpiresAfterNetworkCut(t *testing.T) {
 			data := []byte("acknowledged data")
 			if status := client.write(t, wire.WriteRequest{ID: created.Reply.ID, Data: data}); status != smb.StatusSuccess {
 				t.Fatalf("WRITE status %#x", status)
-			}
-			if status := client.lock(t, wire.LockRequest{ID: created.Reply.ID, Elements: []wire.LockElement{{Length: 17, Flags: 2}}}); status != smb.StatusSuccess {
-				t.Fatalf("LOCK status %#x", status)
 			}
 			client.drop(t)
 			srv.clock.advance(smb.DefaultDurableTimeout - time.Nanosecond)
@@ -325,9 +312,6 @@ func TestDurableOpenExpiresAfterNetworkCut(t *testing.T) {
 			}
 			peer := srv.connect(t)
 			id := peer.open(t, "file")
-			if status := peer.lock(t, wire.LockRequest{ID: id, Elements: []wire.LockElement{{Length: 17, Flags: 2}}}); status != smb.StatusSuccess {
-				t.Fatalf("LOCK after expiry: status %#x", status)
-			}
 			if got, status := peer.read(t, wire.ReadRequest{ID: id, Length: 64}); status != smb.StatusSuccess || !bytes.Equal(got, data) {
 				t.Fatalf("READ after expiry = %q, %#x", got, status)
 			}
@@ -387,8 +371,8 @@ func TestNoDurableHandleWhileHandleLeaseIsBroken(t *testing.T) {
 	}
 }
 
-// A network cut during READ, WRITE or FLUSH keeps acknowledged data, the
-// open's sharing and its byte ranges, and the Mac reclaims the open.
+// A network cut during READ, WRITE or FLUSH keeps acknowledged data and the
+// open's sharing, and the Mac reclaims the open.
 func TestDurableReconnectDuringIO(t *testing.T) {
 	for _, protection := range []struct {
 		name   string
@@ -418,19 +402,10 @@ func checkDurableReconnectDuringIO(t *testing.T, cipher uint16, command wire.Com
 	}
 	id := created.Reply.ID
 	acknowledged := []byte("acknowledged data")
-	exclusive := wire.LockRequest{ID: id, Elements: []wire.LockElement{{Length: 17, Flags: 2}}}
 	if status = client.write(t, wire.WriteRequest{ID: id, Data: acknowledged}); status != smb.StatusSuccess {
 		t.Fatalf("WRITE status %#x", status)
 	}
-	if status = client.lock(t, exclusive); status != smb.StatusSuccess {
-		t.Fatalf("LOCK status %#x", status)
-	}
 	peer := srv.connect(t)
-	peerOpen, status := peer.create(t, smbtest.CreateOptions{Request: wire.CreateRequest{Name: "band", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpen}})
-	if status != smb.StatusSuccess {
-		t.Fatalf("peer CREATE status %#x", status)
-	}
-	peerLock := wire.LockRequest{ID: peerOpen.Reply.ID, Elements: exclusive.Elements}
 
 	// The request blocks in storage until the cut cancels it.
 	entered, canceled := make(chan struct{}), make(chan struct{})
@@ -469,7 +444,7 @@ func checkDurableReconnectDuringIO(t *testing.T, cipher uint16, command wire.Com
 
 	// A peer CREATE could break H and close the detached open, so check its
 	// sharing in the open table without starting a break.
-	selected, err := srv.adapter.Lookup(t.Context(), "band")
+	selected, err := srv.storage.Lookup(t.Context(), "band")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -486,9 +461,6 @@ func checkDurableReconnectDuringIO(t *testing.T, cipher uint16, command wire.Com
 	if status != smb.StatusSharingViolation {
 		t.Fatalf("detached sharing = %#x", status)
 	}
-	if status = peer.lock(t, peerLock); status != smb.StatusLockNotGranted {
-		t.Fatalf("detached range = %#x", status)
-	}
 
 	srv.clock.advance(30 * time.Second)
 	resumed := client.reconnect(t)
@@ -503,9 +475,6 @@ func checkDurableReconnectDuringIO(t *testing.T, cipher uint16, command wire.Com
 	if data, status := resumed.read(t, wire.ReadRequest{ID: newID, Length: 17}); status != smb.StatusSuccess || !bytes.Equal(data, acknowledged) {
 		t.Fatalf("reconnected READ = %q, %#x", data, status)
 	}
-	if status := peer.lock(t, peerLock); status != smb.StatusLockNotGranted {
-		t.Fatalf("reattached range = %#x", status)
-	}
 	if status := resumed.write(t, wire.WriteRequest{ID: newID, Offset: 17, Data: []byte(" continued")}); status != smb.StatusSuccess {
 		t.Fatalf("WRITE status %#x", status)
 	}
@@ -515,12 +484,5 @@ func checkDurableReconnectDuringIO(t *testing.T, cipher uint16, command wire.Com
 	want := "acknowledged data continued"
 	if data, status := resumed.read(t, wire.ReadRequest{ID: newID, Length: 1024}); status != smb.StatusSuccess || string(data) != want {
 		t.Fatalf("READ after reconnect = %q, %#x", data, status)
-	}
-	unlock := wire.LockRequest{ID: newID, Elements: []wire.LockElement{{Length: 17, Flags: 4}}}
-	if status := resumed.lock(t, unlock); status != smb.StatusSuccess {
-		t.Fatalf("retained owner's unlock = %#x", status)
-	}
-	if status := peer.lock(t, peerLock); status != smb.StatusSuccess {
-		t.Fatalf("peer lock after unlock = %#x", status)
 	}
 }

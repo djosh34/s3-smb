@@ -286,14 +286,6 @@ func DecodeFlushResponse(m Message) (EmptyResponse, error) {
 // EncodeFlushResponse writes the empty body.
 func EncodeFlushResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
 
-// DecodeLockResponse checks the command and structure size.
-func DecodeLockResponse(m Message) (EmptyResponse, error) {
-	return EmptyResponse{}, decodeEmpty(m, Lock, true)
-}
-
-// EncodeLockResponse writes the empty body.
-func EncodeLockResponse(EmptyResponse) ([]byte, error) { return emptyBody(), nil }
-
 // DecodeSetInfoResponse checks the command and structure size.
 func DecodeSetInfoResponse(m Message) (EmptyResponse, error) {
 	return EmptyResponse{}, decodeEmpty(m, SetInfo, true)

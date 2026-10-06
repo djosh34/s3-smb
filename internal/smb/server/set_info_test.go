@@ -343,7 +343,7 @@ func setInfoBlockedInStorage(t *testing.T, srv *testServer, client *testClient, 
 	before := basicInfo(t, client, request.ID)
 	entered, release := make(chan struct{}, 1), make(chan struct{})
 	srv.faults.set(func(hooks *storageHooks) {
-		hooks.SetAttr = func(ctx context.Context, object smb.ObjectKey, change smb.AttrChange) error {
+		hooks.SetAttr = func(ctx context.Context, object smb.Inode, change smb.AttrChange) error {
 			entered <- struct{}{}
 			select {
 			case <-release:
@@ -353,7 +353,7 @@ func setInfoBlockedInStorage(t *testing.T, srv *testServer, client *testClient, 
 			if failure != nil {
 				return failure
 			}
-			return srv.adapter.SetAttr(ctx, object, change)
+			return srv.storage.SetAttr(ctx, object, change)
 		}
 	})
 	defer srv.faults.set(func(hooks *storageHooks) { hooks.SetAttr = nil })
@@ -376,7 +376,7 @@ func TestSetInfoAllocationHintRepliesAtOnce(t *testing.T) {
 	id := client.open(t, "file")
 	writeFile(t, client, id, []byte("buffered data"))
 	srv.faults.set(func(hooks *storageHooks) {
-		hooks.SetAttr = func(context.Context, smb.ObjectKey, smb.AttrChange) error {
+		hooks.SetAttr = func(context.Context, smb.Inode, smb.AttrChange) error {
 			t.Error("allocation hint reached storage")
 			return smb.ErrIO
 		}

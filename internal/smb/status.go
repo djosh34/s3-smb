@@ -34,8 +34,6 @@ const (
 	StatusObjectNameCollision              Status = 0xc0000035
 	StatusObjectPathNotFound               Status = 0xc000003a
 	StatusSharingViolation                 Status = 0xc0000043
-	StatusFileLockConflict                 Status = 0xc0000054
-	StatusLockNotGranted                   Status = 0xc0000055
 	StatusDeletePending                    Status = 0xc0000056
 	StatusLogonFailure                     Status = 0xc000006d
 	StatusDiskFull                         Status = 0xc000007f
@@ -53,22 +51,20 @@ const (
 	StatusFileClosed                       Status = 0xc0000128
 	StatusIOTimeout                        Status = 0xc00000b5
 	StatusIODeviceError                    Status = 0xc0000185
-	StatusInvalidLockRange                 Status = 0xc00001a1
 	StatusDuplicateObjectID                Status = 0xc000022a
 	StatusUserSessionDeleted               Status = 0xc0000203
 	StatusSMBNoPreauthIntegrityHashOverlap Status = 0xc05d0000
 	StatusNetworkNameDeleted               Status = 0xc00000c9
-	StatusRangeNotLocked                   Status = 0xc000007e
 	StatusFileTooLarge                     Status = 0xc0000904
 )
 
-// ErrorKind is a storage error category. The adapter translates errno at its
+// ErrorKind is a storage error category. Storage translates its errors at its
 // seam, where it can distinguish missing leaf from missing ancestor and an
 // identity mismatch from an I/O error. Wrap with fmt.Errorf and %w to retain
 // this category. Backend diagnostics must be logged separately or joined.
 type ErrorKind string
 
-// Adapter error kinds. ErrIdentityChanged means a namespace expectation failed;
+// Storage error kinds. ErrIdentityChanged means a namespace expectation failed;
 // the server may repeat lookup/check before replying, but must not mutate the
 // newly found object using checks made for the old one.
 const (

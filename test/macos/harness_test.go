@@ -43,7 +43,7 @@ type harness struct {
 	// The run's directories. The roots keep file access inside them.
 	work, evidence, transfer, bin, local, share, proof string
 	workDir, evidenceDir, transferDir, proofDir        *os.Root
-	interval, destination, launchdPlist, smbAddress    string
+	destination, launchdPlist, smbAddress              string
 	// smbLogLevel is the kernel SMB log level to restore, if it was changed.
 	smbLogLevel               string
 	proxy                     *netfault.Proxy
@@ -115,16 +115,18 @@ func TestTimeMachine(t *testing.T) {
 	t.Setenv("MINIO_ROOT_USER", minioUser)
 	t.Setenv("MINIO_ROOT_PASSWORD", minioPassword)
 	phase := os.Getenv("MAC_PHASE")
-	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "features": 130 * time.Minute, "recover": 70 * time.Minute, "scenario": 100 * time.Minute}
+	// A start with a new data folder may wait 10 minutes for the old
+	// server's stale lock.
+	budgets := map[string]time.Duration{"discover": 15 * time.Minute, "backup": 130 * time.Minute, "recover": 85 * time.Minute, "scenario": 140 * time.Minute}
 	budget, ok := budgets[phase]
 	if !ok {
-		t.Fatal("MAC_PHASE must be discover, backup, features, recover or scenario")
+		t.Fatal("MAC_PHASE must be discover, backup, recover or scenario")
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	h := &harness{t: t, ctx: ctx, interval: "5m", smbAddress: "127.0.0.1:1445"}
+	h := &harness{t: t, ctx: ctx, smbAddress: "127.0.0.1:1445"}
 	for name, target := range map[string]*string{"MAC_WORK": &h.work, "MAC_ARTIFACTS": &h.evidence, "MAC_TRANSFER": &h.transfer} {
 		*target = os.Getenv(name)
 		if !filepath.IsAbs(*target) || filepath.Clean(*target) == "/" {
@@ -154,7 +156,7 @@ func TestTimeMachine(t *testing.T) {
 		h.discover()
 	case "recover":
 		outcome = h.recoverStore()
-	case "backup", "features":
+	case "backup":
 		outcome = h.baseline()
 	case "scenario":
 		outcome = h.scenario(os.Getenv("MAC_SCENARIO"))

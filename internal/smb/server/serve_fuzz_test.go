@@ -13,7 +13,6 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
-	"github.com/djosh34/s3-smb/internal/smbfs"
 )
 
 // FuzzServerStream sends the server arbitrary bytes as a client would, then
@@ -23,8 +22,8 @@ func FuzzServerStream(f *testing.F) {
 	for _, seed := range streamSeeds(f) {
 		f.Add(seed.stream)
 	}
-	adapter := smbtest.NewStorage(f)
-	root, err := adapter.Lookup(f.Context(), "")
+	storage := smbtest.NewStorage(f)
+	root, err := storage.Lookup(f.Context(), "")
 	if err != nil {
 		f.Fatal(err)
 	}
@@ -34,21 +33,21 @@ func FuzzServerStream(f *testing.F) {
 		}
 		// Cleanups run last first: the server shuts down before the reset.
 		t.Cleanup(func() {
-			if err := resetStorage(context.WithoutCancel(t.Context()), adapter, root.Attr.Inode); err != nil {
+			if err := resetStorage(context.WithoutCancel(t.Context()), storage, root.Attr.Inode); err != nil {
 				t.Error(err)
 			}
 		})
-		runStream(t, newTestServerOn(t, adapter), stream)
+		runStream(t, newTestServerOn(t, storage), stream)
 	})
 }
 
 // The seeds must reach the server's handlers, or fuzzing tests nothing past
 // the frame decoder.
 func TestServerStreamSeeds(t *testing.T) {
-	adapter := smbtest.NewStorage(t)
+	storage := smbtest.NewStorage(t)
 	for _, seed := range streamSeeds(t) {
 		var statuses []smb.Status
-		for _, reply := range runStream(t, newTestServerOn(t, adapter), seed.stream) {
+		for _, reply := range runStream(t, newTestServerOn(t, storage), seed.stream) {
 			statuses = append(statuses, reply.Header.Status)
 		}
 		if !slices.Equal(statuses, seed.want) {
@@ -133,20 +132,20 @@ func runStream(t *testing.T, srv *testServer, stream []byte) []wire.Message {
 }
 
 // resetStorage removes everything below parent, so each fuzz input starts
-// from the same storage.
-func resetStorage(ctx context.Context, adapter *smbfs.FS, parent smb.Inode) error {
+// from an empty share.
+func resetStorage(ctx context.Context, storage smb.Storage, parent smb.Inode) error {
 	for {
-		entries, err := adapter.ReadDir(ctx, parent, 0, 64)
+		entries, err := storage.ReadDir(ctx, parent, 0, 64)
 		if err != nil || len(entries) == 0 {
 			return err
 		}
 		for _, entry := range entries {
 			if entry.Attr.Kind == smb.KindDirectory {
-				if err := resetStorage(ctx, adapter, entry.Attr.Inode); err != nil {
+				if err := resetStorage(ctx, storage, entry.Attr.Inode); err != nil {
 					return err
 				}
 			}
-			if err := adapter.Remove(ctx, smb.Name{Parent: parent, Base: entry.Name}, entry.Attr.Inode); err != nil {
+			if err := storage.Remove(ctx, smb.Name{Parent: parent, Base: entry.Name}, entry.Attr.Inode); err != nil {
 				return fmt.Errorf("remove %q: %w", entry.Name, err)
 			}
 		}

@@ -31,7 +31,6 @@ const (
 	ClassFileAll          FileInfoClass = 18
 	ClassFileAllocation   FileInfoClass = 19
 	ClassFileEndOfFile    FileInfoClass = 20
-	ClassFileStream       FileInfoClass = 22
 	ClassFileNetworkOpen  FileInfoClass = 34
 	ClassFileAttributeTag FileInfoClass = 35
 	ClassFileID           FileInfoClass = 59
@@ -165,17 +164,6 @@ type FileAttributeTagInformation struct {
 	Tag        uint32
 }
 
-// FileStreamEntry contains a wire stream name, including the :$DATA suffix.
-// The unnamed stream is ::$DATA. The adapter supplies canonical names without it.
-type FileStreamEntry struct {
-	Name           string
-	Size           uint64
-	AllocationSize uint64
-}
-
-// FileStreamInformation is an offset-linked stream list.
-type FileStreamInformation struct{ Entries []FileStreamEntry }
-
 // FileIDInformation reports a stable volume serial and 128-bit storage identity.
 type FileIDInformation struct {
 	VolumeSerial uint64
@@ -193,7 +181,7 @@ type FileEndOfFileInformation struct{ EndOfFile uint64 }
 type FileAllocationInformation struct{ AllocationSize uint64 }
 
 // FileRenameInformation carries SET_INFO's destination name. The handler rejects
-// unsupported RootDirectory values. The adapter refuses named-stream rename.
+// unsupported RootDirectory values.
 type FileRenameInformation struct {
 	Name            string
 	RootDirectory   uint64

@@ -120,20 +120,20 @@ func (e *Engine) load(ctx context.Context, st *inode) (row, error) {
 
 type handle struct {
 	st     *inode
-	key    smb.ObjectKey
+	key    smb.Inode
 	access smb.Access
 	kind   smb.Kind
 	closed bool
 }
 
-func (h *handle) Key() smb.ObjectKey { return h.key }
+func (h *handle) Key() smb.Inode { return h.key }
 
 func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*handle, func(), error) {
 	h, ok := ref.(*handle)
 	if !ok || h == nil {
 		return nil, nil, smb.ErrInvalidHandle
 	}
-	st, release := e.acquire(h.key.Inode)
+	st, release := e.acquire(h.key)
 	if st != h.st || h.closed {
 		release()
 		return nil, nil, smb.ErrInvalidHandle
@@ -154,12 +154,9 @@ func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*han
 }
 
 // Open returns a handle on an existing file or directory.
-func (e *Engine) Open(ctx context.Context, key smb.ObjectKey, access smb.Access) (smb.Handle, error) {
-	if access&^(smb.AccessRead|smb.AccessWrite|smb.AccessAppend) != 0 || key.Inode == 0 {
+func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (smb.Handle, error) {
+	if access&^(smb.AccessRead|smb.AccessWrite|smb.AccessAppend) != 0 || ino == 0 {
 		return nil, smb.ErrInvalidParameter
-	}
-	if key.Stream != "" {
-		return nil, smb.ErrNotSupported
 	}
 	if e.readOnly && access&(smb.AccessWrite|smb.AccessAppend) != 0 {
 		return nil, smb.ErrReadOnly
@@ -167,7 +164,7 @@ func (e *Engine) Open(ctx context.Context, key smb.ObjectKey, access smb.Access)
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	st, release := e.acquire(key.Inode)
+	st, release := e.acquire(ino)
 	defer release()
 	r, err := e.load(ctx, st)
 	if err != nil {
@@ -178,7 +175,7 @@ func (e *Engine) Open(ctx context.Context, key smb.ObjectKey, access smb.Access)
 		kind = smb.KindDirectory
 	}
 	st.refs++
-	return &handle{st: st, key: key, access: access, kind: kind}, nil
+	return &handle{st: st, key: ino, access: access, kind: kind}, nil
 }
 
 // Close flushes, then releases the handle even when ctx is canceled or the
@@ -695,13 +692,10 @@ func (e *Engine) truncate(ctx context.Context, st *inode, size uint64) error {
 }
 
 // GetAttr returns live attributes without waiting for the file's I/O.
-func (e *Engine) GetAttr(ctx context.Context, key smb.ObjectKey) (smb.Attr, error) {
-	if key.Stream != "" {
-		return smb.Attr{}, smb.ErrNotSupported
-	}
-	st, unpin := e.pin(key.Inode)
+func (e *Engine) GetAttr(ctx context.Context, ino smb.Inode) (smb.Attr, error) {
+	st, unpin := e.pin(ino)
 	defer unpin()
-	r, err := fileRow(ctx, e.db, key.Inode)
+	r, err := fileRow(ctx, e.db, ino)
 	if err != nil {
 		return smb.Attr{}, err
 	}
@@ -711,12 +705,9 @@ func (e *Engine) GetAttr(ctx context.Context, key smb.ObjectKey) (smb.Attr, erro
 // SetAttr applies a size change as Truncate does, then times and attributes
 // in one commit. Explicit times also replace the live write times, so a
 // later FLUSH keeps them.
-func (e *Engine) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.AttrChange) error {
+func (e *Engine) SetAttr(ctx context.Context, ino smb.Inode, change smb.AttrChange) error {
 	if e.readOnly {
 		return smb.ErrReadOnly
-	}
-	if key.Stream != "" {
-		return smb.ErrNotSupported
 	}
 	if change.Size != nil && change.SizeCap != nil {
 		return smb.ErrInvalidParameter
@@ -724,7 +715,7 @@ func (e *Engine) SetAttr(ctx context.Context, key smb.ObjectKey, change smb.Attr
 	if change.Size != nil && *change.Size >= maxFileSize || change.SizeCap != nil && *change.SizeCap >= maxFileSize {
 		return smb.ErrFileTooLarge
 	}
-	st, release := e.acquire(key.Inode)
+	st, release := e.acquire(ino)
 	defer release()
 	r, err := e.load(ctx, st)
 	if err != nil {

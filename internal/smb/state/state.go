@@ -1,5 +1,5 @@
-// Package state owns opens, sharing, deletion, ranges and leases in memory.
-// It must not call storage, encode packets or depend on connections or JuiceFS.
+// Package state owns opens, sharing, deletion and leases in memory.
+// It must not call storage, encode packets or depend on connections.
 // Time is injected. Methods are atomic and safe for concurrent callers; storage
 // I/O and break delivery occur after they return, never under a table lock.
 //
@@ -45,17 +45,15 @@ const (
 	RightDelete
 )
 
-// ShareMode uses the same bits as Rights. When both same-stream opens have
+// ShareMode uses the same bits as Rights. When both opens of an inode have
 // sharing intent, new rights must be allowed by the existing share mode and
-// existing rights by the new share mode. Metadata-only opens do not participate,
-// including in base-file delete checks against named streams.
+// existing rights by the new share mode. Metadata-only opens do not participate.
 // Check and reservation occur before any create disposition can destroy bytes.
-// Base-file delete access also checks every named stream with sharing intent.
 type ShareMode Rights
 
 // Open is a snapshot, not mutable table storage. ID.Persistent indexes it;
 // Nonzero CreateGUID is also indexed by (client, user, share) for duplicate CREATE.
-// Its handle, ranges, deletion intent and lease survive detachment. Explicit
+// Its handle, deletion intent and lease survive detachment. Explicit
 // close, expiry and shutdown release them. CloseSession and CloseTree also close
 // durable opens on logoff and tree disconnect. A transport drop does not.
 // GrantedAccess retains the full expanded SMB mask through reconnect.
@@ -70,8 +68,8 @@ type Open struct {
 	Handle          smb.Handle
 	User            string
 	Share           string
-	Object          smb.ObjectKey
 	Directory       DirectoryCursor
+	Object          smb.Inode
 	ID              FileID
 	Binding         Binding
 	ClientGUID      GUID
@@ -98,19 +96,6 @@ type DirectoryCursor struct {
 	Started    bool
 }
 
-// Range describes a non-blocking byte lock owned by one persistent FileId.
-// A nonempty range's last byte is Offset+Length-1, checked before reservation.
-// The last byte may be 2^64-1; a larger value returns INVALID_LOCK_RANGE.
-// Zero-length ranges follow MS-SMB2 zero-byte rules, not arithmetic overlap.
-// Unlock requires the exact owner, offset and length, not just overlap. Closing
-// an open releases every range it owns, including when durability expires.
-type Range struct {
-	Owner     uint64
-	Offset    uint64
-	Length    uint64
-	Exclusive bool
-}
-
 // Lease is the one V2 lease on a regular file. All opens of the file with the
 // same client GUID and lease key share it; other opens of the file get none.
 // While Breaking, the holder keeps State until it acknowledges BreakTo or
@@ -127,25 +112,21 @@ type Lease struct {
 	Breaking   bool
 }
 
-// ObjectRecord describes the per-(inode, stream) record. Opens, locks and leases
-// never cross stream keys. DeletePending rejects new opens. DeleteName is the
-// name selected for deletion, not the name of the last closing handle. For a
-// renamed base, the close path resolves PathOf and verifies the inode again.
-// DeletePending remains set until CompleteDelete reports the cleanup outcome.
-// A base deletion waits for all opens on that inode, including named streams;
-// a stream deletion waits only for that stream and never removes the base.
-// Records are removed only after opens, reservations, locks and the lease are
-// gone.
+// ObjectRecord describes the per-inode record. DeletePending rejects new
+// opens. DeleteName is the name selected for deletion, not the name of the last
+// closing handle. For a renamed file, the close path resolves PathOf and
+// verifies the inode again. DeletePending remains set until CompleteDelete
+// reports the cleanup outcome. A deletion waits for all opens on that inode.
+// Records are removed only after opens, reservations and the lease are gone.
 type ObjectRecord struct {
 	Opens         []uint64
-	Locks         []Range
-	Key           smb.ObjectKey
 	DeleteName    smb.Name
+	Key           smb.Inode
 	DeletePending bool
 }
 
 // OpenRequest contains everything needed for an atomic sharing reservation.
-// Object.Inode must be nonzero. For a new file the server holds its parent guard,
+// Object must be nonzero. For a new file the server holds its parent guard,
 // creates an identity, then reserves it before releasing that guard. For an
 // existing file Reserve precedes truncate, supersede or any other mutation.
 // GrantedAccess includes append and metadata rights, not just SharingIntent.
@@ -154,7 +135,7 @@ type ObjectRecord struct {
 type OpenRequest struct {
 	User          string
 	Share         string
-	Object        smb.ObjectKey
+	Object        smb.Inode
 	Binding       Binding
 	ClientGUID    GUID
 	CreateGUID    GUID
@@ -165,13 +146,13 @@ type OpenRequest struct {
 
 // Reservation is an opaque token. It participates in share checks until Commit
 // or Abort, exactly once. It prevents another open from slipping between the
-// share check and adapter Open or Truncate. No table mutex is held by the caller.
+// share check and storage Open or Truncate. No table mutex is held by the caller.
 type Reservation uint64
 
 // Grant supplies storage and CREATE results for Commit. Lease is the lease the
 // client asked for, with State R, RH or RWH, or zero to join only an existing
-// lease of the same key. The caller asks for no lease on directories and named
-// streams. DurableTimeout is the timeout to grant, at most MaxDurableTimeout;
+// lease of the same key. The caller asks for no lease on directories.
+// DurableTimeout is the timeout to grant, at most MaxDurableTimeout;
 // Commit grants it only to an open with a nonzero CreateGUID that keeps H.
 type Grant struct {
 	Handle         smb.Handle
@@ -185,11 +166,9 @@ type Grant struct {
 
 // CloseAction transfers cleanup to the server. FileID names the removed open;
 // active references use its persistent half across reconnects. The table has
-// already removed the open and ranges. The server closes Handle and, if Remove
-// is true, calls identity-checked Remove after resolving the current name under
-// a parent guard.
-// Object and Name identify the deletion, which may be a pending base deletion
-// triggered by the last stream close, not Handle.Key().
+// already removed the open. The server closes Handle and, if Remove is true,
+// calls identity-checked Remove after resolving the current name under a parent
+// guard. Object and Name identify the deletion.
 // Cleanup failures propagate, but cannot restore a half-closed open. The server
 // retains delete-pending until CompleteDelete on every removal outcome, and
 // drains active request references before closing Handle without a parent guard.
@@ -197,15 +176,15 @@ type Grant struct {
 // request.
 type CloseAction struct {
 	Handle smb.Handle
-	Object smb.ObjectKey
 	Name   smb.Name
+	Object smb.Inode
 	FileID FileID
 	Remove bool
 }
 
 // ReconnectRequest must match every identity, including user, share, client,
 // CreateGUID and lease key. The detached deadline must be strictly in the future.
-// Reconnect changes only binding and volatile ID, never rights, handles or locks.
+// Reconnect changes only binding and volatile ID, never rights, handles or leases.
 type ReconnectRequest struct {
 	User       string
 	Share      string
@@ -230,17 +209,17 @@ type Break struct {
 
 // Table owns all indexes. Returned structs and slices are copies. Failed methods
 // leave state unchanged. Status-returning methods return StatusSuccess on success,
-// otherwise a command-specific status, such as SHARING_VIOLATION, DELETE_PENDING,
-// LOCK_NOT_GRANTED, FILE_LOCK_CONFLICT, RANGE_NOT_LOCKED or DUPLICATE_OBJECTID.
-// Detached durable opens still participate in every sharing and lock check.
+// otherwise a command-specific status, such as SHARING_VIOLATION, DELETE_PENDING
+// or DUPLICATE_OBJECTID. Detached durable opens still participate in every
+// sharing check.
 // The zero value is not usable; callers must use New.
 type Table struct {
 	now             func() time.Time
 	opens           map[uint64]*openEntry
 	reservations    map[Reservation]OpenRequest
-	objects         map[smb.ObjectKey]*objectEntry
+	objects         map[smb.Inode]*objectEntry
 	creates         map[createIdentity]createEntry
-	leaseObjects    map[leaseIdentity]smb.ObjectKey
+	leaseObjects    map[leaseIdentity]smb.Inode
 	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64

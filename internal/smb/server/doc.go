@@ -1,6 +1,6 @@
 // Package server owns transport, sessions, trees, credits, compounds, async
 // requests and SMB handlers. It joins wire, auth, crypt, state and smb.Storage.
-// It must not reach into JuiceFS, reparse stream names or keep a second lock table.
+// It must not reach into storage internals or parse storage paths.
 //
 // New validates the supplied modules and identity. The server handles negotiation,
 // NTLMv2 sessions, disk-share trees, ECHO, signing and GCM encryption. File
@@ -62,7 +62,7 @@ type Options struct {
 // Shutdown stops the timer, stops accepting and drains requests and expiry
 // cleanup. It closes every attached and detached open, applies pending deletion,
 // and returns cleanup errors.
-// The app closes JuiceFS only after Shutdown returns. Repeated calls are safe.
+// The app shuts storage down only after Shutdown returns. Repeated calls are safe.
 type Server struct {
 	shutdownErr          error
 	connectionCleanupErr error

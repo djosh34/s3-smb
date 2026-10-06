@@ -323,43 +323,6 @@ func EncodeWriteRequest(v WriteRequest) ([]byte, error) {
 	return b.finish()
 }
 
-// DecodeLockRequest validates fixed fields and variable buffers.
-func DecodeLockRequest(m Message) (LockRequest, error) {
-	r := body(m, Lock, false, 48, 48)
-	var v LockRequest
-	count := r.u16()
-	v.Sequence = r.u32()
-	v.ID = r.id()
-	if r.err != nil || count == 0 || int(count) > (len(m.Body)-24)/24 {
-		return v, errMalformed
-	}
-	v.Elements = make([]LockElement, count)
-	for i := range v.Elements {
-		v.Elements[i] = LockElement{Offset: r.u64(), Length: r.u64(), Flags: r.u32()}
-		r.skip(4)
-	}
-	return v, r.err
-}
-
-// EncodeLockRequest writes the command body without an SMB header.
-func EncodeLockRequest(v LockRequest) ([]byte, error) {
-	if len(v.Elements) == 0 {
-		return nil, errMalformed
-	}
-	b := builder{}
-	b.u16(48)
-	b.length16(len(v.Elements))
-	b.u32(v.Sequence)
-	b.id(v.ID)
-	for _, e := range v.Elements {
-		b.u64(e.Offset)
-		b.u64(e.Length)
-		b.u32(e.Flags)
-		b.u32(0)
-	}
-	return b.finish()
-}
-
 // DecodeQueryDirectoryRequest validates fixed fields and variable buffers.
 func DecodeQueryDirectoryRequest(m Message) (QueryDirectoryRequest, error) {
 	r := body(m, QueryDirectory, false, 33, 32)

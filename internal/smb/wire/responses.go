@@ -97,6 +97,6 @@ type LeaseBreakResponse struct {
 	Flags    uint32
 }
 
-// EmptyResponse represents ECHO, LOGOFF, TREE_DISCONNECT, FLUSH, LOCK and SET_INFO success.
+// EmptyResponse represents ECHO, LOGOFF, TREE_DISCONNECT, FLUSH and SET_INFO success.
 // Their structure sizes are command-specific. STATUS_PENDING uses ErrorResponse.
 type EmptyResponse struct{}

@@ -5,10 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
-	"encoding/json"
-	"errors"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,10 +17,11 @@ import (
 )
 
 // TestSMBSparseEOFAndOverwriteObjectGrowth checks that growing a file with SET
-// EOF stores nothing in S3, and that small writes and overwrites at a high
-// offset store about one block each. It does not use FSCTL_SET_SPARSE.
+// EOF stores nothing in S3, and that each FLUSH after a small write or
+// overwrite at a high offset uploads only the one chunk it touched. It does
+// not use FSCTL_SET_SPARSE.
 func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
-	f := newFixture(t, true)
+	f := newFixture(t)
 	proxy := f.newFaultProxy()
 	f.start()
 	share, disconnect := f.share()
@@ -31,8 +29,6 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	share = share.WithContext(ctx)
-	// A write may store a whole block plus encryption framing.
-	blockEnvelope := blockSize(t, f)*1024 + 4096
 
 	file, err := share.OpenFile("large-sparse.bin", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
@@ -63,45 +59,30 @@ func TestSMBSparseEOFAndOverwriteObjectGrowth(t *testing.T) {
 	readAt(t, file, logicalSize/2, zeros)
 	readAt(t, file, logicalSize-64, zeros)
 
-	// Cross a 4 KiB boundary, but stay within one block.
+	// Cross a 4 KiB boundary, but stay within one chunk.
 	const offset = logicalSize - (1 << 20) + 4093
 	payload := bytes.Repeat([]byte("sparse-data-"), 6)
 	writeAt(t, file, offset, payload)
 	written := chunkUsage(t, f, proxy)
-	if written.puts <= grown.puts || written.chunkBytes <= grown.chunkBytes || written.chunkBytes-grown.chunkBytes > blockEnvelope {
-		t.Fatalf("one small write: before %+v, after %+v, bound %d", grown, written, blockEnvelope)
+	if written.puts != grown.puts+1 || written.chunkBytes <= grown.chunkBytes || written.chunkBytes-grown.chunkBytes > chunkSize {
+		t.Fatalf("one small write: before %+v, after %+v, bound one chunk of %d bytes", grown, written, chunkSize)
 	}
 	readAt(t, file, offset-32, append(append(make([]byte, 32), payload...), make([]byte, 32)...))
 	readAt(t, file, 0, zeros)
 	readAt(t, file, logicalSize-64, zeros)
 
-	for i := range 8 {
+	const overwrites = 8
+	for i := range overwrites {
 		payload[0] = byte('A' + i)
 		writeAt(t, file, offset, payload)
 		readAt(t, file, offset, payload)
 	}
+	// Replaced chunks stay in the bucket until no kept copy needs them.
 	after := chunkUsage(t, f, proxy)
-	if delta := after.puts - written.puts; delta <= 0 || after.chunkBytes-written.chunkBytes > delta*blockEnvelope {
-		t.Fatalf("overwrites stored more than one block per PUT: before %+v, after %+v", written, after)
+	if after.puts != written.puts+overwrites || after.chunkBytes-written.chunkBytes > overwrites*chunkSize {
+		t.Fatalf("each overwrite must upload one chunk: before %+v, after %+v", written, after)
 	}
 	readAt(t, file, offset-32, append(append(make([]byte, 32), payload...), make([]byte, 32)...))
-}
-
-// blockSize returns the volume block size in KiB.
-func blockSize(t *testing.T, f *fixture) int64 {
-	t.Helper()
-	identity, err := f.store.GetObject(t.Context(), &s3.GetObjectInput{Bucket: aws.String(f.bucket), Key: aws.String("s3-smb/format.json")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var format struct{ BlockSize int64 }
-	if err = errors.Join(json.NewDecoder(identity.Body).Decode(&format), identity.Body.Close()); err != nil {
-		t.Fatal(err)
-	}
-	if format.BlockSize <= 0 {
-		t.Fatalf("block size %d", format.BlockSize)
-	}
-	return format.BlockSize
 }
 
 type usage struct{ chunkBytes, puts int64 }
@@ -110,16 +91,14 @@ type usage struct{ chunkBytes, puts int64 }
 func chunkUsage(t *testing.T, f *fixture, proxy *s3fault.Proxy) usage {
 	t.Helper()
 	var result usage
-	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
+	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket), Prefix: aws.String("chunks/")})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(t.Context())
 		if err != nil {
 			t.Fatal(err)
 		}
 		for _, object := range page.Contents {
-			if strings.Contains(aws.ToString(object.Key), "/chunks/") {
-				result.chunkBytes += aws.ToInt64(object.Size)
-			}
+			result.chunkBytes += aws.ToInt64(object.Size)
 		}
 	}
 	result.puts = proxy.ChunkPuts()

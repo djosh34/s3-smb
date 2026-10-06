@@ -16,11 +16,11 @@ type stateLock struct{ file *os.File }
 
 func lockState(dir string) (*stateLock, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create state directory: %w", err)
+		return nil, fmt.Errorf("create the data folder: %w", err)
 	}
 	fd, err := syscall.Open(filepath.Join(dir, "state.lock"), syscall.O_CREAT|syscall.O_RDWR|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open state lock: %w", err)
+		return nil, fmt.Errorf("open the folder lock: %w", err)
 	}
 	f := os.NewFile(uintptr(fd), "state.lock")
 	info, err := f.Stat()
@@ -28,11 +28,11 @@ func lockState(dir string) (*stateLock, error) {
 		return nil, errors.Join(err, f.Close())
 	}
 	if !info.Mode().IsRegular() {
-		return nil, errors.Join(errors.New("state lock is not a regular file"), f.Close())
+		return nil, errors.Join(errors.New("the folder lock is not a regular file"), f.Close())
 	}
-	warnPermissions(info, "state lock", 0o600)
+	warnPermissions(info, "folder lock", 0o600)
 	if err = syscall.Flock(fd, syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		return nil, errors.Join(errors.New("local state is locked by another process (this lock does not protect other hosts)"), f.Close())
+		return nil, errors.Join(errors.New("the data folder is locked by another process"), f.Close())
 	}
 	return &stateLock{f}, nil
 }

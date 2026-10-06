@@ -126,7 +126,7 @@ type CreateContext struct {
 	Data []byte
 }
 
-// CreateRequest leaves path and stream interpretation to Storage.Lookup.
+// CreateRequest leaves path interpretation to Storage.Lookup.
 type CreateRequest struct {
 	Name               string
 	Contexts           []CreateContext
@@ -172,20 +172,6 @@ type WriteRequest struct {
 	Channel        uint32
 	RemainingBytes uint32
 	Flags          uint32
-}
-
-// LockElement is one validated range with raw SMB lock flags.
-type LockElement struct {
-	Offset uint64
-	Length uint64
-	Flags  uint32
-}
-
-// LockRequest carries the whole vector; state applies it atomically.
-type LockRequest struct {
-	Elements []LockElement
-	ID       FileID
-	Sequence uint32
 }
 
 // QueryDirectoryRequest keeps an empty continuation pattern distinct from "*".

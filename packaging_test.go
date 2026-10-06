@@ -15,7 +15,7 @@ import (
 // The rules in docs/vendored.md that keep `go install module@version` working.
 func TestPackaging(t *testing.T) {
 	root := os.DirFS(".")
-	for _, name := range []string{"LICENSE", "NOTICE", "internal/juicefs/LICENSE", "internal/smb/auth/LICENSE", "internal/smb/auth/Attributions.txt", "internal/thirdparty/mpb/UNLICENSE", "internal/thirdparty/xorm/LICENSE"} {
+	for _, name := range []string{"LICENSE", "NOTICE", "internal/smb/auth/LICENSE", "internal/smb/auth/Attributions.txt"} {
 		if b, err := fs.ReadFile(root, name); err != nil || len(b) < 100 {
 			t.Errorf("missing licence file %s: %v", name, err)
 		}
@@ -27,7 +27,7 @@ func TestPackaging(t *testing.T) {
 	if regexp.MustCompile(`(?m)^\s*replace\b`).Match(mod) {
 		t.Error("go.mod has a replace directive")
 	}
-	upstream := []string{"github.com/juicedata/juicefs", "github.com/macos-fuse-t/go-smb2", "xorm.io/xorm", "github.com/vbauerster/mpb/v7", "github.com/urfave/cli/v2", "github.com/hashicorp/golang-lru/v2", "github.com/hanwen/go-fuse"}
+	upstream := []string{"github.com/macos-fuse-t/go-smb2"}
 	err = fs.WalkDir(root, ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
