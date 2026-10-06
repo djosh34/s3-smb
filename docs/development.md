@@ -262,7 +262,10 @@ changed tree.
 
 The scenarios are `server-kill-restart`, `launchd-kill-restart`,
 `server-kill-cold`, `server-kill-cold-midpoint`, `client-abort-cold`,
-`machine-loss`, `network-drop` and `network-outage`.
+`machine-loss`, `network-drop` and `network-outage`. Six more Macs run
+`incrementals`, `s3-outage`, `s3-outage-long`, `thinning`, `rollback` and
+`large`, and `mode=b2` runs one small backup against B2.
+[test/macos/README.md](../test/macos/README.md) describes them.
 
 `launchd-kill-restart` makes the first backup with s3-smb in the foreground,
 then loads [the shipped plist](com.s3-smb.plist) into the system domain with
@@ -320,7 +323,9 @@ There are no release candidates.
 
 1. Pick the latest `main` commit. On it, every workflow passes: `check` in gate
    mode (`gh workflow run check.yml --ref main -f gate=true`), the Time Machine
-   workflow (`gh workflow run macos.yml --ref main -f mode=acceptance`) and
+   workflow (`gh workflow run macos.yml --ref main -f mode=acceptance`), the
+   B2 storage test (`gh workflow run b2.yml --ref main`), the Time Machine run
+   against B2 (`gh workflow run macos.yml --ref main -f mode=b2`) and
    `Publish MinIO` (`gh workflow run minio.yml --ref main`, which never
    overwrites a published image).
 2. Install that exact commit from the Go proxy with empty caches:
