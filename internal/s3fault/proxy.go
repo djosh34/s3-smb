@@ -100,7 +100,7 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 	p := &Proxy{
 		rng:    rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // Test faults, not secrets.
 		target: target, transport: &http.Transport{Proxy: nil},
-		outageSeen: make(chan Event, 32),
+		outageSeen: make(chan Event, 4096),
 		done:       make(chan struct{}), served: make(chan error, 1),
 		address: "http://" + listener.Addr().String(),
 	}

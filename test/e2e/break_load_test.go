@@ -519,7 +519,7 @@ func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand, proxy *s3fault.
 			break
 		}
 		if time.Now().After(deadline) {
-			l.t.Error("coverage: writes never got stuck on S3 with the RAM budget full")
+			l.t.Errorf("coverage: writes never got stuck on S3 with the RAM budget full: WRITEs stuck on %d bands, %d chunk PUTs refused, an early upload among them: %v", len(bands), len(refused), l.earlyUpload(ctx, refused))
 			return
 		}
 		time.Sleep(100 * time.Millisecond)

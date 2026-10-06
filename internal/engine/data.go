@@ -704,7 +704,9 @@ func (e *Engine) truncate(ctx context.Context, st *inode, size uint64) error {
 	if r.directory {
 		return smb.ErrIsDirectory
 	}
-	if size == st.snapshot().size {
+	// A size the file already has needs no commit, unless only RAM has it:
+	// a truncate is durable at once, also to the size a write gave the file.
+	if size == st.snapshot().size && size == r.size {
 		return nil
 	}
 	// Chunks with an index below keep stay. The last of them, keep-1, keeps
