@@ -109,6 +109,14 @@ handles waits for a reconnect, the server refuses any other client. A reconnect
 from the same SMB client is let in. So a new Mac restoring from the share may
 wait until the first Mac's durable handles expire, at most 16 minutes. Mounting
 the share in Finder during a backup may be refused.
+
+macOS mounts with a new client GUID after a crash, a reboot, a long sleep or
+a failed reconnect, so the same Mac then counts as another client. s3-smb
+notices a dead link within about a minute, through TCP keepalive and a limit
+on unacknowledged data set on each SMB socket. The old client's durable
+opens then wait their 120 seconds, and the Mac gets in once they and their
+cleanup have ended, about 3 minutes after the link died. Restarting s3-smb on
+the same data folder lets it in at once.
 [The SMB server design](docs/smb-design.md) has the details.
 
 ## What survives a failure
@@ -139,6 +147,12 @@ An outage longer than about 8 minutes lets the bucket lock expire, and s3-smb
 exits with an error, since another server could own the bucket by then. If no
 database copy reaches S3 for 30 minutes, s3-smb also exits rather than risk
 losing more. Start it again, or let launchd do it.
+
+A failed read, write or sync on the local disk under the data folder, such as
+EIO or a full disk, makes s3-smb exit too. After a failed sync the system may
+hold the data only in memory, so going on could lose it later. The next start
+keeps the local database if it is sound, or restores the newest database copy
+from the bucket.
 
 ## Restart after a crash on a Mac
 
@@ -197,7 +211,9 @@ read a file without s3-smb, are in [recovery](docs/recovery.md).
   stay until 4 newer database copies exist, about an hour. Unwritten gaps
   inside a chunk are stored as zeros. The share reports at most 1 TiB free, so
   Time Machine uses 268.4 MB bands.
-- Writes wait in memory, up to 256 MiB, until the Mac flushes them.
+- Writes wait in memory, up to 256 MiB, until the Mac flushes them. The last
+  16 chunks read from S3 stay in memory too, up to 128 MiB, so mounting the
+  backup image over a slow link needs few requests.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
   On a Mac, the [launchd plist](docs/com.s3-smb.plist) can keep it running.
 - The Time Machine tests kill the application or the Time Machine client, or

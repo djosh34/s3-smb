@@ -3,10 +3,14 @@
 # part it runs lint, unit tests, fuzzing in gate mode and the Docker integration
 # one after another. CI runs each part as its own job. fuzz takes an optional
 # shard, like fuzz 2/4, which runs every fourth fuzz target from the second on.
+# integration takes an optional job, as test/run-linux.sh says: rest, a chaos
+# or break test, or one round of a break test like TestBreakDisk-2. jobs prints
+# the integration jobs as a JSON list: each chaos test, each break test round,
+# then rest.
 set -Eeuo pipefail
 
 usage() {
-  echo 'Usage: scripts/check.sh [--gate] [lint | unit | fuzz [SHARD/SHARDS] | integration]' >&2
+  echo 'Usage: scripts/check.sh [--gate] [lint | unit | fuzz [SHARD/SHARDS] | integration [JOB] | jobs]' >&2
   exit 2
 }
 export S3_SMB_CHECK_MODE=pr
@@ -14,15 +18,20 @@ if (( $# > 0 )) && [[ $1 == --gate ]]; then
   export S3_SMB_CHECK_MODE=gate
   shift
 fi
-part=all shard=1 shards=1
+part=all shard=1 shards=1 job=all
 case "$#:${1:-}" in
   0:) ;;
-  1:lint | 1:unit | 1:fuzz | 1:integration) part=$1 ;;
+  1:lint | 1:unit | 1:fuzz | 1:integration | 1:jobs) part=$1 ;;
   2:fuzz)
     if [[ ! $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || (( BASH_REMATCH[1] > BASH_REMATCH[2] )); then
       usage
     fi
-    part=fuzz shard=${BASH_REMATCH[1]} shards=${BASH_REMATCH[2]} ;;
+    part=$1 shard=${BASH_REMATCH[1]} shards=${BASH_REMATCH[2]} ;;
+  2:integration)
+    if [[ ! $2 =~ ^(rest|Test[A-Za-z0-9]+(-[0-9]+)?)$ ]]; then
+      usage
+    fi
+    part=$1 job=$2 ;;
   *) usage ;;
 esac
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -76,6 +85,7 @@ check_lint() {
   xargs -0 -r "$tools/actionlint" -shellcheck "$tools/shellcheck" -pyflakes '' < "$work/workflows"
   go mod tidy -diff
   go vet ./...
+  go vet -tags testcopies ./internal/engine
   GOOS=darwin go vet -tags macos ./test/macos/...
   find . -type d -path './.git' -prune -o -type f -name '*.go' -print0 > "$work/go-files"
   xargs -0 gofmt -l < "$work/go-files" > "$work/unformatted"
@@ -150,15 +160,32 @@ check_integration() {
     fi
     sleep 1
   done
-  docker create --name "$id-runner" --network "$id" \
+  # NET_ADMIN lets the dead-link test drop packets with iptables.
+  docker create --name "$id-runner" --network "$id" --cap-add NET_ADMIN \
     --add-host transport.test:127.0.0.1 --add-host transport-test.transport.test:127.0.0.1 \
     -v "$root:/src:ro" -v "$logs:/artifacts" \
     -v s3-smb-test-gomod:/go/pkg/mod -v s3-smb-test-gobuild:/root/.cache/go-build \
     -e S3_SMB_E2E_ENDPOINT=http://minio:9000 -e S3_SMB_TEST_ARTIFACTS=/artifacts \
-    -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" -e S3_SMB_CHAOS_SEED \
+    -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" -e S3_SMB_CHAOS_SEED -e "S3_SMB_JOB=$job" \
     "$image" bash /src/test/run-linux.sh >/dev/null
   containers=("$id-runner" "${containers[@]}")
   docker start -a "$id-runner"
+}
+
+check_jobs() {
+  # Break tests print their round counts instead of running.
+  S3_SMB_LIST_ROUNDS=1 S3_SMB_CHAOS_SEED=0 go test -count=1 -run '^TestBreak' -v ./test/e2e > "$work/rounds"
+  go test -list '^TestChaos' ./test/e2e > "$work/chaos"
+  {
+    while IFS= read -r test; do
+      if [[ $test == TestChaos* ]]; then echo "$test"; fi
+    done < "$work/chaos"
+    while read -r word test rounds; do
+      [[ $word == rounds ]] || continue
+      for ((round = 0; round < rounds; round++)); do echo "$test-$round"; done
+    done < "$work/rounds"
+    echo rest
+  } | jq -R . | jq -cs .
 }
 
 if [[ $part == all ]]; then

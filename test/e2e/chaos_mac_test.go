@@ -32,6 +32,7 @@ const (
 // time may use it.
 type rawMac struct {
 	client  *smbtest.Client
+	conn    net.Conn
 	session smbtest.Session
 }
 
@@ -59,7 +60,7 @@ func (f *fixture) rawLogin(ctx context.Context, addr string, previous uint64) (*
 	if err != nil {
 		return nil, err
 	}
-	return &rawMac{client: client, session: session}, nil
+	return &rawMac{client: client, conn: conn, session: session}, nil
 }
 
 // header returns the header of the next request, which costs one credit and

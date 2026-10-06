@@ -179,7 +179,7 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 		return smb.Resolved{Object: parent, Attr: a, Exists: attrErr == nil}, attrErr
 	}
 	for _, base := range parts[:len(parts)-1] {
-		r, ok, lookupErr := childRow(ctx, e.db, parent, base)
+		r, ok, lookupErr := e.childRow(ctx, parent, base)
 		switch {
 		case lookupErr != nil:
 			return smb.Resolved{}, lookupErr
@@ -191,7 +191,7 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 		parent = r.id
 	}
 	name := smb.Name{Parent: parent, Base: parts[len(parts)-1]}
-	r, ok, err := childRow(ctx, e.db, parent, name.Base)
+	r, ok, err := e.childRow(ctx, parent, name.Base)
 	if err != nil || !ok {
 		return smb.Resolved{Name: name}, err
 	}
@@ -270,10 +270,11 @@ func touch(ctx context.Context, tx *sql.Tx, now int64, dirs ...smb.Inode) error 
 // ReadDir returns up to limit entries after cookie, ordered by ID. A cookie
 // is the ID of the last entry returned, so removals do not move it.
 func (e *Engine) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, limit uint32) (entries []smb.DirEntry, err error) {
+	defer func() { err = e.diskError(err) }()
 	if limit == 0 {
 		return nil, smb.ErrInvalidParameter
 	}
-	dir, err := fileRow(ctx, e.db, ino)
+	dir, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +304,8 @@ func (e *Engine) ReadDir(ctx context.Context, ino smb.Inode, cookie smb.Cookie, 
 
 // Remove deletes name if it is still expect. Its chunks go to the trash in
 // the same commit. An open file is only unlinked; its last close drops it.
+// Remove runs inside CLOSE, so it does not wait for the file's I/O lock: when
+// an upload holds it, the file is only unlinked, and dropped once it is free.
 func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) error {
 	if e.readOnly {
 		return smb.ErrReadOnly
@@ -313,8 +316,12 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 	if expect == 0 {
 		return smb.ErrInvalidParameter
 	}
-	st, release := e.acquire(expect)
-	defer release()
+	st, unpin := e.pin(expect)
+	defer unpin()
+	locked := st.mu.TryLock()
+	if locked {
+		defer st.mu.Unlock()
+	}
 	var drop bool
 	err := e.commit(ctx, func(tx *sql.Tx) error {
 		r, exists, err := childRow(ctx, tx, name.Parent, name.Base)
@@ -324,7 +331,7 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 		if !exists || r.id != expect {
 			return smb.ErrIdentityChanged
 		}
-		if drop, err = e.unlink(ctx, tx, r, st); err != nil {
+		if drop, err = e.unlink(ctx, tx, r, st, locked); err != nil {
 			return err
 		}
 		return touch(ctx, tx, timeValue(wallClock()), name.Parent)
@@ -332,13 +339,24 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 	if err != nil {
 		return err
 	}
-	e.settleUnlink(st, drop)
-	return nil
+	if !locked {
+		// An open file is dropped at its last close.
+		e.mu.Lock()
+		st.unlinked = true
+		open := st.refs > 0
+		e.mu.Unlock()
+		if open {
+			return nil
+		}
+		return e.dropWhenFree(ctx, st)
+	}
+	return e.settleUnlink(ctx, st, drop)
 }
 
 // unlink removes r from the namespace inside tx. It drops the file at once
-// when nothing has it open, and reports whether it did.
-func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode) (bool, error) {
+// when nothing has it open and the caller holds its I/O lock, and reports
+// whether it did.
+func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode, locked bool) (bool, error) {
 	if r.directory {
 		var children bool
 		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM files WHERE parent = ?)`, r.id).Scan(&children); err != nil {
@@ -348,20 +366,27 @@ func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode) (bool
 			return false, smb.ErrDirectoryNotEmpty
 		}
 	}
-	if st.refs > 0 {
+	e.mu.Lock()
+	open := st.refs > 0
+	e.mu.Unlock()
+	if open || !locked {
 		_, err := tx.ExecContext(ctx, `UPDATE files SET parent = NULL, name = NULL WHERE id = ?`, r.id)
 		return false, err
 	}
 	return true, e.dropFile(ctx, tx, r.id, st)
 }
 
-// settleUnlink updates memory after a committed unlink.
-func (e *Engine) settleUnlink(st *inode, dropped bool) {
+// settleUnlink updates memory after a committed unlink. A file whose last
+// handle closed since the commit is dropped now. The I/O lock must be held.
+func (e *Engine) settleUnlink(ctx context.Context, st *inode, dropped bool) error {
 	if dropped {
 		e.discard(st)
-	} else {
-		st.unlinked = true
+		return nil
 	}
+	e.mu.Lock()
+	st.unlinked = true
+	e.mu.Unlock()
+	return e.dropUnlinked(context.WithoutCancel(ctx), st)
 }
 
 // dropFile deletes a file row inside tx and sends its chunks and early
@@ -412,7 +437,7 @@ func (e *Engine) Rename(ctx context.Context, request smb.RenameRequest) error {
 		return err
 	}
 	if target != nil {
-		e.settleUnlink(target, drop)
+		return e.settleUnlink(ctx, target, drop)
 	}
 	return nil
 }
@@ -450,7 +475,7 @@ func (e *Engine) rename(ctx context.Context, tx *sql.Tx, request smb.RenameReque
 		case !destination.directory && source.directory:
 			return false, smb.ErrNotDirectory
 		}
-		if drop, err = e.unlink(ctx, tx, destination, target); err != nil {
+		if drop, err = e.unlink(ctx, tx, destination, target, true); err != nil {
 			return false, err
 		}
 	}
@@ -489,7 +514,7 @@ func (e *Engine) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	}
 	var names []string
 	for depth := 0; ino != rootInode; depth++ {
-		r, err := fileRow(ctx, e.db, ino)
+		r, err := e.fileRow(ctx, ino)
 		if err != nil {
 			return "", err
 		}
@@ -509,7 +534,7 @@ func (e *Engine) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 // StatFS reports the configured capacity, or caps free space at 1 TiB.
 func (e *Engine) StatFS(ctx context.Context) (smb.Space, error) {
 	var used float64
-	if err := e.db.QueryRowContext(ctx, `SELECT total(size) FROM files WHERE directory = 0`).Scan(&used); err != nil {
+	if err := e.diskError(e.db.QueryRowContext(ctx, `SELECT total(size) FROM files WHERE directory = 0`).Scan(&used)); err != nil {
 		return smb.Space{}, storageError(err)
 	}
 	total, free := uint64(used)+1<<40, uint64(1)<<40

@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -44,6 +45,15 @@ type Fault struct {
 	Cut         bool
 }
 
+// Mix draws a fault for each request on its own, so requests in flight end
+// out of order and some fail while others succeed. Fail is the share that
+// get an error, Cut the share forwarded and then cut, which S3 may have
+// accepted, and every request waits up to MaxDelay first.
+type Mix struct {
+	Fail, Cut float64
+	MaxDelay  time.Duration
+}
+
 type heldResponse struct {
 	seen    chan Event
 	release chan struct{}
@@ -59,12 +69,14 @@ type Proxy struct {
 	transport   *http.Transport
 	next        *heldResponse
 	active      *heldResponse
+	rng         *rand.Rand
 	outageSeen  chan Event
 	done        chan struct{}
 	served      chan error
 	closeErr    error
 	address     string
 	fault       Fault
+	mix         Mix
 	chunkPuts   atomic.Int64
 	outageUntil atomic.Int64
 	mu          sync.Mutex
@@ -86,8 +98,9 @@ func New(ctx context.Context, upstream string) (*Proxy, error) {
 		return nil, fmt.Errorf("listen for fault proxy: %w", err)
 	}
 	p := &Proxy{
+		rng:    rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())), //nolint:gosec // Test faults, not secrets.
 		target: target, transport: &http.Transport{Proxy: nil},
-		outageSeen: make(chan Event, 32),
+		outageSeen: make(chan Event, 4096),
 		done:       make(chan struct{}), served: make(chan error, 1),
 		address: "http://" + listener.Addr().String(),
 	}
@@ -139,6 +152,39 @@ func (p *Proxy) SetFault(fault Fault) error {
 	return nil
 }
 
+// SetMix replaces the per-request mix. It applies only while no Fault is set.
+// A zero Mix ends it.
+func (p *Proxy) SetMix(mix Mix) error {
+	if mix.Fail < 0 || mix.Cut < 0 || mix.Fail+mix.Cut > 1 || mix.MaxDelay < 0 {
+		return errors.New("invalid S3 fault mix")
+	}
+	p.mu.Lock()
+	p.mix = mix
+	p.mu.Unlock()
+	return nil
+}
+
+// current returns the fault for one request: the set Fault, or one drawn
+// from the mix.
+func (p *Proxy) current() Fault {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.fault != (Fault{}) || p.mix == (Mix{}) {
+		return p.fault
+	}
+	fault := Fault{}
+	if p.mix.MaxDelay > 0 {
+		fault.HeaderDelay = time.Duration(p.rng.Int64N(int64(p.mix.MaxDelay)))
+	}
+	switch draw := p.rng.Float64(); {
+	case draw < p.mix.Fail:
+		fault.Status = http.StatusServiceUnavailable
+	case draw < p.mix.Fail+p.mix.Cut:
+		fault.Cut = true
+	}
+	return fault
+}
+
 func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if time.Now().UnixNano() < p.outageUntil.Load() {
@@ -148,9 +194,7 @@ func (p *Proxy) handler(proxy *httputil.ReverseProxy) http.Handler {
 			writeError(w, http.StatusServiceUnavailable, "")
 			return
 		}
-		p.mu.Lock()
-		fault := p.fault
-		p.mu.Unlock()
+		fault := p.current()
 		if fault.Method != "" && fault.Method != r.Method {
 			fault = Fault{}
 		}

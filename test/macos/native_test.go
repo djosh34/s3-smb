@@ -24,6 +24,8 @@ type process struct {
 	err    error
 	cancel context.CancelFunc
 	log    *os.File
+	// name is the process's log in the evidence, without .log.
+	name string
 	// point is the database copy that an application start restored.
 	point string
 }
@@ -57,7 +59,7 @@ func (h *harness) newProcess(name string, args ...string) *process {
 	cmd.Stdout, cmd.Stderr = log, log
 	cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGTERM) }
 	cmd.WaitDelay = 45 * time.Second
-	return &process{cmd: cmd, cancel: cancel, done: make(chan struct{}), log: log}
+	return &process{cmd: cmd, cancel: cancel, done: make(chan struct{}), log: log, name: name}
 }
 
 func (h *harness) start(name string, args ...string) *process {
@@ -148,6 +150,11 @@ func (h *harness) run(timeout time.Duration, args ...string) string {
 func (h *harness) startDaemon(phase string) {
 	if phase != "restart" {
 		h.must(h.workDir.Mkdir("daemon", 0o700))
+		// B2 keys stay in the environment, out of the config and the logs.
+		keys := fmt.Sprintf("access_key:\n    value: %s\n  secret_key:\n    value: %s", minioUser, minioPassword)
+		if h.b2 {
+			keys = "access_key:\n    command: [/usr/bin/printenv, B2_KEY_ID]\n  secret_key:\n    command: [/usr/bin/printenv, B2_APPLICATION_KEY]"
+		}
 		config := fmt.Sprintf(`smb:
   listen: 127.0.0.1:1445
   share: TimeMachine
@@ -156,18 +163,15 @@ func (h *harness) startDaemon(phase string) {
 storage:
   state_dir: %q
 s3:
-  endpoint: http://127.0.0.1:19000
+  endpoint: %s
   bucket: %s
-  region: us-east-1
+  region: %s
   path_style: true
-  access_key:
-    value: %s
-  secret_key:
-    value: %s
+  %s
 logging:
   format: json
   level: info
-`, filepath.Join(h.local, "state"), bucket, minioUser, minioPassword)
+`, filepath.Join(h.local, "state"), h.endpoint, h.bucket, h.region, keys)
 		h.must(h.workDir.WriteFile("daemon/config.yaml", []byte(config), 0o600))
 	}
 	h.applicationSerial++

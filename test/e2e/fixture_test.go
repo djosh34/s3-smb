@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smb "github.com/hirochachacha/go-smb2"
 
 	"github.com/djosh34/s3-smb/internal/s3fault"
@@ -59,6 +60,7 @@ type fixture struct {
 	password                     string
 	signingKey                   string        // S3 secret key in the config.
 	storageCapacity              string        // Empty means the default.
+	env                          []string      // added to the daemon's environment
 	startupTimeout               time.Duration // Zero means 45s.
 	readonly                     bool
 	// failStart expects the daemon to exit during startup.
@@ -108,8 +110,38 @@ func newFixture(t *testing.T) *fixture {
 	if _, err := f.store.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(f.bucket)}); err != nil {
 		t.Fatal(err)
 	}
+	// Registered first, so it runs after every daemon has stopped.
+	t.Cleanup(f.dropBucket)
 	f.freshLocal()
 	return f
+}
+
+// dropBucket deletes every object of the bucket, then the bucket. Some tests
+// write gigabytes, and each shard of them runs on one disk.
+func (f *fixture) dropBucket() {
+	ctx := context.WithoutCancel(f.t.Context())
+	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			f.t.Error(err)
+			return
+		}
+		var objects []types.ObjectIdentifier
+		for _, object := range page.Contents {
+			objects = append(objects, types.ObjectIdentifier{Key: object.Key})
+		}
+		if len(objects) == 0 {
+			continue
+		}
+		if _, err = f.store.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(f.bucket), Delete: &types.Delete{Objects: objects}}); err != nil {
+			f.t.Error(err)
+			return
+		}
+	}
+	if _, err := f.store.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(f.bucket)}); err != nil {
+		f.t.Error(err)
+	}
 }
 
 // closeOnCleanup closes c at the end of the test.
@@ -283,6 +315,9 @@ func (f *fixture) launch() *daemon {
 		cmd: exec.CommandContext(context.Background(), daemonBinary, "serve", "-c", "config.yaml"),
 	}
 	d.cmd.Dir = f.root
+	if len(f.env) > 0 {
+		d.cmd.Env = append(os.Environ(), f.env...)
+	}
 	stdout, stderr := d.create("stdout.log"), d.create("stderr.log")
 	d.cmd.Stdout, d.cmd.Stderr = stdout, stderr
 	err := d.cmd.Start()
@@ -393,6 +428,20 @@ func (d *daemon) alive() {
 		d.exited()
 		d.t.Fatalf("daemon exited: %v", err)
 	default:
+	}
+}
+
+// waitExit waits until the daemon exits on its own and returns its exit
+// error.
+func (d *daemon) waitExit(timeout time.Duration) error {
+	d.t.Helper()
+	select {
+	case err := <-d.done:
+		d.exited()
+		return err
+	case <-time.After(timeout):
+		d.t.Fatalf("daemon did not exit within %v; logs %s", timeout, d.path())
+		return nil
 	}
 }
 

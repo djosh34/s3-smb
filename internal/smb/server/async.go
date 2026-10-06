@@ -12,6 +12,12 @@ import (
 
 const localWait = 5 * time.Millisecond
 
+// interimRepeat is how often a request that is still pending gets its
+// interim reply again. macOS fails a request 2 minutes after it was sent or
+// after its last interim reply, and drops the data written through it, while
+// FLUSH and WRITE can wait out an S3 outage of 5 minutes.
+var interimRepeat = 30 * time.Second
+
 // work publishes one immutable result before closing done. Dependent members
 // wait for that publication, rather than for transport completion.
 type work struct {
@@ -31,8 +37,14 @@ type pendingRequest struct {
 	asyncID uint64
 }
 
+// asyncEligible reports the commands that can wait on storage. CLOSE and a
+// lease break acknowledgment wait for the pending requests of the opens they
+// close, and LOGOFF and TREE_DISCONNECT for every request of their session or
+// tree. Cancelling such a request does not stop it while it waits for a file
+// that S3 work holds.
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo ||
+		command == wire.Close || command == wire.OplockBreak || command == wire.Logoff || command == wire.TreeDisconnect
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
@@ -65,7 +77,7 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 // serverFault reports whether a failed request is the server's fault rather
 // than an answer to what the client asked, such as a name that is not there.
 func serverFault(status smb.Status) bool {
-	return status == smb.StatusInternalError || status == smb.StatusIODeviceError || status == smb.StatusIOTimeout ||
+	return status == smb.StatusInternalError || status == smb.StatusIODeviceError ||
 		status == smb.StatusInsufficientResources || status == smb.StatusDiskFull
 }
 
@@ -80,7 +92,9 @@ func (connection *connection) startWork(ctx context.Context, message wire.Messag
 		if prerequisite != nil {
 			select {
 			case <-prerequisite.done:
-				previous = prerequisite.compound
+				if message.Header.Flags&wire.FlagRelated != 0 {
+					previous = prerequisite.compound
+				}
 			case <-ctx.Done():
 				operation.result.status = smb.StatusCancelled
 				operation.compound = previous.after(operation.result)
@@ -117,15 +131,16 @@ func asyncResponse(request wire.Header, result reply, asyncID uint64, credits ui
 	return message, nil
 }
 
-// sendPending registers operation for CANCEL and sends its interim reply. The
-// caller starts the goroutine that sends the final reply.
-func (connection *connection) sendPending(header wire.Header, operation *work) (*pendingRequest, error) {
+// sendPending registers operation for CANCEL and sends its interim reply,
+// which grants credits. The caller starts the goroutine that sends the final
+// reply.
+func (connection *connection) sendPending(header wire.Header, operation *work, credits uint16) (*pendingRequest, error) {
 	pending := &pendingRequest{work: operation, header: header, asyncID: connection.nextAsyncID}
 	connection.nextAsyncID++
 	connection.pendingMu.Lock()
 	connection.pending[header.MessageID] = pending
 	connection.pendingMu.Unlock()
-	message, err := asyncResponse(header, reply{status: smb.StatusPending}, pending.asyncID, connection.credits.grant(header))
+	message, err := asyncResponse(header, reply{status: smb.StatusPending}, pending.asyncID, credits)
 	if err != nil {
 		return nil, err
 	}
@@ -165,11 +180,27 @@ func (connection *connection) complete(pending *pendingRequest, held []heldReply
 			works = append(works, member.work)
 		}
 	}
+	repeat := time.NewTicker(interimRepeat)
+	defer repeat.Stop()
 	for _, operation := range works {
-		select {
-		case <-connection.ctx.Done():
-			return
-		case <-operation.done:
+		for done := false; !done; {
+			select {
+			case <-connection.ctx.Done():
+				return
+			case <-operation.done:
+				done = true
+			case <-repeat.C:
+				// The held members of a compound wait under the first's
+				// interim reply, so repeating it covers them too.
+				interim, err := asyncResponse(pending.header, reply{status: smb.StatusPending}, pending.asyncID, 0)
+				if err == nil {
+					err = connection.send([]wire.Message{interim})
+				}
+				if err != nil {
+					connection.server.options.Logger.Error("repeat interim reply failed", "error", errors.Join(err, connection.close()))
+					return
+				}
+			}
 		}
 	}
 	// Both cases can be ready when late work finishes after a disconnect.

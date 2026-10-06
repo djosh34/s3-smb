@@ -98,12 +98,32 @@ never AES-CCM or an older dialect.
 
 ## Async I/O and credits
 
-The server sends an interim STATUS_PENDING when READ, WRITE or FLUSH waits on
-S3, after a short bounded wait for local work. A request that finishes locally
-gets one synchronous reply. Each pending request owns its async ID and
-completion state. The server keeps serving other requests and ECHO while S3 is
-slow. The engine retries each S3 request for up to six minutes; after that the
-server returns the storage error.
+The server sends an interim STATUS_PENDING when CREATE, READ, WRITE, FLUSH,
+SET_INFO, CLOSE, LOGOFF, TREE_DISCONNECT or a lease break acknowledgment has
+not finished after a short bounded wait for local work. CLOSE does not
+upload: it leaves dirty data for the next FLUSH, but it waits for the open's
+pending requests, as LOGOFF and TREE_DISCONNECT wait for their session's or
+tree's. A reconnect that replaces a session finishes the old session's
+cleanup in the background. Nothing that runs inline may wait on S3: macOS
+fails a request that gets no reply, final or interim, within 2 minutes, and
+the data written through it is lost.
+
+A compound is not split. Until a compound reply has come back split, macOS
+reads each packet as the reply to a whole compound, and it fails a CLOSE
+that comes back split. When any member goes async, the first answered
+member gets the interim reply, and its final reply and those of the rest
+follow in one chain. The members after an async one wait for it, so they
+run in order. The one exception is a TREE_CONNECT at the head: an async
+reply has no tree ID, so it keeps its own reply and the rest follow in a
+second packet. A request that finishes locally gets one synchronous reply.
+Each pending request owns its async ID and completion state. The server
+keeps serving other requests and ECHO while S3 is slow. The engine retries
+each S3 request for up to six minutes; after that the server replies
+STATUS_IO_DEVICE_ERROR. macOS keeps the written pages for that and fails a
+later fsync, where it would drop them without an error for
+STATUS_IO_TIMEOUT. A request that waits longer than 30 seconds gets its
+interim reply again, because macOS fails a request 2 minutes after its last
+one.
 
 The server validates the whole compound and checks request signatures and
 credit charges before changing any state. A missing or bad signature, or

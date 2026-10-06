@@ -113,8 +113,10 @@ func (client *Client) receiveRouted(ctx context.Context) (Reply, error) {
 			continue
 		}
 		if h.Status == smb.StatusPending {
-			if _, exists := client.pending[h.MessageID]; exists {
-				return reply, fmt.Errorf("smbtest: duplicate pending reply for message %d", h.MessageID)
+			// A server repeats the interim reply of a long wait, as macOS
+			// needs, with the same identity.
+			if pending, exists := client.pending[h.MessageID]; exists && (pending.asyncID != h.AsyncID || pending.sessionID != h.SessionID) {
+				return reply, fmt.Errorf("smbtest: pending reply for message %d changes its async identity", h.MessageID)
 			}
 			client.pending[h.MessageID] = pendingReply{asyncID: h.AsyncID, sessionID: h.SessionID}
 			continue

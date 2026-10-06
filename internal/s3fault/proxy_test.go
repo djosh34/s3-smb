@@ -199,3 +199,36 @@ func TestCutResponse(t *testing.T) {
 		t.Fatalf("%d cut requests reached S3, want 2", calls.Load())
 	}
 }
+
+func TestMix(t *testing.T) {
+	proxy, calls := newProxy(t)
+	for _, bad := range []s3fault.Mix{{Fail: -1}, {Fail: 0.6, Cut: 0.6}, {MaxDelay: -time.Second}} {
+		if err := proxy.SetMix(bad); err == nil {
+			t.Errorf("accepted %+v", bad)
+		}
+	}
+	if err := proxy.SetMix(s3fault.Mix{Fail: 1, MaxDelay: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	for range 10 {
+		if got := status(t, proxy, http.MethodPut, "/bucket/chunks/a"); got != http.StatusServiceUnavailable {
+			t.Fatalf("mixed PUT: status %d", got)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatal("failed requests reached S3")
+	}
+	// A set Fault wins over the mix.
+	if err := proxy.SetFault(s3fault.Fault{HeaderDelay: time.Millisecond}); err != nil {
+		t.Fatal(err)
+	}
+	if got := status(t, proxy, http.MethodPut, "/bucket/chunks/a"); got != http.StatusOK {
+		t.Fatalf("with a fault set: status %d", got)
+	}
+	if err := errors.Join(proxy.SetFault(s3fault.Fault{}), proxy.SetMix(s3fault.Mix{})); err != nil {
+		t.Fatal(err)
+	}
+	if got := status(t, proxy, http.MethodPut, "/bucket/chunks/a"); got != http.StatusOK {
+		t.Fatalf("after the mix: status %d", got)
+	}
+}

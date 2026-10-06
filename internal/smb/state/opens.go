@@ -26,6 +26,8 @@ func New(now func() time.Time) (*Table, error) {
 		objects:      make(map[smb.Inode]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
 		leaseObjects: make(map[leaseIdentity]smb.Inode),
+		cleaning:     make(map[GUID]int),
+		failed:       make(map[GUID]bool),
 		breakChanges: make(chan struct{}),
 	}, nil
 }
@@ -337,7 +339,8 @@ func (table *Table) Close(id FileID, binding Binding) (CloseAction, smb.Status) 
 func (table *Table) closeOpen(open *openEntry) CloseAction {
 	key := open.Object
 	record := table.objects[key]
-	action := CloseAction{FileID: open.ID, Handle: open.Handle, Object: key}
+	action := CloseAction{FileID: open.ID, Handle: open.Handle, Object: key, ClientGUID: open.ClientGUID}
+	table.cleaning[open.ClientGUID]++
 	if open.DeleteOnClose || open.dispositionPending {
 		if !record.DeletePending {
 			record.DeleteName = open.deleteName
@@ -357,6 +360,21 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 	}
 	table.prune(key)
 	return action
+}
+
+// CleanupDone ends the cleanup of a close action. A cleanup that failed for
+// a storage fault keeps its client present for the one-client rule until the
+// server restarts, since its storage may still be in use. A refusal, such as
+// a delete of a folder that is no longer empty, does not.
+func (table *Table) CleanupDone(action CloseAction, fault bool) {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	if table.cleaning[action.ClientGUID]--; table.cleaning[action.ClientGUID] <= 0 {
+		delete(table.cleaning, action.ClientGUID)
+	}
+	if fault {
+		table.failed[action.ClientGUID] = true
+	}
 }
 
 // CompleteDelete releases the delete-pending barrier after a Remove action,

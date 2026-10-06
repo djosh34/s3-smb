@@ -76,10 +76,10 @@ func (h *harness) startBackup(label string) {
 }
 
 func (h *harness) completeBackup(label string) error {
-	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
+	deadline, next := time.Now().Add(150*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
-			h.t.Fatal("full backup exceeded 90 minute stage budget")
+			h.t.Fatal("full backup exceeded 150 minute stage budget")
 		}
 		if time.Now().After(next) {
 			var stat syscall.Statfs_t
@@ -89,6 +89,7 @@ func (h *harness) completeBackup(label string) error {
 			if free < 20<<30 {
 				h.t.Fatal("free space below 20 GiB")
 			}
+			h.storage(label)
 			next = time.Now().Add(time.Minute)
 		}
 		h.pause(time.Second)
@@ -101,6 +102,7 @@ func (h *harness) completeBackup(label string) error {
 		return errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
 	}
 	h.t.Log("time-machine-command-completed", label)
+	h.storage(label + "-end")
 	// A command exit is not enough. remoteBackup must also find a completed native backup.
 	return nil
 }
@@ -280,22 +282,18 @@ func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
 }
 
 func (h *harness) remoteBackup(label, identifier string) string {
-	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
-	h.must(err)
-	if len(bundles) != 1 {
-		h.t.Fatal("expected one real Time Machine sparsebundle", bundles)
-	}
-	devices, volumes := h.attach(bundles[0], true)
+	bundle := h.bundle()
+	devices, volumes := h.attach(bundle, true)
 	if len(volumes) != 1 {
 		if len(devices) > 0 {
 			h.run(2*time.Minute, "/usr/bin/hdiutil", "detach", "-force", devices[0])
 		}
-		devices, _ = h.attach(bundles[0], false)
+		devices, _ = h.attach(bundle, false)
 		if len(devices) == 0 {
 			h.t.Fatal("writable replay attach failed")
 		}
 		h.run(5*time.Minute, "/usr/bin/hdiutil", "detach", devices[0])
-		devices, volumes = h.attach(bundles[0], true)
+		devices, volumes = h.attach(bundle, true)
 	}
 	if len(devices) == 0 || len(volumes) != 1 {
 		h.t.Fatal("unknown Time Machine image volume layout")
@@ -322,7 +320,7 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	selected = h.holdBackup(selected, volumes[0])
 	h.run(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 	h.run(2*time.Minute, "/sbin/mount")
-	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
+	h.save(label+"-remote-selection.json", map[string]any{"image": bundle, "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
 	return selected
 }
 
@@ -406,14 +404,31 @@ func (h *harness) restore(selected string, expected []helpers.Entry, name string
 	output := filepath.Join(h.work, name)
 	h.must(absent(output))
 	h.t.Log("native-created-tree-restore-start", source)
-	h.run(30*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
+	h.run(90*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
 	actual, counts := h.manifest(output, h.evidenceDir, name+".json")
 	differences, err := helpers.Compare(expected, actual)
 	h.must(err)
 	h.save(name+"-differences.json", differences)
 	if len(differences) != 0 {
+		h.diffBlocks(output, differences, name)
 		h.t.Fatalf("%d created-tree differences; see %s-differences.json", len(differences), name)
 	}
 	h.t.Log("native-created-tree-restore-verified", filepath.Base(selected), counts)
 	return counts
+}
+
+// diffBlocks saves where each differing restored file differs from the file
+// in the test tree, when both are there. The test tree may have changed
+// since the backup, so this is evidence, not a verdict.
+func (h *harness) diffBlocks(output string, differences []string, name string) {
+	blocks := map[string]any{}
+	for _, path := range differences {
+		ranges, err := helpers.DiffBlocks(filepath.Join(h.proof, path), filepath.Join(output, path))
+		if err != nil {
+			blocks[path] = err.Error()
+			continue
+		}
+		blocks[path] = ranges
+	}
+	h.save(name+"-blocks.json", blocks)
 }

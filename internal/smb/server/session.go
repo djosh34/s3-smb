@@ -66,9 +66,7 @@ func (connection *connection) sessionSetup(ctx context.Context, message wire.Mes
 		return result, err
 	}
 	connection.server.registerSession(result.sessionID, connection)
-	if err := connection.server.replaceSession(context.WithoutCancel(ctx), result.sessionID, request.PreviousSessionID, connection.server.options.Account.User); err != nil {
-		return result, fmt.Errorf("previous session cleanup: %w", err)
-	}
+	connection.replaceSession(context.WithoutCancel(ctx), result.sessionID, request.PreviousSessionID, connection.server.options.Account.User)
 	return result, nil
 }
 

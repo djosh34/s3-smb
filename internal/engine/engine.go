@@ -27,9 +27,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
@@ -53,6 +56,7 @@ type tuning struct {
 	hook         func(step string) error
 	chunkSize    uint64
 	dirtyChunks  int
+	readChunks   int
 	copiesKept   int
 	copyInterval time.Duration
 	stopAge      time.Duration
@@ -68,8 +72,9 @@ func defaultTuning() tuning {
 	return tuning{
 		chunkSize:    8 << 20,
 		dirtyChunks:  (256 << 20) / (8 << 20),
-		copiesKept:   4,
-		copyInterval: 15 * time.Minute,
+		readChunks:   (128 << 20) / (8 << 20),
+		copiesKept:   keptCopies,
+		copyInterval: copyEvery,
 		stopAge:      30 * time.Minute,
 		renewEvery:   time.Minute,
 		lease:        8 * time.Minute,
@@ -104,6 +109,7 @@ type Engine struct {
 	newest     time.Time // capture time of the newest copy this run landed, or of the start copy before it lands
 	leaseUntil time.Time
 	objs       objects
+	cache      readCache
 	failErr    error
 	log        *slog.Logger
 	db         *sql.DB
@@ -121,6 +127,7 @@ type Engine struct {
 	admitting  int   // dirty chunks admitted but not yet added, guarded by mu
 	captureSeq int64 // highest copy sequence whose capture has started
 	startSeen  int64 // highest copy sequence seen at start
+	commits    int64 // commits since the start, guarded by commitMu
 	failOnce   sync.Once
 	commitMu   sync.Mutex // serializes commits and copy captures
 	copyMu     sync.Mutex // one copy at a time
@@ -483,7 +490,7 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
-		return storageError(err)
+		return storageError(e.diskError(err))
 	}
 	err = fn(tx)
 	if err == nil {
@@ -494,12 +501,48 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 		err = e.check()
 	}
 	if err != nil {
-		return storageError(errors.Join(err, tx.Rollback()))
+		return storageError(e.diskError(errors.Join(err, tx.Rollback())))
 	}
 	if err = tx.Commit(); err != nil {
-		return storageError(err)
+		return storageError(e.diskError(err))
+	}
+	if e.commits++; e.commits%checkpointEvery == 0 {
+		// SQLite drops the errors of its own checkpoints, so the engine
+		// checkpoints, and a failed write or sync of the database stops it.
+		if _, err = e.db.ExecContext(context.WithoutCancel(ctx), `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
+			return storageError(e.diskError(fmt.Errorf("checkpoint: %w", err)))
+		}
 	}
 	return e.step(stepCommit)
+}
+
+// checkpointEvery is how many commits the WAL takes between checkpoints.
+const checkpointEvery = 64
+
+// fileRow reads a file's row outside a transaction.
+func (e *Engine) fileRow(ctx context.Context, id smb.Inode) (row, error) {
+	r, err := fileRow(ctx, e.db, id)
+	return r, e.diskError(err)
+}
+
+// childRow reads a name's row outside a transaction.
+func (e *Engine) childRow(ctx context.Context, parent smb.Inode, base string) (row, bool, error) {
+	r, ok, err := childRow(ctx, e.db, parent, base)
+	return r, ok, e.diskError(err)
+}
+
+// diskError stops the engine for good when err comes from the local disk,
+// and returns err. After a failed write or fsync, Linux can keep the new
+// data only in memory, and SQLite can then lose or corrupt it (Rebello et
+// al., USENIX ATC 2020). The next start recovers from the local file, or
+// from S3 when that is lost or broken.
+func (e *Engine) diskError(err error) error {
+	var sqliteErr sqlite3.Error
+	disk := errors.As(err, &sqliteErr) && slices.Contains([]sqlite3.ErrNo{sqlite3.ErrIoErr, sqlite3.ErrFull, sqlite3.ErrCorrupt, sqlite3.ErrCantOpen, sqlite3.ErrNotADB}, sqliteErr.Code)
+	if disk || errors.Is(err, syscall.EIO) || errors.Is(err, syscall.ENOSPC) {
+		e.fail(fmt.Errorf("local disk: %w", err))
+	}
+	return err
 }
 
 // Shutdown flushes what is still dirty, stops the engine and deletes its

@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -141,14 +143,17 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
 	// Every final reply must come after S3 is back. Replies sent before the
 	// cached READ's reply are buffered already; the rest are timed as they
-	// arrive.
+	// arrive. A long outage repeats the interim replies.
 	finals := make(map[uint64]wire.Message)
 	for _, request := range requests {
-		if buffered := client.replies[request.MessageID]; len(buffered) != 0 {
+		for _, buffered := range client.replies[request.MessageID] {
+			if buffered.Header.Status == smb.StatusPending {
+				continue
+			}
 			if time.Since(start) < outage {
 				t.Fatalf("%v finished during the outage", request.Command)
 			}
-			finals[request.MessageID] = buffered[0]
+			finals[request.MessageID] = buffered
 		}
 	}
 	for len(finals) < len(requests) {
@@ -157,6 +162,9 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, message := range reply.Messages {
+			if message.Header.Status == smb.StatusPending {
+				continue
+			}
 			if time.Since(start) < outage {
 				t.Fatalf("%v finished during the outage", message.Header.Command)
 			}
@@ -203,15 +211,11 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 				t.Fatalf("final status %#x", status)
 			}
 			client.echo(t)
-			// Data that failed to upload stays failed, so CLOSE reports it too.
-			want := smb.StatusIODeviceError
-			if test.command == wire.Read {
-				want = smb.StatusSuccess
+			// CLOSE does not upload, so it succeeds and leaves the data in RAM.
+			if status := client.close(t, id); status != smb.StatusSuccess {
+				t.Fatalf("CLOSE status %#x", status)
 			}
-			if status := client.close(t, id); status != want {
-				t.Fatalf("CLOSE status %#x, want %#x", status, want)
-			}
-			// The data still in RAM uploads at shutdown.
+			// Let the shutdown upload the data still in RAM.
 			if err := proxy.SetFault(s3fault.Fault{}); err != nil {
 				t.Fatal(err)
 			}
@@ -219,9 +223,10 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 	}
 }
 
-// A READ waiting on S3 inside a compound holds back only the request related
-// to it. The request before it and an unrelated one after it answer at once,
-// and nothing is answered twice.
+// A READ waiting on S3 inside a compound puts the whole compound on hold:
+// macOS reads a compound reply only whole, or as an interim reply for its
+// first member followed by one chain. So the ECHO before the READ gets the
+// interim reply, and all four replies follow in one chain once S3 is back.
 func TestS3OutageInCompound(t *testing.T) {
 	srv, proxy := newS3Server(t)
 	client := srv.connect(t)
@@ -241,23 +246,74 @@ func TestS3OutageInCompound(t *testing.T) {
 	if err := client.raw.Send(t.Context(), []wire.Message{prefix, read, related, unrelated}); err != nil {
 		t.Fatal(err)
 	}
-	if status := client.receive(t, prefix.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("prefix status %#x", status)
-	}
-	readInterim, relatedInterim := client.interim(t, read.Header), client.interim(t, related.Header)
-	if readInterim.AsyncID == relatedInterim.AsyncID {
-		t.Fatal("related request shares the READ's async ID")
-	}
-	if status := client.receive(t, unrelated.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("unrelated status %#x", status)
-	}
+	interim := client.interim(t, prefix.Header)
 	<-proxy.OutageSeen()
 	proxy.RestoreS3()
-	if response, status := decodeReply(t, client.receive(t, read.Header), wire.DecodeReadResponse); status != smb.StatusSuccess || !bytes.Equal(response.Data, data) {
-		t.Fatalf("READ = %q, %#x", response.Data, status)
+	reply, err := client.raw.Receive(t.Context())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if status := client.receive(t, related.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("related status %#x", status)
+	if len(reply.Messages) != 4 {
+		t.Fatalf("%d replies in the chain, want 4", len(reply.Messages))
+	}
+	for i, request := range []wire.Message{prefix, read, related, unrelated} {
+		got := reply.Messages[i].Header
+		if got.MessageID != request.Header.MessageID || got.Status != smb.StatusSuccess {
+			t.Fatalf("reply %d: %+v, want success for message %d", i, got, request.Header.MessageID)
+		}
+	}
+	if first := reply.Messages[0].Header; first.Flags&wire.FlagAsync == 0 || first.AsyncID != interim.AsyncID || first.Credit != 0 {
+		t.Fatalf("first reply %+v after interim %+v", first, interim)
+	}
+	if response, err := wire.DecodeReadResponse(reply.Messages[1]); err != nil || !bytes.Equal(response.Data, data) {
+		t.Fatalf("READ = %q, %v", response.Data, err)
 	}
 	client.noExtraReplies(t)
+}
+
+// A CLOSE waits for the open's pending WRITE, which waits on S3. It must reply
+// STATUS_PENDING and let the connection go on: macOS fails a request with no
+// reply after 2 minutes, and data written through it is lost.
+func TestCloseAfterSlowWriteRepliesAsync(t *testing.T) {
+	srv, proxy := newS3Server(t)
+	client := srv.connect(t)
+	id := client.open(t, "slow")
+	held, err := proxy.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("written before the close")
+	write := sendIO(t, client, wire.Write, id, 0, data)
+	<-held
+	client.interim(t, write)
+	closing := client.send(t, wire.Close, encode(t, wire.EncodeCloseRequest, wire.CloseRequest{ID: id}), 1)
+	client.interim(t, closing)
+	client.echo(t)
+	proxy.Release()
+	for _, request := range []wire.Header{write, closing} {
+		if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
+			t.Fatalf("%v final status %#x", request.Command, status)
+		}
+	}
+	srv.expectContent(t, map[string]string{"slow": string(data)})
+}
+
+// When storage gives up on S3 after its time limit, the reply is
+// STATUS_IO_DEVICE_ERROR, never STATUS_IO_TIMEOUT: macOS drops the written
+// pages without an error for a timeout, and keeps them and fails the next
+// fsync for a device error.
+func TestS3TimeLimitRepliesDeviceError(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	writeFile(t, client, id, []byte("never reaches S3"))
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Flush = func(context.Context, smb.Handle, smb.SyncMode) error {
+			return fmt.Errorf("%w: put chunks/a: %w", smb.ErrIO, context.DeadlineExceeded)
+		}
+	})
+	if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusIODeviceError {
+		t.Fatalf("FLUSH status %#x, want STATUS_IO_DEVICE_ERROR", status)
+	}
+	srv.faults.set(func(hooks *storageHooks) { hooks.Flush = nil })
 }

@@ -36,6 +36,14 @@ func (client *Client) routeLeaseBreaks(reply *Reply) error {
 	return nil
 }
 
+// TakeLeaseBreaks returns and clears the notifications that Receive queued.
+// Only the receiving goroutine may call it.
+func (client *Client) TakeLeaseBreaks() []wire.LeaseBreakNotification {
+	breaks := client.leaseBreaks
+	client.leaseBreaks = nil
+	return breaks
+}
+
 // WaitLeaseBreak returns the next V2 notification. It verifies protection just
 // like Receive and queues normal replies, including pending and final replies,
 // for later Receive calls. Only one receiver may run at a time. Send may run

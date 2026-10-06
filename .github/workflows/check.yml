@@ -67,16 +67,40 @@ jobs:
           name: fuzz-corpus-${{ matrix.shard }}
           path: '**/testdata/fuzz/**'
           retention-days: 7
-  integration:
-    name: integration, smbtorture and chaos
+  # Lists the integration jobs: each chaos and break test, or in the gate
+  # each break test round, and the rest. GitHub queues what is over the
+  # account's limit.
+  plan:
+    name: integration jobs
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: ${{ inputs.gate && 150 || 75 }}
+    timeout-minutes: 15
+    outputs:
+      jobs: ${{ steps.list.outputs.jobs }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.26.3'
-      - run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} integration
+      - id: list
+        run: |
+          jobs=$(scripts/check.sh ${{ inputs.gate && '--gate' || '' }} jobs)
+          echo "jobs=$jobs" >> "$GITHUB_OUTPUT"
+  # Each job gets its own chaos seed.
+  integration:
+    name: integration ${{ matrix.job }}
+    needs: plan
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: ${{ inputs.gate && 150 || 75 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        job: ${{ fromJSON(needs.plan.outputs.jobs) }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+      - run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} integration ${{ matrix.job }}
         env:
           S3_SMB_TEST_LOGS: ${{ runner.temp }}/s3-smb-logs
           S3_SMB_CHAOS_SEED: ${{ inputs.chaos_seed }}
@@ -84,21 +108,21 @@ jobs:
         name: Save namespace measurements
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: namespace-measurement
+          name: namespace-measurement-${{ matrix.job }}
           path: ${{ runner.temp }}/s3-smb-logs/namespace-measurement.json
           if-no-files-found: ignore
           retention-days: 7
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: daemon-logs
+          name: daemon-logs-${{ matrix.job }}
           path: ${{ runner.temp }}/s3-smb-logs
           retention-days: 7
   # Branch protection requires this one job. Fuzzing is skipped outside the gate.
   check:
     name: check
     if: always()
-    needs: [lint, unit, fuzz, integration]
+    needs: [lint, unit, fuzz, plan, integration]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 5
     steps:

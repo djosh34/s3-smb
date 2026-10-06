@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
+
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
@@ -717,6 +719,8 @@ func TestStorageFlushUploadErrorReachesNonWriter(t *testing.T) {
 	}
 }
 
+// Close never waits on S3: dirty data stays for the next FLUSH, which
+// commits it once S3 works again.
 func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 	f := newFixture(t)
 	e := f.open()
@@ -724,8 +728,12 @@ func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 	h := openFile(t, e, "failing", smb.AccessWrite)
 	failChunkPuts(f)
 	writeAt(t, e, h, "data", 0)
-	requireError(t, e.Close(t.Context(), h), smb.ErrIO)
+	before := chunkRequests(f.bucket)
+	closeFile(t, e, h)
 	requireError(t, e.Close(t.Context(), h), smb.ErrInvalidHandle)
+	if n := chunkRequests(f.bucket); n != before {
+		t.Fatalf("close made %d chunk requests", n-before)
+	}
 	f.bucket.setFault(nil)
 
 	create(t, e, "canceled", smb.KindFile)
@@ -739,12 +747,14 @@ func TestStorageCloseAlwaysReleasesReference(t *testing.T) {
 		t.Fatalf("canceled close lost data: %q", got)
 	}
 
-	// The failed close kept the bytes, so a later flush commits them.
-	h = openFile(t, e, "failing", smb.AccessRead)
-	flush(t, e, h)
-	closeFile(t, e, h)
+	// The closes kept the bytes, so a later flush commits them.
+	for _, name := range []string{"failing", "canceled"} {
+		h = openFile(t, e, name, smb.AccessRead)
+		flush(t, e, h)
+		closeFile(t, e, h)
+	}
 	if got := readFile(t, e, "failing"); got != "data" {
-		t.Fatalf("failed close lost data: %q", got)
+		t.Fatalf("close lost data: %q", got)
 	}
 	if n := storageInodes(e); n != 0 {
 		t.Fatalf("%d closed references retained", n)
@@ -1158,5 +1168,140 @@ func TestStorageManySmallWritesBeyondTheRAMBudget(t *testing.T) {
 	shutdown(t, e)
 	if got := tree(t, f.open()); !maps.Equal(got, map[string]string{"big": want, "other": other.String()}) {
 		t.Fatalf("after restart = %q", got)
+	}
+}
+
+// Small reads of a stored chunk cost one GET while the chunk stays in the
+// read cache. A write into a cached chunk must not change the cached bytes.
+func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
+	f := newFixture(t)
+	f.tune.readChunks = 2
+	e := f.open()
+	const data = "0123456789abcdefghijklmnopqrstuvABCDEFGHIJKLMNOP"
+	writeFile(t, e, "data", data)
+	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
+	readBytes := func(from, to uint64) {
+		t.Helper()
+		b := make([]byte, 1)
+		for i := from; i < to; i++ {
+			if _, err := e.ReadAt(t.Context(), h, b, i); err != nil || b[0] != data[i] {
+				t.Fatalf("byte %d = %q, %v", i, b, err)
+			}
+		}
+	}
+	gets := func(want int) {
+		t.Helper()
+		if n := chunkRequests(f.bucket); n != want {
+			t.Fatalf("%d chunk requests, want %d", n, want)
+		}
+	}
+	base := chunkRequests(f.bucket)
+	readBytes(0, 16)
+	gets(base + 1)
+	readBytes(0, uint64(len(data)))
+	gets(base + 3)
+	// Two chunks fit, so the first one was dropped.
+	readBytes(0, 1)
+	gets(base + 4)
+	var second string
+	if err := e.db.QueryRowContext(t.Context(), `SELECT name FROM chunks WHERE idx = 1`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	readBytes(16, 17)
+	writeAt(t, e, h, "XY", 16)
+	if cached := string(e.cache.get(second)); cached != data[16:32] {
+		t.Fatalf("cached chunk changed to %q", cached)
+	}
+	requireContent(t, e, h, data[:16]+"XY"+data[18:])
+	closeFile(t, e, h)
+	if got := readFile(t, e, "data"); got != data[:16]+"XY"+data[18:] {
+		t.Fatalf("read %q", got)
+	}
+}
+
+// Open, Close and Remove must not wait for a file's I/O lock, which an
+// upload holds for the whole of an S3 outage: CREATE opens a file while it
+// guards the file's folder, and CLOSE closes and removes it. The file is
+// dropped once the upload ends.
+func TestStorageOpenCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
+	f := newFixture(t)
+	bucket := &pausable{objects: f.bucket}
+	e, err := open(t.Context(), Options{Dir: f.dir}, bucket, f.tune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { kill(t, e) })
+	r := create(t, e, "data", smb.KindFile)
+	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
+	other := openFile(t, e, "data", smb.AccessRead)
+	writeAt(t, e, h, "uploaded during an outage", 0)
+	bucket.gate.Lock()
+	reopen := sync.OnceFunc(bucket.gate.Unlock)
+	defer reopen()
+	flushed := make(chan error, 1)
+	go func() { flushed <- e.Flush(t.Context(), h, smb.SyncData) }()
+	// Wait until the FLUSH holds the I/O lock and waits on S3.
+	st, unpin := e.pin(r.Object)
+	for st.mu.TryLock() {
+		st.mu.Unlock()
+		time.Sleep(time.Millisecond)
+	}
+	unpin()
+	done := make(chan error, 1)
+	go func() {
+		third, err := e.Open(t.Context(), r.Object, smb.AccessRead)
+		if err != nil {
+			done <- err
+			return
+		}
+		done <- errors.Join(e.Close(t.Context(), third), e.Close(t.Context(), other), e.Remove(t.Context(), r.Name, r.Object), e.Close(t.Context(), h))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("open, close and remove waited for the upload")
+	}
+	reopen()
+	if err := <-flushed; err != nil {
+		t.Fatal(err)
+	}
+	if got, err := e.Lookup(t.Context(), "data"); err != nil || got.Exists {
+		t.Fatal("removed file still in the namespace", err)
+	}
+	// The drop runs once the FLUSH has let go of the I/O lock.
+	for deadline := time.Now().Add(5 * time.Second); countRows(t, e, "files") != 1 || countRows(t, e, "chunks") != 0; {
+		if time.Now().After(deadline) {
+			t.Fatal("the removed file was not dropped after the upload")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// An error of the local disk stops the engine for good, so the server exits.
+// An error of the request alone does not.
+func TestDiskErrorStopsEngine(t *testing.T) {
+	f := newFixture(t)
+	e, err := open(t.Context(), Options{Dir: f.dir}, f.bucket, f.tune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { kill(t, e) })
+	if err = e.diskError(smb.ErrNameCollision); e.Err() != nil || err != smb.ErrNameCollision { //nolint:errorlint // The same error must come back.
+		t.Fatalf("a request error stopped the engine: %v", e.Err())
+	}
+	ioErr := fmt.Errorf("commit: %w", sqlite3.Error{Code: sqlite3.ErrIoErr, ExtendedCode: sqlite3.ErrIoErrFsync})
+	if err = e.diskError(ioErr); err != ioErr { //nolint:errorlint // The same error must come back.
+		t.Fatalf("diskError returned %v", err)
+	}
+	select {
+	case <-e.Dead():
+	default:
+		t.Fatal("a failed fsync did not stop the engine")
+	}
+	if !errors.Is(e.Err(), ioErr) {
+		t.Fatalf("engine stopped with %v", e.Err())
 	}
 }

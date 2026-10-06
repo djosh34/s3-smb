@@ -3,6 +3,7 @@
 package helpers
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"slices"
@@ -101,6 +102,30 @@ func TestCopies(t *testing.T) {
 	if got := RestoredCopy(`{"msg":"keeping the local database","copy":"` + newest + `"}`); got != "" {
 		t.Fatal(got)
 	}
+	log += `{"msg":"database copy landed","copy":"db/1"}` + "\n" + `{"msg":"database copy upload failed; retrying the same copy","copy":"db/2"}` + "\n" + `{"msg":"database copy landed","copy":"db/2"}` + "\n"
+	if got := LandedCopies(log); !slices.Equal(got, []string{"db/1", "db/2"}) {
+		t.Fatal(got)
+	}
+}
+
+func TestStorage(t *testing.T) {
+	objects := map[string]int64{"chunks/a": 8, "chunks/b": 3, "chunks/c": 1}
+	if got := Bytes(objects, map[string]bool{"chunks/a": true, "chunks/c": true, "chunks/gone": true}); got != 9 {
+		t.Fatal(got)
+	}
+	region, err := B2Region("https://s3.eu-central-003.backblazeb2.com")
+	if region != "eu-central-003" || err != nil {
+		t.Fatal(region, err)
+	}
+	for _, endpoint := range []string{"", "http://s3.eu-central-003.backblazeb2.com", "https://s3..backblazeb2.com", "https://s3.eu-central-003.example.com"} {
+		if _, err := B2Region(endpoint); err == nil {
+			t.Error("accepted", endpoint)
+		}
+	}
+	block := append(append([]byte("random"), Marker...), "more"...)
+	if !HoldsMarker(block) || HoldsMarker(Marker[1:]) {
+		t.Fatal("marker misread")
+	}
 }
 
 func TestSelectBackup(t *testing.T) {
@@ -145,5 +170,33 @@ func TestSMBMountpoints(t *testing.T) {
 //timemachine@127.0.0.1:54321/TimeMachine on /wrong-type (apfs)`
 	if got := SMBMountpoints(text, "127.0.0.1:54321"); !slices.Equal(got, []string{"/proxy share"}) {
 		t.Fatal(got)
+	}
+}
+
+func TestDiffBlocks(t *testing.T) {
+	dir := t.TempDir()
+	data := bytes.Repeat([]byte{7}, 5*4096+100)
+	changed := bytes.Clone(data)
+	clear(changed[4096 : 3*4096])
+	changed[4*4096+5] = 1
+	changed[len(changed)-1] = 2
+	must(t, os.WriteFile(filepath.Join(dir, "a"), data, 0o600))
+	must(t, os.WriteFile(filepath.Join(dir, "b"), changed, 0o600))
+	ranges, err := DiffBlocks(filepath.Join(dir, "a"), filepath.Join(dir, "b"))
+	must(t, err)
+	want := []Range{{4096, 3 * 4096, true}, {4 * 4096, 5*4096 + 100, false}}
+	if !slices.Equal(ranges, want) {
+		t.Fatal(ranges)
+	}
+}
+
+func TestGaveUp(t *testing.T) {
+	log := `{"level":"ERROR","msg":"request failed","command":9,"error":"io error: put chunks/a: context deadline exceeded"}
+{"level":"ERROR","msg":"request failed","command":9,"error":"io error: put chunks/b: access denied"}
+{"level":"INFO","msg":"database copy landed","error":"context deadline exceeded"}
+not json
+`
+	if got := GaveUp(log); got != 1 {
+		t.Fatalf("GaveUp = %d, want 1", got)
 	}
 }

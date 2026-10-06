@@ -2,6 +2,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -23,14 +24,15 @@ const maxFileSize = uint64(1) << 50
 const uploads = 4
 
 // inode is the in-memory state of a file that is open, pinned or has data
-// not yet committed. mu orders I/O on the file and guards everything but
-// live and users. liveMu guards live, so attribute reads never wait for I/O.
+// not yet committed. mu orders I/O on the file and guards dirty and early.
+// Engine.mu guards users, refs and unlinked, so CLOSE never waits for I/O.
+// liveMu guards live, so attribute reads never wait for I/O either.
 type inode struct {
 	dirty    map[uint64]*dirtyChunk
 	early    map[uint64]earlyChunk
 	live     live
 	id       smb.Inode
-	users    int // pins, guarded by Engine.mu
+	users    int // pins
 	refs     int // open handles
 	mu       sync.Mutex
 	liveMu   sync.Mutex
@@ -111,9 +113,13 @@ func (e *Engine) acquire(id smb.Inode) (*inode, func()) {
 
 // load reads the committed size once. The I/O lock must be held.
 func (e *Engine) load(ctx context.Context, st *inode) (row, error) {
-	r, err := fileRow(ctx, e.db, st.id)
-	if err == nil && !st.snapshot().loaded {
-		st.update(func(l *live) { l.size, l.loaded = r.size, true })
+	r, err := e.fileRow(ctx, st.id)
+	if err == nil {
+		st.update(func(l *live) {
+			if !l.loaded {
+				l.size, l.loaded = r.size, true
+			}
+		})
 	}
 	return r, err
 }
@@ -123,7 +129,7 @@ type handle struct {
 	key    smb.Inode
 	access smb.Access
 	kind   smb.Kind
-	closed bool
+	closed bool // guarded by Engine.mu
 }
 
 func (h *handle) Key() smb.Inode { return h.key }
@@ -134,7 +140,10 @@ func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*han
 		return nil, nil, smb.ErrInvalidHandle
 	}
 	st, release := e.acquire(h.key)
-	if st != h.st || h.closed {
+	e.mu.Lock()
+	closed := h.closed
+	e.mu.Unlock()
+	if st != h.st || closed {
 		release()
 		return nil, nil, smb.ErrInvalidHandle
 	}
@@ -153,7 +162,9 @@ func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*han
 	return h, release, nil
 }
 
-// Open returns a handle on an existing file or directory.
+// Open returns a handle on an existing file or directory. It does not wait
+// for the file's I/O, which an upload can hold for a whole S3 outage, and
+// CREATE opens a file while it guards the file's folder.
 func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (smb.Handle, error) {
 	if access&^(smb.AccessRead|smb.AccessWrite|smb.AccessAppend) != 0 || ino == 0 {
 		return nil, smb.ErrInvalidParameter
@@ -164,42 +175,95 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	st, release := e.acquire(ino)
-	defer release()
-	r, err := e.load(ctx, st)
+	st, unpin := e.pin(ino)
+	defer unpin()
+	r, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return nil, err
 	}
+	// Only a handle changes a file's live size, so before the first one the
+	// committed size is current.
+	st.update(func(l *live) {
+		if !l.loaded {
+			l.size, l.loaded = r.size, true
+		}
+	})
 	kind := smb.KindFile
 	if r.directory {
 		kind = smb.KindDirectory
 	}
+	e.mu.Lock()
 	st.refs++
+	e.mu.Unlock()
 	return &handle{st: st, key: ino, access: access, kind: kind}, nil
 }
 
-// Close flushes, then releases the handle even when ctx is canceled or the
-// flush fails. The last close of an unlinked file drops it.
+// Close releases the handle, even when ctx is canceled. Dirty data waits for
+// the next FLUSH: CLOSE promises nothing about durability. It must never
+// wait on S3, so it does not wait for the file's I/O, which can. The last
+// close of an unlinked file drops it once its I/O lock is free.
 func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
-	cleanup := context.WithoutCancel(ctx)
-	h, release, err := e.selected(cleanup, ref, false)
-	if err != nil {
+	h, ok := ref.(*handle)
+	if !ok || h == nil {
+		return smb.ErrInvalidHandle
+	}
+	st, unpin := e.pin(h.key)
+	defer unpin()
+	e.mu.Lock()
+	if st != h.st || h.closed {
+		e.mu.Unlock()
+		return smb.ErrInvalidHandle
+	}
+	h.closed = true
+	st.refs--
+	last := st.refs == 0 && st.unlinked
+	e.mu.Unlock()
+	var err error
+	if last {
+		err = e.dropWhenFree(ctx, st)
+	}
+	return errors.Join(err, ctx.Err())
+}
+
+// dropWhenFree drops an unlinked file that nothing has open. It does not wait
+// for the file's I/O lock, which an upload can hold for a whole S3 outage:
+// while the lock is busy, a goroutine drops the file once it is free. A crash
+// before that leaves the unlinked row, which the next start drops.
+func (e *Engine) dropWhenFree(ctx context.Context, st *inode) error {
+	ctx = context.WithoutCancel(ctx)
+	if st.mu.TryLock() {
+		defer st.mu.Unlock()
+		return e.dropUnlinked(ctx, st)
+	}
+	_, unpin := e.pin(st.id)
+	e.group.Go(func() {
+		defer unpin()
+		st.mu.Lock()
+		defer st.mu.Unlock()
+		if err := e.dropUnlinked(ctx, st); err != nil && e.Err() == nil {
+			e.log.Error("dropping an unlinked file failed; the next start drops it", "error", err)
+		}
+	})
+	return nil
+}
+
+// dropUnlinked drops an unlinked file that nothing has open anymore. The I/O
+// lock must be held.
+func (e *Engine) dropUnlinked(ctx context.Context, st *inode) error {
+	e.mu.Lock()
+	drop := st.refs == 0 && st.unlinked
+	e.mu.Unlock()
+	if !drop {
+		return nil
+	}
+	if err := e.commit(ctx, func(tx *sql.Tx) error { return e.dropFile(ctx, tx, st.id, st) }); err != nil {
 		return err
 	}
-	defer release()
-	h.closed = true
-	st := h.st
-	if st.unlinked && st.refs == 1 {
-		err = e.commit(cleanup, func(tx *sql.Tx) error { return e.dropFile(cleanup, tx, st.id, st) })
-		if err == nil {
-			st.unlinked = false
-			e.discard(st)
-		}
-	} else {
-		err = e.flush(cleanup, st)
-	}
-	st.refs--
-	return errors.Join(err, ctx.Err())
+	e.mu.Lock()
+	st.unlinked = false
+	e.mu.Unlock()
+	e.discard(st)
+	return nil
 }
 
 // discard forgets a dropped file's data. The I/O lock must be held.
@@ -524,7 +588,7 @@ func (e *Engine) stored(ctx context.Context, st *inode, idx uint64) (upload, err
 		return upload{name: early.name, length: min(early.length, valid)}, nil
 	}
 	var u upload
-	err := e.db.QueryRowContext(ctx, `SELECT name, length FROM chunks WHERE file = ? AND idx = ?`, st.id, idx).Scan(&u.name, &u.length)
+	err := e.diskError(e.db.QueryRowContext(ctx, `SELECT name, length FROM chunks WHERE file = ? AND idx = ?`, st.id, idx).Scan(&u.name, &u.length))
 	if errors.Is(err, sql.ErrNoRows) {
 		return upload{}, nil
 	}
@@ -535,15 +599,21 @@ func (e *Engine) stored(ctx context.Context, st *inode, idx uint64) (upload, err
 	return u, nil
 }
 
+// readStored returns a copy of length bytes at offset of an uploaded chunk.
+// It fetches the whole chunk into the read cache once.
 func (e *Engine) readStored(ctx context.Context, u upload, offset, length uint64) ([]byte, error) {
-	data, err := e.objs.get(ctx, chunkPrefix+u.name, offset, length)
-	if err != nil {
-		return nil, storageError(err)
+	data := e.cache.get(u.name)
+	if data == nil {
+		var err error
+		if data, err = e.objs.get(ctx, chunkPrefix+u.name, 0, 0); err != nil {
+			return nil, storageError(err)
+		}
+		e.cache.add(u.name, data, e.tune.readChunks)
 	}
-	if uint64(len(data)) != length {
+	if uint64(len(data)) < offset+length {
 		return nil, smb.ErrIO
 	}
-	return data, nil
+	return bytes.Clone(data[offset : offset+length]), nil
 }
 
 // ReadAt reads RAM, then S3. Holes and bytes past a chunk's length are zero.
@@ -634,7 +704,9 @@ func (e *Engine) truncate(ctx context.Context, st *inode, size uint64) error {
 	if r.directory {
 		return smb.ErrIsDirectory
 	}
-	if size == st.snapshot().size {
+	// A size the file already has needs no commit, unless only RAM has it:
+	// a truncate is durable at once, also to the size a write gave the file.
+	if size == st.snapshot().size && size == r.size {
 		return nil
 	}
 	// Chunks with an index below keep stay. The last of them, keep-1, keeps
@@ -695,7 +767,7 @@ func (e *Engine) truncate(ctx context.Context, st *inode, size uint64) error {
 func (e *Engine) GetAttr(ctx context.Context, ino smb.Inode) (smb.Attr, error) {
 	st, unpin := e.pin(ino)
 	defer unpin()
-	r, err := fileRow(ctx, e.db, ino)
+	r, err := e.fileRow(ctx, ino)
 	if err != nil {
 		return smb.Attr{}, err
 	}

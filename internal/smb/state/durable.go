@@ -65,6 +65,16 @@ func (table *Table) OtherClient(clientGUID GUID) bool {
 			return true
 		}
 	}
+	for guid := range table.cleaning {
+		if guid != clientGUID {
+			return true
+		}
+	}
+	for guid := range table.failed {
+		if guid != clientGUID {
+			return true
+		}
+	}
 	return false
 }
 

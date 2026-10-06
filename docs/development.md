@@ -72,6 +72,8 @@ scripts/check.sh               # PR checks, including fuzz seed replay
 scripts/check.sh --gate        # release gate: full-length outage tests and fuzzing
 scripts/check.sh unit          # one part: lint, unit, fuzz or integration
 scripts/check.sh --gate fuzz 2/6  # every sixth fuzz target, from the second on
+scripts/check.sh integration rest  # one integration job, see below
+scripts/check.sh --gate jobs      # the list of integration jobs
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
@@ -153,6 +155,27 @@ the Mac. They check exactly the promises of "What survives which failure",
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
 nothing needs privileges. The gate runs more rounds and longer faults.
 
+The break tests, `TestBreak*`, try harder. Two raw connections of one client
+keep many requests in flight across several files, with the 256 MiB RAM budget
+full, while operators mix in FLUSH, CLOSE alone and later in compounds, delete
+on close, truncate, rename, conflicting opens and lease breaks. Each test adds
+one kind of fault: an S3 outage, S3 requests that fail, stall or end out of
+order, kills, cut, silent and trickling links, file churn, LOGOFF and
+TREE_DISCONNECT while work waits, or a local disk whose syncs are slow or fail
+and whose writes fail, through an `LD_PRELOAD` library built from
+`test/e2e/testdata/diskfault.c`; the first failed write or sync must stop
+the daemon. Every request must get a reply or STATUS_PENDING within 3
+seconds, and STATUS_PENDING again while it waits longer than a minute,
+because macOS fails a request 2 minutes after it was sent or after its last
+STATUS_PENDING and drops its data. Every slot of every file is checked
+against a model, during the faults, after them, after a restart and after a
+cold start from S3 on a new data folder.
+
+With a job, `integration JOB` runs part of the Docker tests: `rest` runs all
+but the chaos and break tests, a test name runs that test, and a name with a
+round, like `TestBreakDisk-2`, runs one round of a break test. `jobs` prints
+the jobs CI runs: each chaos test, each break test round, and `rest`.
+
 The Docker tests get 120 minutes in gate mode and 60 minutes in PR mode.
 
 `test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
@@ -184,9 +207,12 @@ changes the pin.
 
 The `check` workflow runs on every pull request, on `main` and for merge queue
 groups. Each part of `scripts/check.sh` runs as its own job, in parallel: lint,
-unit tests and the integration. Dispatch it with `gate=true` for a gate run,
-which adds six fuzzing jobs, one per shard, so a gate run takes about as long as
-its slowest job. A last job named `check` passes only when every part passed;
+unit tests, and one integration job per entry of `scripts/check.sh jobs`, each
+with its own chaos seed. Every break test round runs as its own job.
+Dispatch it with `gate=true` for a gate run, which has more and longer rounds
+and adds six fuzzing jobs. GitHub queues
+the jobs over the account's limit, so a gate run takes about as long as its
+slowest job, a few times over. A last job named `check` passes only when every part passed;
 the name is fixed because branch protection requires it. A failed integration
 uploads daemon logs; test or fuzz failures upload any `testdata/fuzz` inputs.
 

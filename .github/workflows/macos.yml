@@ -1,7 +1,7 @@
 name: Time Machine end-to-end
 # Builds the checked-out code on Mac runners and runs the Time Machine test:
-# backup and restore on a fresh Mac, failed-backup scenarios or exclusion
-# discovery.
+# backup and restore on a fresh Mac, failed-backup and proof scenarios,
+# exclusion discovery, or one backup against the B2 test bucket.
 on:
   workflow_dispatch:
     inputs:
@@ -14,10 +14,11 @@ on:
           - discover
           - acceptance
           - scenarios
+          - b2
       scenarios:
-        description: Failed-backup scenarios to run, as a JSON list
+        description: Scenarios to run on MinIO, as a JSON list
         required: true
-        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage"]'
+        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage", "incrementals", "s3-outage", "s3-outage-long", "thinning", "rollback", "large"]'
         type: string
 permissions:
   contents: read
@@ -171,7 +172,7 @@ jobs:
     name: ${{ matrix.scenario }}
     if: inputs.mode == 'acceptance' || inputs.mode == 'scenarios'
     runs-on: macos-15-intel
-    timeout-minutes: 160
+    timeout-minutes: ${{ matrix.scenario == 'large' && 355 || 160 }}
     strategy:
       fail-fast: false
       matrix:
@@ -194,6 +195,20 @@ jobs:
         with:
           go-version: '1.26.3'
           cache: false
+      # The large tree, its image in MinIO and its restore need more room.
+      - name: Free runner disk
+        if: matrix.scenario == 'large'
+        run: |
+          df -k /
+          keep=$(cd "$(xcode-select -p)/../.." && pwd -P)
+          for x in /Applications/Xcode*.app; do
+            if [ "$(cd "$x" && pwd -P)" != "$keep" ]; then sudo rm -rf "$x" & fi
+          done
+          for d in "$HOME/Library/Android" /usr/local/lib/android /usr/local/share/dotnet "$HOME/.dotnet" "$HOME/.ghcup" /Library/Developer/CoreSimulator/Profiles/Runtimes "$HOME/Library/Developer/CoreSimulator"; do
+            sudo rm -rf "$d" &
+          done
+          wait
+          df -k /
       - name: Failed backup and recovery
         run: bash test/macos/run.sh
       - name: Make transfer files readable
@@ -227,6 +242,66 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: mac-${{ matrix.scenario }}-${{ github.sha }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.MAC_ARTIFACTS }}
+            ${{ runner.temp }}/mac-harness.log
+          if-no-files-found: error
+          retention-days: 14
+          include-hidden-files: true
+  b2:
+    name: b2
+    if: inputs.mode == 'b2'
+    runs-on: macos-15-intel
+    timeout-minutes: 160
+    # Shares the B2 workflow's group, so only one run uses the test bucket.
+    concurrency:
+      group: b2
+      cancel-in-progress: false
+    env:
+      MAC_PHASE: scenario
+      MAC_SCENARIO: b2
+      B2_ENDPOINT: ${{ vars.B2_ENDPOINT }}
+      B2_BUCKET: ${{ vars.B2_BUCKET }}
+    steps:
+      - name: Set task paths
+        run: |
+          {
+            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
+            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
+            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
+          } >> "$GITHUB_ENV"
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.26.3'
+          cache: false
+      - name: Backup and restore against B2
+        run: bash test/macos/run.sh
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      # Also after a failure: stop s3-smb, then delete every object version.
+      # It runs as root like run.sh, which owns the Go caches by now.
+      - name: Empty the B2 test bucket
+        if: always()
+        run: |
+          sudo pkill -9 -x s3-smb || true
+          sudo -n --preserve-env=B2_KEY_ID,B2_APPLICATION_KEY,B2_ENDPOINT,B2_BUCKET /usr/bin/env "PATH=$PATH" "HOME=$HOME" \
+            GOENV=off GOTOOLCHAIN=local GOWORK=off \
+            go test -tags macos -count=1 -run '^TestEmptyB2Bucket$' -v ./test/macos
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
+      - name: Make evidence readable by the uploader
+        if: always()
+        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: mac-b2-${{ github.sha }}-${{ github.run_attempt }}
           path: |
             ${{ env.MAC_ARTIFACTS }}
             ${{ runner.temp }}/mac-harness.log

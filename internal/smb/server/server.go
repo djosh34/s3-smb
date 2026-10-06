@@ -73,6 +73,10 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 			}
 			break
 		}
+		if err = watchDeadLink(conn); err != nil {
+			server.options.Logger.Error("refused a connection", "error", errors.Join(err, conn.Close()))
+			continue
+		}
 		// Registration happens before starting the goroutine, so Shutdown cannot
 		// finish while an accepted connection is still waiting to be registered.
 		// Canceling ctx only closes the listener: connections end in Shutdown,
@@ -94,6 +98,9 @@ func (server *Server) Serve(ctx context.Context, listener net.Listener) error {
 
 // ServeConn owns conn and serves framed requests until EOF, cancellation or error.
 func (server *Server) ServeConn(ctx context.Context, conn net.Conn) error {
+	if err := watchDeadLink(conn); err != nil {
+		return errors.Join(err, conn.Close())
+	}
 	ctx, cancel := context.WithCancel(ctx)
 	connection, err := server.addConnection(ctx, cancel, conn)
 	if err != nil {

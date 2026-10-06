@@ -85,7 +85,7 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	// VACUUM INTO needs a missing or empty file. An empty one keeps it private.
 	temp := filepath.Join(e.dir, copyTemp)
 	if err := writeSynced(temp, nil); err != nil {
-		return err
+		return e.diskError(err)
 	}
 	seq, captured, err := e.capture(ctx, seq, temp)
 	if err != nil {
@@ -93,11 +93,11 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	}
 	data, err := os.ReadFile(filepath.Clean(temp))
 	if err != nil {
-		return err
+		return e.diskError(err)
 	}
 	state, err := readFileState(ctx, temp)
 	if err != nil {
-		return fmt.Errorf("read the copy's state: %w", err)
+		return e.diskError(fmt.Errorf("read the copy's state: %w", err))
 	}
 	name := formatCopy(seq, state.commits, state.history)
 	err = e.commit(ctx, func(tx *sql.Tx) error {
@@ -130,7 +130,7 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 		e.startCopy = name
 	}
 	e.log.Info("database copy landed", "copy", name)
-	err = errors.Join(os.Remove(temp), e.commit(ctx, func(tx *sql.Tx) error {
+	err = errors.Join(e.diskError(os.Remove(temp)), e.commit(ctx, func(tx *sql.Tx) error {
 		return execAll(ctx, tx, []statement{
 			{`UPDATE copies SET landed = 1 WHERE seq = ?`, []any{seq}},
 			{`UPDATE state SET published = ?, published_commits = ? WHERE id = 1`, []any{state.history, state.commits}},
@@ -157,7 +157,7 @@ func (e *Engine) capture(ctx context.Context, seq int64, temp string) (int64, ti
 	e.captureSeq = seq
 	captured := time.Now()
 	if _, err := e.db.ExecContext(ctx, `VACUUM INTO ?`, temp); err != nil {
-		return 0, time.Time{}, fmt.Errorf("capture copy %d: %w", seq, err)
+		return 0, time.Time{}, e.diskError(fmt.Errorf("capture copy %d: %w", seq, err))
 	}
 	e.timesMu.Lock()
 	if e.newest.IsZero() {
@@ -236,6 +236,7 @@ func (e *Engine) cleanup(ctx context.Context, deadline time.Time) error {
 }
 
 func (e *Engine) expiredTrash(ctx context.Context, oldest int64) (names []string, err error) {
+	defer func() { err = e.diskError(err) }()
 	rows, err := e.db.QueryContext(ctx, `SELECT t.name FROM trash t WHERE t.seq < ?
 		AND NOT EXISTS (SELECT 1 FROM chunks c WHERE c.name = t.name)
 		AND NOT EXISTS (SELECT 1 FROM pending p WHERE p.name = t.name)

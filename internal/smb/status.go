@@ -97,6 +97,9 @@ func (kind ErrorKind) Error() string {
 // io.EOF maps to end-of-file only after the handler checks the read byte count.
 // Context errors take precedence over categories in an errors.Join value;
 // an explicit storage category takes precedence over a backend EOF cause.
+// A deadline is storage giving up on S3, a device error: macOS turns it
+// into EIO, keeps the written pages and fails a later fsync, where it would
+// drop the pages without an error for STATUS_IO_TIMEOUT.
 func StatusFromError(err error) Status {
 	if err == nil {
 		return StatusSuccess
@@ -105,7 +108,7 @@ func StatusFromError(err error) Status {
 		return StatusCancelled
 	}
 	if errors.Is(err, context.DeadlineExceeded) {
-		return StatusIOTimeout
+		return StatusIODeviceError
 	}
 	var kind ErrorKind
 	if !errors.As(err, &kind) {
