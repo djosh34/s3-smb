@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"os/exec"
@@ -103,13 +104,8 @@ func deadLink(t *testing.T, busy bool, drop time.Duration) {
 		time.Sleep(drop)
 		lose(false)
 		for _, read := range reads {
-			reply, replyErr := mac.reply(ctx, read)
-			if replyErr != nil {
+			if replyErr := readBack(ctx, mac, read, written[:60000]); replyErr != nil {
 				t.Fatalf("after a %v interruption: %v", drop, replyErr)
-			}
-			response, decodeErr := wire.DecodeReadResponse(reply)
-			if reply.Header.Status != 0 || decodeErr != nil || !bytes.Equal(response.Data, written[:60000]) {
-				t.Fatalf("after a %v interruption a READ gave status %#x, %d bytes: %v", drop, reply.Header.Status, len(response.Data), decodeErr)
 			}
 		}
 		if got := closed(); got != before {
@@ -124,6 +120,19 @@ func deadLink(t *testing.T, busy bool, drop time.Duration) {
 		time.Sleep(time.Second)
 	}
 	t.Logf("the server noticed the dead link after %v", time.Since(start).Round(time.Second))
+}
+
+// readBack waits for the final reply to a READ and requires want.
+func readBack(ctx context.Context, mac *rawMac, read wire.Header, want []byte) error {
+	reply, err := mac.reply(ctx, read)
+	if err != nil {
+		return err
+	}
+	response, err := wire.DecodeReadResponse(reply)
+	if reply.Header.Status != 0 || err != nil || !bytes.Equal(response.Data, want) {
+		return fmt.Errorf("READ gave status %#x and %d bytes: %w", reply.Header.Status, len(response.Data), err)
+	}
+	return nil
 }
 
 // iptables runs iptables with args.
