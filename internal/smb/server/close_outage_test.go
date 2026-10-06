@@ -136,3 +136,36 @@ func leaveAsync(t *testing.T, client *testClient, request wire.Header, release f
 		t.Fatalf("%v status %#x", request.Command, status)
 	}
 }
+
+// macOS fails a request 2 minutes after its last interim reply. A FLUSH that
+// waits on S3 longer gets its interim reply again, with the same async ID.
+func TestLongWaitRepeatsInterim(t *testing.T) {
+	interimRepeat = 50 * time.Millisecond
+	t.Cleanup(func() { interimRepeat = 30 * time.Second })
+	srv, proxy := newS3Server(t)
+	client := srv.connect(t)
+	band := client.open(t, "band")
+	writeFile(t, client, band, []byte("band data waiting for S3"))
+	held, err := proxy.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	flush := sendIO(t, client, wire.Flush, band, 0, nil)
+	<-held
+	first := client.interim(t, flush)
+	again := client.next(t, flush).Header
+	proxy.Release()
+	if again.Status != smb.StatusPending || again.AsyncID != first.AsyncID || again.Credit != 0 {
+		t.Fatalf("second reply %+v, want the interim reply %+v again without credits", again, first)
+	}
+	for {
+		reply := client.next(t, flush).Header
+		if reply.Status == smb.StatusPending {
+			continue
+		}
+		if reply.Status != smb.StatusSuccess || reply.AsyncID != first.AsyncID {
+			t.Fatalf("final reply %+v", reply)
+		}
+		break
+	}
+}

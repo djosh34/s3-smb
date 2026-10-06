@@ -68,13 +68,14 @@ func restartAndCheck(l *macLoad, f *fixture, d *daemon, also ...func(*macConn)) 
 	return d
 }
 
-// TestBreakS3OutageUnderLoad cuts S3 for 25 seconds, or 5 minutes in the
+// TestBreakS3OutageUnderLoad cuts S3 for 75 seconds, or 5 minutes in the
 // gate, while the Mac load fills the RAM budget. FLUSH, CLOSE, delete on
 // close, lease breaks and the rest keep coming. Every request must get a
-// reply or STATUS_PENDING within the patience, and nothing may be lost.
+// reply or STATUS_PENDING within the patience, and STATUS_PENDING again
+// while it waits longer than a minute. Nothing may be lost.
 func TestBreakS3OutageUnderLoad(t *testing.T) {
 	rng := chaosRand(t)
-	rounds, outage := 2, 25*time.Second
+	rounds, outage := 2, 75*time.Second
 	if gate() {
 		rounds, outage = 4, 5*time.Minute
 	}

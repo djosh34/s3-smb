@@ -12,6 +12,12 @@ import (
 
 const localWait = 5 * time.Millisecond
 
+// interimRepeat is how often a request that is still pending gets its
+// interim reply again. macOS fails a request 2 minutes after it was sent or
+// after its last interim reply, and drops the data written through it, while
+// FLUSH and WRITE can wait out an S3 outage of 5 minutes.
+var interimRepeat = 30 * time.Second
+
 // work publishes one immutable result before closing done. Dependent members
 // wait for that publication, rather than for transport completion.
 type work struct {
@@ -174,11 +180,27 @@ func (connection *connection) complete(pending *pendingRequest, held []heldReply
 			works = append(works, member.work)
 		}
 	}
+	repeat := time.NewTicker(interimRepeat)
+	defer repeat.Stop()
 	for _, operation := range works {
-		select {
-		case <-connection.ctx.Done():
-			return
-		case <-operation.done:
+		for done := false; !done; {
+			select {
+			case <-connection.ctx.Done():
+				return
+			case <-operation.done:
+				done = true
+			case <-repeat.C:
+				// The held members of a compound wait under the first's
+				// interim reply, so repeating it covers them too.
+				interim, err := asyncResponse(pending.header, reply{status: smb.StatusPending}, pending.asyncID, 0)
+				if err == nil {
+					err = connection.send([]wire.Message{interim})
+				}
+				if err != nil {
+					connection.server.options.Logger.Error("repeat interim reply failed", "error", errors.Join(err, connection.close()))
+					return
+				}
+			}
 		}
 	}
 	// Both cases can be ready when late work finishes after a disconnect.

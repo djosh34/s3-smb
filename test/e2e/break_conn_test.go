@@ -26,10 +26,12 @@ import (
 // through it while Time Machine reports success. A healthy server sends
 // STATUS_PENDING after 5 ms, so the tests allow 3 seconds, also in the gate.
 // A link that a test slows on purpose gets 45 seconds, for stalls of up to
-// 30.
+// 30. macOS also fails a request 2 minutes after its last STATUS_PENDING, so
+// a request that waits longer must get it again: the tests allow 1 minute.
 const (
 	patience     = 3 * time.Second
 	slowPatience = 45 * time.Second
+	waitPatience = time.Minute
 )
 
 // related is the FileID of a compound member that uses the previous
@@ -71,6 +73,7 @@ var errLeft = errors.New("the session has logged off")
 // answers the rest in one chain after it, as macOS reads it.
 type macRequest struct {
 	queued, sent time.Time
+	interim      time.Time // the last STATUS_PENDING, of its compound too
 	reply        chan wire.Message
 	compound     []*macRequest // every member, this one too
 	id           uint64
@@ -262,7 +265,7 @@ func (c *macConn) receive(ctx context.Context) {
 			if m.Header.Status == smbproto.StatusPending && m.Header.Flags&wire.FlagAsync != 0 {
 				r.pending = true
 				for _, member := range r.compound {
-					member.pending = true
+					member.pending, member.interim = true, time.Now()
 				}
 				c.pending++
 				continue
@@ -326,7 +329,11 @@ func (c *macConn) watch() {
 		c.mu.Lock()
 		for id, r := range c.inFlight {
 			switch {
-			case r.pending || r.late:
+			case r.late:
+			case r.pending && time.Since(r.interim) > waitPatience:
+				r.late = true
+				c.t.Errorf("%v message %d got no reply for %v after its STATUS_PENDING: macOS fails it 2 minutes after the last one and drops its data", r.command, id, waitPatience)
+			case r.pending:
 			case r.sent.IsZero() && time.Since(r.queued) > limit:
 				r.late = true
 				c.t.Errorf("%v message %d could not be sent within %v: the server stopped reading", r.command, id, limit)
