@@ -127,6 +127,7 @@ type Engine struct {
 	admitting  int   // dirty chunks admitted but not yet added, guarded by mu
 	captureSeq int64 // highest copy sequence whose capture has started
 	startSeen  int64 // highest copy sequence seen at start
+	commits    int64 // commits since the start, guarded by commitMu
 	failOnce   sync.Once
 	commitMu   sync.Mutex // serializes commits and copy captures
 	copyMu     sync.Mutex // one copy at a time
@@ -505,8 +506,18 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	if err = tx.Commit(); err != nil {
 		return storageError(e.diskError(err))
 	}
+	if e.commits++; e.commits%checkpointEvery == 0 {
+		// SQLite drops the errors of its own checkpoints, so the engine
+		// checkpoints, and a failed write or sync of the database stops it.
+		if _, err = e.db.ExecContext(context.WithoutCancel(ctx), `PRAGMA wal_checkpoint(PASSIVE)`); err != nil {
+			return storageError(e.diskError(fmt.Errorf("checkpoint: %w", err)))
+		}
+	}
 	return e.step(stepCommit)
 }
+
+// checkpointEvery is how many commits the WAL takes between checkpoints.
+const checkpointEvery = 64
 
 // diskError stops the engine for good when err comes from the local disk,
 // and returns err. After a failed write or fsync, Linux can keep the new

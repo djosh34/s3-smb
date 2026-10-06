@@ -81,9 +81,11 @@ CREATE TABLE state (
 `
 
 // fullFSync requests F_FULLFSYNC on macOS for commits and checkpoints. It has
-// no effect elsewhere. It runs for every connection, including replacements.
+// no effect elsewhere. It also turns off SQLite's automatic checkpoints, whose
+// errors SQLite drops; the engine checkpoints itself. It runs for every
+// connection, including replacements.
 func fullFSync(conn *sqlite3.SQLiteConn) error {
-	if _, err := conn.Exec("PRAGMA fullfsync=ON; PRAGMA checkpoint_fullfsync=ON", nil); err != nil {
+	if _, err := conn.Exec("PRAGMA fullfsync=ON; PRAGMA checkpoint_fullfsync=ON; PRAGMA wal_autocheckpoint=0", nil); err != nil {
 		return fmt.Errorf("enable SQLite full fsync: %w", err)
 	}
 	return nil

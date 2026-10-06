@@ -81,16 +81,17 @@ func (h *harness) s3Outage(long bool) result {
 		h.t.Log("s3-outage-long-visible-failure", attempt.CommandError)
 	}
 	h.must(h.detach())
-	if !failed {
-		h.mount()
-		latest := h.remoteBackup("after-outage", "")
-		if filepath.Base(latest) == outcome.Baseline {
-			h.t.Fatal("Time Machine reported the backup during the S3 outage as good, but it is not there")
-		}
+	// Any backup that is there after the outage must restore exactly, also
+	// one Time Machine reported as failed.
+	h.mount()
+	latest := h.remoteBackup("after-outage", "")
+	if filepath.Base(latest) != outcome.Baseline {
 		outcome.Resumed = filepath.Base(latest)
 		outcome.ResumedRestore = h.restore(latest, updated, "restore-after-outage")
-		h.must(h.detach())
+	} else if !failed {
+		h.t.Fatal("Time Machine reported the backup during the S3 outage as good, but it is not there")
 	}
+	h.must(h.detach())
 	outcome.BaselineRestore = h.restoreBackup(outcome.Baseline, h.reference(), "restore-baseline")
 	return outcome
 }

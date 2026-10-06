@@ -500,6 +500,10 @@ func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand
 		replies, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request}), relatedTo(closeMessage(c.t, related))}, smbproto.StatusObjectNameNotFound)
 		if err != nil {
 			if c.allowed(err) {
+				// The file may be gone or not.
+				c.mu.Lock()
+				delete(c.files, old)
+				c.mu.Unlock()
 				continue
 			}
 			c.t.Errorf("delete %s: %v", old, err)
@@ -519,7 +523,7 @@ func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand
 func (c *fileChurn) flush(ctx context.Context, conn *macConn) error {
 	root := wire.CreateRequest{Name: "", DesiredAccess: 0x80, ShareAccess: 7, Disposition: 1}
 	_, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: root}), relatedTo(flushMessage(c.t, related, true)), relatedTo(closeMessage(c.t, related))})
-	if err != nil && !c.allowed(err) {
+	if err != nil {
 		c.t.Errorf("full FLUSH: %v", err)
 	}
 	return err
