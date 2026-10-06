@@ -24,12 +24,13 @@ import (
 )
 
 // thinning backs up a file that only the oldest backup holds and deletes
-// that backup with tmutil. The next backup and compacting the image, as
-// Time Machine does to reclaim space, give the freed bands back to the share.
-// Then every chunk of a band that the file filled must go to the trash and be
-// deleted. A band that also holds other data stays, as SMB cannot punch
-// holes. s3-smb keeps 2 copies and makes one every 2 minutes here. The
-// remaining backups must restore.
+// that backup with tmutil. Once APFS has freed it, the next backup and
+// compacting the image, as Time Machine does to reclaim space, give the freed
+// bands back to the share; up to three rounds wait for APFS. Then every
+// chunk of a band that the file filled must go to the trash and be deleted.
+// A band that also holds other data stays, as SMB cannot punch holes. s3-smb
+// keeps 2 copies and makes one every 2 minutes here. The remaining backups
+// must restore.
 func (h *harness) thinning() result {
 	const size = 2 << 30
 	h.prepare = func() { h.markedFile("oldest-only.bin", size) }
@@ -50,18 +51,32 @@ func (h *harness) thinning() result {
 	// kept only minutes here, so the watch starts before anything is freed.
 	trashed := h.watchTrash(holders)
 	h.deleteBackup(outcome.Baseline)
-	fourth, fourthTree := h.incremental("fourth", third, func() {
-		h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed in the fourth backup\n"), 0o600))
-	})
-	h.compact()
-	h.storage("after-compact")
-	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, func() (bool, error) {
+	left := func() (bool, error) {
 		count, err := h.holderStates(holders)
 		if err == nil && count.leaked > 0 {
 			err = fmt.Errorf("%d chunks of the deleted backup are neither in a file, in the trash nor deleted", count.leaked)
 		}
 		return count.live == 0, err
-	}))
+	}
+	// APFS frees a deleted backup lazily. When it has, the next backup and a
+	// compact give its bands back. Up to three rounds of both, each after the
+	// image was attached a while, wait for it.
+	latest, latestTree := third, thirdTree
+	for round := 1; ; round++ {
+		latest, latestTree = h.incremental(fmt.Sprintf("after-delete-%d", round), latest, func() {
+			h.must(h.proofDir.WriteFile("nested/message.txt", fmt.Appendf(nil, "changed after the delete, round %d\n", round), 0o600))
+		})
+		h.compact()
+		h.storage(fmt.Sprintf("after-compact-%d", round))
+		err := h.waitFor("the deleted backup's chunks leaving the files", 2*time.Minute, 10*time.Second, left)
+		if err == nil {
+			break
+		}
+		if round == 3 || h.ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded) {
+			h.t.Fatalf("after %d rounds of a backup and a compact: %v", round, err)
+		}
+		h.holdAttached(5 * time.Minute)
+	}
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
 		return count.live+count.trashed+count.leaked == 0, err
@@ -70,10 +85,10 @@ func (h *harness) thinning() result {
 		h.t.Fatal("no chunk of the deleted backup was ever seen in the trash")
 	}
 	h.storage("after-thinning")
-	outcome.Resumed = fourth
+	outcome.Resumed = latest
 	h.restoreBackup(second, secondTree, "restore-second")
 	h.restoreBackup(third, thirdTree, "restore-third")
-	outcome.ResumedRestore = h.restoreBackup(fourth, fourthTree, "restore-fourth")
+	outcome.ResumedRestore = h.restoreBackup(latest, latestTree, "restore-latest")
 	return outcome
 }
 
@@ -208,7 +223,9 @@ func (h *harness) deleteBackup(backup string) {
 	if len(devices) == 0 || len(volumes) != 1 {
 		h.t.Fatal("unknown Time Machine image volume layout", devices, volumes)
 	}
+	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
+	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
 	}
@@ -222,6 +239,32 @@ func (h *harness) deleteBackup(backup string) {
 	}
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)
+}
+
+// holdAttached attaches the image read-write for d, so APFS can free a
+// deleted backup in the background, and lists its snapshots.
+func (h *harness) holdAttached(d time.Duration) {
+	h.mount()
+	devices, volumes := h.attach(h.bundle(), false)
+	if len(devices) > 0 {
+		h.attachments = append(h.attachments, devices[0])
+	}
+	for _, volume := range volumes {
+		h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volume)
+	}
+	select {
+	case <-h.ctx.Done():
+		h.must(h.ctx.Err())
+	case <-time.After(d):
+	}
+	h.must(h.detach())
+}
+
+// diagnostic runs a command whose output is only evidence.
+func (h *harness) diagnostic(args ...string) {
+	if _, err := h.try(2*time.Minute, args...); err != nil {
+		h.t.Log("diagnostic failed", args, err)
+	}
 }
 
 // compact gives the image's free bands back to the share.
