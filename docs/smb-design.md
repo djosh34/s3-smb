@@ -144,23 +144,15 @@ server grows the balance toward 256 within the bound in `features.go`, and
 replenishes credits before a valid synchronous compound can use up the
 client's balance.
 
-When a related compound member goes async, the rest of the compound runs
-asynchronously too, and each dependent request waits for its predecessor,
-including CLOSE. If the first member goes async, only it gets a pending reply.
-The final replies of the whole compound then follow in one chain, with the
-first member's async ID: until a compound reply has come back split, macOS
-reads each packet as the reply to one whole compound, and a split reply there
-stalled a mount for two minutes in a Mac run. If a later member goes async,
-the replies before it are sent first, and it and each dependent request get
-their own pending reply, async ID and final reply. The server carries the
-session, tree and FileId from the preceding operation, also when that
-operation used an existing handle. Handlers report the FileId they used or
-created even on error; members that report none leave the saved ID unchanged.
-An error from a predecessor fails a following related FileId command with the
-same status; warnings do not. Completed replies are sent once. Unrelated
-members need not wait on S3. CANCEL has no reply. It cancels the named pending
-request; a member without a pending reply is named by its MessageId, and the
-first member's async ID also cancels the rest of its compound.
+Without the single reply chain described above, a split reply stalled a mount
+for two minutes in a Mac run. The server carries the session, tree and FileId
+from the preceding operation, also when that operation used an existing handle.
+Handlers report the FileId they used or created even on error; members that
+report none leave the saved ID unchanged. An error from a predecessor fails a
+following related FileId command with the same status; warnings do not.
+Completed replies are sent once. CANCEL has no reply. It cancels the named
+pending request; a member without a pending reply is named by its MessageId,
+and the first member's async ID also cancels the rest of its compound.
 
 ## Protection and reconnect
 
