@@ -197,8 +197,7 @@ func (h *harness) holderStates(holders map[string]bool) (holderCount, error) {
 }
 
 // deleteBackup deletes one backup with tmutil on the destination image
-// attached read-write. APFS gives the backup's blocks back during the next
-// backup, not while the image is only attached.
+// attached read-write, and keeps the image attached while APFS frees it.
 func (h *harness) deleteBackup(backup string) {
 	h.mount()
 	bundle := h.bundle()
@@ -212,6 +211,14 @@ func (h *harness) deleteBackup(backup string) {
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
+	}
+	// APFS frees the deleted snapshot's blocks in the background, and only
+	// while the volume is mounted. The run that freed them kept it attached
+	// for 5 minutes; a run that detached at once freed nothing.
+	select {
+	case <-h.ctx.Done():
+		h.must(h.ctx.Err())
+	case <-time.After(5 * time.Minute):
 	}
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)
