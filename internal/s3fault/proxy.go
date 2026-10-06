@@ -69,6 +69,7 @@ type Proxy struct {
 	transport   *http.Transport
 	next        *heldResponse
 	active      *heldResponse
+	rng         *rand.Rand
 	outageSeen  chan Event
 	done        chan struct{}
 	served      chan error
@@ -76,7 +77,6 @@ type Proxy struct {
 	address     string
 	fault       Fault
 	mix         Mix
-	rng         *rand.Rand
 	chunkPuts   atomic.Int64
 	outageUntil atomic.Int64
 	mu          sync.Mutex

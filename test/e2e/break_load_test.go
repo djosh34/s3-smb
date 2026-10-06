@@ -95,6 +95,8 @@ type macLoad struct {
 	t       *testing.T
 	f       *fixture
 	scratch map[string][]byte
+	// flushed hears of each FLUSH of one file that succeeded.
+	flushed chan struct{}
 	conns   []*macConn
 	handles [][]wire.FileID // per connection, one per band with a lease, then the side file
 	addrs   []string        // per connection
@@ -102,16 +104,14 @@ type macLoad struct {
 	leases  [][16]byte
 	slots   [][]slotState // per band, and the side file last
 	// fired holds the operations started once writes were stuck.
-	fired sync.WaitGroup
-	// flushed hears of each FLUSH of one file that succeeded. With
-	// fileFlushes, the flushing operator flushes only one file at a time.
-	flushed     chan struct{}
+	fired   sync.WaitGroup
+	seed    uint64
+	writers int
+	serial  int
+	mu      sync.Mutex
+	sideMu  sync.Mutex // one operator at a time uses the side file
+	// fileFlushes makes the flushing operator flush one file at a time.
 	fileFlushes bool
-	seed        uint64
-	writers     int
-	serial      int
-	mu          sync.Mutex
-	sideMu      sync.Mutex // one operator at a time uses the side file
 }
 
 // loadBands is the number of band files, and loadSlots the slots of each:
