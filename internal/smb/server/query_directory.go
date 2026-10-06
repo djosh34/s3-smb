@@ -59,7 +59,7 @@ func handleQueryDirectory(ctx context.Context, request RequestContext, message w
 	cursor := directoryCursor(open.Directory, query)
 	// MS-SMB2 3.3.5.18 permits ignoring INDEX_SPECIFIED. Storage cookies are
 	// opaque, not 32-bit byte indexes. All returned FileIndex fields are zero.
-	data, cursor, status, err := scanDirectory(ctx, request.Storage, open.Object.Inode, cursor, query)
+	data, cursor, status, err := scanDirectory(ctx, request.Storage, open.Object, cursor, query)
 	if err != nil {
 		return result, err
 	}
@@ -211,7 +211,7 @@ func directoryDots(ctx context.Context, storage smb.Storage, inode smb.Inode, cu
 	}
 	var entries []smb.DirEntry
 	if cursor.DotEntries == 0 {
-		attr, attrErr := storage.GetAttr(ctx, smb.ObjectKey{Inode: inode})
+		attr, attrErr := storage.GetAttr(ctx, inode)
 		if attrErr != nil {
 			return nil, attrErr
 		}

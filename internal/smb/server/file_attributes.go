@@ -23,8 +23,7 @@ func normalizeFileAttributes(attributes uint32, directory bool) uint32 {
 
 func setCreateAttributes(ctx context.Context, storage smb.Storage, create wire.CreateRequest, resolved smb.Resolved, action uint32) error {
 	directory := resolved.Attr.Kind == smb.KindDirectory
-	// CREATE attributes describe the unnamed file, never a selected named stream.
-	if resolved.Object.Stream != "" || action == 1 || action != 0 && create.FileAttributes == 0 && directory {
+	if action == 1 || action != 0 && create.FileAttributes == 0 && directory {
 		return nil
 	}
 	attributes := create.FileAttributes

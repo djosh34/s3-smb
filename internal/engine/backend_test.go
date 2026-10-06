@@ -160,14 +160,14 @@ func TestRealBackend(t *testing.T) {
 	moved := lookup(t, e, "d/big")
 	destination := lookup(t, e, "d")
 	err := e.Rename(t.Context(), smb.RenameRequest{
-		Source: moved.Name, SourceInode: moved.Object.Inode,
-		Destination: smb.Name{Parent: destination.Object.Inode, Base: "moved"},
+		Source: moved.Name, SourceInode: moved.Object,
+		Destination: smb.Name{Parent: destination.Object, Base: "moved"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	small := lookup(t, e, "small")
-	if err = e.Remove(t.Context(), small.Name, small.Object.Inode); err != nil {
+	if err = e.Remove(t.Context(), small.Name, small.Object); err != nil {
 		t.Fatal(err)
 	}
 	want := map[string]string{"d/": "", "d/moved": string(big[:100<<10])}

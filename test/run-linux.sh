@@ -26,4 +26,4 @@ go build -race -buildvcs=false -o /tmp/s3-smb .
 echo "Chaos seed $S3_SMB_CHAOS_SEED: replay with S3_SMB_CHAOS_SEED=$S3_SMB_CHAOS_SEED"
 # Only these packages need MinIO. The unit part of scripts/check.sh runs the rest.
 GORACE=halt_on_error=1 S3_SMB_E2E_BINARY=/tmp/s3-smb \
-  go test -race -shuffle=on -count=1 "-timeout=$timeout" ./internal/engine ./internal/storage ./test/e2e
+  go test -race -shuffle=on -count=1 "-timeout=$timeout" ./internal/engine ./test/e2e

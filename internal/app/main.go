@@ -15,8 +15,8 @@ import (
 )
 
 // Main runs the foreground process and returns its exit code. When shutdown
-// exceeds its deadline, Main calls exit while the state lock is still held,
-// because JuiceFS I/O may still be running.
+// exceeds its deadline, Main calls exit while the folder lock is still held,
+// because storage I/O may still be running.
 func Main(args []string, version string, stdout, stderr io.Writer, exit func(code int)) int {
 	logging.Install(stderr)
 	// Apply --log-format before parsing, so an error in the command line or the
@@ -39,13 +39,13 @@ func Main(args []string, version string, stdout, stderr io.Writer, exit func(cod
 		return write(stdout, "s3-smb "+version+"\nSource: https://github.com/djosh34/s3-smb\n")
 	}
 	hardExit := func() {
-		logFailure("hard shutdown deadline exceeded; exiting with local state lock retained until process termination", nil)
+		logFailure("hard shutdown deadline exceeded; exiting with the folder lock retained until process termination", nil)
 		exit(1)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	// A signal can arrive during a blocked startup step or terminal read, where
-	// serve cannot clean up. Exit once the shutdown deadline has passed.
+	// A signal can arrive during a blocked startup step, where serve cannot
+	// clean up. Exit once the shutdown deadline has passed.
 	finished := make(chan struct{})
 	defer close(finished)
 	go func() {

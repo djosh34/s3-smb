@@ -8,7 +8,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,19 +15,17 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
-
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
 type process struct {
-	cmd      *exec.Cmd
-	done     chan struct{}
-	err      error
-	cancel   context.CancelFunc
-	log      *os.File
-	closeTTY func() error
-	point    string
+	cmd    *exec.Cmd
+	done   chan struct{}
+	err    error
+	cancel context.CancelFunc
+	log    *os.File
+	// point is the database copy that an application start restored.
+	point string
 }
 
 func (p *process) exited() bool {
@@ -105,9 +102,6 @@ func stop(p *process, abrupt bool) error {
 	case p.err != nil && !errors.Is(p.err, context.Canceled):
 		err = errors.Join(err, p.err)
 	}
-	if p.closeTTY != nil {
-		err = errors.Join(err, p.closeTTY())
-	}
 	return errors.Join(err, p.log.Close())
 }
 
@@ -146,6 +140,11 @@ func (h *harness) run(timeout time.Duration, args ...string) string {
 	return output
 }
 
+// startDaemon starts s3-smb and waits until it serves. A fresh start writes
+// the config into a new data folder. A recover start also has a new data
+// folder and must restore a database copy. It may first wait out the old
+// server's stale bucket lock, which takes 10 minutes. A restart reuses the
+// data folder and must keep its database.
 func (h *harness) startDaemon(phase string) {
 	if phase != "restart" {
 		h.must(h.workDir.Mkdir("daemon", 0o700))
@@ -156,8 +155,6 @@ func (h *harness) startDaemon(phase string) {
   password: synthetic-tm-control
 storage:
   state_dir: %q
-  cache_dir: %q
-  cache_size: 0
 s3:
   endpoint: http://127.0.0.1:19000
   bucket: %s
@@ -167,75 +164,40 @@ s3:
     value: %s
   secret_key:
     value: %s
-encryption:
-  enabled: true
-  passphrase:
-    value: synthetic-mac-acceptance-passphrase
-backup:
-  interval: %s
 logging:
   format: json
   level: info
-`, filepath.Join(h.local, "state"), filepath.Join(h.local, "cache"), bucket, minioUser, minioPassword, h.interval)
+`, filepath.Join(h.local, "state"), bucket, minioUser, minioPassword)
 		h.must(h.workDir.WriteFile("daemon/config.yaml", []byte(config), 0o600))
 	}
 	h.applicationSerial++
 	name := fmt.Sprintf("application-%d-%s", h.applicationSerial, phase)
-	p := h.newProcess(name, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
-	terminal, err := pty.Start(p.cmd)
-	if err != nil {
-		p.cancel()
-		h.must(errors.Join(err, p.log.Close()))
-	}
+	p := h.start(name, filepath.Join(h.bin, "s3-smb"), "-c", filepath.Join(h.local, "config.yaml"), "serve")
 	h.daemon = p
-	p.wait()
-	ttyName := name + "-tty.log"
-	ttyLog, err := h.evidenceDir.OpenFile(ttyName, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		h.must(errors.Join(err, terminal.Close()))
+	limit := 3 * time.Minute
+	if phase == "recover" {
+		limit = 15 * time.Minute
 	}
-	copied := make(chan error, 1)
-	go func() {
-		_, err := io.Copy(ttyLog, terminal)
-		if errors.Is(err, syscall.EIO) {
-			err = nil
-		}
-		copied <- err
-	}()
-	p.closeTTY = func() error {
-		var err error
-		select {
-		case err = <-copied:
-		case <-time.After(5 * time.Second):
-			err = errors.New("PTY evidence reader did not close")
-		}
-		return errors.Join(err, terminal.Close(), ttyLog.Close())
-	}
-	confirmed := false
-	h.must(h.waitFor("application startup", 3*time.Minute, 100*time.Millisecond, func() (bool, error) {
-		text, err := h.evidenceDir.ReadFile(ttyName)
-		if err != nil {
-			return false, err
-		}
-		if !confirmed && strings.Contains(string(text), "Continue? [yes/no]: ") {
-			p.point, err = helpers.Confirmation(phase, string(text))
-			if err != nil {
-				return false, err
-			}
-			if _, err = terminal.Write([]byte("yes\n")); err != nil {
-				return false, err
-			}
-			confirmed = true
-		}
+	h.must(h.waitFor("application startup", limit, time.Second, func() (bool, error) {
 		data, err := h.evidenceDir.ReadFile(name + ".log")
 		if err != nil {
 			return false, err
 		}
-		ready := strings.Contains(string(data), `"msg":"SMB serving"`)
-		if ready && phase != "restart" && !confirmed {
-			return false, errors.New("fresh start did not require documented confirmation")
+		text := string(data)
+		if !strings.Contains(text, `"msg":"SMB serving"`) {
+			return false, nil
 		}
-		return ready, nil
+		p.point = helpers.RestoredCopy(text)
+		kept := strings.Contains(text, `"msg":"keeping the local database"`)
+		switch {
+		case phase == "recover" && p.point == "":
+			return false, errors.New("recovery start restored no database copy")
+		case phase == "restart" && !kept:
+			return false, errors.New("restart did not keep its local database")
+		case phase == "initialize" && (p.point != "" || kept):
+			return false, errors.New("fresh start found an existing database")
+		}
+		return true, nil
 	}))
-	h.t.Log("application-ready", phase, p.cmd.Process.Pid, "recovered_from", p.point)
+	h.t.Log("application-ready", phase, p.cmd.Process.Pid, "restored", p.point)
 }

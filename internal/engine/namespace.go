@@ -125,7 +125,7 @@ func validBase(base string) bool {
 	return base != "" && base != "." && base != ".." && len(base) <= 255 && utf8.ValidString(base) && !strings.ContainsAny(base, "\x00:/\\")
 }
 
-// parsePath splits a share-relative path. Named streams are not supported;
+// parsePath splits a share-relative path. Stream syntax is not supported;
 // name::$DATA names the file itself.
 func parsePath(p string) ([]string, error) {
 	if !utf8.ValidString(p) || strings.ContainsRune(p, 0) {
@@ -158,9 +158,6 @@ func parsePath(p string) ([]string, error) {
 }
 
 func checkName(name smb.Name) error {
-	if name.Stream != "" {
-		return smb.ErrNotSupported
-	}
 	if !validBase(name.Base) {
 		return smb.ErrInvalidName
 	}
@@ -178,9 +175,8 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 	}
 	parent := smb.Inode(rootInode)
 	if len(parts) == 0 {
-		key := smb.ObjectKey{Inode: parent}
-		a, attrErr := e.GetAttr(ctx, key)
-		return smb.Resolved{Object: key, Attr: a, Exists: attrErr == nil}, attrErr
+		a, attrErr := e.GetAttr(ctx, parent)
+		return smb.Resolved{Object: parent, Attr: a, Exists: attrErr == nil}, attrErr
 	}
 	for _, base := range parts[:len(parts)-1] {
 		r, ok, lookupErr := childRow(ctx, e.db, parent, base)
@@ -201,7 +197,7 @@ func (e *Engine) Lookup(ctx context.Context, p string) (smb.Resolved, error) {
 	}
 	st, unpin := e.pin(r.id)
 	defer unpin()
-	return smb.Resolved{Name: name, Object: smb.ObjectKey{Inode: r.id}, Attr: attr(r, st), Exists: true}, nil
+	return smb.Resolved{Name: name, Object: r.id, Attr: attr(r, st), Exists: true}, nil
 }
 
 // Create makes a new file or directory. An existing name is ErrNameCollision.
@@ -242,9 +238,8 @@ func (e *Engine) Create(ctx context.Context, name smb.Name, kind smb.Kind) (smb.
 	if err != nil {
 		return smb.Resolved{}, err
 	}
-	key := smb.ObjectKey{Inode: id}
-	a, err := e.GetAttr(ctx, key)
-	return smb.Resolved{Name: name, Object: key, Attr: a, Exists: err == nil}, err
+	a, err := e.GetAttr(ctx, id)
+	return smb.Resolved{Name: name, Object: id, Attr: a, Exists: err == nil}, err
 }
 
 // checkParent requires a linked directory.
@@ -393,9 +388,6 @@ func trashPending(name string, seq int64) []statement {
 // Rename moves exactly the expected identities in one commit. Chunk IDs stay.
 // A replaced destination is removed as Remove would.
 func (e *Engine) Rename(ctx context.Context, request smb.RenameRequest) error {
-	if request.Source.Stream != "" || request.Destination.Stream != "" {
-		return smb.ErrNotSupported
-	}
 	if e.readOnly {
 		return smb.ErrReadOnly
 	}
@@ -512,12 +504,6 @@ func (e *Engine) PathOf(ctx context.Context, ino smb.Inode) (string, error) {
 	}
 	slices.Reverse(names)
 	return strings.Join(names, "/"), nil
-}
-
-// Streams lists nothing: named streams are not supported.
-func (e *Engine) Streams(ctx context.Context, ino smb.Inode) ([]smb.StreamInfo, error) {
-	_, err := fileRow(ctx, e.db, ino)
-	return nil, err
 }
 
 // StatFS reports the configured capacity, or caps free space at 1 TiB.

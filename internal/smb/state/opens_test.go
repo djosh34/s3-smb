@@ -12,9 +12,9 @@ const shareAll = state.ShareMode(state.RightRead | state.RightWrite | state.Righ
 
 var binding = state.Binding{SessionID: 1, TreeID: 1}
 
-type handle struct{ key smb.ObjectKey }
+type handle struct{ key smb.Inode }
 
-func (reference *handle) Key() smb.ObjectKey { return reference.key }
+func (reference *handle) Key() smb.Inode { return reference.key }
 
 func newTable(t *testing.T) *state.Table {
 	t.Helper()
@@ -27,7 +27,7 @@ func newTable(t *testing.T) *state.Table {
 
 func request(inode smb.Inode) state.OpenRequest {
 	return state.OpenRequest{
-		User: "user", Share: "share", Object: smb.ObjectKey{Inode: inode}, Binding: binding,
+		User: "user", Share: "share", Object: inode, Binding: binding,
 		ClientGUID: state.GUID{1}, Sharing: shareAll,
 	}
 }
@@ -124,10 +124,8 @@ func TestOpenBelongsToItsBinding(t *testing.T) {
 	table.Disconnect(binding.SessionID)
 	fresh, status := table.Reconnect(reconnectRequest(open))
 	statusIs(t, status, smb.StatusSuccess)
-	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusFileClosed)
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(), true), smb.StatusFileClosed)
 	statusIs(t, table.SetDirectory(open.ID, binding, state.DirectoryCursor{Pattern: "*"}), smb.StatusFileClosed)
-	statusIs(t, table.Lock(open.ID, binding, []state.Range{{Length: 10}}, false), smb.StatusFileClosed)
-	statusIs(t, table.CheckIO(open.ID, binding, 0, 10, false), smb.StatusFileClosed)
 	_, status = table.Close(open.ID, binding)
 	statusIs(t, status, smb.StatusFileClosed)
 	found, status := table.Find(fresh.ID, fresh.Binding)

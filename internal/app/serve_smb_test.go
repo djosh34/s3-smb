@@ -3,20 +3,15 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
 	"net"
-	"net/http"
-	"net/http/httptest"
-	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/config"
-	"github.com/djosh34/s3-smb/internal/juicefs/pkg/meta"
-	"github.com/djosh34/s3-smb/internal/storage"
+	"github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 )
 
 type servingHandler struct {
@@ -36,69 +31,27 @@ func (h servingHandler) Handle(ctx context.Context, record slog.Record) error {
 	return h.Handler.Handle(ctx, record)
 }
 
+// serveConfig is a configuration for serve on an in-memory S3 server.
+func serveConfig(t *testing.T) *config.Resolved {
+	t.Helper()
+	pathStyle := true
+	return &config.Resolved{
+		Config: &config.Config{
+			SMB:     serverConfig(),
+			Storage: config.StorageConfig{StateDir: t.TempDir()},
+			S3:      config.S3Config{Bucket: "bucket", Endpoint: smbtest.NewS3(t), PathStyle: &pathStyle},
+		},
+		AccessKey: "synthetic-access", SecretKey: "synthetic-secret",
+	}
+}
+
 func TestSMBServeCancellation(t *testing.T) {
-	stateDir := t.TempDir()
-	format, err := storage.NewFormat(storage.VolumeName, false, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m, err := storage.OpenMetadata(filepath.Join(stateDir, "metadata.db"), meta.DefaultConf())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = m.Init(format, false); err != nil {
-		t.Fatal(err)
-	}
-	if err = m.Shutdown(); err != nil {
-		t.Fatal(err)
-	}
-	// format.json holds no bucket or credentials.
-	identity, err := json.Marshal(struct {
-		meta.Format
-		Bucket       string `json:"-"`
-		AccessKey    string `json:"-"`
-		SecretKey    string `json:"-"`
-		SessionToken string `json:"-"`
-	}{Format: *format})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Only startup reads are needed for an existing, read-only dataset.
-	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var data []byte
-		switch {
-		case r.Method == http.MethodGet && r.URL.Query().Get("list-type") == "2":
-			w.Header().Set("Content-Type", "application/xml")
-			data = []byte(`<ListBucketResult><IsTruncated>false</IsTruncated><Contents><Key>s3-smb/format.json</Key><Size>1</Size></Contents></ListBucketResult>`)
-		case r.Method == http.MethodGet && r.URL.Path == "/fixture/s3-smb/format.json":
-			data = identity
-		case r.Method == http.MethodGet && r.URL.Path == "/fixture/s3-smb/juicefs_uuid":
-			data = []byte(format.UUID)
-		default:
-			t.Errorf("unexpected S3 request: %s %s", r.Method, r.URL)
-			w.WriteHeader(http.StatusBadRequest)
-		}
-		if _, e := w.Write(data); e != nil {
-			t.Error(e)
-		}
-	}))
-	defer s3.Close()
+	c := serveConfig(t)
+	stateDir := c.Storage.StateDir
 	ready := make(chan string, 1)
 	previousLogger := slog.Default()
 	slog.SetDefault(slog.New(servingHandler{slog.NewTextHandler(io.Discard, nil), ready}))
 	defer slog.SetDefault(previousLogger)
-	zero := config.ByteSize(0)
-	pathStyle := true
-	c := &config.Resolved{
-		Config: &config.Config{
-			SMB:     serverConfig(),
-			Storage: config.StorageConfig{StateDir: stateDir, CacheDir: t.TempDir(), CacheSize: &zero},
-			S3:      config.S3Config{Bucket: "fixture", Region: "us-east-1", Endpoint: s3.URL, PathStyle: &pathStyle},
-			Backup:  config.BackupConfig{Interval: time.Hour},
-		},
-		AccessKey: "synthetic-access", SecretKey: "synthetic-secret",
-	}
-	c.SMB.ReadOnly = true
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	done := make(chan error, 1)
@@ -109,11 +62,11 @@ func TestSMBServeCancellation(t *testing.T) {
 	var address string
 	select {
 	case address = <-ready:
-	case err = <-done:
+	case err := <-done:
 		t.Fatalf("serve stopped before listening: %v", err)
 	}
 	cancel()
-	if err = <-done; err != nil {
+	if err := <-done; err != nil {
 		t.Fatalf("canceled serve: %v", err)
 	}
 	if conn, e := new(net.Dialer).DialContext(t.Context(), "tcp", address); e == nil {
@@ -121,9 +74,40 @@ func TestSMBServeCancellation(t *testing.T) {
 	}
 	lock, err := lockState(stateDir)
 	if err != nil {
-		t.Fatalf("serve retained its state lock: %v", err)
+		t.Fatalf("serve retained its folder lock: %v", err)
 	}
 	if err = lock.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// The configured capacity and read-only mode reach the engine.
+func TestOpenPassesStorageSettings(t *testing.T) {
+	for _, readOnly := range []bool{false, true} {
+		c := serveConfig(t)
+		c.SMB.ReadOnly = readOnly
+		c.Storage.Capacity = 2 << 40
+		var r resources
+		err := r.open(t.Context(), c)
+		t.Cleanup(func() {
+			if e := r.close(t.Context()); e != nil {
+				t.Error(e)
+			}
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		space, err := r.store.StatFS(t.Context())
+		if err != nil || space.Capacity != 2<<40 {
+			t.Fatalf("capacity: %+v, %v", space, err)
+		}
+		resolved, err := r.store.Lookup(t.Context(), "fixture")
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = r.store.Create(t.Context(), resolved.Name, smb.KindFile)
+		if readOnly && !errors.Is(err, smb.ErrReadOnly) || !readOnly && err != nil {
+			t.Fatalf("read_only=%t: create error %v", readOnly, err)
+		}
 	}
 }

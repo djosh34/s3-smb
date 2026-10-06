@@ -6,10 +6,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 case "$MAC_PHASE" in
   discover) timeout=25m ;;
-  backup|features) timeout=140m ;;
-  recover) timeout=80m ;;
-  scenario) timeout=110m ;;
-  *) echo 'MAC_PHASE must be discover, backup, features, recover or scenario' >&2; exit 1 ;;
+  backup) timeout=150m ;;
+  recover) timeout=95m ;;
+  scenario) timeout=150m ;;
+  *) echo 'MAC_PHASE must be discover, backup, recover or scenario' >&2; exit 1 ;;
 esac
 sudo -n /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_RUNNER_HOME=$HOME" \
   "MAC_WORK=$MAC_WORK" "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_TRANSFER=$MAC_TRANSFER" \

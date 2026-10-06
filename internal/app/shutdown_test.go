@@ -8,7 +8,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/djosh34/s3-smb/internal/backup"
+	"github.com/djosh34/s3-smb/internal/smb"
 )
 
 type shutdownServer struct {
@@ -23,16 +23,25 @@ func (s *shutdownServer) Shutdown(context.Context) error {
 	return s.err
 }
 
-type shutdownAdapter struct{ called bool }
+// shutdownStore is an engine that only shuts down.
+type shutdownStore struct {
+	smb.Storage
+	err    error
+	called bool
+}
 
-func (a *shutdownAdapter) Shutdown() error {
-	a.called = true
-	return nil
+func (*shutdownStore) Dead() <-chan struct{} { return nil }
+
+func (*shutdownStore) Err() error { return nil }
+
+func (s *shutdownStore) Shutdown(context.Context) error {
+	s.called = true
+	return s.err
 }
 
 // closeWithServeError runs close after Serve or Shutdown returned err. It
-// reports the close error and whether storage cleanup ran and the state lock
-// was released.
+// reports the close error and whether the engine was shut down and the folder
+// lock released.
 func closeWithServeError(t *testing.T, err error, fromShutdown bool) (cleanedUp bool, closeErr error) {
 	t.Helper()
 	s := &shutdownServer{}
@@ -48,8 +57,8 @@ func closeWithServeError(t *testing.T, err error, fromShutdown bool) (cleanedUp 
 	if err != nil {
 		t.Fatal(err)
 	}
-	a := &shutdownAdapter{}
-	closeErr = (&resources{server: s, adapter: a, serveDone: done, lock: lock}).close(t.Context())
+	a := &shutdownStore{}
+	closeErr = (&resources{server: s, store: a, serveDone: done, lock: lock}).close(t.Context())
 	other, err := lockState(dir)
 	if err != nil {
 		// The failed close kept the lock. Release it for the next case.
@@ -62,7 +71,7 @@ func closeWithServeError(t *testing.T, err error, fromShutdown bool) (cleanedUp 
 		t.Fatal(err)
 	}
 	if !s.called || !a.called {
-		t.Fatal("close released the state lock without finishing SMB cleanup")
+		t.Fatal("close released the folder lock without finishing SMB and engine cleanup")
 	}
 	return true, closeErr
 }
@@ -138,75 +147,51 @@ func (s gatedShutdownServer) Shutdown(ctx context.Context) error {
 	return s.smbServer.Shutdown(ctx)
 }
 
-type gatedShutdownAdapter struct {
-	smbAdapter
-	gate shutdownGate
-}
-
-func (a gatedShutdownAdapter) Shutdown() error {
-	a.gate.wait()
-	return a.smbAdapter.Shutdown()
-}
-
-func TestShutdownWaitsBeforeStoppingBackup(t *testing.T) {
-	serverGate, adapterGate := newShutdownGate(t), newShutdownGate(t)
+// SMB shuts down, closing every open, before the engine stops.
+func TestShutdownStopsSMBBeforeTheEngine(t *testing.T) {
+	gate := newShutdownGate(t)
 	server := &shutdownServer{}
-	adapter := &shutdownAdapter{}
-	backupCtx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	backupDone := make(chan error, 1)
-	go func() {
-		<-backupCtx.Done()
-		backupDone <- backupCtx.Err()
-		close(backupDone)
-	}()
-	r := resources{
-		server: gatedShutdownServer{server, serverGate}, adapter: gatedShutdownAdapter{adapter, adapterGate},
-		cancelBackup: cancel, backupDone: backupDone,
-	}
+	engine := &shutdownStore{}
+	r := resources{server: gatedShutdownServer{server, gate}, store: engine}
 	// close gets an ended context, as it does in serve.
 	ended, end := context.WithCancel(t.Context())
 	end()
 	closed := make(chan error, 1)
 	go func() { closed <- r.close(ended) }()
-	for _, gate := range []shutdownGate{serverGate, adapterGate} {
-		select {
-		case <-gate.entered:
-		case err := <-closed:
-			t.Fatalf("close returned before cleanup: %v", err)
-		}
-		if err := backupCtx.Err(); err != nil {
-			t.Fatalf("backup canceled before cleanup: %v", err)
-		}
-		close(gate.release)
+	select {
+	case <-gate.entered:
+	case err := <-closed:
+		t.Fatalf("close returned before SMB shutdown: %v", err)
 	}
+	if engine.called {
+		t.Fatal("engine stopped before SMB shutdown finished")
+	}
+	close(gate.release)
 	if err := <-closed; err != nil {
 		t.Fatal(err)
 	}
-	if !server.called || !adapter.called || backupCtx.Err() == nil {
+	if !server.called || !engine.called {
 		t.Fatal("shutdown did not finish all cleanup")
 	}
 }
 
-func backupResult(err error) <-chan error {
-	done := make(chan error, 1)
-	done <- err
-	close(done)
-	return done
-}
-
-func TestShutdownReportsBackupFailure(t *testing.T) {
-	failure := backup.ErrUnprotected
-	if err := (&resources{backupDone: backupResult(failure)}).close(t.Context()); !errors.Is(err, failure) {
-		t.Fatalf("lost backup failure: %v", err)
+// A failed engine shutdown is reported and keeps the folder lock.
+func TestShutdownReportsEngineFailure(t *testing.T) {
+	dir := t.TempDir()
+	lock, err := lockState(dir)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-// A backup canceled during its retry wait returns the cancellation joined with
-// the last failed attempt. That is a normal shutdown.
-func TestShutdownAcceptsCanceledBackupRetry(t *testing.T) {
-	retry := errors.Join(context.Canceled, fmt.Errorf("upload snapshot: %w", context.DeadlineExceeded))
-	if err := (&resources{backupDone: backupResult(retry)}).close(t.Context()); err != nil {
-		t.Fatalf("canceled backup retry failed shutdown: %v", err)
+	defer func() {
+		if e := lock.Close(); e != nil {
+			t.Error(e)
+		}
+	}()
+	failure := errors.New("flush failed")
+	if err = (&resources{store: &shutdownStore{err: failure}, lock: lock}).close(t.Context()); !errors.Is(err, failure) {
+		t.Fatalf("lost engine failure: %v", err)
+	}
+	if other, e := lockState(dir); e == nil {
+		t.Fatal(errors.Join(errors.New("folder lock released after a failed shutdown"), other.Close()))
 	}
 }

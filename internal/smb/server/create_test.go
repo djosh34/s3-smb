@@ -158,9 +158,9 @@ func TestCreateReplacementNeedsAccess(t *testing.T) {
 	}
 }
 
-func (s *testServer) attributes(t *testing.T, object smb.ObjectKey) uint32 {
+func (s *testServer) attributes(t *testing.T, object smb.Inode) uint32 {
 	t.Helper()
-	attr, err := s.adapter.GetAttr(t.Context(), object)
+	attr, err := s.storage.GetAttr(t.Context(), object)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,18 +214,6 @@ func TestCreateAttributes(t *testing.T) {
 		if got := srv.attributes(t, srv.object(t, name)); reply.Attributes != test.want || got != test.want {
 			t.Errorf("%s: reply %#x, stored %#x, want %#x", name, reply.Attributes, got, test.want)
 		}
-	}
-	// Replacing a named stream leaves the base file's data and attributes.
-	seedWithAttributes(t, client, "base", "base data", 0x6)
-	seed(t, client, "base:fork", "old fork")
-	for _, disposition := range []uint32{fileSupersede, fileOverwrite, fileOverwriteIf} {
-		request := fullAccess("base:fork", disposition)
-		request.FileAttributes = 0x100
-		closeOK(t, client, mustOpen(t, client, request).ID)
-	}
-	srv.expectContent(t, map[string]string{"base": "base data"})
-	if got := srv.attributes(t, srv.object(t, "base")); got != 0x26 {
-		t.Errorf("base attributes %#x after replacing its stream", got)
 	}
 }
 
@@ -313,13 +301,13 @@ func TestCreateIgnoresFileIDQuery(t *testing.T) {
 func countHandles(srv *testServer) (opened, closed *atomic.Int32) {
 	opened, closed = new(atomic.Int32), new(atomic.Int32)
 	srv.faults.set(func(hooks *storageHooks) {
-		hooks.Open = func(ctx context.Context, object smb.ObjectKey, access smb.Access) (smb.Handle, error) {
+		hooks.Open = func(ctx context.Context, object smb.Inode, access smb.Access) (smb.Handle, error) {
 			opened.Add(1)
-			return srv.adapter.Open(ctx, object, access)
+			return srv.storage.Open(ctx, object, access)
 		}
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
 			closed.Add(1)
-			return srv.adapter.Close(ctx, handle)
+			return srv.storage.Close(ctx, handle)
 		}
 	})
 	return opened, closed
@@ -357,9 +345,9 @@ func TestCreateFailureReleasesEverything(t *testing.T) {
 func TestClose(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
-	base, stream := client.open(t, "file"), client.open(t, "file:fork")
-	writeFile(t, client, stream, []byte("fork"))
-	request := wire.CloseRequest{ID: stream, Flags: 1}
+	base, data := client.open(t, "file"), client.open(t, "data")
+	writeFile(t, client, data, []byte("data"))
+	request := wire.CloseRequest{ID: data, Flags: 1}
 	response, status := decodeReply(t, client.call(t, wire.Close, encode(t, wire.EncodeCloseRequest, request), 1), wire.DecodeCloseResponse)
 	if status != smb.StatusSuccess || response.Flags != 1 || response.Size != 4 || response.Attributes != 0x20 {
 		t.Fatalf("CLOSE with attributes = %+v, %#x", response, status)
@@ -384,11 +372,11 @@ func TestCloseFailureEndsTheOpen(t *testing.T) {
 	}{
 		"close": {func(hooks *storageHooks) {
 			hooks.Close = func(ctx context.Context, handle smb.Handle) error {
-				return errors.Join(smb.ErrIO, srv.adapter.Close(ctx, handle))
+				return errors.Join(smb.ErrIO, srv.storage.Close(ctx, handle))
 			}
 		}, 0},
 		"attributes": {func(hooks *storageHooks) {
-			hooks.GetAttr = func(context.Context, smb.ObjectKey) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
+			hooks.GetAttr = func(context.Context, smb.Inode) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
 		}, 1},
 	} {
 		id := openAs(t, client, name, fileAllAccess, 0, 0)

@@ -242,15 +242,6 @@ func FuzzDecodeWriteResponse(f *testing.F) {
 	fuzzCodec(f, WriteResponse{Count: 1, Remaining: 2}, EncodeWriteResponse, response(DecodeWriteResponse, Write))
 }
 
-func FuzzDecodeLockRequest(f *testing.F) {
-	value := LockRequest{Elements: []LockElement{{Offset: 1, Length: 2, Flags: 3}, {Offset: 4, Length: 5, Flags: 6}}, ID: FileID{7, 8}, Sequence: 9}
-	fuzzCodec(f, value, EncodeLockRequest, request(DecodeLockRequest, Lock))
-}
-
-func FuzzDecodeLockResponse(f *testing.F) {
-	fuzzCodec(f, EmptyResponse{}, EncodeLockResponse, response(DecodeLockResponse, Lock))
-}
-
 func FuzzDecodeQueryDirectoryRequest(f *testing.F) {
 	value := QueryDirectoryRequest{Pattern: "*.😀", ID: FileID{1, 2}, FileIndex: 3, OutputLength: 4, InfoClass: ClassDirectoryIDBoth, Flags: 5}
 	fuzzCodec(f, value, EncodeQueryDirectoryRequest, request(DecodeQueryDirectoryRequest, QueryDirectory))
@@ -427,11 +418,6 @@ func FuzzDecodeFileNetworkOpenInformation(f *testing.F) {
 func FuzzDecodeFileAttributeTagInformation(f *testing.F) {
 	value := FileAttributeTagInformation{Attributes: 1, Tag: 2}
 	fuzzCodec(f, value, EncodeFileAttributeTagInformation, DecodeFileAttributeTagInformation)
-}
-
-func FuzzDecodeFileStreamInformation(f *testing.F) {
-	value := FileStreamInformation{Entries: []FileStreamEntry{{Name: "::$DATA", Size: 1, AllocationSize: 2}, {Name: ":😀:$DATA", Size: 3, AllocationSize: 4}}}
-	fuzzCodec(f, value, EncodeFileStreamInformation, DecodeFileStreamInformation)
 }
 
 func FuzzDecodeFileIDInformation(f *testing.F) {

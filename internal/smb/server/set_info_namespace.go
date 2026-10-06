@@ -17,9 +17,6 @@ func setRenameInfo(ctx context.Context, request RequestContext, open state.Open,
 	if info.RootDirectory != 0 {
 		return smb.StatusNotSupported
 	}
-	if open.Object.Stream != "" {
-		return smb.StatusNotSupported
-	}
 	if open.GrantedAccess&0x00010000 == 0 {
 		return smb.StatusAccessDenied
 	}
@@ -29,16 +26,13 @@ func setRenameInfo(ctx context.Context, request RequestContext, open state.Open,
 		if err := ctx.Err(); err != nil {
 			return smb.StatusFromError(err)
 		}
-		sourcePath, source, err := renameSource(ctx, request, open.Object.Inode)
+		sourcePath, source, err := renameSource(ctx, request, open.Object)
 		if err != nil {
 			return smb.StatusFromError(err)
 		}
 		destination, err := request.Storage.Lookup(ctx, path)
 		if err != nil {
 			return smb.StatusFromError(err)
-		}
-		if destination.Name.Stream != "" {
-			return smb.StatusNotSupported
 		}
 		if source.Name.Parent == 0 || destination.Name.Parent == 0 {
 			return smb.StatusAccessDenied
@@ -82,7 +76,7 @@ func renameUnderGuard(ctx context.Context, request RequestContext, open state.Op
 		if !replace {
 			return smb.StatusObjectNameCollision, false
 		}
-		if request.Opens.InodeOpen(destination.Object.Inode) {
+		if request.Opens.InodeOpen(destination.Object) {
 			return smb.StatusAccessDenied, false
 		}
 	}
@@ -90,7 +84,7 @@ func renameUnderGuard(ctx context.Context, request RequestContext, open state.Op
 	// A source open granted DELETE cannot coexist with a deny-delete open.
 	err = request.Storage.Rename(ctx, smb.RenameRequest{
 		Source: source.Name, Destination: destination.Name,
-		SourceInode: open.Object.Inode, DestinationInode: destination.Object.Inode,
+		SourceInode: open.Object, DestinationInode: destination.Object,
 		Replace: replace,
 	})
 	return smb.StatusFromError(err), false
@@ -111,7 +105,7 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 		if err := ctx.Err(); err != nil {
 			return smb.StatusFromError(err)
 		}
-		path, discovered, err := renameSource(ctx, request, open.Object.Inode)
+		path, discovered, err := renameSource(ctx, request, open.Object)
 		if err != nil {
 			return smb.StatusFromError(err)
 		}
@@ -119,7 +113,7 @@ func setDispositionInfo(ctx context.Context, request RequestContext, open state.
 			return smb.StatusAccessDenied
 		}
 		// The inode guard also keeps child CREATE out of an emptiness check.
-		unlock, err := lockParents(ctx, request, discovered.Name.Parent, open.Object.Inode)
+		unlock, err := lockParents(ctx, request, discovered.Name.Parent, open.Object)
 		if err != nil {
 			return smb.StatusFromError(err)
 		}
@@ -137,11 +131,11 @@ func dispositionUnderGuard(ctx context.Context, request RequestContext, open sta
 	if err != nil {
 		return smb.StatusFromError(err), false
 	}
-	if resolved.Name.Parent != discovered.Name.Parent || !resolved.Exists || resolved.Object.Inode != open.Object.Inode {
+	if resolved.Name.Parent != discovered.Name.Parent || !resolved.Exists || resolved.Object != open.Object {
 		return smb.StatusSuccess, true
 	}
-	if open.Object.Stream == "" && resolved.Attr.Kind == smb.KindDirectory {
-		entries, err := request.Storage.ReadDir(ctx, open.Object.Inode, 0, 1)
+	if resolved.Attr.Kind == smb.KindDirectory {
+		entries, err := request.Storage.ReadDir(ctx, open.Object, 0, 1)
 		if err != nil {
 			return smb.StatusFromError(err), false
 		}
@@ -149,7 +143,5 @@ func dispositionUnderGuard(ctx context.Context, request RequestContext, open sta
 			return smb.StatusDirectoryNotEmpty, false
 		}
 	}
-	name := resolved.Name
-	name.Stream = open.Object.Stream
-	return request.Opens.SetDelete(open.ID, request.Binding(), name, true), false
+	return request.Opens.SetDelete(open.ID, request.Binding(), resolved.Name, true), false
 }

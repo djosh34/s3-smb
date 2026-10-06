@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"math"
@@ -28,7 +29,7 @@ func holdFlush(srv *testServer) (<-chan smb.SyncMode, chan<- error) {
 				if err != nil {
 					return err
 				}
-				return srv.adapter.Flush(ctx, handle, mode)
+				return srv.storage.Flush(ctx, handle, mode)
 			case <-ctx.Done():
 				return ctx.Err()
 			}
@@ -52,9 +53,6 @@ func TestRead(t *testing.T) {
 	if status := client.write(t, wire.WriteRequest{ID: writer, Offset: 2, Data: []byte("hello")}); status != smb.StatusSuccess {
 		t.Fatalf("WRITE status %#x", status)
 	}
-	owner, locked := client.open(t, "locked"), client.open(t, "locked")
-	writeFile(t, client, owner, []byte("data"))
-	lockRange(t, client, owner, 0, 64, lockExclusive, smb.StatusSuccess)
 	directory := openDirectory(t, client, "directory")
 	closed := client.open(t, "closed")
 	closeOK(t, client, closed)
@@ -79,9 +77,6 @@ func TestRead(t *testing.T) {
 		{"past the signed limit", "", reader, math.MaxInt64, 1, 0, smb.StatusInvalidParameter},
 		{"ending past the signed limit", "", reader, math.MaxInt64 - 1, 2, 0, smb.StatusInvalidParameter},
 		{"offset past the signed limit", "", reader, math.MaxInt64 + 1, 0, 0, smb.StatusInvalidParameter},
-		{"locked by another open", "", locked, 1, 1, 0, smb.StatusFileLockConflict},
-		{"empty inside a lock", "", locked, 1, 0, 0, smb.StatusSuccess},
-		{"empty past end of file inside a lock", "", locked, 64, 0, 0, smb.StatusSuccess},
 		{"directory", "", directory, 0, 10, 0, smb.StatusInvalidDeviceRequest},
 		{"empty from a directory", "", directory, 0, 0, 0, smb.StatusInvalidDeviceRequest},
 		{"closed open", "", closed, 0, 1, 0, smb.StatusFileClosed},
@@ -90,6 +85,23 @@ func TestRead(t *testing.T) {
 		if status != test.want || string(data) != test.data {
 			t.Errorf("%s: READ = %q, %#x; want %q, %#x", test.name, data, status, test.data, test.want)
 		}
+	}
+}
+
+// LOCK is refused: the server has no range locks.
+func TestLockNotSupported(t *testing.T) {
+	client := newTestServer(t).connect(t)
+	id := client.open(t, "file")
+	// One exclusive range of 10 bytes (MS-SMB2 2.2.26).
+	body := make([]byte, 48)
+	binary.LittleEndian.PutUint16(body, 48)
+	binary.LittleEndian.PutUint16(body[2:], 1)
+	binary.LittleEndian.PutUint64(body[8:], id.Persistent)
+	binary.LittleEndian.PutUint64(body[16:], id.Volatile)
+	binary.LittleEndian.PutUint64(body[32:], 10)
+	binary.LittleEndian.PutUint32(body[40:], 2)
+	if status := client.call(t, wire.Lock, body, 1).Header.Status; status != smb.StatusNotSupported {
+		t.Fatalf("LOCK status %#x", status)
 	}
 }
 
@@ -290,22 +302,18 @@ func TestFlushWaitsForStorage(t *testing.T) {
 // overwritten.
 func TestAppendWriteRechecksEndOfFile(t *testing.T) {
 	for _, test := range []struct {
-		name, path string
-		winner     uint32
+		name   string
+		winner uint32
 	}{
-		{"file, writer wins", "file", fileReadData | fileWriteData},
-		{"file, appender wins", "file", fileReadData | fileAppendData},
-		{"stream, writer wins", "file:fork", fileReadData | fileWriteData},
-		{"stream, appender wins", "file:fork", fileReadData | fileAppendData},
+		{"writer wins", fileReadData | fileWriteData},
+		{"appender wins", fileReadData | fileAppendData},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			srv := newTestServer(t)
 			client := srv.connect(t)
-			seed(t, client, "file", "base")
-			seed(t, client, "file:other", "other stream")
-			seed(t, client, test.path, "seed")
-			appender := openAs(t, client, test.path, fileReadData|fileAppendData, 7, 0)
-			winner := openAs(t, client, test.path, test.winner, 7, 0)
+			seed(t, client, "file", "seed")
+			appender := openAs(t, client, "file", fileReadData|fileAppendData, 7, 0)
+			winner := openAs(t, client, "file", test.winner, 7, 0)
 			entered, release := make(chan struct{}), make(chan struct{})
 			srv.faults.set(func(hooks *storageHooks) {
 				hooks.WriteAt = func(ctx context.Context, handle smb.Handle, src []byte, offset uint64) (int, error) {
@@ -317,7 +325,7 @@ func TestAppendWriteRechecksEndOfFile(t *testing.T) {
 							return 0, ctx.Err()
 						}
 					}
-					return srv.adapter.WriteAt(ctx, handle, src, offset)
+					return srv.storage.WriteAt(ctx, handle, src, offset)
 				}
 			})
 			request := client.send(t, wire.Write, encode(t, wire.EncodeWriteRequest, wire.WriteRequest{ID: appender, Offset: 4, Data: []byte("stale")}), 1)
@@ -330,9 +338,7 @@ func TestAppendWriteRechecksEndOfFile(t *testing.T) {
 			if status := client.receive(t, request).Header.Status; status != smb.StatusAccessDenied {
 				t.Fatalf("stale append: status %#x", status)
 			}
-			want := map[string]string{"file": "base", "file:other": "other stream"}
-			want[test.path] = "seedwinner"
-			srv.expectContent(t, want)
+			srv.expectContent(t, map[string]string{"file": "seedwinner"})
 		})
 	}
 }
@@ -363,41 +369,34 @@ func TestAppendSupersede(t *testing.T) {
 // An allocation that waits in storage cannot grow the file back after
 // another open shrank it meanwhile.
 func TestAllocationCannotUndoAConcurrentShrink(t *testing.T) {
-	for _, path := range []string{"file", "file:fork"} {
-		t.Run(path, func(t *testing.T) {
-			srv := newTestServer(t)
-			client, other := srv.connect(t), srv.connect(t)
-			seed(t, client, "file", "base")
-			allocator := client.open(t, path)
-			writeFile(t, client, allocator, bytes.Repeat([]byte("a"), 9000))
-			shrinker := other.open(t, path)
-			entered, release := make(chan struct{}), make(chan struct{})
-			srv.faults.set(func(hooks *storageHooks) {
-				hooks.SetAttr = func(ctx context.Context, object smb.ObjectKey, change smb.AttrChange) error {
-					srv.faults.set(func(hooks *storageHooks) { hooks.SetAttr = nil })
-					close(entered)
-					select {
-					case <-release:
-					case <-ctx.Done():
-						return ctx.Err()
-					}
-					return srv.adapter.SetAttr(ctx, object, change)
-				}
-			})
-			input := encode(t, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: 4097})
-			body := encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: allocator, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileAllocation), Input: input})
-			request := client.send(t, wire.SetInfo, body, 1)
-			<-entered
-			if status := setEndOfFile(t, other, shrinker, 7); status != smb.StatusSuccess {
-				t.Fatalf("shrink: status %#x", status)
+	srv := newTestServer(t)
+	client, other := srv.connect(t), srv.connect(t)
+	allocator := client.open(t, "file")
+	writeFile(t, client, allocator, bytes.Repeat([]byte("a"), 9000))
+	shrinker := other.open(t, "file")
+	entered, release := make(chan struct{}), make(chan struct{})
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.SetAttr = func(ctx context.Context, object smb.Inode, change smb.AttrChange) error {
+			srv.faults.set(func(hooks *storageHooks) { hooks.SetAttr = nil })
+			close(entered)
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			close(release)
-			if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
-				t.Fatalf("allocation: status %#x", status)
-			}
-			want := map[string]string{"file": "base"}
-			want[path] = "aaaaaaa"
-			srv.expectContent(t, want)
-		})
+			return srv.storage.SetAttr(ctx, object, change)
+		}
+	})
+	input := encode(t, wire.EncodeFileAllocationInformation, wire.FileAllocationInformation{AllocationSize: 4097})
+	body := encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: allocator, InfoType: wire.InfoFile, InfoClass: uint8(wire.ClassFileAllocation), Input: input})
+	request := client.send(t, wire.SetInfo, body, 1)
+	<-entered
+	if status := setEndOfFile(t, other, shrinker, 7); status != smb.StatusSuccess {
+		t.Fatalf("shrink: status %#x", status)
 	}
+	close(release)
+	if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("allocation: status %#x", status)
+	}
+	srv.expectContent(t, map[string]string{"file": "aaaaaaa"})
 }

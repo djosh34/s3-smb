@@ -105,9 +105,9 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	if resolved.Attr.Kind == smb.KindDirectory {
 		return 0, false, smb.StatusFileIsADirectory
 	}
-	if resolved.Object.Stream == "" && resolved.Attr.Attributes&0x6&^create.FileAttributes != 0 {
-		// MS-FSA refuses destructive unnamed-stream opens that omit an
-		// existing HIDDEN or SYSTEM attribute, before truncation.
+	if resolved.Attr.Attributes&0x6&^create.FileAttributes != 0 {
+		// MS-FSA refuses destructive opens that omit an existing HIDDEN or
+		// SYSTEM attribute, before truncation.
 		return 0, false, smb.StatusAccessDenied
 	}
 	if create.Disposition == fileSupersede {
@@ -122,7 +122,7 @@ func createDisposition(create wire.CreateRequest, resolved smb.Resolved, granted
 	return 3, true, smb.StatusSuccess // FILE_OVERWRITTEN.
 }
 
-func openRequestForCreate(request RequestContext, create wire.CreateRequest, contexts createContexts, object smb.ObjectKey, granted uint32) state.OpenRequest {
+func openRequestForCreate(request RequestContext, create wire.CreateRequest, contexts createContexts, object smb.Inode, granted uint32) state.OpenRequest {
 	open := state.OpenRequest{
 		Object: object, Binding: request.Binding(), User: request.Session.User,
 		Share: request.Tree.Share, ClientGUID: request.Session.ClientGUID,
@@ -168,7 +168,7 @@ func handleCreate(ctx context.Context, request RequestContext, message wire.Mess
 		return reply{status: status}, nil
 	}
 	if contexts.durable != nil {
-		if _, status = request.Opens.LookupCreate(openRequestForCreate(request, create, contexts, smb.ObjectKey{}, granted)); status != smb.StatusObjectNameNotFound {
+		if _, status = request.Opens.LookupCreate(openRequestForCreate(request, create, contexts, 0, granted)); status != smb.StatusObjectNameNotFound {
 			return reply{status: smb.StatusDuplicateObjectID}, nil
 		}
 	}
@@ -186,12 +186,8 @@ func createOnce(ctx context.Context, request RequestContext, create wire.CreateR
 }
 
 func createSelected(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, resolved smb.Resolved, granted uint32) (result reply, conflict *leaseBreak, resultErr error) {
-	aaplQuery := len(contexts.aapl) != 0
 	action, destructive, status := createDisposition(create, resolved, granted)
 	if status != smb.StatusSuccess {
-		return reply{status: status}, nil, nil
-	}
-	if status = streamOpenStatus(request.aaplNegotiated() || aaplQuery, create, resolved); status != smb.StatusSuccess {
 		return reply{status: status}, nil, nil
 	}
 	if !resolved.Exists {
@@ -267,9 +263,6 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 	if err != nil {
 		return reply{}, nil, errors.Join(err, closeFailedCreate(context.WithoutCancel(ctx), request, created))
 	}
-	if aaplQuery {
-		request.markAAPL()
-	}
 	return reply{body: body, fileID: response.ID}, nil, nil
 }
 
@@ -283,7 +276,7 @@ func closeFailedCreate(ctx context.Context, request RequestContext, open state.O
 	closeErr := request.Storage.Close(ctx, action.Handle)
 	if action.Remove {
 		defer request.Opens.CompleteDelete(action.Object)
-		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object.Inode))
+		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object))
 	}
 	return closeErr
 }

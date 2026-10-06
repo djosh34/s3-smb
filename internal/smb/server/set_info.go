@@ -9,7 +9,7 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// Matches smbfs allocation accounting and the filesystem information replies.
+// Matches storage allocation accounting and the filesystem information replies.
 const setInfoAllocationUnit uint64 = 4096
 
 func handleSetInfo(ctx context.Context, request RequestContext, message wire.Message) (reply, error) {

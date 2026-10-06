@@ -202,7 +202,7 @@ func (m *model) remove(path string, directory bool) {
 	}
 	m.closeHandle(path)
 	r := lookup(m.t, m.e, strings.TrimSuffix(path, "/"))
-	if err := m.e.Remove(m.t.Context(), r.Name, r.Object.Inode); err != nil {
+	if err := m.e.Remove(m.t.Context(), r.Name, r.Object); err != nil {
 		m.t.Fatal(err)
 	}
 	delete(m.live, path)
@@ -222,8 +222,8 @@ func (m *model) rename(from, to string) {
 		m.t.Fatal(err)
 	}
 	err = m.e.Rename(m.t.Context(), smb.RenameRequest{
-		Source: source.Name, SourceInode: source.Object.Inode,
-		Destination: destination.Name, DestinationInode: destination.Object.Inode, Replace: true,
+		Source: source.Name, SourceInode: source.Object,
+		Destination: destination.Name, DestinationInode: destination.Object, Replace: true,
 	})
 	if err != nil {
 		m.t.Fatal(err)

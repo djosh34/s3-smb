@@ -17,8 +17,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/sirupsen/logrus"
 )
 
 var state = struct {
@@ -28,8 +26,8 @@ var state = struct {
 	sync.RWMutex
 }{writer: os.Stderr}
 
-// Install sets text output at INFO and routes the standard log package and the
-// standard logrus logger through it. Registered secrets stay registered.
+// Install sets text output at INFO and routes the standard log package through
+// it. Registered secrets stay registered.
 func Install(w io.Writer) {
 	if w == nil {
 		w = os.Stderr
@@ -41,7 +39,6 @@ func Install(w io.Writer) {
 	slog.SetDefault(slog.New(&handler{}))
 	log.SetFlags(0)
 	log.SetPrefix("")
-	Logrus(logrus.StandardLogger(), "logrus")
 }
 
 // Configure checks both settings before it changes the logger. Empty values
@@ -187,7 +184,7 @@ func cleanAttrs(attrs []slog.Attr) []slog.Attr {
 func cleanAttr(a slog.Attr) slog.Attr {
 	key := strings.ToLower(strings.ReplaceAll(strings.ReplaceAll(a.Key, "_", ""), "-", ""))
 	switch key {
-	case "password", "passphrase", "secret", "secretkey", "accesskey", "sessiontoken", "token", "authorization", "privatekey", "keypem", "config", "configuration", "argv", "args", "sqlargs", "xattrvalue", "helperoutput":
+	case "password", "passphrase", "secret", "secretkey", "accesskey", "sessiontoken", "token", "authorization", "privatekey", "keypem", "config", "configuration", "argv", "args", "helperoutput":
 		return slog.String(Redact(a.Key), "[REDACTED]")
 	}
 	a.Key = Redact(a.Key)

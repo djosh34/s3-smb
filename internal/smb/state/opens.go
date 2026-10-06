@@ -23,9 +23,9 @@ func New(now func() time.Time) (*Table, error) {
 		now:          now,
 		opens:        make(map[uint64]*openEntry),
 		reservations: make(map[Reservation]OpenRequest),
-		objects:      make(map[smb.ObjectKey]*objectEntry),
+		objects:      make(map[smb.Inode]*objectEntry),
 		creates:      make(map[createIdentity]createEntry),
-		leaseObjects: make(map[leaseIdentity]smb.ObjectKey),
+		leaseObjects: make(map[leaseIdentity]smb.Inode),
 		breakChanges: make(chan struct{}),
 	}, nil
 }
@@ -68,7 +68,7 @@ func availableID(id uint64) bool {
 func (table *Table) Reserve(request OpenRequest) (Reservation, smb.Status) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if request.Object.Inode == 0 || !validBinding(request.Binding) || request.SharingIntent & ^allRights != 0 || Rights(request.Sharing) & ^allRights != 0 {
+	if request.Object == 0 || !validBinding(request.Binding) || request.SharingIntent & ^allRights != 0 || Rights(request.Sharing) & ^allRights != 0 {
 		return 0, smb.StatusInvalidParameter
 	}
 	request = sharingIntent(request)
@@ -97,22 +97,15 @@ func (table *Table) Reserve(request OpenRequest) (Reservation, smb.Status) {
 }
 
 func sharingCompatible(left, right OpenRequest) bool {
-	if left.Object.Inode != right.Object.Inode {
+	if left.Object != right.Object {
 		return true
 	}
 	// MS-FSA 2.1.5.1.2.2 excludes metadata-only opens from both
-	// directions of sharing, including base deletion against named streams.
+	// directions of sharing.
 	if left.SharingIntent == 0 || right.SharingIntent == 0 {
 		return true
 	}
-	if left.Object.Stream == right.Object.Stream {
-		return left.SharingIntent & ^Rights(right.Sharing) == 0 && right.SharingIntent & ^Rights(left.Sharing) == 0
-	}
-	// Base deletion checks every stream's deny-delete share, in both orders.
-	if left.Object.Stream == "" && left.SharingIntent&RightDelete != 0 && Rights(right.Sharing)&RightDelete == 0 {
-		return false
-	}
-	return right.Object.Stream != "" || right.SharingIntent&RightDelete == 0 || Rights(left.Sharing)&RightDelete != 0
+	return left.SharingIntent & ^Rights(right.Sharing) == 0 && right.SharingIntent & ^Rights(left.Sharing) == 0
 }
 
 func (table *Table) sharingAllowed(request OpenRequest, except uint64, reservation Reservation) bool {
@@ -129,15 +122,12 @@ func (table *Table) sharingAllowed(request OpenRequest, except uint64, reservati
 	return true
 }
 
-func (table *Table) deletePending(key smb.ObjectKey) bool {
-	if record := table.objects[key]; record != nil && record.DeletePending {
-		return true
-	}
-	base := table.objects[smb.ObjectKey{Inode: key.Inode}]
-	return base != nil && base.DeletePending
+func (table *Table) deletePending(key smb.Inode) bool {
+	record := table.objects[key]
+	return record != nil && record.DeletePending
 }
 
-func (table *Table) object(key smb.ObjectKey) *objectEntry {
+func (table *Table) object(key smb.Inode) *objectEntry {
 	record := table.objects[key]
 	if record == nil {
 		record = &objectEntry{ObjectRecord: ObjectRecord{Key: key}}
@@ -212,8 +202,8 @@ func (table *Table) Commit(reservation Reservation, grant Grant) (Open, smb.Stat
 	return open, smb.StatusSuccess
 }
 
-func validName(name smb.Name, object smb.ObjectKey) bool {
-	return name.Parent != 0 && name.Base != "" && name.Stream == object.Stream
+func validName(name smb.Name) bool {
+	return name.Parent != 0 && name.Base != ""
 }
 
 func (table *Table) validateGrant(request OpenRequest, reservation Reservation, grant Grant) smb.Status {
@@ -224,7 +214,7 @@ func (table *Table) validateGrant(request OpenRequest, reservation Reservation, 
 		if request.GrantedAccess&deleteAccess == 0 {
 			return smb.StatusAccessDenied
 		}
-		if !validName(grant.DeleteName, request.Object) {
+		if !validName(grant.DeleteName) {
 			return smb.StatusInvalidParameter
 		}
 		deleting := request
@@ -255,8 +245,8 @@ func (table *Table) Find(id FileID, binding Binding) (Open, smb.Status) {
 	return open.Open, smb.StatusSuccess
 }
 
-// DeletePending reports deletion of the selected object or its base file.
-func (table *Table) DeletePending(key smb.ObjectKey) bool {
+// DeletePending reports deletion of the object.
+func (table *Table) DeletePending(key smb.Inode) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	return table.deletePending(key)
@@ -290,7 +280,7 @@ func (table *Table) SetDelete(id FileID, binding Binding, name smb.Name, pending
 		return smb.StatusAccessDenied
 	}
 	if pending {
-		if !validName(name, open.Object) {
+		if !validName(name) {
 			return smb.StatusInvalidParameter
 		}
 		request := openRequest(open.Open)
@@ -320,9 +310,9 @@ func (table *Table) refreshDelete(record *objectEntry) {
 	}
 }
 
-func (table *Table) prune(key smb.ObjectKey) {
+func (table *Table) prune(key smb.Inode) {
 	record := table.objects[key]
-	if record == nil || len(record.Opens) != 0 || len(record.Locks) != 0 || record.lease != nil || record.DeletePending {
+	if record == nil || len(record.Opens) != 0 || record.lease != nil || record.DeletePending {
 		return
 	}
 	for _, reserved := range table.reservations {
@@ -359,20 +349,9 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 		delete(table.creates, identity(openRequest(open.Open)))
 	}
 	record.Opens = slices.DeleteFunc(record.Opens, func(id uint64) bool { return id == open.ID.Persistent })
-	record.Locks = slices.DeleteFunc(record.Locks, func(lock Range) bool { return lock.Owner == open.ID.Persistent })
 	table.releaseLease(record)
 	table.refreshDelete(record)
-	// A pending base deletion takes precedence when the inode's last open closes.
-	baseKey := smb.ObjectKey{Inode: key.Inode}
-	base := table.objects[baseKey]
-	if base != nil && base.DeletePending && !table.inodeOpen(key.Inode) {
-		action.Object, action.Name, action.Remove = baseKey, base.DeleteName, true
-		base.removalPending = true
-		if record != base {
-			record.DeletePending, record.deleteCommitted = false, false
-		}
-		table.prune(baseKey)
-	} else if key.Stream != "" && record.DeletePending && len(record.Opens) == 0 {
+	if record.DeletePending && len(record.Opens) == 0 {
 		action.Name, action.Remove = record.DeleteName, true
 		record.removalPending = true
 	}
@@ -383,7 +362,7 @@ func (table *Table) closeOpen(open *openEntry) CloseAction {
 // CompleteDelete releases the delete-pending barrier after a Remove action,
 // whether cleanup succeeded or failed. Until then Reserve and Commit reject
 // this object, including during bulk-close cleanup before its namespace lock.
-func (table *Table) CompleteDelete(object smb.ObjectKey) {
+func (table *Table) CompleteDelete(object smb.Inode) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	record := table.objects[object]
@@ -398,24 +377,15 @@ func (table *Table) CompleteDelete(object smb.ObjectKey) {
 }
 
 // InodeOpen reports whether an inode has any open or sharing reservation,
-// including named streams and detached durable opens.
+// including detached durable opens.
 func (table *Table) InodeOpen(inode smb.Inode) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
-	if table.inodeOpen(inode) {
+	if record := table.objects[inode]; record != nil && len(record.Opens) != 0 {
 		return true
 	}
 	for _, request := range table.reservations {
-		if request.Object.Inode == inode {
-			return true
-		}
-	}
-	return false
-}
-
-func (table *Table) inodeOpen(inode smb.Inode) bool {
-	for _, open := range table.opens {
-		if open.Object.Inode == inode {
+		if request.Object == inode {
 			return true
 		}
 	}

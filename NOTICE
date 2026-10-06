@@ -4,9 +4,6 @@ Original project code is licensed under AGPL-3.0-only; see LICENSE.
 
 This distribution incorporates modified copies of:
 
-* JuiceFS v1.4.1, commit 0b90c7db5a929ae6adc5faad948d108efd2c99f9
-  https://github.com/juicedata/juicefs
-  Copyright Juicedata Inc.; Apache-2.0 (internal/juicefs/LICENSE).
 * macos-fuse-t/go-smb2, commit 277a9300411249a881a05f7a910f5a83ae3395f2
   https://github.com/macos-fuse-t/go-smb2
   The NTLMv2 code in internal/smb/auth is ported from it.
@@ -15,22 +12,17 @@ This distribution incorporates modified copies of:
 * AES-CMAC in internal/smb/crypt/cmac.go, ported from go-smb2 above.
   Copyright 2009 The Go Authors; portions Copyright 2016 Hiroshi Ioka.
   BSD-3-Clause; the full notice is retained in that file.
-* Customized mpb, juicedata/mpb v7.0.4-0.20231024073412-2b8d31be510b
-  Unlicense; internal/thirdparty/mpb/UNLICENSE.
-* Customized Xorm, gitea.com/davies/xorm v1.0.8-0.20220528043536-552d84d1b34a
-  BSD-3-Clause; internal/thirdparty/xorm/LICENSE.
 
 Their original license grants and copyright notices remain applicable to
 those files; this distribution does not relicense upstream files.
-All import paths were rewritten to github.com/djosh34/s3-smb/internal/...
-docs/vendored.md lists every other change. Other Go dependencies and
+docs/vendored.md describes the changes. Other Go dependencies and
 versions are identified by go.mod/go.sum; their source/license texts are
 available through `go mod download` and their upstream repositories.
 
 Corresponding Source
 --------------------
-Complete application source, bundled modified upstream source, dependency
-pins, and build/test scripts are available without charge at:
+Complete application source, ported upstream source, dependency pins, and
+build/test scripts are available without charge at:
   https://github.com/djosh34/s3-smb
 Use the tag/commit matching the distributed version. `s3-smb version` reports
 version/build information. There is no separately withheld proprietary

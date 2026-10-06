@@ -8,9 +8,8 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// createAAPLContexts answers an AAPL query among contexts without changing
-// connection state. It returns no reply without a query. Unknown requested
-// bits get no answer.
+// createAAPLContexts answers an AAPL query among contexts. It returns no reply
+// without a query. Unknown requested bits get no answer.
 func createAAPLContexts(contexts []wire.CreateContext) ([]wire.CreateContext, error) {
 	var replies []wire.CreateContext
 	for _, context := range contexts {

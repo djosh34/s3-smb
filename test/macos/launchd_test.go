@@ -44,8 +44,7 @@ func (h *harness) launchdReady(previous, starts int) int {
 		if err != nil {
 			return false, err
 		}
-		ready, err := helpers.LaunchdServing(logs, starts)
-		return ready && pid != 0 && pid != previous, err
+		return helpers.LaunchdServing(logs, starts) && pid != 0 && pid != previous, nil
 	}))
 	h.t.Log("launchd-application-ready", "pid", pid, "previous_pid", previous, "starts", starts)
 	return pid
@@ -68,11 +67,10 @@ func (h *harness) launchdLogs() (string, error) {
 
 func (h *harness) killLaunchd(previous int, atKill string) (map[string]int64, int) {
 	h.run(time.Minute, "/bin/launchctl", "kill", "SIGKILL", launchdJob)
-	after := h.objects("s3-smb/chunks/")
+	after := h.objects("chunks/")
 	logs, err := h.launchdLogs()
 	h.must(err)
-	restarted, err := helpers.LaunchdServing(logs, 2)
-	h.must(err)
+	restarted := helpers.LaunchdServing(logs, 2)
 	if restarted {
 		h.t.Fatal("launchd restarted before the interrupted chunk snapshot was captured")
 	}

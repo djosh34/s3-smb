@@ -11,8 +11,8 @@ import (
 	"time"
 )
 
-// build builds s3-smb from this checkout, MinIO from the commit pinned in
-// test/Dockerfile and the fullsync probe, and saves their versions as evidence.
+// build builds s3-smb from this checkout and MinIO from the commit pinned in
+// test/Dockerfile, and saves their versions as evidence.
 func (h *harness) build() {
 	root, err := filepath.Abs("../..")
 	h.must(err)
@@ -65,7 +65,6 @@ func (h *harness) build() {
 	for _, args := range [][]string{
 		{"go", "-C", source, "build", "-p", "2", "-o", filepath.Join(h.bin, "minio"), "."},
 		{"go", "version", "-m", filepath.Join(h.bin, "minio")},
-		{"go", "-C", root, "build", "-o", filepath.Join(h.bin, "fullsync"), "./test/macos/fullsync"},
 	} {
 		h.run(20*time.Minute, args...)
 	}

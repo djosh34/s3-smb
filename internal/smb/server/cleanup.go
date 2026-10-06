@@ -39,7 +39,7 @@ func (server *Server) cleanupAction(ctx context.Context, action state.CloseActio
 
 func (server *Server) removeClosed(ctx context.Context, action state.CloseAction) error {
 	request := RequestContext{server: server, Storage: server.options.Storage}
-	name, unlock, err := lockName(ctx, request, action.Object.Inode)
+	name, unlock, err := lockName(ctx, request, action.Object)
 	if errors.Is(err, smb.ErrNameNotFound) {
 		return nil // Already unlinked.
 	}
@@ -47,8 +47,7 @@ func (server *Server) removeClosed(ctx context.Context, action state.CloseAction
 		return fmt.Errorf("find deletion name: %w", err)
 	}
 	defer unlock()
-	name.Stream = action.Object.Stream
-	if err = request.Storage.Remove(ctx, name, action.Object.Inode); err != nil {
+	if err = request.Storage.Remove(ctx, name, action.Object); err != nil {
 		return fmt.Errorf("remove closed object: %w", err)
 	}
 	return nil

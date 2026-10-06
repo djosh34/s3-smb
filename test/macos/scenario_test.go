@@ -18,18 +18,16 @@ type result struct {
 	NetworkDrop     *helpers.DropReport `json:"network_drop,omitempty"`
 	Baseline        string              `json:"baseline"`
 	Scenario        string              `json:"scenario,omitempty"`
-	MetadataBackup  string              `json:"metadata_backup,omitempty"`
 	AtKill          string              `json:"at_kill,omitempty"`
 	Resumed         string              `json:"resumed,omitempty"`
-	RecoveredFrom   string              `json:"recovered_from,omitempty"`
+	RestoredFrom    string              `json:"restored_from,omitempty"`
 	BaselineRestore helpers.Counts      `json:"baseline_restore,omitempty"`
 	ResumedRestore  helpers.Counts      `json:"resumed_restore,omitempty"`
 	ChunkObjectsEnd int                 `json:"chunk_objects_end,omitempty"`
 }
 
 // baseline starts fresh storage and s3-smb, then makes and checks the first
-// Time Machine backup. The features phase first checks Mac file operations on
-// the empty share.
+// Time Machine backup, and waits for a database copy that holds it.
 func (h *harness) baseline() result {
 	h.must(absent(filepath.Join(h.work, "objects")))
 	h.must(absent(h.local))
@@ -42,24 +40,19 @@ func (h *harness) baseline() result {
 	if len(entries) != 0 {
 		h.t.Fatal("initial application share not empty")
 	}
-	if os.Getenv("MAC_PHASE") == "features" {
-		h.shareFeatures()
-		h.t.Log("share-features-passed")
-	}
 	// The server lets one client in at a time. Unmount before tmutil connects.
 	h.must(h.detachShares())
 	h.destinationSetup()
 	h.createTree()
 	h.checkExclusions()
 	h.startBackup("baseline")
-	completed, err := h.completeBackup("baseline")
-	h.must(err)
+	h.must(h.completeBackup("baseline"))
 	h.must(h.detach())
 	h.mount()
 	selected := h.remoteBackup("baseline", "")
 	h.backupTree(selected)
 	h.must(h.detach())
-	h.metadata(completed, "baseline")
+	h.newCopy("baseline")
 	return result{Baseline: filepath.Base(selected)}
 }
 
@@ -121,12 +114,19 @@ func (h *harness) copying() string {
 	return text
 }
 
-func (h *harness) cold() {
+// cold stops s3-smb, if it runs, and starts it on a new data folder. The new
+// server must restore the newest database copy, which it returns.
+func (h *harness) cold() string {
 	if h.daemon != nil {
 		h.stopDaemon(false)
 	}
+	newest := helpers.NewestCopy(h.objects("db/"))
 	h.must(h.workDir.RemoveAll("daemon"))
 	h.startDaemon("recover")
+	if h.daemon.point != newest {
+		h.t.Fatalf("restored %s, expected the newest copy %s", h.daemon.point, newest)
+	}
+	return newest
 }
 
 func (h *harness) scenario(name string) result {
@@ -137,36 +137,16 @@ func (h *harness) scenario(name string) result {
 	default:
 		h.t.Fatal("unknown interruption scenario", name)
 	}
-	midpoint := name == "server-kill-cold-midpoint"
-	if midpoint {
-		h.interval = "1m"
-	}
 	outcome := h.baseline()
 	launchdPID := 0
 	if name == "launchd-kill-restart" {
 		launchdPID = h.startLaunchd()
 	}
-	size := int64(1 << 30)
-	if midpoint {
-		size = 4 << 30
-	}
-	h.randomFile("later.bin", size)
+	h.randomFile("later.bin", 1<<30)
 	h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed after the baseline\n"), 0o600))
 	updated, _ := h.manifest(h.proof, h.evidenceDir, "updated-tree.json")
-	// Wait for this metadata point last, so the cold and machine-loss kills
-	// come before the next scheduled point.
-	p1 := h.metadata(time.Now().UTC(), "pre-interruption")
-	before := h.objects("s3-smb/chunks/")
+	before := h.objects("chunks/")
 	atKill := h.copying()
-	point := p1
-	if midpoint {
-		point = h.metadata(time.Now().UTC(), "midpoint")
-		atKill = h.run(2*time.Minute, "/usr/bin/tmutil", "status")
-		if !helpers.Copying(atKill) {
-			h.t.Fatal("Time Machine stopped copying before the metadata backup landed")
-		}
-	}
-	aborted := time.Now().UTC()
 	var after map[string]int64
 	newPID := 0
 	switch name {
@@ -185,32 +165,29 @@ func (h *harness) scenario(name string) result {
 		h.stopDaemon(true)
 	}
 	h.stopClient()
-	// Check before any recovery or metadata wait. launchd captured this before restart.
+	// Check before any restart. launchd captured this before its restart.
 	if after == nil {
-		after = h.objects("s3-smb/chunks/")
+		after = h.objects("chunks/")
 	}
 	h.must(helpers.CheckRemoteChange(before, after))
 	h.save("interrupted-chunks.json", map[string]any{"before": before, "after": after, "at_kill": atKill})
 	outcome.Scenario, outcome.AtKill = name, atKill
-	if name == "machine-loss" {
-		outcome.MetadataBackup = p1.Key
+	switch name {
+	case "machine-loss":
 		return outcome
-	}
-	if name == "server-kill-restart" {
+	case "server-kill-restart":
 		h.startDaemon("restart")
-	} else if name != "launchd-kill-restart" {
-		if name == "client-abort-cold" {
-			point = h.metadata(aborted, "after-abort")
-		}
-		h.cold()
-		if name == "server-kill-cold" && h.daemon.point != p1.Key {
-			h.t.Fatalf("recovered from %s, expected %s", h.daemon.point, p1.Key)
-		}
-		if name != "server-kill-cold" && h.daemon.point < point.Key {
-			h.t.Fatalf("recovered from %s, expected %s or later", h.daemon.point, point.Key)
-		}
+	case "server-kill-cold":
+		outcome.RestoredFrom = h.cold()
+	case "server-kill-cold-midpoint":
+		// The restart's start copy holds what the interrupted backup flushed,
+		// so the cold start restores a copy from the middle of a backup.
+		h.startDaemon("restart")
+		outcome.RestoredFrom = h.cold()
+	case "client-abort-cold":
+		h.newCopy("after-abort")
+		outcome.RestoredFrom = h.cold()
 	}
-	outcome.MetadataBackup = point.Key
 	h.mount()
 	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline-recovered", outcome.Baseline), h.reference(), "restore-baseline")
 	h.must(h.detach())
@@ -219,10 +196,7 @@ func (h *harness) scenario(name string) result {
 	if name == "launchd-kill-restart" {
 		h.checkLaunchdPID(newPID)
 	}
-	outcome.Resumed, outcome.ChunkObjectsEnd = filepath.Base(latest), len(h.objects("s3-smb/chunks/"))
-	if h.daemon != nil {
-		outcome.RecoveredFrom = h.daemon.point
-	}
+	outcome.Resumed, outcome.ChunkObjectsEnd = filepath.Base(latest), len(h.objects("chunks/"))
 	h.must(h.detach())
 	return outcome
 }
@@ -230,7 +204,7 @@ func (h *harness) scenario(name string) result {
 func (h *harness) resumeBackup(baseline string, requireNext bool) string {
 	for _, label := range []string{"resumed", "resumed-retry"} {
 		h.startBackup(label)
-		if _, err := h.completeBackup(label); err != nil {
+		if err := h.completeBackup(label); err != nil {
 			if requireNext {
 				h.must(err)
 			}
@@ -251,8 +225,9 @@ func (h *harness) resumeBackup(baseline string, requireNext bool) string {
 	return ""
 }
 
-// recoverStore recovers s3-smb on a fresh Mac from the store that a backup or
-// machine-loss job exported, then restores the baseline backup.
+// recoverStore starts s3-smb with a new data folder on a fresh Mac, on the
+// store that a backup or machine-loss job exported. It must restore the
+// newest database copy. Then the baseline backup is restored.
 func (h *harness) recoverStore() result {
 	h.must(absent(h.local))
 	h.must(absent(filepath.Join(h.work, "objects")))
@@ -265,15 +240,16 @@ func (h *harness) recoverStore() result {
 	h.run(30*time.Minute, "/usr/bin/tar", "-C", h.work, "-xf", filepath.Join(h.transfer, "store.tar"))
 	h.must(h.transferDir.Remove("store.tar"))
 	h.services(false)
+	newest := helpers.NewestCopy(h.objects("db/"))
 	h.startDaemon("recover")
-	if outcome.MetadataBackup != "" && outcome.MetadataBackup != h.daemon.point {
-		h.t.Fatalf("recovered from %s, expected %s", h.daemon.point, outcome.MetadataBackup)
+	if h.daemon.point != newest {
+		h.t.Fatalf("restored %s, expected the newest copy %s", h.daemon.point, newest)
 	}
 	// No source tree is created here. Only hashes and S3 objects crossed runners.
 	h.must(absent(h.proof))
 	h.mount()
 	outcome.BaselineRestore = h.restore(h.remoteBackup("baseline", outcome.Baseline), h.reference(), "restore-baseline")
-	outcome.RecoveredFrom = h.daemon.point
+	outcome.RestoredFrom = h.daemon.point
 	h.must(h.detach())
 	return outcome
 }

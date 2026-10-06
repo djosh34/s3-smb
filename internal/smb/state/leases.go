@@ -22,7 +22,7 @@ func (lease *Lease) is(clientGUID, key GUID) bool {
 }
 
 // otherLease returns the lease on object unless it belongs to clientGUID and key.
-func (table *Table) otherLease(object smb.ObjectKey, clientGUID, key GUID) *Lease {
+func (table *Table) otherLease(object smb.Inode, clientGUID, key GUID) *Lease {
 	record := table.objects[object]
 	if record == nil || record.lease == nil || record.lease.is(clientGUID, key) {
 		return nil
@@ -33,14 +33,14 @@ func (table *Table) otherLease(object smb.ObjectKey, clientGUID, key GUID) *Leas
 // LeaseKeyElsewhere reports whether the lease key of clientGUID names a file
 // other than object. A CREATE checks it before it changes storage; Commit
 // checks it again for a CREATE that raced another one with the same key.
-func (table *Table) LeaseKeyElsewhere(object smb.ObjectKey, clientGUID, key GUID) bool {
+func (table *Table) LeaseKeyElsewhere(object smb.Inode, clientGUID, key GUID) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	return table.leaseKeyElsewhere(object, leaseIdentity{client: clientGUID, key: key})
 }
 
 // leaseKeyElsewhere requires mu.
-func (table *Table) leaseKeyElsewhere(object smb.ObjectKey, identity leaseIdentity) bool {
+func (table *Table) leaseKeyElsewhere(object smb.Inode, identity leaseIdentity) bool {
 	held, exists := table.leaseObjects[identity]
 	return exists && held != object
 }
@@ -84,7 +84,7 @@ func (table *Table) grantLease(request OpenRequest, reservation Reservation, req
 
 // onlyLeaseOpens reports whether every other open and reservation of object
 // belongs to the lease identity. Requires mu.
-func (table *Table) onlyLeaseOpens(object smb.ObjectKey, reservation Reservation, identity leaseIdentity) bool {
+func (table *Table) onlyLeaseOpens(object smb.Inode, reservation Reservation, identity leaseIdentity) bool {
 	for _, id := range table.objects[object].Opens {
 		open := table.opens[id]
 		if open.ClientGUID != identity.client || open.LeaseKey != identity.key {
@@ -132,7 +132,7 @@ func (table *Table) leaseBinding(record *objectEntry) Binding {
 // acknowledgment. A lease whose opens are all detached has nobody to tell, so
 // it drops to target at once. Opens that lose H stop being durable; detached
 // ones are closed and returned for cleanup.
-func (table *Table) BreakLease(object smb.ObjectKey, clientGUID, key GUID, target uint32) (Break, bool, []CloseAction) {
+func (table *Table) BreakLease(object smb.Inode, clientGUID, key GUID, target uint32) (Break, bool, []CloseAction) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	lease := table.otherLease(object, clientGUID, key)
@@ -184,7 +184,7 @@ func (table *Table) ExpireBreaks() []CloseAction {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	now := table.now()
-	var expired []smb.ObjectKey
+	var expired []smb.Inode
 	for object, record := range table.objects {
 		if lease := record.lease; lease != nil && lease.Breaking && !lease.Deadline.After(now) {
 			expired = append(expired, object)
@@ -202,7 +202,7 @@ func (table *Table) ExpireBreaks() []CloseAction {
 
 // dropDurability ends durability of the lease's opens once it loses H.
 // Detached opens close, because nothing could reconnect them. Requires mu.
-func (table *Table) dropDurability(object smb.ObjectKey, lease *Lease) []CloseAction {
+func (table *Table) dropDurability(object smb.Inode, lease *Lease) []CloseAction {
 	if lease.handle() {
 		return nil
 	}
@@ -223,7 +223,7 @@ func (table *Table) dropDurability(object smb.ObjectKey, lease *Lease) []CloseAc
 
 // LeaseNeedsBreak reports whether the lease on object, unless it belongs to
 // clientGUID and key, holds rights outside target or is breaking.
-func (table *Table) LeaseNeedsBreak(object smb.ObjectKey, clientGUID, key GUID, target uint32) bool {
+func (table *Table) LeaseNeedsBreak(object smb.Inode, clientGUID, key GUID, target uint32) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	lease := table.otherLease(object, clientGUID, key)
@@ -232,7 +232,7 @@ func (table *Table) LeaseNeedsBreak(object smb.ObjectKey, clientGUID, key GUID, 
 
 // LeaseBreaking reports whether the lease on object, unless it belongs to
 // clientGUID and key, waits for an acknowledgment.
-func (table *Table) LeaseBreaking(object smb.ObjectKey, clientGUID, key GUID) bool {
+func (table *Table) LeaseBreaking(object smb.Inode, clientGUID, key GUID) bool {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	lease := table.otherLease(object, clientGUID, key)
@@ -256,7 +256,7 @@ func (table *Table) signalBreakChanges() {
 // clientGUID and key, holds an open that conflicts with request's sharing.
 // Breaking H lets the client close cached handles; the opener's own lease is
 // never broken.
-func (table *Table) SharingLease(request OpenRequest, clientGUID, key GUID) (smb.ObjectKey, bool) {
+func (table *Table) SharingLease(request OpenRequest, clientGUID, key GUID) (smb.Inode, bool) {
 	table.mu.Lock()
 	defer table.mu.Unlock()
 	request = sharingIntent(request)
@@ -268,7 +268,7 @@ func (table *Table) SharingLease(request OpenRequest, clientGUID, key GUID) (smb
 			return open.Object, true
 		}
 	}
-	return smb.ObjectKey{}, false
+	return 0, false
 }
 
 // LeaseForOpen finds the open like Find and returns it with a copy of its

@@ -51,21 +51,21 @@ func seed(t *testing.T, client *testClient, name, data string) {
 	closeOK(t, client, id)
 }
 
-// content reads the data stored under name straight from the adapter.
+// content reads the data stored under name straight from the engine.
 func (s *testServer) content(t *testing.T, name string) string {
 	t.Helper()
 	object := s.object(t, name)
-	attr, err := s.adapter.GetAttr(t.Context(), object)
+	attr, err := s.storage.GetAttr(t.Context(), object)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handle, err := s.adapter.Open(t.Context(), object, smb.AccessRead)
+	handle, err := s.storage.Open(t.Context(), object, smb.AccessRead)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data := make([]byte, attr.Size)
-	n, err := s.adapter.ReadAt(t.Context(), handle, data, 0)
-	if closeErr := s.adapter.Close(t.Context(), handle); err != nil || closeErr != nil {
+	n, err := s.storage.ReadAt(t.Context(), handle, data, 0)
+	if closeErr := s.storage.Close(t.Context(), handle); err != nil || closeErr != nil {
 		t.Fatalf("read %q: %v, %v", name, err, closeErr)
 	}
 	return string(data[:n])
@@ -105,94 +105,68 @@ func TestDeleteOnCloseNeedsDeleteAccess(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	seed(t, client, "existing", "keep")
-	seed(t, client, "existing:stream", "keep stream")
 	for _, test := range []struct {
 		name        string
 		disposition uint32
-	}{{"missing", fileCreateDisposition}, {"existing", fileOverwrite}, {"existing:stream", fileOverwrite}} {
+	}{{"missing", fileCreateDisposition}, {"existing", fileOverwrite}} {
 		request := wire.CreateRequest{Name: test.name, DesiredAccess: fileWriteData, ShareAccess: 7, Disposition: test.disposition, Options: fileDeleteOnClose}
 		if _, status := client.create(t, smbtest.CreateOptions{Request: request}); status != smb.StatusAccessDenied {
 			t.Fatalf("%s: status %#x", test.name, status)
 		}
 	}
-	srv.expectContent(t, map[string]string{"missing": "", "existing": "keep", "existing:stream": "keep stream"})
+	srv.expectContent(t, map[string]string{"missing": "", "existing": "keep"})
 	// GENERIC_ALL grants DELETE once the server expands it.
 	closeOK(t, client, openAs(t, client, "missing", genericAll, 7, fileDeleteOnClose))
 	srv.expectContent(t, map[string]string{"missing": ""})
 }
 
-// However the last open ends, delete on close removes exactly its own object:
-// a stream leaves the file and its other streams, a file leaves other files.
+// However the last open ends, delete on close removes exactly its own file
+// and leaves other files.
 func TestDeleteOnCloseRemovesOnlyItsObject(t *testing.T) {
 	for _, ending := range []string{"close", "drop", "logoff", "tree disconnect"} {
-		for _, target := range []string{"data", "data:stream"} {
-			t.Run(ending+"/"+target, func(t *testing.T) {
-				srv := newTestServer(t)
-				client := srv.connect(t)
-				want := map[string]string{"data": "base", "data:stream": "stream", "data:other": "other", "unrelated": "unrelated"}
-				for _, name := range []string{"data", "data:stream", "data:other", "unrelated"} {
-					seed(t, client, name, want[name])
+		t.Run(ending, func(t *testing.T) {
+			srv := newTestServer(t)
+			client := srv.connect(t)
+			seed(t, client, "data", "data")
+			seed(t, client, "unrelated", "unrelated")
+			id := openAs(t, client, "data", fileDelete, 7, fileDeleteOnClose)
+			switch ending {
+			case "close":
+				closeOK(t, client, id)
+			case "drop":
+				client.drop(t)
+			case "logoff":
+				if status := client.call(t, wire.Logoff, encode(t, wire.EncodeLogoffRequest, wire.EmptyRequest{}), 1).Header.Status; status != smb.StatusSuccess {
+					t.Fatalf("LOGOFF status %#x", status)
 				}
-				id := openAs(t, client, target, fileDelete, 7, fileDeleteOnClose)
-				switch ending {
-				case "close":
-					closeOK(t, client, id)
-				case "drop":
-					client.drop(t)
-				case "logoff":
-					if status := client.call(t, wire.Logoff, encode(t, wire.EncodeLogoffRequest, wire.EmptyRequest{}), 1).Header.Status; status != smb.StatusSuccess {
-						t.Fatalf("LOGOFF status %#x", status)
-					}
-				case "tree disconnect":
-					if status := client.call(t, wire.TreeDisconnect, encode(t, wire.EncodeTreeDisconnectRequest, wire.EmptyRequest{}), 1).Header.Status; status != smb.StatusSuccess {
-						t.Fatalf("TREE_DISCONNECT status %#x", status)
-					}
+			case "tree disconnect":
+				if status := client.call(t, wire.TreeDisconnect, encode(t, wire.EncodeTreeDisconnectRequest, wire.EmptyRequest{}), 1).Header.Status; status != smb.StatusSuccess {
+					t.Fatalf("TREE_DISCONNECT status %#x", status)
 				}
-				want[target] = ""
-				if target == "data" {
-					want["data:stream"], want["data:other"] = "", ""
-				}
-				srv.expectContent(t, want)
-			})
-		}
+			}
+			srv.expectContent(t, map[string]string{"data": "", "unrelated": "unrelated"})
+		})
 	}
 }
 
-// A pending delete refuses new opens of the file and its streams and happens
-// when the last open closes, even if that open is on another connection.
+// A pending delete refuses new opens of the file and happens when the last
+// open closes, even if that open is on another connection.
 func TestDeletePendingWaitsForLastOpen(t *testing.T) {
-	for _, target := range []string{"data", "data:stream"} {
-		t.Run(target, func(t *testing.T) {
-			srv := newTestServer(t)
-			client, other := srv.connect(t), srv.connect(t)
-			seeded := map[string]string{"data": "base", "data:stream": "stream"}
-			seed(t, client, "data", seeded["data"])
-			seed(t, client, "data:stream", seeded["data:stream"])
-			held := openAs(t, other, target, fileReadData, 7, 0)
-			id := openAs(t, client, target, fileDelete, 7, 0)
-			if status := setDeletePending(t, client, id, true); status != smb.StatusSuccess {
-				t.Fatalf("SET_INFO status %#x", status)
-			}
-			blocked := []string{target}
-			if target == "data" {
-				blocked = append(blocked, "data:stream")
-			} else if status := openStatus(t, other, "data"); status != smb.StatusSuccess {
-				t.Fatalf("base open beside a pending stream delete: status %#x", status)
-			}
-			client.drop(t)
-			for _, name := range blocked {
-				if status := openStatus(t, other, name); status != smb.StatusDeletePending {
-					t.Fatalf("open %q: status %#x", name, status)
-				}
-			}
-			srv.expectContent(t, map[string]string{target: seeded[target]})
-			closeOK(t, other, held)
-			srv.expectContent(t, map[string]string{target: ""})
-			if target == "data:stream" {
-				srv.expectContent(t, map[string]string{"data": "base"})
-			}
-		})
+	srv := newTestServer(t)
+	client, other := srv.connect(t), srv.connect(t)
+	seed(t, client, "data", "base")
+	held := openAs(t, other, "data", fileReadData, 7, 0)
+	id := openAs(t, client, "data", fileDelete, 7, 0)
+	if status := setDeletePending(t, client, id, true); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
 	}
+	client.drop(t)
+	if status := openStatus(t, other, "data"); status != smb.StatusDeletePending {
+		t.Fatalf("open: status %#x", status)
+	}
+	srv.expectContent(t, map[string]string{"data": "base"})
+	closeOK(t, other, held)
+	srv.expectContent(t, map[string]string{"data": ""})
 }
 
 // Each open sets and clears only its own delete intent. Delete on close from
@@ -201,9 +175,8 @@ func TestDeletePendingIsPerOpen(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	seed(t, client, "data", "base")
-	seed(t, client, "data:stream", "stream")
-	first := openAs(t, client, "data:stream", fileDelete, 7, 0)
-	second := openAs(t, client, "data:stream", fileDelete, 7, 0)
+	first := openAs(t, client, "data", fileDelete, 7, 0)
+	second := openAs(t, client, "data", fileDelete, 7, 0)
 	for _, step := range []struct {
 		id      wire.FileID
 		pending bool
@@ -217,35 +190,34 @@ func TestDeletePendingIsPerOpen(t *testing.T) {
 		if status := setDeletePending(t, client, step.id, step.pending); status != smb.StatusSuccess {
 			t.Fatalf("SET_INFO status %#x", status)
 		}
-		if status := openStatus(t, client, "data:stream"); status != step.want {
+		if status := openStatus(t, client, "data"); status != step.want {
 			t.Fatalf("open after %+v: status %#x", step, status)
 		}
 	}
 	closeOK(t, client, first)
 	closeOK(t, client, second)
 
-	id := openAs(t, client, "data:stream", fileDelete, 7, fileDeleteOnClose)
+	id := openAs(t, client, "data", fileDelete, 7, fileDeleteOnClose)
 	for _, pending := range []bool{true, false} {
 		if status := setDeletePending(t, client, id, pending); status != smb.StatusSuccess {
 			t.Fatalf("SET_INFO status %#x", status)
 		}
 	}
 	closeOK(t, client, id)
-	srv.expectContent(t, map[string]string{"data:stream": ""})
+	srv.expectContent(t, map[string]string{"data": ""})
 }
 
 func TestDeletePendingNeedsDeleteAccess(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	seed(t, client, "data", "base")
-	seed(t, client, "data:stream", "stream")
-	id := openAs(t, client, "data:stream", fileReadData|fileWriteData, 7, 0)
+	id := openAs(t, client, "data", fileReadData|fileWriteData, 7, 0)
 	for _, pending := range []bool{true, false} {
 		if status := setDeletePending(t, client, id, pending); status != smb.StatusAccessDenied {
 			t.Fatalf("SET_INFO %t: status %#x", pending, status)
 		}
 	}
-	if status := openStatus(t, client, "data:stream"); status != smb.StatusSuccess {
+	if status := openStatus(t, client, "data"); status != smb.StatusSuccess {
 		t.Fatalf("open after refused delete: status %#x", status)
 	}
 }
@@ -255,19 +227,12 @@ func TestDeleteDirectory(t *testing.T) {
 	client := srv.connect(t)
 	directory := openAs(t, client, "directory", fileDelete, 7, fileDirectoryFile)
 	seed(t, client, "directory/child", "child")
-	seed(t, client, "directory:stream", "stream")
 	if status := setDeletePending(t, client, directory, true); status != smb.StatusDirectoryNotEmpty {
 		t.Fatalf("non-empty directory: status %#x", status)
 	}
-	// A stream of a non-empty directory can still go.
-	stream := openAs(t, client, "directory:stream", fileDelete, 7, 0)
-	if status := setDeletePending(t, client, stream, true); status != smb.StatusSuccess {
-		t.Fatalf("directory stream: status %#x", status)
-	}
-	closeOK(t, client, stream)
 	child := openAs(t, client, "directory/child", fileDelete, 7, fileDeleteOnClose)
 	closeOK(t, client, child)
-	srv.expectContent(t, map[string]string{"directory:stream": "", "directory/child": ""})
+	srv.expectContent(t, map[string]string{"directory/child": ""})
 	if status := setDeletePending(t, client, directory, true); status != smb.StatusSuccess {
 		t.Fatalf("empty directory: status %#x", status)
 	}
@@ -278,37 +243,19 @@ func TestDeleteDirectory(t *testing.T) {
 // A pending delete follows its file through a rename and leaves whatever
 // takes the old name alone.
 func TestDeleteFollowsRename(t *testing.T) {
-	t.Run("file", func(t *testing.T) {
-		srv := newTestServer(t)
-		client := srv.connect(t)
-		seed(t, client, "data", "old")
-		id := client.open(t, "data")
-		if status := setDeletePending(t, client, id, true); status != smb.StatusSuccess {
-			t.Fatalf("SET_INFO status %#x", status)
-		}
-		if status := rename(t, client, id, "renamed", false); status != smb.StatusSuccess {
-			t.Fatalf("rename status %#x", status)
-		}
-		seed(t, client, "data", "replacement")
-		closeOK(t, client, id)
-		srv.expectContent(t, map[string]string{"renamed": "", "data": "replacement"})
-	})
-	t.Run("stream", func(t *testing.T) {
-		srv := newTestServer(t)
-		client := srv.connect(t)
-		seed(t, client, "data", "base")
-		seed(t, client, "data:other", "other")
-		seed(t, client, "data:stream", "stream")
-		base := client.open(t, "data")
-		stream := openAs(t, client, "data:stream", fileDelete, 7, fileDeleteOnClose)
-		if status := rename(t, client, base, "renamed", false); status != smb.StatusSuccess {
-			t.Fatalf("rename status %#x", status)
-		}
-		seed(t, client, "data", "new base")
-		seed(t, client, "data:stream", "new stream")
-		closeOK(t, client, stream)
-		srv.expectContent(t, map[string]string{"renamed:stream": "", "renamed": "base", "renamed:other": "other", "data": "new base", "data:stream": "new stream"})
-	})
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	seed(t, client, "data", "old")
+	id := client.open(t, "data")
+	if status := setDeletePending(t, client, id, true); status != smb.StatusSuccess {
+		t.Fatalf("SET_INFO status %#x", status)
+	}
+	if status := rename(t, client, id, "renamed", false); status != smb.StatusSuccess {
+		t.Fatalf("rename status %#x", status)
+	}
+	seed(t, client, "data", "replacement")
+	closeOK(t, client, id)
+	srv.expectContent(t, map[string]string{"renamed": "", "data": "replacement"})
 }
 
 // While storage is still deleting a closed file, new opens see the delete
@@ -325,7 +272,7 @@ func TestDeleteInProgressRefusesOpens(t *testing.T) {
 		hooks.Close = func(ctx context.Context, handle smb.Handle) error {
 			close(entered)
 			<-blocked
-			return srv.adapter.Close(ctx, handle)
+			return srv.storage.Close(ctx, handle)
 		}
 	})
 	request := client.send(t, wire.Close, encode(t, wire.EncodeCloseRequest, wire.CloseRequest{ID: id}), 1)
@@ -352,14 +299,14 @@ func TestDeleteOnCloseLeavesReplacementAlone(t *testing.T) {
 	id := openAs(t, client, "data", fileDelete, 7, fileDeleteOnClose)
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Remove = func(ctx context.Context, name smb.Name, expect smb.Inode) error {
-			replacement, err := srv.adapter.Lookup(ctx, "replacement")
+			replacement, err := srv.storage.Lookup(ctx, "replacement")
 			if err != nil {
 				return err
 			}
-			if err = srv.adapter.Rename(ctx, smb.RenameRequest{Source: replacement.Name, SourceInode: replacement.Object.Inode, Destination: name, DestinationInode: expect, Replace: true}); err != nil {
+			if err = srv.storage.Rename(ctx, smb.RenameRequest{Source: replacement.Name, SourceInode: replacement.Object, Destination: name, DestinationInode: expect, Replace: true}); err != nil {
 				return err
 			}
-			return srv.adapter.Remove(ctx, name, expect)
+			return srv.storage.Remove(ctx, name, expect)
 		}
 	})
 	if status := client.close(t, id); status != smb.StatusObjectNameNotFound {
@@ -380,7 +327,7 @@ func TestFailedCloseStillCloses(t *testing.T) {
 				if failure == "path" {
 					hooks.PathOf = func(context.Context, smb.Inode) (string, error) { return "", smb.ErrIO }
 				} else {
-					hooks.GetAttr = func(context.Context, smb.ObjectKey) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
+					hooks.GetAttr = func(context.Context, smb.Inode) (smb.Attr, error) { return smb.Attr{}, smb.ErrIO }
 				}
 			})
 			request := wire.CloseRequest{ID: id, Flags: 1}
@@ -436,7 +383,6 @@ func TestRenameOntoExistingName(t *testing.T) {
 		{"collision", "", smb.StatusObjectNameCollision, false},
 		{"replace", "", smb.StatusSuccess, true},
 		{"replace an open file", "destination", smb.StatusAccessDenied, true},
-		{"replace a file with an open stream", "destination:stream", smb.StatusAccessDenied, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			srv := newTestServer(t)
@@ -463,9 +409,7 @@ func TestRenameRefusals(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	seed(t, client, "source", "source")
-	seed(t, client, "source:stream", "stream")
 	id := client.open(t, "source")
-	stream := client.open(t, "source:stream")
 	noDelete := openAs(t, client, "source", fileReadData|fileWriteData, 7, 0)
 	input := func(name string, root uint64) []byte {
 		return encode(t, wire.EncodeFileRenameInformation, wire.FileRenameInformation{Name: name, RootDirectory: root})
@@ -478,8 +422,7 @@ func TestRenameRefusals(t *testing.T) {
 	}{
 		{"short buffer", []byte{1}, id, smb.StatusInvalidParameter},
 		{"root directory handle", input("destination", 1), id, smb.StatusNotSupported},
-		{"named stream", input("destination", 0), stream, smb.StatusNotSupported},
-		{"to a named stream", input("source:new", 0), id, smb.StatusNotSupported},
+		{"to a stream name", input("source:new", 0), id, smb.StatusNotSupported},
 		{"no delete access", input("destination", 0), noDelete, smb.StatusAccessDenied},
 		{"parent component", input("../destination", 0), id, smb.StatusObjectNameInvalid},
 		{"missing parent", input("missing/destination", 0), id, smb.StatusObjectPathNotFound},
@@ -488,7 +431,7 @@ func TestRenameRefusals(t *testing.T) {
 			t.Errorf("%s: status %#x, want %#x", test.name, status, test.want)
 		}
 	}
-	srv.expectContent(t, map[string]string{"source": "source", "source:stream": "stream", "source:new": "", "destination": ""})
+	srv.expectContent(t, map[string]string{"source": "source", "destination": ""})
 }
 
 // When the source moves between the server finding it and locking its
@@ -502,16 +445,16 @@ func TestRenameRetriesWhenSourceMoves(t *testing.T) {
 	id := client.open(t, "left/source")
 	srv.faults.set(func(hooks *storageHooks) {
 		hooks.Lookup = func(ctx context.Context, path string) (smb.Resolved, error) {
-			resolved, err := srv.adapter.Lookup(ctx, path)
+			resolved, err := srv.storage.Lookup(ctx, path)
 			if err != nil || path != "left/source" {
 				return resolved, err
 			}
 			srv.faults.set(func(hooks *storageHooks) { hooks.Lookup = nil })
-			moved, err := srv.adapter.Lookup(ctx, "right/moved")
+			moved, err := srv.storage.Lookup(ctx, "right/moved")
 			if err != nil {
 				return smb.Resolved{}, err
 			}
-			return resolved, srv.adapter.Rename(ctx, smb.RenameRequest{Source: resolved.Name, SourceInode: resolved.Object.Inode, Destination: moved.Name})
+			return resolved, srv.storage.Rename(ctx, smb.RenameRequest{Source: resolved.Name, SourceInode: resolved.Object, Destination: moved.Name})
 		}
 	})
 	if status := rename(t, client, id, "right/final", false); status != smb.StatusSuccess {
@@ -537,7 +480,7 @@ func TestNamespaceWaitCanBeCancelled(t *testing.T) {
 		hooks.Rename = func(ctx context.Context, request smb.RenameRequest) error {
 			close(entered)
 			<-blocked
-			return srv.adapter.Rename(ctx, request)
+			return srv.storage.Rename(ctx, request)
 		}
 	})
 	setInfoBody := func(class wire.FileInfoClass, id wire.FileID, input []byte) []byte {

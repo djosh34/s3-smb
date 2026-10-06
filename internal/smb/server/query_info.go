@@ -52,12 +52,12 @@ func handleQueryInfo(ctx context.Context, request RequestContext, message wire.M
 }
 
 // Fixed portions are from MS-FSCC 2.4. Name and All may return a truncated
-// variable portion; Stream must return only complete entries.
+// variable portion.
 func fileInfoFixedSize(class wire.FileInfoClass) uint32 {
 	switch class {
 	case wire.ClassFileBasic:
 		return 40
-	case wire.ClassFileStandard, wire.ClassFileID, wire.ClassFileStream:
+	case wire.ClassFileStandard, wire.ClassFileID:
 		return 24
 	case wire.ClassFileInternal, wire.ClassFilePosition, wire.ClassFileAttributeTag:
 		return 8
@@ -94,34 +94,9 @@ func queryFileInfo(ctx context.Context, request RequestContext, open state.Open,
 		return nil, smb.StatusSuccess, err
 	}
 	if uint64(len(data)) > uint64(outputLength) {
-		if class == wire.ClassFileStream {
-			return streamInfoPrefix(data, outputLength), smb.StatusBufferOverflow, nil
-		}
 		return data[:outputLength], smb.StatusBufferOverflow, nil
 	}
 	return data, smb.StatusSuccess, nil
-}
-
-// streamInfoPrefix receives an encoded list and keeps only complete entries.
-// The last retained entry needs no alignment padding or link to the omitted one.
-func streamInfoPrefix(data []byte, outputLength uint32) []byte {
-	end, last := 0, 0
-	for offset := 0; offset < len(data); {
-		entryEnd := offset + 24 + int(binary.LittleEndian.Uint32(data[offset+4:offset+8]))
-		if entryEnd > int(outputLength) {
-			break
-		}
-		end, last = entryEnd, offset
-		next := binary.LittleEndian.Uint32(data[offset : offset+4])
-		if next == 0 {
-			break
-		}
-		offset += int(next)
-	}
-	if end != 0 {
-		binary.LittleEndian.PutUint32(data[last:last+4], 0)
-	}
-	return data[:end]
 }
 
 func queryBasicInfo(attr smb.Attr) (wire.FileBasicInformation, error) {
@@ -152,14 +127,11 @@ func queryStandardInfo(request RequestContext, open state.Open, attr smb.Attr) w
 }
 
 func queryNameInfo(ctx context.Context, request RequestContext, open state.Open) (wire.FileNameInformation, error) {
-	path, err := request.Storage.PathOf(ctx, open.Object.Inode)
+	path, err := request.Storage.PathOf(ctx, open.Object)
 	if err != nil {
 		return wire.FileNameInformation{}, err
 	}
 	name := "\\" + strings.ReplaceAll(path, "/", "\\")
-	if open.Object.Stream != "" {
-		name += ":" + open.Object.Stream + ":$DATA"
-	}
 	return wire.FileNameInformation{Name: name}, nil
 }
 
@@ -176,7 +148,7 @@ func encodeFileInfo(ctx context.Context, request RequestContext, open state.Open
 	case wire.ClassFileInternal:
 		return wire.EncodeFileInternalInformation(wire.FileInternalInformation{Index: uint64(attr.Inode)})
 	case wire.ClassFileEA:
-		// Named xattrs are exposed as streams, not Windows extended attributes.
+		// There are no Windows extended attributes.
 		return wire.EncodeFileEAInformation(wire.FileEAInformation{})
 	case wire.ClassFileAccess:
 		return wire.EncodeFileAccessInformation(wire.FileAccessInformation{Access: open.GrantedAccess})
@@ -206,8 +178,6 @@ func encodeFileInfo(ctx context.Context, request RequestContext, open state.Open
 		})
 	case wire.ClassFileAttributeTag:
 		return wire.EncodeFileAttributeTagInformation(wire.FileAttributeTagInformation{Attributes: attr.Attributes})
-	case wire.ClassFileStream:
-		return encodeStreamInfo(ctx, request, open, attr)
 	case wire.ClassFileID:
 		space, err := request.Storage.StatFS(ctx)
 		if err != nil {
@@ -237,32 +207,4 @@ func encodeAllFileInfo(ctx context.Context, request RequestContext, open state.O
 		Internal: wire.FileInternalInformation{Index: uint64(attr.Inode)},
 		Access:   wire.FileAccessInformation{Access: open.GrantedAccess}, Name: name,
 	})
-}
-
-func encodeStreamInfo(ctx context.Context, request RequestContext, open state.Open, attr smb.Attr) ([]byte, error) {
-	if attr.Kind == smb.KindDirectory {
-		return wire.EncodeFileStreamInformation(wire.FileStreamInformation{})
-	}
-	streams, err := request.Storage.Streams(ctx, open.Object.Inode)
-	if err != nil {
-		return nil, err
-	}
-	// GetAttr always selects the open's object. The unnamed entry needs its own
-	// attributes only when this query was made through a named-stream open.
-	base := attr
-	if open.Object.Stream != "" {
-		base, err = request.Storage.GetAttr(ctx, smb.ObjectKey{Inode: open.Object.Inode})
-		if err != nil {
-			return nil, err
-		}
-	}
-	entries := []wire.FileStreamEntry{{Name: "::$DATA", Size: base.Size, AllocationSize: base.AllocationSize}}
-	negotiated := request.aaplNegotiated()
-	for _, stream := range streams {
-		if negotiated && stream.Size == 0 {
-			continue
-		}
-		entries = append(entries, wire.FileStreamEntry{Name: ":" + stream.Name + ":$DATA", Size: stream.Size, AllocationSize: stream.AllocationSize})
-	}
-	return wire.EncodeFileStreamInformation(wire.FileStreamInformation{Entries: entries})
 }

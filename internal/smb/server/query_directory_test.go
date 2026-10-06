@@ -79,7 +79,7 @@ func TestQueryDirectoryEmptyRoot(t *testing.T) {
 	srv := newTestServer(t)
 	client := srv.connect(t)
 	root := openDirectory(t, client, "")
-	inode := uint64(srv.object(t, "").Inode)
+	inode := uint64(srv.object(t, ""))
 	for _, class := range directoryClasses {
 		request := wire.QueryDirectoryRequest{ID: root, Pattern: "*", Flags: directoryReopen, InfoClass: class, OutputLength: 4096}
 		entries, status := list(t, client, request)
@@ -189,7 +189,7 @@ func TestQueryDirectoryDotsAndSmallBuffer(t *testing.T) {
 		object string
 	}{{".", "parent/child"}, {"..", "parent"}, {"alpha", "parent/child/alpha"}} {
 		entries, status := list(t, client, request)
-		if status != smb.StatusSuccess || len(entries) != 1 || entries[0].Name != want.name || entries[0].Metadata.FileID != uint64(srv.object(t, want.object).Inode) {
+		if status != smb.StatusSuccess || len(entries) != 1 || entries[0].Name != want.name || entries[0].Metadata.FileID != uint64(srv.object(t, want.object)) {
 			t.Fatalf("want %q: %+v, %#x", want.name, entries, status)
 		}
 	}
@@ -206,7 +206,7 @@ func TestQueryDirectoryEntriesShowLiveLength(t *testing.T) {
 	if status := client.write(t, wire.WriteRequest{ID: id, Offset: 101, Data: []byte("live data")}); status != smb.StatusSuccess {
 		t.Fatalf("WRITE status %#x", status)
 	}
-	inode := uint64(srv.object(t, "buffered").Inode)
+	inode := uint64(srv.object(t, "buffered"))
 	directory := openDirectory(t, client, "")
 	for _, class := range directoryClasses {
 		entries, status := list(t, client, wire.QueryDirectoryRequest{ID: directory, Pattern: "buffered", Flags: directoryReopen, InfoClass: class, OutputLength: 4096})

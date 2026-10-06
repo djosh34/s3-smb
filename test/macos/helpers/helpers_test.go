@@ -85,17 +85,21 @@ func TestTmutilStatus(t *testing.T) {
 	must(t, CheckRemoteChange(before, map[string]int64{"a": 2, "b": 1}))
 }
 
-func TestConfirmation(t *testing.T) {
-	point, err := Confirmation("recover", "Recover metadata from meta/dump-2099\nContinue? [yes/no]: ")
-	must(t, err)
-	if point != "meta/dump-2099" {
-		t.Fatal(point)
+func TestCopies(t *testing.T) {
+	newest := "db/000000000012-000000000040-bbbb"
+	objects := map[string]int64{"db/000000000009-000000000099-aaaa": 1, newest: 1, "db/000000000012-000000000039-cccc": 1, "chunks/zzzz": 1}
+	if got := NewestCopy(objects); got != newest {
+		t.Fatal(got)
 	}
-	if _, err := Confirmation("restart", "Initialize a genuinely empty S3 dataset?\nContinue? [yes/no]: "); err == nil {
-		t.Fatal("prompt accepted on restart")
+	if got := NewestCopy(map[string]int64{"chunks/a": 1}); got != "" {
+		t.Fatal(got)
 	}
-	if _, err := Confirmation("initialize", "Recover metadata from meta/dump-2099\nContinue? [yes/no]: "); err == nil {
-		t.Fatal("recovery prompt accepted on a fresh start")
+	log := `{"msg":"SMB serving"}` + "\n" + `{"level":"WARN","msg":"restoring the newest database copy","copy":"` + newest + `"}` + "\nnot json\n"
+	if got := RestoredCopy(log); got != newest {
+		t.Fatal(got)
+	}
+	if got := RestoredCopy(`{"msg":"keeping the local database","copy":"` + newest + `"}`); got != "" {
+		t.Fatal(got)
 	}
 }
 
@@ -129,11 +133,8 @@ func TestLaunchdOutput(t *testing.T) {
 		t.Fatal(pid, err)
 	}
 	serving := `{"msg":"SMB serving"}` + "\n"
-	if ready, err := LaunchdServing(serving, 2); ready || err != nil {
-		t.Fatal("one start counted as two", err)
-	}
-	if _, err := LaunchdServing(serving+"Continue? [yes/no]: ", 1); err == nil {
-		t.Fatal("consent prompt under launchd accepted")
+	if LaunchdServing(serving, 2) || !LaunchdServing(serving, 1) {
+		t.Fatal("serving entries miscounted")
 	}
 }
 

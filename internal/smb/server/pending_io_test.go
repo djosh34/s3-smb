@@ -11,14 +11,16 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
-	"github.com/djosh34/s3-smb/internal/storage"
 )
 
-// newS3Server serves storage whose objects sit behind an S3 fault proxy.
-func newS3Server(t *testing.T, config smbtest.S3Config) (*testServer, *s3fault.Proxy) {
+// gateOutage is the S3 outage a backup must survive in gate mode.
+const gateOutage = 5 * time.Minute
+
+// newS3Server serves an engine whose bucket sits behind an S3 fault proxy.
+func newS3Server(t *testing.T) (*testServer, *s3fault.Proxy) {
 	t.Helper()
-	adapter, proxy := smbtest.NewS3Storage(t, config)
-	srv := newTestServerOn(t, adapter)
+	storage, proxy := smbtest.NewS3Storage(t)
+	srv := newTestServerOn(t, storage)
 	t.Cleanup(proxy.Release)
 	t.Cleanup(proxy.RestoreS3)
 	return srv, proxy
@@ -60,10 +62,11 @@ func readOK(t *testing.T, client *testClient, request wire.ReadRequest, want []b
 
 // S3 holds the upload's response, so the request stays in storage until the
 // test releases it. Meanwhile the connection keeps serving other requests.
+// The engine uploads at FLUSH, so the WRITE is a write-through one.
 func TestSlowS3UploadRepliesAsync(t *testing.T) {
 	for _, test := range ioCommands[1:] {
 		t.Run(test.name, func(t *testing.T) {
-			srv, proxy := newS3Server(t, smbtest.S3Config{Timeout: time.Minute})
+			srv, proxy := newS3Server(t)
 			client := srv.connect(t)
 			other := client.open(t, "other")
 			otherData := []byte("unrelated bytes")
@@ -99,23 +102,23 @@ func TestSlowS3UploadRepliesAsync(t *testing.T) {
 }
 
 // During an S3 outage READ, WRITE and FLUSH wait with an interim reply while
-// the connection serves cached data, and finish once S3 is back. They share
-// one outage: the full outage a backup must survive in gate mode, with the
-// daemon's retries.
+// the connection serves data still in RAM, and finish once S3 is back. They
+// share one outage: the full outage a backup must survive in gate mode, with
+// the engine's own retries.
 func TestS3OutageRepliesAsync(t *testing.T) {
 	outage := 3 * time.Second
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
-		outage = smb.S3OutageWindow
+		outage = gateOutage
 	}
-	srv, proxy := newS3Server(t, smbtest.S3Config{MetaRetries: storage.FilesystemRetries, ChunkRetries: storage.UploadRetries})
+	srv, proxy := newS3Server(t)
 	client := srv.connect(t)
+	// Written but not flushed, so it stays in RAM and needs no S3.
 	cached := client.open(t, "cached")
 	cachedData := []byte("cached during the outage")
 	writeFile(t, client, cached, cachedData)
-	flushOK(t, client, cached)
 	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
-	// READ crosses the first 64 KiB block boundary from a cold cache.
-	stored := bytes.Repeat([]byte("block boundary payload\n"), 6000)
+	// READ fetches flushed data from S3.
+	stored := bytes.Repeat([]byte("stored payload\n"), 6000)
 	offset := uint64(64<<10 - 32)
 	read := client.open(t, "read")
 	writeFile(t, client, read, stored)
@@ -171,12 +174,14 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 	srv.expectContent(t, map[string]string{"write": string(written), "flush": string(flushed)})
 }
 
-// When S3 keeps failing past the retry budget, the final reply reports the
-// error under the interim reply's async ID and the connection goes on.
+// When S3 refuses a request, the final reply reports the error under the
+// interim reply's async ID and the connection goes on. The engine retries
+// unavailable S3 for minutes, so the fault is a slow refusal it does not
+// retry.
 func TestS3FailureEndsAsyncRequest(t *testing.T) {
 	for _, test := range ioCommands {
 		t.Run(test.name, func(t *testing.T) {
-			srv, proxy := newS3Server(t, smbtest.S3Config{ReadRetryWindow: 100 * time.Millisecond})
+			srv, proxy := newS3Server(t)
 			client := srv.connect(t)
 			id := client.open(t, "file")
 			data := []byte("failed upload")
@@ -188,7 +193,8 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 				flushOK(t, client, id)
 				method = http.MethodGet
 			}
-			if err := proxy.SetFault(s3fault.Fault{Method: method, Status: http.StatusServiceUnavailable}); err != nil {
+			refusal := s3fault.Fault{Method: method, Status: http.StatusForbidden, Code: "AccessDenied", HeaderDelay: 100 * time.Millisecond}
+			if err := proxy.SetFault(refusal); err != nil {
 				t.Fatal(err)
 			}
 			request := sendIO(t, client, test.command, id, 0, data)
@@ -205,6 +211,10 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 			if status := client.close(t, id); status != want {
 				t.Fatalf("CLOSE status %#x, want %#x", status, want)
 			}
+			// The data still in RAM uploads at shutdown.
+			if err := proxy.SetFault(s3fault.Fault{}); err != nil {
+				t.Fatal(err)
+			}
 		})
 	}
 }
@@ -213,7 +223,7 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 // to it. The request before it and an unrelated one after it answer at once,
 // and nothing is answered twice.
 func TestS3OutageInCompound(t *testing.T) {
-	srv, proxy := newS3Server(t, smbtest.S3Config{ChunkRetries: 5})
+	srv, proxy := newS3Server(t)
 	client := srv.connect(t)
 	id := client.open(t, "file")
 	data := []byte("cold compound data")

@@ -9,11 +9,11 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
 
-// durableTimeout is the timeout to grant a DH2Q on a regular unnamed file: the
+// durableTimeout is the timeout to grant a DH2Q on a regular file: the
 // requested one up to 16 minutes, or 120 s for a request of 0. The open table
 // grants it only with an H lease. Persistent handles are never granted.
 func (contexts createContexts) durableTimeout(resolved smb.Resolved) time.Duration {
-	if contexts.durable == nil || resolved.Attr.Kind != smb.KindFile || resolved.Object.Stream != "" {
+	if contexts.durable == nil || resolved.Attr.Kind != smb.KindFile {
 		return 0
 	}
 	timeout := time.Duration(contexts.durable.Timeout) * time.Millisecond

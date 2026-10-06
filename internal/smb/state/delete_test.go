@@ -7,16 +7,15 @@ import (
 	"github.com/djosh34/s3-smb/internal/smb/state"
 )
 
-func deleteRequest(inode smb.Inode, stream string) state.OpenRequest {
-	req := request(inode)
-	req.Object.Stream = stream
+func deleteRequest() state.OpenRequest {
+	req := request(1)
 	req.GrantedAccess = 0x10000
 	req.SharingIntent = state.RightDelete
 	return req
 }
 
-func deleteName(stream string) smb.Name {
-	return smb.Name{Parent: 1, Base: "backup", Stream: stream}
+func deleteName() smb.Name {
+	return smb.Name{Parent: 1, Base: "backup"}
 }
 
 func closeOpen(t *testing.T, table *state.Table, open state.Open) state.CloseAction {
@@ -33,7 +32,7 @@ func closeOpen(t *testing.T, table *state.Table, open state.Open) state.CloseAct
 
 func TestCreateDeleteOnCloseBecomesPendingOnlyAtClose(t *testing.T) {
 	table := newTable(t)
-	first := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
+	first := commit(t, table, deleteRequest(), state.Grant{DeleteOnClose: true, DeleteName: deleteName()})
 	second := commit(t, table, request(1), state.Grant{})
 	denyDelete := request(1)
 	denyDelete.GrantedAccess = 1
@@ -46,16 +45,16 @@ func TestCreateDeleteOnCloseBecomesPendingOnlyAtClose(t *testing.T) {
 	_, status = table.Reserve(request(1))
 	statusIs(t, status, smb.StatusDeletePending)
 	action := closeOpen(t, table, second)
-	if !action.Remove || action.Name != deleteName("") {
+	if !action.Remove || action.Name != deleteName() {
 		t.Fatalf("CREATE delete-on-close cleanup: %+v", action)
 	}
 }
 
 func TestClosedDeleteIntentCannotBeClearedByAnotherOpen(t *testing.T) {
 	table := newTable(t)
-	first := commit(t, table, deleteRequest(1, ""), state.Grant{})
-	second := commit(t, table, deleteRequest(1, ""), state.Grant{})
-	selected := deleteName("")
+	first := commit(t, table, deleteRequest(), state.Grant{})
+	second := commit(t, table, deleteRequest(), state.Grant{})
+	selected := deleteName()
 	statusIs(t, table.SetDelete(first.ID, binding, selected, true), smb.StatusSuccess)
 	if action := closeOpen(t, table, first); action.Remove {
 		t.Fatal("first close removed a live inode")
@@ -69,35 +68,12 @@ func TestClosedDeleteIntentCannotBeClearedByAnotherOpen(t *testing.T) {
 	}
 }
 
-func TestBaseDeletionWaitsForLastStream(t *testing.T) {
+func TestDeleteNameMustBeComplete(t *testing.T) {
 	table := newTable(t)
-	base := commit(t, table, deleteRequest(2, ""), state.Grant{})
-	stream := commit(t, table, requestWithStream(2, "xattr"), state.Grant{})
-	statusIs(t, table.SetDelete(base.ID, binding, deleteName(""), true), smb.StatusSuccess)
-	_, status := table.Reserve(requestWithStream(2, "another"))
-	statusIs(t, status, smb.StatusDeletePending)
-	if action := closeOpen(t, table, base); action.Remove {
-		t.Fatal("base removed before stream closed")
-	}
-	action := closeOpen(t, table, stream)
-	if !action.Remove || action.Object != base.Object || action.Name != deleteName("") || action.Handle != stream.Handle {
-		t.Fatalf("base deletion on stream close: %+v", action)
-	}
-}
-
-func requestWithStream(inode smb.Inode, stream string) state.OpenRequest {
-	req := request(inode)
-	req.Object.Stream = stream
-	return req
-}
-
-func TestDeleteNameMustSelectTheSameStream(t *testing.T) {
-	table := newTable(t)
-	open := commit(t, table, deleteRequest(1, "xattr"), state.Grant{})
-	statusIs(t, table.SetDelete(open.ID, binding, deleteName(""), true), smb.StatusInvalidParameter)
-	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{Base: "backup", Stream: "xattr"}, true), smb.StatusInvalidParameter)
-	reserve(t, table, requestWithStream(1, "xattr"))
-	statusIs(t, table.SetDelete(open.ID, binding, deleteName("xattr"), true), smb.StatusSuccess)
+	open := commit(t, table, deleteRequest(), state.Grant{})
+	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{Base: "backup"}, true), smb.StatusInvalidParameter)
+	statusIs(t, table.SetDelete(open.ID, binding, smb.Name{Parent: 1}, true), smb.StatusInvalidParameter)
+	statusIs(t, table.SetDelete(open.ID, binding, deleteName(), true), smb.StatusSuccess)
 }
 
 // However the opens of a session or tree end, a file deleted on close stays
@@ -110,12 +86,12 @@ func TestBulkCloseKeepsDeletePendingUntilCleanup(t *testing.T) {
 		(*state.Table).CloseAll,
 	} {
 		table := newTable(t)
-		commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
+		commit(t, table, deleteRequest(), state.Grant{DeleteOnClose: true, DeleteName: deleteName()})
 		actions := end(table)
 		if len(actions) != 1 || !actions[0].Remove {
 			t.Fatalf("cleanup = %+v", actions)
 		}
-		_, status := table.Reserve(requestWithStream(1, "xattr"))
+		_, status := table.Reserve(request(1))
 		statusIs(t, status, smb.StatusDeletePending)
 		table.CompleteDelete(actions[0].Object)
 		commit(t, table, request(1), state.Grant{})
@@ -126,7 +102,7 @@ func TestBulkCloseKeepsDeletePendingUntilCleanup(t *testing.T) {
 // runs.
 func TestDeletionRejectsCommitDuringCleanup(t *testing.T) {
 	table := newTable(t)
-	open := commit(t, table, deleteRequest(1, ""), state.Grant{DeleteOnClose: true, DeleteName: deleteName("")})
+	open := commit(t, table, deleteRequest(), state.Grant{DeleteOnClose: true, DeleteName: deleteName()})
 	token := reserve(t, table, request(1))
 	action := closeOpen(t, table, open)
 	_, status := table.Commit(token, state.Grant{Handle: &handle{key: open.Object}})

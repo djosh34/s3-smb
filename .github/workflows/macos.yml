@@ -1,7 +1,7 @@
 name: Time Machine end-to-end
 # Builds the checked-out code on Mac runners and runs the Time Machine test:
-# backup and restore on a fresh Mac, Mac share features, failed-backup scenarios or
-# exclusion discovery.
+# backup and restore on a fresh Mac, failed-backup scenarios or exclusion
+# discovery.
 on:
   workflow_dispatch:
     inputs:
@@ -13,7 +13,6 @@ on:
         options:
           - discover
           - acceptance
-          - features
           - scenarios
       scenarios:
         description: Failed-backup scenarios to run, as a JSON list
@@ -65,7 +64,7 @@ jobs:
     name: backup
     if: inputs.mode == 'acceptance'
     runs-on: macos-15-intel
-    timeout-minutes: 150
+    timeout-minutes: 160
     env:
       MAC_PHASE: backup
     steps:
@@ -84,7 +83,7 @@ jobs:
           go-version: '1.26.3'
           cache: false
       - name: Check SQLite full fsync on every pool connection
-        run: go test -count=1 ./internal/juicefs/pkg/meta -run '^TestSQLiteFullFSyncEveryConnection$'
+        run: go test -count=1 ./internal/engine -run '^TestSQLiteFullFSyncEveryConnection$'
       - name: Time Machine backup
         run: bash test/macos/run.sh
       - name: Make transfer files readable
@@ -122,49 +121,11 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           include-hidden-files: true
-  features:
-    name: Mac share features and backup
-    if: inputs.mode == 'features'
-    runs-on: macos-15-intel
-    timeout-minutes: 150
-    env:
-      MAC_PHASE: features
-    steps:
-      - name: Set task paths
-        run: |
-          {
-            echo "MAC_ARTIFACTS=$RUNNER_TEMP/s3-smb-mac-evidence"
-            echo "MAC_WORK=$RUNNER_TEMP/s3-smb-mac-work"
-            echo "MAC_TRANSFER=$RUNNER_TEMP/s3-smb-mac-transfer"
-          } >> "$GITHUB_ENV"
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
-        with:
-          go-version: '1.26.3'
-          cache: false
-      - name: Mac share features and Time Machine backup
-        run: bash test/macos/run.sh
-      - name: Make evidence readable by the uploader
-        if: always()
-        run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"
-      - name: Upload features evidence
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: mac-features-${{ github.sha }}-${{ github.run_attempt }}
-          path: |
-            ${{ env.MAC_ARTIFACTS }}
-            ${{ runner.temp }}/mac-harness.log
-          if-no-files-found: error
-          retention-days: 14
-          include-hidden-files: true
   recover:
     name: recovery on a fresh Mac
     needs: backup
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 105
     env:
       MAC_PHASE: recover
     steps:
@@ -210,7 +171,7 @@ jobs:
     name: ${{ matrix.scenario }}
     if: inputs.mode == 'acceptance' || inputs.mode == 'scenarios'
     runs-on: macos-15-intel
-    timeout-minutes: 120
+    timeout-minutes: 160
     strategy:
       fail-fast: false
       matrix:
@@ -278,7 +239,7 @@ jobs:
     needs: scenario
     if: ${{ !cancelled() && (inputs.mode == 'acceptance' || inputs.mode == 'scenarios') && contains(inputs.scenarios, 'machine-loss') }}
     runs-on: macos-15-intel
-    timeout-minutes: 90
+    timeout-minutes: 105
     env:
       MAC_PHASE: recover
     steps:

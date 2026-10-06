@@ -23,19 +23,7 @@ lint_fails() {
     grep -F "$finding" "$fixture/output" >/dev/null || fail "missing $finding"
   done
 }
-# Vendored trees are excluded recursively, even with deliberate errors.
-for directory in internal/juicefs/probe internal/thirdparty/probe; do
-  mkdir -p "$directory"
-  cat > "$directory/probe.go" <<'GO'
-package probe
-import "os"
-//nolint
-func broken() { os.Chdir("."); panic("excluded") }
-GO
-done
-lint_passes
-
-# Our code, including the root package, gets the full config.
+# All code, including the root package, gets the full config.
 mkdir -p internal/smb
 cat > internal/smb/probe.go <<'GO'
 // Package smb tests the lint configuration.
@@ -62,7 +50,7 @@ GO
 lint_fails '(forbidigo)'
 rm main.go
 
-mkdir -p internal/smb cmd/probe test/macos/fullsync
+mkdir -p internal/smb cmd/probe
 cat > internal/smb/print_test.go <<'GO'
 package smb
 
@@ -86,9 +74,8 @@ func main() {
 	os.Exit(0)
 }
 GO
-cp cmd/probe/main.go test/macos/fullsync/main.go
 lint_passes
-cat > test/macos/fullsync/write.go <<'GO'
+cat > cmd/probe/write.go <<'GO'
 package main
 
 import "os"
@@ -98,7 +85,7 @@ func exitHelper() {
 }
 GO
 lint_fails '(forbidigo)'
-rm test/macos/fullsync/write.go
+rm cmd/probe/write.go
 cat > internal/smb/main.go <<'GO'
 package smb
 

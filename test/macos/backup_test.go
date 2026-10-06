@@ -75,7 +75,7 @@ func (h *harness) startBackup(label string) {
 	h.t.Log("time-machine-start", label)
 }
 
-func (h *harness) completeBackup(label string) (time.Time, error) {
+func (h *harness) completeBackup(label string) error {
 	deadline, next := time.Now().Add(90*time.Minute), time.Time{}
 	for !h.backup.exited() {
 		if time.Now().After(deadline) {
@@ -98,37 +98,25 @@ func (h *harness) completeBackup(label string) (time.Time, error) {
 	p.cancel()
 	h.must(p.log.Close())
 	if p.err != nil || h.status() {
-		return time.Time{}, errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
+		return errors.Join(errors.New("Time Machine did not complete cleanly"), p.err)
 	}
 	h.t.Log("time-machine-command-completed", label)
 	// A command exit is not enough. remoteBackup must also find a completed native backup.
-	return time.Now().UTC(), nil
+	return nil
 }
 
-type receipt struct {
-	Snapshot time.Time
-	Key      string
-}
-
-func (h *harness) metadata(after time.Time, label string) receipt {
-	var point receipt
-	h.must(h.waitFor("metadata point after "+after.Format(time.RFC3339), 15*time.Minute, time.Second, func() (bool, error) {
-		err := readJSON(h.workDir, "daemon/state/backup-receipt.json", &point)
-		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
-		}
-		if err != nil {
-			return false, err
-		}
-		return point.Snapshot.After(after), nil
+// newCopy waits until a database copy newer than every copy now in the
+// bucket has landed, and returns its key. s3-smb uploads a copy every 15
+// minutes.
+func (h *harness) newCopy(label string) string {
+	previous := helpers.NewestCopy(h.objects("db/"))
+	var landed string
+	h.must(h.waitFor("database copy after "+previous, 20*time.Minute, 10*time.Second, func() (bool, error) {
+		landed = helpers.NewestCopy(h.objects("db/"))
+		return landed > previous, nil
 	}))
-	size, exists := h.objects("s3-smb/meta/")["s3-smb/"+point.Key]
-	if !exists {
-		h.t.Fatal("receipt object absent from S3", point.Key)
-	}
-	h.save(label+"-receipt.json", point)
-	h.t.Log("native-point-after-completion", label, point, "object_bytes", size)
-	return point
+	h.t.Log("database-copy-landed", label, landed)
+	return landed
 }
 
 func (h *harness) mountpoints(text string) []string {

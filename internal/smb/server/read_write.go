@@ -44,10 +44,6 @@ func handleRead(ctx context.Context, request RequestContext, message wire.Messag
 		result.body, err = wire.EncodeReadResponse(wire.ReadResponse{})
 		return result, err
 	}
-	if status = request.Opens.CheckIO(open.ID, request.Binding(), read.Offset, uint64(read.Length), false); status != smb.StatusSuccess {
-		result.status = status
-		return result, nil
-	}
 	data := make([]byte, read.Length)
 	n, err := request.Storage.ReadAt(ctx, open.Handle, data, read.Offset)
 	if n < 0 || n > len(data) {
@@ -82,10 +78,6 @@ func handleWrite(ctx context.Context, request RequestContext, message wire.Messa
 	length := uint64(len(write.Data))
 	if length > uint64(smb.MaxWriteSize) || write.Channel != 0 || write.Offset == math.MaxUint64 || write.Offset > math.MaxUint64-length {
 		result.status = smb.StatusInvalidParameter
-		return result, nil
-	}
-	if status = request.Opens.CheckIO(open.ID, request.Binding(), write.Offset, length, true); status != smb.StatusSuccess {
-		result.status = status
 		return result, nil
 	}
 	n, err := request.Storage.WriteAt(ctx, open.Handle, write.Data, write.Offset)

@@ -122,7 +122,7 @@ func removeOpen(ctx context.Context, request RequestContext, id state.FileID) (s
 	if status != smb.StatusSuccess {
 		return state.CloseAction{}, smb.ErrInvalidHandle
 	}
-	_, unlock, lookupErr := lockName(ctx, request, open.Object.Inode)
+	_, unlock, lookupErr := lockName(ctx, request, open.Object)
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		if unlock != nil {
 			unlock()
@@ -168,7 +168,7 @@ func lockName(ctx context.Context, request RequestContext, inode smb.Inode) (smb
 		if err != nil {
 			return smb.Name{}, nil, err
 		}
-		if selected.Exists && selected.Object.Inode == inode {
+		if selected.Exists && selected.Object == inode {
 			return selected.Name, unlock, nil
 		}
 		unlock()

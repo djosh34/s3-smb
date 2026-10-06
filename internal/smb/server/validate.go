@@ -65,8 +65,7 @@ func requestSize(message wire.Message) (uint64, error) {
 		request, err := wire.DecodeWriteRequest(message)
 		return uint64(len(request.Data)), err
 	case wire.Lock:
-		_, err := wire.DecodeLockRequest(message)
-		return 0, err
+		return 0, nil // Refused with NOT_SUPPORTED, never decoded.
 	case wire.IOCTL:
 		request, err := wire.DecodeIOCTLRequest(message)
 		return max(uint64(len(request.Input)), uint64(request.MaxOutput)), err

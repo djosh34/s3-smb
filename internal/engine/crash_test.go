@@ -138,7 +138,7 @@ func (s *steps) rename(from, to string) error {
 	}
 	destination, err := s.resolve(to)
 	if err == nil {
-		err = s.e.Rename(context.Background(), smb.RenameRequest{Source: source.Name, SourceInode: source.Object.Inode, Destination: destination.Name})
+		err = s.e.Rename(context.Background(), smb.RenameRequest{Source: source.Name, SourceInode: source.Object, Destination: destination.Name})
 	}
 	if err == nil {
 		s.state[to] = s.state[from]
@@ -150,7 +150,7 @@ func (s *steps) rename(from, to string) error {
 func (s *steps) remove(path string) error {
 	r, err := s.resolve(path)
 	if err == nil {
-		err = s.e.Remove(context.Background(), r.Name, r.Object.Inode)
+		err = s.e.Remove(context.Background(), r.Name, r.Object)
 	}
 	if err == nil {
 		delete(s.state, path)

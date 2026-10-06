@@ -9,8 +9,7 @@ import (
 	"testing"
 )
 
-// Carried over from the JuiceFS hook: every connection, including pool
-// replacements, has full fsync on.
+// Every connection, including pool replacements, has full fsync on.
 func TestSQLiteFullFSyncEveryConnection(t *testing.T) {
 	db, err := openDatabase(t.Context(), t.TempDir())
 	if err != nil {

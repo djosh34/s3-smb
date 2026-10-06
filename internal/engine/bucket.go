@@ -4,6 +4,7 @@ package engine
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -40,11 +41,11 @@ type objects interface {
 
 var errNotFound = errors.New("object not found")
 
-// BucketOptions selects an S3 bucket. HTTPClient is optional; set it to use
-// custom TLS settings. PathStyle addresses the bucket in the URL path, as
-// MinIO needs.
+// BucketOptions selects an S3 bucket. TLS is optional; set it to use custom
+// trust roots or a client certificate. PathStyle addresses the bucket in the
+// URL path, as MinIO needs.
 type BucketOptions struct {
-	HTTPClient   *http.Client
+	TLS          *tls.Config
 	Endpoint     string
 	Region       string
 	Bucket       string
@@ -77,13 +78,10 @@ func newBucket(options BucketOptions, maxBackoff time.Duration) (*Bucket, error)
 	if options.Bucket == "" || options.Region == "" {
 		return nil, errors.New("bucket and region are required")
 	}
-	client := options.HTTPClient
-	if client == nil {
-		client = &http.Client{Transport: &http.Transport{
-			Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: time.Minute,
-			IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 16, TLSHandshakeTimeout: 30 * time.Second,
-		}}
-	}
+	client := &http.Client{Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment, ResponseHeaderTimeout: time.Minute, TLSClientConfig: options.TLS,
+		IdleConnTimeout: 90 * time.Second, MaxIdleConnsPerHost: 16, TLSHandshakeTimeout: 30 * time.Second,
+	}}
 	config := aws.Config{
 		Region:      options.Region,
 		HTTPClient:  client,

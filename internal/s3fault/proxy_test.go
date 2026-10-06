@@ -96,7 +96,7 @@ func TestStatusFault(t *testing.T) {
 func TestOutage(t *testing.T) {
 	proxy, calls := newProxy(t)
 	proxy.FailS3For(time.Hour)
-	for _, path := range []string{"/bucket/chunks/a", "/bucket/meta/a"} {
+	for _, path := range []string{"/bucket/chunks/a", "/bucket/db/a"} {
 		if got := status(t, proxy, http.MethodPut, path); got != http.StatusServiceUnavailable {
 			t.Fatalf("PUT %s during outage: status %d", path, got)
 		}
@@ -107,30 +107,9 @@ func TestOutage(t *testing.T) {
 	if event := <-proxy.OutageSeen(); event.Path != "/bucket/chunks/a" {
 		t.Fatalf("outage event %+v", event)
 	}
-	if event := <-proxy.MetadataFailureSeen(); event.Path != "/bucket/meta/a" {
-		t.Fatalf("metadata outage event %+v", event)
-	}
 	proxy.RestoreS3()
 	if got := status(t, proxy, http.MethodPut, "/bucket/chunks/a"); got != http.StatusOK {
 		t.Fatalf("after RestoreS3: status %d", got)
-	}
-}
-
-func TestMetadataFailure(t *testing.T) {
-	proxy, _ := newProxy(t)
-	proxy.SetMetadataFailure(true)
-	if got := status(t, proxy, http.MethodPut, "/bucket/meta/a"); got != http.StatusServiceUnavailable {
-		t.Fatalf("metadata PUT: status %d", got)
-	}
-	if event := <-proxy.MetadataFailureSeen(); event.Method != http.MethodPut {
-		t.Fatalf("metadata event %+v", event)
-	}
-	if got := status(t, proxy, http.MethodPut, "/bucket/chunks/a"); got != http.StatusOK {
-		t.Fatalf("chunk PUT during metadata failure: status %d", got)
-	}
-	proxy.SetMetadataFailure(false)
-	if got := status(t, proxy, http.MethodPut, "/bucket/meta/a"); got != http.StatusOK {
-		t.Fatalf("metadata PUT after reset: status %d", got)
 	}
 }
 

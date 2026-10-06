@@ -45,9 +45,9 @@ func rawCreate(t *testing.T, client *testClient, request wire.CreateRequest) (sm
 	return decodeReply(t, client.call(t, wire.Create, encode(t, wire.EncodeCreateRequest, request), 1), smbtest.DecodeCreateReply)
 }
 
-func (s *testServer) object(t *testing.T, name string) smb.ObjectKey {
+func (s *testServer) object(t *testing.T, name string) smb.Inode {
 	t.Helper()
-	resolved, err := s.adapter.Lookup(t.Context(), name)
+	resolved, err := s.storage.Lookup(t.Context(), name)
 	if err != nil || !resolved.Exists {
 		t.Fatalf("lookup %q: %+v, %v", name, resolved, err)
 	}
@@ -131,7 +131,7 @@ func TestLeaseKeyOfAnotherFileChangesNothing(t *testing.T) {
 	if _, status := client.create(t, overwrite); status != smb.StatusInvalidParameter {
 		t.Fatalf("OVERWRITE_IF with the key of another file: status %#x", status)
 	}
-	if attr, err := srv.adapter.GetAttr(t.Context(), srv.object(t, "b")); err != nil || attr.Size != 4 {
+	if attr, err := srv.storage.GetAttr(t.Context(), srv.object(t, "b")); err != nil || attr.Size != 4 {
 		t.Fatalf("size after the refused overwrite = %d, %v", attr.Size, err)
 	}
 	created := leasedCreate("c", 1, leaseRH)
@@ -139,19 +139,17 @@ func TestLeaseKeyOfAnotherFileChangesNothing(t *testing.T) {
 	if _, status := client.create(t, created); status != smb.StatusInvalidParameter {
 		t.Fatalf("FILE_CREATE with the key of another file: status %#x", status)
 	}
-	if resolved, err := srv.adapter.Lookup(t.Context(), "c"); err != nil || resolved.Exists {
+	if resolved, err := srv.storage.Lookup(t.Context(), "c"); err != nil || resolved.Exists {
 		t.Fatalf("refused FILE_CREATE left %+v, %v", resolved, err)
 	}
 }
 
-func TestNoLeaseForDirectoriesStreamsAndOplocks(t *testing.T) {
+func TestNoLeaseForDirectoriesAndOplocks(t *testing.T) {
 	client := newTestServer(t).connect(t)
-	client.open(t, "base")
 	directory := leasedCreate("dir", 1, leaseRWH)
 	directory.Request.Options = fileDirectoryFile
-	stream := leasedCreate("base:meta", 2, leaseRWH)
 	oplock := smbtest.CreateOptions{Request: wire.CreateRequest{Name: "oplock", DesiredAccess: fileReadData, ShareAccess: 7, Disposition: fileOpenIf, OplockLevel: 8}}
-	for _, options := range []smbtest.CreateOptions{directory, stream, oplock} {
+	for _, options := range []smbtest.CreateOptions{directory, oplock} {
 		if result := mustCreate(t, client, options); result.Lease != nil || result.Reply.OplockLevel != 0 {
 			t.Fatalf("%q got caching: %+v, oplock level %#x", options.Request.Name, result.Lease, result.Reply.OplockLevel)
 		}
@@ -189,7 +187,7 @@ func TestConflictingOpenBreaksLease(t *testing.T) {
 				t.Fatalf("break = %+v, want %+v", notification, want)
 			}
 			opener.interim(t, request)
-			if attr, err := srv.adapter.GetAttr(t.Context(), srv.object(t, "file")); err != nil || attr.Size != 17 {
+			if attr, err := srv.storage.GetAttr(t.Context(), srv.object(t, "file")); err != nil || attr.Size != 17 {
 				t.Fatalf("size before ACK = %d, %v", attr.Size, err)
 			}
 			if status := holder.ackLease(t, notification.Key, notification.NewState); status != smb.StatusSuccess {
