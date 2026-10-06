@@ -269,40 +269,19 @@ type upload struct {
 
 // flush uploads the dirty chunks, then makes one commit: new chunks in,
 // replaced chunks to the trash, early uploads settled, size and times
-// updated. The I/O lock must be held.
+// updated. If the uploads or the commit fail, what did upload goes to the
+// trash, so it is not left in S3 for good. The I/O lock must be held.
 func (e *Engine) flush(ctx context.Context, st *inode) error {
 	l := st.snapshot()
 	if len(st.dirty) == 0 && len(st.early) == 0 && !l.timesDirty {
 		return nil
 	}
 	uploaded, err := e.uploadDirty(ctx, st)
-	if err != nil {
-		return err
+	if err == nil {
+		err = e.commit(ctx, func(tx *sql.Tx) error { return e.settle(ctx, tx, st, uploaded, l) })
 	}
-	err = e.commit(ctx, func(tx *sql.Tx) error {
-		var statements []statement
-		for idx, early := range st.early {
-			if _, replaced := uploaded[idx]; replaced {
-				statements = append(statements, trashPending(early.name, e.captureSeq)...)
-			} else {
-				statements = append(statements, statement{`DELETE FROM pending WHERE name = ?`, []any{early.name}})
-				uploaded[idx] = upload(early)
-			}
-		}
-		for idx, u := range uploaded {
-			statements = append(statements, replaceChunk(st.id, idx, u, e.captureSeq)...)
-		}
-		statements = append(statements, statement{`UPDATE files SET size = ? WHERE id = ?`, []any{l.size, st.id}})
-		if l.timesDirty {
-			statements = append(statements, statement{
-				`UPDATE files SET modified = ?, changed = ? WHERE id = ?`,
-				[]any{timeValue(l.modified), timeValue(l.changed), st.id},
-			})
-		}
-		return execAll(ctx, tx, statements)
-	})
 	if err != nil {
-		return err
+		return errors.Join(err, e.trashUploads(ctx, uploaded))
 	}
 	for _, c := range st.dirty {
 		e.forget(c)
@@ -310,6 +289,43 @@ func (e *Engine) flush(ctx context.Context, st *inode) error {
 	clear(st.early)
 	st.update(func(l *live) { l.timesDirty = false })
 	return nil
+}
+
+func (e *Engine) settle(ctx context.Context, tx *sql.Tx, st *inode, uploaded map[uint64]upload, l live) error {
+	var statements []statement
+	for idx, u := range uploaded {
+		statements = append(statements, replaceChunk(st.id, idx, u, e.captureSeq)...)
+	}
+	for idx, early := range st.early {
+		if _, replaced := uploaded[idx]; replaced {
+			statements = append(statements, trashPending(early.name, e.captureSeq)...)
+		} else {
+			statements = append(statements, statement{`DELETE FROM pending WHERE name = ?`, []any{early.name}})
+			statements = append(statements, replaceChunk(st.id, idx, upload(early), e.captureSeq)...)
+		}
+	}
+	statements = append(statements, statement{`UPDATE files SET size = ? WHERE id = ?`, []any{l.size, st.id}})
+	if l.timesDirty {
+		statements = append(statements, statement{
+			`UPDATE files SET modified = ?, changed = ? WHERE id = ?`,
+			[]any{timeValue(l.modified), timeValue(l.changed), st.id},
+		})
+	}
+	return execAll(ctx, tx, statements)
+}
+
+func (e *Engine) trashUploads(ctx context.Context, uploaded map[uint64]upload) error {
+	if len(uploaded) == 0 {
+		return nil
+	}
+	return e.commit(context.WithoutCancel(ctx), func(tx *sql.Tx) error {
+		for _, u := range uploaded {
+			if _, err := tx.ExecContext(ctx, `INSERT INTO trash (name, seq) VALUES (?, ?)`, u.name, e.captureSeq); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 // replaceChunk points a chunk index at a new object and trashes the old one.
@@ -320,23 +336,28 @@ func replaceChunk(file smb.Inode, idx uint64, u upload, seq int64) []statement {
 	}
 }
 
-// uploadDirty puts each dirty chunk under a new random name.
+// uploadDirty puts each dirty chunk under a new random name. It returns what
+// did upload, also on error.
 func (e *Engine) uploadDirty(ctx context.Context, st *inode) (map[uint64]upload, error) {
+	names := make(map[uint64]string, len(st.dirty))
+	for idx := range st.dirty {
+		name, err := randomID()
+		if err != nil {
+			return nil, err
+		}
+		names[idx] = name
+	}
 	result := make(map[uint64]upload, len(st.dirty))
 	var mu sync.Mutex
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.SetLimit(uploads)
 	for idx, c := range st.dirty {
-		name, err := randomID()
-		if err != nil {
-			return nil, err
-		}
 		group.Go(func() error {
-			if err := e.put(groupCtx, chunkPrefix+name, c.data); err != nil {
+			if err := e.put(groupCtx, chunkPrefix+names[idx], c.data); err != nil {
 				return storageError(err)
 			}
 			mu.Lock()
-			result[idx] = upload{name: name, length: uint64(len(c.data))}
+			result[idx] = upload{name: names[idx], length: uint64(len(c.data))}
 			mu.Unlock()
 			return nil
 		})

@@ -2,10 +2,12 @@
 package engine
 
 import (
+	"errors"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/djosh34/s3-smb/internal/smb"
@@ -156,5 +158,37 @@ func TestDamagedLocalDatabaseIsRestored(t *testing.T) {
 	e = f.open()
 	if got := tree(t, e); !maps.Equal(got, map[string]string{"f": "kept"}) {
 		t.Fatalf("tree = %v", got)
+	}
+}
+
+// Chunks that uploaded before a FLUSH failed go to the trash and are deleted
+// in time, rather than staying in S3 unknown.
+func TestFailedFlushTrashesItsUploads(t *testing.T) {
+	f := newFixture(t)
+	e := f.open()
+	create(t, e, "f", smb.KindFile)
+	h := openFile(t, e, "f", smb.AccessRead|smb.AccessWrite)
+	writeAt(t, e, h, strings.Repeat("x", 48), 0)
+	var puts atomic.Int32
+	f.bucket.setFault(func(op, key string) error {
+		if op == "put" && strings.HasPrefix(key, chunkPrefix) && puts.Add(1) == 2 {
+			return errors.New("injected chunk failure")
+		}
+		return nil
+	})
+	if err := e.Flush(t.Context(), h, smb.SyncData); err == nil {
+		t.Fatal("the flush did not fail")
+	}
+	f.bucket.setFault(nil)
+	flush(t, e, h)
+	closeFile(t, e, h)
+	for range 4 {
+		copyNow(t, e)
+	}
+	if objects, rows := len(f.bucket.keys(chunkPrefix)), countRows(t, e, "chunks"); objects != rows {
+		t.Fatalf("%d chunk objects for %d rows", objects, rows)
+	}
+	if got := readFile(t, e, "f"); got != strings.Repeat("x", 48) {
+		t.Fatalf("read %q", got)
 	}
 }

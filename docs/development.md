@@ -5,6 +5,9 @@
 - `internal/app`: command line, prompt, state lock, startup, shutdown.
 - `internal/config`: YAML loading, validation, secret sources and TLS files.
 - `internal/storage`: S3 connection, volume identity, encryption key, JuiceFS setup.
+- `internal/engine`: the SQLite chunk engine that replaces JuiceFS. Files are
+  immutable chunk objects in S3, a local SQLite database maps them, and full
+  copies of it go to S3. Not wired into the server yet.
 - `internal/backup`: scheduled metadata backups, delete protection, recovery.
 - `internal/logging`: `log/slog` setup, secret removal, bridges for JuiceFS logs.
 - `internal/smb`, `internal/smbfs`: the SMB server and its JuiceFS

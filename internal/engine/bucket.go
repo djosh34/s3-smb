@@ -59,6 +59,7 @@ type BucketOptions struct {
 type Bucket struct {
 	client  *s3.Client
 	name    string
+	prefix  string // keeps test runs apart in a shared bucket
 	timeout time.Duration
 }
 
@@ -70,6 +71,10 @@ const requestTimeout = 6 * time.Minute
 // checksum stay on. The retry quota is off, so an outage cannot use it up, and
 // each call retries until requestTimeout.
 func NewBucket(options BucketOptions) (*Bucket, error) {
+	return newBucket(options, retry.DefaultMaxBackoff)
+}
+
+func newBucket(options BucketOptions, maxBackoff time.Duration) (*Bucket, error) {
 	if options.Bucket == "" || options.Region == "" {
 		return nil, errors.New("bucket and region are required")
 	}
@@ -87,6 +92,7 @@ func NewBucket(options BucketOptions) (*Bucket, error) {
 		Retryer: func() aws.Retryer {
 			return retry.NewStandard(func(o *retry.StandardOptions) {
 				o.MaxAttempts = 1 << 20
+				o.MaxBackoff = maxBackoff
 				o.RateLimiter = ratelimit.None
 			})
 		},
@@ -104,7 +110,7 @@ func (b *Bucket) put(ctx context.Context, key string, data []byte) error {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 	_, err := b.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(b.name), Key: aws.String(key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))),
+		Bucket: aws.String(b.name), Key: aws.String(b.prefix + key), Body: bytes.NewReader(data), ContentLength: aws.Int64(int64(len(data))),
 	})
 	if err != nil {
 		return fmt.Errorf("put %s: %w", key, err)
@@ -116,7 +122,7 @@ func (b *Bucket) put(ctx context.Context, key string, data []byte) error {
 func (b *Bucket) get(ctx context.Context, key string, offset, length uint64) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
-	input := &s3.GetObjectInput{Bucket: aws.String(b.name), Key: aws.String(key)}
+	input := &s3.GetObjectInput{Bucket: aws.String(b.name), Key: aws.String(b.prefix + key)}
 	if length > 0 {
 		input.Range = aws.String(fmt.Sprintf("bytes=%d-%d", offset, offset+length-1))
 	}
@@ -167,7 +173,7 @@ func (b *Bucket) getOnce(ctx context.Context, input *s3.GetObjectInput, length u
 func (b *Bucket) remove(ctx context.Context, key string) error {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
-	if _, err := b.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(b.name), Key: aws.String(key)}); err != nil {
+	if _, err := b.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(b.name), Key: aws.String(b.prefix + key)}); err != nil {
 		return fmt.Errorf("delete %s: %w", key, err)
 	}
 	return nil
@@ -177,15 +183,15 @@ func (b *Bucket) list(ctx context.Context, prefix string) ([]object, error) {
 	ctx, cancel := context.WithTimeout(ctx, b.timeout)
 	defer cancel()
 	var result []object
-	pages := s3.NewListObjectsV2Paginator(b.client, &s3.ListObjectsV2Input{Bucket: aws.String(b.name), Prefix: aws.String(prefix)})
+	pages := s3.NewListObjectsV2Paginator(b.client, &s3.ListObjectsV2Input{Bucket: aws.String(b.name), Prefix: aws.String(b.prefix + prefix)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list %s: %w", prefix, err)
 		}
 		for _, item := range page.Contents {
-			key := aws.ToString(item.Key)
-			if !strings.HasPrefix(key, prefix) || item.LastModified == nil {
+			key, ok := strings.CutPrefix(aws.ToString(item.Key), b.prefix)
+			if !ok || !strings.HasPrefix(key, prefix) || item.LastModified == nil {
 				return nil, fmt.Errorf("list %s: malformed entry %q", prefix, key)
 			}
 			result = append(result, object{key: key, size: aws.ToInt64(item.Size), modified: *item.LastModified})

@@ -413,22 +413,38 @@ func tree(t testing.TB, e *Engine) map[string]string {
 
 // checkCopies opens every copy in the bucket and requires each chunk it
 // names to exist, so each one can still be restored.
-func checkCopies(t testing.TB, b *memBucket) {
+func checkCopies(t testing.TB, b objects) {
 	t.Helper()
-	for _, key := range b.keys(copyPrefix) {
-		data, _ := b.data(key)
+	ctx := context.Background()
+	chunks, err := b.list(ctx, chunkPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	present := make(map[string]bool, len(chunks))
+	for _, c := range chunks {
+		present[c.key] = true
+	}
+	copies, err := b.list(ctx, copyPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range copies {
+		data, err := b.get(ctx, c.key, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
 		path := filepath.Join(t.TempDir(), "copy")
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err = os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 		db := openSQLite(path, "ro")
-		names, err := chunkNames(t.Context(), db)
+		names, err := chunkNames(ctx, db)
 		if err = errors.Join(err, db.Close()); err != nil {
-			t.Fatal(key, err)
+			t.Fatal(c.key, err)
 		}
 		for _, name := range names {
-			if _, ok := b.data(chunkPrefix + name); !ok {
-				t.Fatalf("copy %s names chunk %s, which is gone", key, name)
+			if !present[chunkPrefix+name] {
+				t.Fatalf("copy %s names chunk %s, which is gone", c.key, name)
 			}
 		}
 	}
