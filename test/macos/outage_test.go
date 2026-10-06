@@ -62,6 +62,7 @@ func (h *harness) s3Outage() result {
 	if attempt.Log.Failed || attempt.Log.Refused || attempt.Log.BackupStarts != 1 {
 		h.t.Fatalf("the backup did not go on through the S3 outage as one backup: %+v", attempt.Log)
 	}
+	h.must(h.detach())
 	h.mount()
 	latest := h.remoteBackup("after-outage", "")
 	if filepath.Base(latest) == outcome.Baseline {
