@@ -24,7 +24,6 @@ import (
 type object struct {
 	modified time.Time
 	key      string
-	size     int64
 }
 
 // objects is everything the engine asks of S3: no conditional writes, no
@@ -194,7 +193,7 @@ func (b *Bucket) list(ctx context.Context, prefix string) ([]object, error) {
 			if !ok || !strings.HasPrefix(key, prefix) || item.LastModified == nil {
 				return nil, fmt.Errorf("list %s: malformed entry %q", prefix, key)
 			}
-			result = append(result, object{key: key, size: aws.ToInt64(item.Size), modified: *item.LastModified})
+			result = append(result, object{key: key, modified: *item.LastModified})
 		}
 	}
 	return result, nil

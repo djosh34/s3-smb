@@ -318,7 +318,8 @@ func (e *Engine) trashUploads(ctx context.Context, uploaded map[uint64]upload) e
 	if len(uploaded) == 0 {
 		return nil
 	}
-	return e.commit(context.WithoutCancel(ctx), func(tx *sql.Tx) error {
+	ctx = context.WithoutCancel(ctx)
+	return e.commit(ctx, func(tx *sql.Tx) error {
 		for _, u := range uploaded {
 			if _, err := tx.ExecContext(ctx, `INSERT INTO trash (name, seq) VALUES (?, ?)`, u.name, e.captureSeq); err != nil {
 				return err
@@ -365,27 +366,39 @@ func (e *Engine) uploadDirty(ctx context.Context, st *inode) (map[uint64]upload,
 	return result, group.Wait()
 }
 
-// makeRoom uploads the oldest dirty chunks early until the RAM budget has
-// room. It runs before the writer takes its own I/O lock, so it may wait
-// for any file's lock.
-func (e *Engine) makeRoom(ctx context.Context) error {
+// admit makes room for one more dirty chunk of st, whose I/O lock is held,
+// by uploading the oldest dirty chunks early: those of st, or of a file whose
+// lock is free. When every chunk belongs to a busy file it goes over the
+// budget by one rather than wait for that lock, which could deadlock. So the
+// budget is exceeded by at most one chunk per file being written at once.
+func (e *Engine) admit(ctx context.Context, st *inode) error {
 	for {
 		e.mu.Lock()
 		if len(e.dirty) < e.tune.dirtyChunks {
 			e.mu.Unlock()
 			return nil
 		}
-		c := e.dirty[0]
-		st := c.owner
-		st.users++
-		e.mu.Unlock()
-		st.mu.Lock()
-		var err error
-		if st.dirty[c.idx] == c {
-			err = e.evict(ctx, st, c)
+		var victim *dirtyChunk
+		for _, c := range e.dirty {
+			if c.owner == st {
+				victim = c
+				break
+			}
+			if c.owner.mu.TryLock() {
+				c.owner.users++
+				victim = c
+				break
+			}
 		}
-		st.mu.Unlock()
-		e.unpin(st)
+		e.mu.Unlock()
+		if victim == nil {
+			return nil
+		}
+		err := e.evict(ctx, victim.owner, victim)
+		if victim.owner != st {
+			victim.owner.mu.Unlock()
+			e.unpin(victim.owner)
+		}
 		if err != nil {
 			return err
 		}
@@ -424,9 +437,6 @@ func (e *Engine) evict(ctx context.Context, st *inode, c *dirtyChunk) error {
 
 // WriteAt writes into RAM. With AccessAppend it refuses offsets below EOF.
 func (e *Engine) WriteAt(ctx context.Context, ref smb.Handle, src []byte, offset uint64) (int, error) {
-	if err := e.makeRoom(ctx); err != nil {
-		return 0, err
-	}
 	h, release, err := e.selected(ctx, ref, true)
 	if err != nil {
 		return 0, err
@@ -480,6 +490,9 @@ func (e *Engine) write(ctx context.Context, st *inode, src []byte, offset uint64
 func (e *Engine) dirtyChunk(ctx context.Context, st *inode, idx, within, n uint64) (*dirtyChunk, error) {
 	if c := st.dirty[idx]; c != nil {
 		return c, nil
+	}
+	if err := e.admit(ctx, st); err != nil {
+		return nil, err
 	}
 	var data []byte
 	stored, err := e.stored(ctx, st, idx)

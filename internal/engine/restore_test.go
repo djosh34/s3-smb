@@ -191,22 +191,26 @@ func TestLateCopyFromFailedTakeover(t *testing.T) {
 	if _, err := takeover.tryOpen(); err == nil {
 		t.Fatal("the takeover started without its start copy")
 	}
-	f.bucket.mu.Lock()
-	f.bucket.holding = nil
-	f.bucket.mu.Unlock()
+	f.bucket.hold(nil)
 
 	f.dir = folder
 	e = f.open()
-	if c := newestCopy(t, f.bucket); c.seq != 5 || c.history != e.history {
+	if c := newestCopy(t, f.bucket); c.seq != 5 || c.history != historyOf(t, e) {
 		t.Fatalf("start copy %+v", c)
 	}
-	kill(t, e)
 	f.bucket.release()
 	want := map[string]string{"f": "v1 and a flush after the copy"}
 	lost := &fixture{t: t, bucket: f.bucket.clone(), dir: t.TempDir(), tune: testTuning()}
-	requireTree(t, f.open(), want)
 	requireTree(t, lost.open(), want)
+	// The late copy landed just above what this run saw at start, so this
+	// timeline's trash does not protect its chunks: the v1 chunk was
+	// trashed at sequence 3. Cleanup removes it before that chunk goes.
+	for range 3 {
+		copyNow(t, e)
+	}
 	checkCopies(t, f.bucket)
+	kill(t, e)
+	requireTree(t, f.open(), want)
 }
 
 func TestStartWaitsForItsCopy(t *testing.T) {
@@ -224,4 +228,43 @@ func TestStartWaitsForItsCopy(t *testing.T) {
 		t.Fatalf("failures left %d, copies %v", failures, f.bucket.keys(copyPrefix))
 	}
 	shutdown(t, e)
+}
+
+// A restart whose local database is ahead of the newest copy keeps it, and
+// a crash anywhere in that start, also after the new timeline began, still
+// keeps it on the next start.
+func TestCrashDuringRestartKeepsFlushedData(t *testing.T) {
+	f := newFixture(t)
+	e := f.open()
+	writeFile(t, e, "f", "in the copy")
+	copyNow(t, e)
+	writeFile(t, e, "f", "flushed after the copy")
+	shutdown(t, e)
+	ahead := map[string]string{"f": "flushed after the copy"}
+	copied := map[string]string{"f": "in the copy"}
+	fired := map[string]bool{}
+	for at := 0; ; at++ {
+		run := &fixture{t: t, bucket: f.bucket.clone(), dir: copyDir(t, f.dir), tune: testTuning()}
+		c := &crasher{at: at}
+		c.install(run)
+		e, err := run.tryOpen()
+		name := c.result()
+		if name == "" {
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.disarm()
+			requireTree(t, e, ahead)
+			break
+		}
+		fired[name] = true
+		if e != nil {
+			run.dir = snapshot(t, e)
+			kill(t, e)
+		}
+		recoverAndCheck(t, run, name, []map[string]string{ahead}, []map[string]string{copied, ahead})
+	}
+	if !fired[stepStartedTimeline] {
+		t.Error("never crashed after the new timeline began")
+	}
 }

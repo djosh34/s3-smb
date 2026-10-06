@@ -405,8 +405,6 @@ func (e *Engine) Rename(ctx context.Context, request smb.RenameRequest) error {
 	if err := errors.Join(checkName(request.Source), checkName(request.Destination)); err != nil {
 		return err
 	}
-	e.renameMu.Lock()
-	defer e.renameMu.Unlock()
 	var target *inode
 	if request.DestinationInode != 0 && request.DestinationInode != request.SourceInode {
 		st, release := e.acquire(request.DestinationInode)

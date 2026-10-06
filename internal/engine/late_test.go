@@ -81,18 +81,26 @@ func TestLateCopies(t *testing.T) {
 	f := newFixture(t)
 	e := f.open()
 	writeFile(t, e, "f", "v1")
+	// The first attempt is held; the retry lands.
 	f.bucket.hold(holdPrefix("put", copyPrefix))
-	failures := 0
+	attempts := 0
 	f.bucket.setFault(func(op, key string) error {
-		if op == "put" && strings.HasPrefix(key, copyPrefix) && failures == 0 {
-			failures++
-			f.bucket.hold(nil)
+		if op == "put" && strings.HasPrefix(key, copyPrefix) {
+			if attempts++; attempts == 2 {
+				f.bucket.hold(nil)
+			}
 		}
 		return nil
 	})
 	copyNow(t, e)
 	landed := newestCopy(t, f.bucket)
 	data, _ := f.bucket.data(landed.key)
+	f.bucket.mu.Lock()
+	held := len(f.bucket.held)
+	f.bucket.mu.Unlock()
+	if attempts != 2 || held != 1 {
+		t.Fatalf("%d attempts, %d held", attempts, held)
+	}
 	f.bucket.release()
 	if late, _ := f.bucket.data(landed.key); string(late) != string(data) {
 		t.Fatal("the late attempt changed the copy")

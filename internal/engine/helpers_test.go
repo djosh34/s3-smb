@@ -136,7 +136,7 @@ func (b *memBucket) list(ctx context.Context, prefix string) ([]object, error) {
 	err := b.do(ctx, "list", prefix, func() {
 		for key, o := range b.objects {
 			if strings.HasPrefix(key, prefix) {
-				result = append(result, object{key: key, size: int64(len(o.data)), modified: o.modified})
+				result = append(result, object{key: key, modified: o.modified})
 			}
 		}
 	})
@@ -511,4 +511,13 @@ func countRows(t testing.TB, e *Engine, table string) int {
 		t.Fatal(err)
 	}
 	return n
+}
+
+func historyOf(t testing.TB, e *Engine) string {
+	t.Helper()
+	state, err := readState(t.Context(), e.db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return state.history
 }

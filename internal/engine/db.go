@@ -35,7 +35,9 @@ const schemaVersion = 1
 // index to its object, and length is how many of its bytes count. trash
 // holds replaced objects with the highest copy sequence captured when they
 // were replaced. pending holds early uploads that no row uses yet. copies
-// records each copy attempt. state is one row.
+// records each copy attempt. state is one row; published is the history of
+// the newest copy this database is known to hold, so a start that crashes
+// before its start copy lands still keeps the database.
 const schema = `
 CREATE TABLE files (
 	id INTEGER PRIMARY KEY,
@@ -71,6 +73,7 @@ CREATE TABLE copies (
 CREATE TABLE state (
 	id INTEGER PRIMARY KEY CHECK (id = 1),
 	history TEXT NOT NULL,
+	published TEXT NOT NULL,
 	commits INTEGER NOT NULL,
 	volume TEXT NOT NULL
 );
@@ -177,7 +180,7 @@ func createSchema(ctx context.Context, db *sql.DB) error {
 			_, err = tx.ExecContext(ctx, schema+fmt.Sprintf("PRAGMA user_version=%d;", schemaVersion))
 		}
 		if err == nil {
-			_, err = tx.ExecContext(ctx, `INSERT INTO state (id, history, commits, volume) VALUES (1, ?, 0, ?)`, history, volume)
+			_, err = tx.ExecContext(ctx, `INSERT INTO state (id, history, published, commits, volume) VALUES (1, ?, '', 0, ?)`, history, volume)
 		}
 	}
 	if err == nil {
@@ -223,14 +226,15 @@ func checkDatabase(ctx context.Context, db *sql.DB) error {
 
 // stateRow is the one row of the state table.
 type stateRow struct {
-	history string
-	volume  string
-	commits int64
+	history   string
+	published string
+	volume    string
+	commits   int64
 }
 
 func readState(ctx context.Context, db *sql.DB) (stateRow, error) {
 	var s stateRow
-	err := db.QueryRowContext(ctx, `SELECT history, commits, volume FROM state WHERE id = 1`).Scan(&s.history, &s.commits, &s.volume)
+	err := db.QueryRowContext(ctx, `SELECT history, published, commits, volume FROM state WHERE id = 1`).Scan(&s.history, &s.published, &s.commits, &s.volume)
 	return s, err
 }
 

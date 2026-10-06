@@ -2,13 +2,16 @@
 package engine
 
 import (
-	"errors"
+	"context"
+	"database/sql"
 	"maps"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
@@ -55,7 +58,7 @@ func TestStartCopyIsHighestPlusTwo(t *testing.T) {
 			t.Fatal(key)
 		}
 		seqs = append(seqs, c.seq)
-		if c.history == e.history && c.seq != 6 {
+		if c.history == historyOf(t, e) && c.seq != 6 {
 			t.Fatalf("start copy %s, want sequence 6", key)
 		}
 	}
@@ -169,14 +172,17 @@ func TestFailedFlushTrashesItsUploads(t *testing.T) {
 	create(t, e, "f", smb.KindFile)
 	h := openFile(t, e, "f", smb.AccessRead|smb.AccessWrite)
 	writeAt(t, e, h, strings.Repeat("x", 48), 0)
+	// The second upload fails as the client goes away, cancelling the FLUSH.
+	ctx, cancel := context.WithCancel(t.Context())
 	var puts atomic.Int32
 	f.bucket.setFault(func(op, key string) error {
 		if op == "put" && strings.HasPrefix(key, chunkPrefix) && puts.Add(1) == 2 {
-			return errors.New("injected chunk failure")
+			cancel()
+			return context.Canceled
 		}
 		return nil
 	})
-	if err := e.Flush(t.Context(), h, smb.SyncData); err == nil {
+	if err := e.Flush(ctx, h, smb.SyncData); err == nil {
 		t.Fatal("the flush did not fail")
 	}
 	f.bucket.setFault(nil)
@@ -190,5 +196,66 @@ func TestFailedFlushTrashesItsUploads(t *testing.T) {
 	}
 	if got := readFile(t, e, "f"); got != strings.Repeat("x", 48) {
 		t.Fatalf("read %q", got)
+	}
+}
+
+// Concurrent writers to several files stay within the RAM budget, give or
+// take one chunk per file being written at once.
+func TestConcurrentWritersKeepTheBudget(t *testing.T) {
+	f := newFixture(t)
+	e := f.open()
+	const files = 4
+	var handles [files]smb.Handle
+	for i := range files {
+		name := string(rune('a' + i))
+		create(t, e, name, smb.KindFile)
+		handles[i] = openFile(t, e, name, smb.AccessRead|smb.AccessWrite)
+	}
+	var most atomic.Int64
+	var group sync.WaitGroup
+	for i := range files {
+		group.Go(func() {
+			for offset := uint64(0); offset < 400; offset += 8 {
+				if _, err := e.WriteAt(t.Context(), handles[i], []byte("12345678"), offset); err != nil {
+					t.Error(err)
+					return
+				}
+				e.mu.Lock()
+				n := int64(len(e.dirty))
+				e.mu.Unlock()
+				for old := most.Load(); n > old && !most.CompareAndSwap(old, n); old = most.Load() {
+				}
+			}
+		})
+	}
+	group.Wait()
+	if n := most.Load(); n > int64(f.tune.dirtyChunks+files) {
+		t.Fatalf("%d dirty chunks with a budget of %d", n, f.tune.dirtyChunks)
+	}
+	for i := range files {
+		flush(t, e, handles[i])
+		if got := readHandle(t, e, handles[i]); got != strings.Repeat("12345678", 50) {
+			t.Fatalf("file %d reads %q", i, got)
+		}
+	}
+}
+
+// A transaction that outlasts the lease does not commit.
+func TestCommitRechecksTheLease(t *testing.T) {
+	f := newFixture(t)
+	f.tune.lease = time.Second
+	e := f.open()
+	e.timesMu.Lock()
+	expiry := e.leaseUntil
+	e.timesMu.Unlock()
+	err := e.commit(t.Context(), func(tx *sql.Tx) error {
+		time.Sleep(time.Until(expiry) + 10*time.Millisecond)
+		_, execErr := tx.ExecContext(t.Context(), `INSERT INTO pending (name) VALUES ('late')`)
+		return execErr
+	})
+	requireError(t, err, errLeaseExpired)
+	var n int
+	if err = e.db.QueryRowContext(t.Context(), `SELECT count(*) FROM pending`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("%d pending rows, %v", n, err)
 	}
 }

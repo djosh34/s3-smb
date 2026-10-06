@@ -155,3 +155,36 @@ func TestStopWhenCopiesStopLanding(t *testing.T) {
 		}
 	}
 }
+
+// A long trash backlog stops at the next copy's deadline instead of holding
+// copies up, and later cleanups finish it.
+func TestCleanupStopsWhenTheNextCopyIsDue(t *testing.T) {
+	f := newFixture(t)
+	e := f.open()
+	for range 20 {
+		writeFile(t, e, "f", "replaced again")
+	}
+	for range 3 {
+		copyNow(t, e)
+	}
+	// The copy loop sleeps for a day, so only this cleanup reads the interval.
+	e.tune.copyInterval = 100 * time.Millisecond
+	f.bucket.setFault(func(op, key string) error {
+		if op == "delete" && strings.HasPrefix(key, chunkPrefix) {
+			time.Sleep(20 * time.Millisecond)
+		}
+		return nil
+	})
+	start := time.Now()
+	copyNow(t, e)
+	if elapsed := time.Since(start); elapsed > 300*time.Millisecond {
+		t.Fatalf("the copy took %s", elapsed)
+	}
+	if n := countRows(t, e, "trash"); n == 0 {
+		t.Fatal("the whole backlog went in one cleanup")
+	}
+	waitFor(t, "the backlog to clear", func() bool {
+		copyNow(t, e)
+		return countRows(t, e, "trash") == 0
+	})
+}

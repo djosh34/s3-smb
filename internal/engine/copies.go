@@ -68,7 +68,7 @@ func (e *Engine) copyLoop(ctx context.Context) {
 	next := time.Now().Add(e.tune.copyInterval)
 	for sleep(ctx, time.Until(next)) {
 		next = time.Now().Add(e.tune.copyInterval)
-		if err := e.makeCopy(ctx, 0); err != nil && e.Err() == nil {
+		if err := e.makeCopy(ctx, 0); err != nil && e.Err() == nil && ctx.Err() == nil {
 			e.log.Error("database copy failed", "error", err)
 		}
 	}
@@ -76,9 +76,9 @@ func (e *Engine) copyLoop(ctx context.Context) {
 
 // makeCopy captures the database into a temp file with VACUUM INTO, records
 // the attempt and uploads it as copy seq, or as the next sequence when seq is
-// zero. It retries the same bytes until
-// they land or the engine stops; each attempt is bounded by the bucket's
-// request timeout. Then it deletes old copies and expired trash.
+// zero. It retries the same bytes until they land or the engine stops; each
+// attempt is bounded by the bucket's request timeout. Then it deletes old
+// copies and expired trash until the next copy is due.
 func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	e.copyMu.Lock()
 	defer e.copyMu.Unlock()
@@ -126,15 +126,20 @@ func (e *Engine) makeCopy(ctx context.Context, seq int64) error {
 	e.timesMu.Lock()
 	e.newest = captured
 	e.timesMu.Unlock()
+	if e.startCopy == "" {
+		e.startCopy = name
+	}
 	e.log.Info("database copy landed", "copy", name)
 	err = errors.Join(os.Remove(temp), e.commit(ctx, func(tx *sql.Tx) error {
-		_, execErr := tx.ExecContext(ctx, `UPDATE copies SET landed = 1 WHERE seq = ?`, seq)
-		return execErr
+		return execAll(ctx, tx, []statement{
+			{`UPDATE copies SET landed = 1 WHERE seq = ?`, []any{seq}},
+			{`UPDATE state SET published = ? WHERE id = 1`, []any{state.history}},
+		})
 	}))
 	if err != nil {
 		return err
 	}
-	return e.cleanup(ctx)
+	return e.cleanup(ctx, captured.Add(e.tune.copyInterval))
 }
 
 // capture takes copy seq while no commit runs, so a commit either is in the
@@ -165,15 +170,26 @@ func (e *Engine) capture(ctx context.Context, seq int64, temp string) (int64, ti
 // cleanup keeps the newest copiesKept copy sequences and deletes older
 // copies. Then it deletes each trashed chunk whose trash sequence is below
 // the oldest kept copy, which was therefore captured after the chunk left
-// every row. It counts landed copies and never reads the clock. A chunk that
-// a row or pending upload names is never deleted.
-func (e *Engine) cleanup(ctx context.Context) error {
-	copies, err := e.listCopies(ctx)
+// every row. It counts landed copies, and the clock only bounds how long it
+// runs. A chunk that a row or pending upload names is never deleted.
+func (e *Engine) cleanup(ctx context.Context, deadline time.Time) error {
+	listed, err := e.listCopies(ctx)
 	if err != nil {
 		return err
 	}
+	var copies []copyName
 	var seqs []int64
-	for _, c := range copies {
+	for _, c := range listed {
+		// Only a dead run's late upload can land above the highest sequence
+		// seen at start and at or below the start copy. Its chunks are not
+		// protected by this timeline's trash, so it goes.
+		if c.seq > e.startSeen && c.seq <= e.startSeen+2 && c.key != e.startCopy {
+			if err = e.remove(ctx, c.key); err != nil {
+				return err
+			}
+			continue
+		}
+		copies = append(copies, c)
 		seqs = append(seqs, c.seq)
 	}
 	slices.Sort(seqs)
@@ -194,7 +210,13 @@ func (e *Engine) cleanup(ctx context.Context) error {
 		return err
 	}
 	// A crash before the commit only means deleting the same names again.
-	for _, name := range names {
+	// Deletes stop when the next copy is due, so a long backlog cannot hold
+	// copies up; the rest go in later cleanups.
+	for i, name := range names {
+		if time.Now().After(deadline) {
+			names = names[:i]
+			break
+		}
 		if err = e.remove(ctx, chunkPrefix+name); err != nil {
 			return err
 		}

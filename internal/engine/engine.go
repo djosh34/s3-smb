@@ -98,7 +98,7 @@ var errLeaseExpired = errors.New("the bucket lease expired; another server may o
 
 // Engine is the storage engine. Its methods are safe for concurrent use.
 type Engine struct {
-	newest     time.Time // capture time of the newest copy this run landed
+	newest     time.Time // capture time of the newest copy this run landed, or of the start copy before it lands
 	leaseUntil time.Time
 	objs       objects
 	failErr    error
@@ -109,19 +109,19 @@ type Engine struct {
 	cancel     context.CancelFunc // stops the loops
 	dir        string
 	lockKey    string
-	history    string
+	startCopy  string
 	dirty      []*dirtyChunk
 	tune       tuning
 	group      sync.WaitGroup
 	capacity   uint64
 	volumeID   uint64
 	captureSeq int64 // highest copy sequence whose capture has started
+	startSeen  int64 // highest copy sequence seen at start
 	failOnce   sync.Once
 	commitMu   sync.Mutex // serializes commits and copy captures
 	copyMu     sync.Mutex // one copy at a time
 	mu         sync.Mutex // inodes and dirty
 	timesMu    sync.Mutex // newest and leaseUntil
-	renameMu   sync.Mutex
 	readOnly   bool
 }
 
@@ -156,11 +156,6 @@ func open(ctx context.Context, options Options, objs objects, tune tuning) (*Eng
 	if err != nil {
 		return nil, err
 	}
-	runID, err := randomID()
-	if err != nil {
-		return nil, err
-	}
-	e.lockKey = lockPrefix + serverID + "/" + runID
 	if err = e.takeLock(ctx, serverID); err != nil {
 		cancel()
 		return nil, err
@@ -181,7 +176,8 @@ func (e *Engine) start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err = e.prepareDatabase(ctx, copies); err != nil {
+	newest, err := e.prepareDatabase(ctx, copies)
+	if err != nil {
 		return err
 	}
 	if e.db, err = openDatabase(ctx, e.dir); err != nil {
@@ -196,15 +192,14 @@ func (e *Engine) start(ctx context.Context) error {
 	for _, c := range copies {
 		highest = max(highest, c.seq)
 	}
-	e.captureSeq = highest
-	if err = e.newTimeline(ctx, highest); err != nil {
+	e.captureSeq, e.startSeen = highest, highest
+	if err = e.newTimeline(ctx, highest, newest); err != nil {
 		return err
 	}
 	state, err := readState(ctx, e.db)
 	if err != nil {
 		return err
 	}
-	e.history = state.history
 	if e.volumeID, err = volumeIdentity(state.volume); err != nil {
 		return err
 	}
@@ -215,15 +210,17 @@ func (e *Engine) start(ctx context.Context) error {
 }
 
 // newTimeline gives the database a new history ID and sends what no row uses
-// to the trash: pending early uploads and files unlinked while open.
-func (e *Engine) newTimeline(ctx context.Context, highest int64) error {
+// to the trash: pending early uploads and files unlinked while open. It
+// records newest, the copy the database was kept against or restored from,
+// as published.
+func (e *Engine) newTimeline(ctx context.Context, highest int64, newest copyName) error {
 	history, err := randomID()
 	if err != nil {
 		return err
 	}
 	err = e.commit(ctx, func(tx *sql.Tx) error {
 		return execAll(ctx, tx, []statement{
-			{`UPDATE state SET history = ? WHERE id = 1`, []any{history}},
+			{`UPDATE state SET history = ?, published = coalesce(nullif(?, ''), published) WHERE id = 1`, []any{history, newest.history}},
 			{`INSERT INTO trash (name, seq) SELECT name, ? FROM pending`, []any{highest}},
 			{`DELETE FROM pending`, nil},
 			{`INSERT INTO trash (name, seq) SELECT c.name, ? FROM chunks c JOIN files f ON f.id = c.file
@@ -255,25 +252,26 @@ func execAll(ctx context.Context, tx *sql.Tx, statements []statement) error {
 // prepareDatabase keeps the local database only if it passes quick_check,
 // has the history of the newest copy and is not behind it. Otherwise it
 // restores the newest copy. With no copy at all, a missing database is
-// created fresh and a damaged one stops the start.
-func (e *Engine) prepareDatabase(ctx context.Context, copies []copyName) error {
+// created fresh and a damaged one stops the start. It returns the newest
+// copy, with an empty key when there is none.
+func (e *Engine) prepareDatabase(ctx context.Context, copies []copyName) (copyName, error) {
 	path := filepath.Join(e.dir, databaseName)
 	local, err := inspectLocal(ctx, path)
 	if err != nil {
-		return err
+		return copyName{}, err
 	}
 	newest := pickNewest(copies, local)
 	switch {
 	case newest == nil && local.damaged:
-		return fmt.Errorf("the local database is damaged and the bucket has no copy: %w", local.problem)
+		return copyName{}, fmt.Errorf("the local database is damaged and the bucket has no copy: %w", local.problem)
 	case newest == nil:
-		return nil
-	case local.ok && local.state.history == newest.history && local.state.commits >= newest.counter:
+		return copyName{}, nil
+	case local.holds(*newest):
 		e.log.Info("keeping the local database", "copy", newest.key)
-		return nil
+		return *newest, nil
 	}
 	e.log.Warn("restoring the newest database copy", "copy", newest.key, "local_found", local.ok || local.damaged, "local_problem", local.problem)
-	return e.restore(ctx, *newest)
+	return *newest, e.restore(ctx, *newest)
 }
 
 // localDatabase is what the start sees of the local database.
@@ -282,6 +280,12 @@ type localDatabase struct {
 	state   stateRow
 	ok      bool // found and passed the check
 	damaged bool // found but failed the check
+}
+
+// holds reports a good local database of c's history, either its current
+// one or the one it last published, that is not behind c.
+func (l localDatabase) holds(c copyName) bool {
+	return l.ok && (c.history == l.state.history || c.history == l.state.published) && l.state.commits >= c.counter
 }
 
 func inspectLocal(ctx context.Context, path string) (localDatabase, error) {
@@ -315,9 +319,9 @@ func pickNewest(copies []copyName, local localDatabase) *copyName {
 		case newest == nil || c.seq > newest.seq:
 			newest = c
 		case c.seq < newest.seq:
-		case local.ok && c.history == local.state.history && local.state.commits >= c.counter:
+		case local.holds(*c):
 			newest = c
-		case local.ok && newest.history == local.state.history && local.state.commits >= newest.counter:
+		case local.holds(*newest):
 		case c.counter > newest.counter || c.counter == newest.counter && c.history > newest.history:
 			newest = c
 		}
@@ -412,11 +416,19 @@ func (e *Engine) check() error {
 	e.timesMu.Lock()
 	until := e.leaseUntil
 	e.timesMu.Unlock()
-	if !time.Now().Before(until) {
+	if passed(until) {
 		e.fail(errLeaseExpired)
 		return fmt.Errorf("%w: %w", smb.ErrIO, errLeaseExpired)
 	}
 	return e.step(stepCheck)
+}
+
+// passed reports whether deadline has passed by the monotonic clock or by
+// the wall clock. The monotonic clock stops while the host sleeps, the wall
+// clock does not.
+func passed(deadline time.Time) bool {
+	now := time.Now()
+	return !now.Before(deadline) || !now.Round(0).Before(deadline.Round(0))
 }
 
 func (e *Engine) step(name string) error {
@@ -458,6 +470,10 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	err = fn(tx)
 	if err == nil {
 		_, err = tx.ExecContext(ctx, `UPDATE state SET commits = commits + 1 WHERE id = 1`)
+	}
+	if err == nil {
+		// The work above can outlast the lease.
+		err = e.check()
 	}
 	if err != nil {
 		return storageError(errors.Join(err, tx.Rollback()))
@@ -512,11 +528,11 @@ func (e *Engine) watch(ctx context.Context) {
 		e.timesMu.Lock()
 		newest, until := e.newest, e.leaseUntil
 		e.timesMu.Unlock()
-		if !time.Now().Before(until) {
+		if passed(until) {
 			e.fail(errLeaseExpired)
 			return
 		}
-		if !newest.IsZero() && time.Since(newest) > e.tune.stopAge {
+		if !newest.IsZero() && passed(newest.Add(e.tune.stopAge)) {
 			e.fail(fmt.Errorf("the newest database copy in S3 was captured more than %s ago; stopping so no more recent backup can be lost", e.tune.stopAge))
 			return
 		}

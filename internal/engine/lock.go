@@ -63,11 +63,17 @@ func validID(id string) bool {
 // two servers that start at once settle: whichever lists without seeing the
 // other proceeds, and since each lists after its own PUT, at most one does.
 // Keys of this server ID are earlier runs of this folder, which the folder
-// lock says are gone.
+// lock says are gone. Each attempt uses a new run ID, so a late DELETE of an
+// earlier attempt's key cannot remove the key that won.
 func (e *Engine) takeLock(ctx context.Context, serverID string) error {
 	for {
+		runID, err := randomID()
+		if err != nil {
+			return err
+		}
+		e.lockKey = lockPrefix + serverID + "/" + runID
 		sent := time.Now()
-		if err := e.objs.put(ctx, e.lockKey, nil); err != nil {
+		if err = e.objs.put(ctx, e.lockKey, nil); err != nil {
 			return fmt.Errorf("put the lock key: %w", err)
 		}
 		keys, err := e.objs.list(ctx, lockPrefix)
