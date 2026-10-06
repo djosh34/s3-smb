@@ -227,9 +227,9 @@ gh workflow run macos.yml --ref <branch-or-tag> -f mode=acceptance
 Each `macos-15-intel` runner builds s3-smb from the checked-out commit and runs
 MinIO locally, or uses the B2 test bucket in `mode=b2`.
 [test/macos/README.md](../test/macos/README.md) describes the layout.
-`test/macos/run.sh` runs `go test -tags macos` as root, which Apple's administrative commands need. The test stops itself at
-least ten minutes before its Go timeout and keeps a separate seven-minute
-cleanup budget; the workflow leaves time for uploads before the job timeout.
+`test/macos/run.sh` runs `go test -tags macos` as root, which Apple's
+administrative commands need. The test stops itself at least ten minutes
+before its Go timeout and keeps a separate seven-minute cleanup budget; the workflow leaves time for uploads before the job timeout.
 
 Evidence includes `mac-harness.log`, numbered command logs, application logs,
 the application and harness revisions and `go version -m`
