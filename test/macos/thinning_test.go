@@ -152,6 +152,8 @@ func (h *harness) watchTrash(holders map[string]bool) func() bool {
 			select {
 			case <-stop:
 				return
+			case <-h.ctx.Done():
+				return
 			case <-time.After(5 * time.Second):
 			}
 		}
