@@ -76,7 +76,7 @@ func testRounds(t *testing.T, prRounds, gateRounds int) []int {
 		n = gateRounds
 	}
 	if os.Getenv("S3_SMB_LIST_ROUNDS") != "" {
-		fmt.Printf("rounds %s %d\n", t.Name(), n) //nolint:forbidigo // The CI job list reads it.
+		fmt.Printf("rounds %s %d\n", t.Name(), n)
 		t.SkipNow()
 	}
 	if round := os.Getenv("S3_SMB_ROUND"); round != "" {
