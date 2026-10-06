@@ -79,16 +79,16 @@ func closeDuringOutage(t *testing.T, compound, same bool) {
 // stop. The cleanup request must still get a reply, interim or final, at once.
 func TestCleanupDuringOutageRepliesAtOnce(t *testing.T) {
 	for _, test := range []struct {
-		name    string
 		cleanup func(t *testing.T, client *testClient, release func())
+		name    string
 	}{
-		{"LOGOFF", func(t *testing.T, client *testClient, release func()) {
+		{name: "LOGOFF", cleanup: func(t *testing.T, client *testClient, release func()) {
 			leaveAsync(t, client, client.send(t, wire.Logoff, encode(t, wire.EncodeLogoffRequest, wire.EmptyRequest{}), 1), release)
 		}},
-		{"TREE_DISCONNECT", func(t *testing.T, client *testClient, release func()) {
+		{name: "TREE_DISCONNECT", cleanup: func(t *testing.T, client *testClient, release func()) {
 			leaveAsync(t, client, client.send(t, wire.TreeDisconnect, encode(t, wire.EncodeTreeDisconnectRequest, wire.EmptyRequest{}), 1), release)
 		}},
-		{"reconnect", func(t *testing.T, client *testClient, release func()) {
+		{name: "reconnect", cleanup: func(t *testing.T, client *testClient, release func()) {
 			client.reconnect(t)
 			release()
 		}},

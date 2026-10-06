@@ -37,11 +37,8 @@ type pendingRequest struct {
 // tree. Cancelling such a request does not stop it while it waits for a file
 // that S3 work holds.
 func asyncEligible(command wire.Command) bool {
-	switch command {
-	case wire.Create, wire.Read, wire.Write, wire.Flush, wire.SetInfo, wire.Close, wire.OplockBreak, wire.Logoff, wire.TreeDisconnect:
-		return true
-	}
-	return false
+	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo ||
+		command == wire.Close || command == wire.OplockBreak || command == wire.Logoff || command == wire.TreeDisconnect
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {
