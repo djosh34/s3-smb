@@ -332,8 +332,7 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 	if err != nil {
 		return err
 	}
-	e.settleUnlink(st, drop)
-	return nil
+	return e.settleUnlink(ctx, st, drop)
 }
 
 // unlink removes r from the namespace inside tx. It drops the file at once
@@ -348,20 +347,27 @@ func (e *Engine) unlink(ctx context.Context, tx *sql.Tx, r row, st *inode) (bool
 			return false, smb.ErrDirectoryNotEmpty
 		}
 	}
-	if st.refs > 0 {
+	e.mu.Lock()
+	open := st.refs > 0
+	e.mu.Unlock()
+	if open {
 		_, err := tx.ExecContext(ctx, `UPDATE files SET parent = NULL, name = NULL WHERE id = ?`, r.id)
 		return false, err
 	}
 	return true, e.dropFile(ctx, tx, r.id, st)
 }
 
-// settleUnlink updates memory after a committed unlink.
-func (e *Engine) settleUnlink(st *inode, dropped bool) {
+// settleUnlink updates memory after a committed unlink. A file whose last
+// handle closed since the commit is dropped now. The I/O lock must be held.
+func (e *Engine) settleUnlink(ctx context.Context, st *inode, dropped bool) error {
 	if dropped {
 		e.discard(st)
-	} else {
-		st.unlinked = true
+		return nil
 	}
+	e.mu.Lock()
+	st.unlinked = true
+	e.mu.Unlock()
+	return e.dropUnlinked(context.WithoutCancel(ctx), st)
 }
 
 // dropFile deletes a file row inside tx and sends its chunks and early
@@ -412,7 +418,7 @@ func (e *Engine) Rename(ctx context.Context, request smb.RenameRequest) error {
 		return err
 	}
 	if target != nil {
-		e.settleUnlink(target, drop)
+		return e.settleUnlink(ctx, target, drop)
 	}
 	return nil
 }
