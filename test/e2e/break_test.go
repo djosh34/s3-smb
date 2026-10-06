@@ -142,9 +142,10 @@ func TestBreakFaultyS3UnderLoad(t *testing.T) {
 				stopFaults = startSchedule(t, rng, s3Faults(t, proxy), clearS3Faults(t, proxy)).stop
 			}
 			time.Sleep(between(rng, 0, length/2))
-			start := proxy.FailS3For(between(rng, 15*time.Second, 25*time.Second))
+			outage := between(rng, 35*time.Second, 45*time.Second)
+			start := proxy.FailS3For(outage)
 			l.waitStuck(ctx, rng, proxy)
-			time.Sleep(length/2 - time.Since(start))
+			time.Sleep(max(length/2, outage) - time.Since(start))
 			stopFaults()
 		})
 		l.check(ctx, "S3 faults")
@@ -229,7 +230,7 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 		mode := "quiet"
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 6*time.Second))
-			s3.FailS3For(between(rng, 20*time.Second, 30*time.Second))
+			s3.FailS3For(between(rng, 35*time.Second, 45*time.Second))
 			l.waitStuck(ctx, rng, s3)
 			time.Sleep(between(rng, 4*time.Second, 8*time.Second))
 			switch round % 3 {
@@ -443,7 +444,7 @@ func (c *fileChurn) check(ctx context.Context, conn *macConn) {
 // within the patience.
 func TestBreakLogoffDuringOutage(t *testing.T) {
 	rng := chaosRand(t)
-	rounds, outage := 2, 25*time.Second
+	rounds, outage := 2, 35*time.Second
 	if gate() {
 		rounds, outage = 4, 3*time.Minute
 	}

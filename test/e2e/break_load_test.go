@@ -504,11 +504,19 @@ func (l *macLoad) fill(ctx context.Context, c int, name string, filled <-chan st
 	if err != nil {
 		return err
 	}
-	for slot := 0; slot < 40*8 && !stopped(filled) && err == nil; slot++ {
-		_, err = l.conns[c].call(ctx, []wire.Message{writeMessage(l.t, id, uint64(slot)*slotSize, slotData(loadBands+1, slot, 1))})
+	// Four WRITEs in flight fill the budget before a short outage ends.
+	errs := make([]error, 4)
+	var wg sync.WaitGroup
+	for w := range errs {
+		wg.Go(func() {
+			for slot := w; slot < 40*8 && !stopped(filled) && errs[w] == nil; slot += len(errs) {
+				_, errs[w] = l.conns[c].call(ctx, []wire.Message{writeMessage(l.t, id, uint64(slot)*slotSize, slotData(loadBands+1, slot, 1))}) //nolint:gosec // Small test indexes.
+			}
+		})
 	}
+	wg.Wait()
 	_, closeErr := l.conns[c].call(ctx, []wire.Message{closeMessage(l.t, id)})
-	return errors.Join(err, closeErr)
+	return errors.Join(append(errs, closeErr)...)
 }
 
 // earlyUpload reports whether one of the chunk names is an early upload of
