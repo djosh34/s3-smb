@@ -1217,10 +1217,11 @@ func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
 	}
 }
 
-// Close and Remove run inside an SMB CLOSE, so they must not wait for a
-// file's I/O lock, which an upload holds for the whole of an S3 outage. The
-// file is dropped once the upload ends.
-func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
+// Open, Close and Remove must not wait for a file's I/O lock, which an
+// upload holds for the whole of an S3 outage: CREATE opens a file while it
+// guards the file's folder, and CLOSE closes and removes it. The file is
+// dropped once the upload ends.
+func TestStorageOpenCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 	f := newFixture(t)
 	bucket := &pausable{objects: f.bucket}
 	e, err := open(t.Context(), Options{Dir: f.dir}, bucket, f.tune)
@@ -1246,7 +1247,12 @@ func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 	unpin()
 	done := make(chan error, 1)
 	go func() {
-		done <- errors.Join(e.Close(t.Context(), other), e.Remove(t.Context(), r.Name, r.Object), e.Close(t.Context(), h))
+		third, err := e.Open(t.Context(), r.Object, smb.AccessRead)
+		if err != nil {
+			done <- err
+			return
+		}
+		done <- errors.Join(e.Close(t.Context(), third), e.Close(t.Context(), other), e.Remove(t.Context(), r.Name, r.Object), e.Close(t.Context(), h))
 	}()
 	select {
 	case err := <-done:
@@ -1254,7 +1260,7 @@ func TestStorageCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 			t.Fatal(err)
 		}
 	case <-time.After(5 * time.Second):
-		t.Fatal("close and remove waited for the upload")
+		t.Fatal("open, close and remove waited for the upload")
 	}
 	reopen()
 	if err := <-flushed; err != nil {

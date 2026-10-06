@@ -114,8 +114,12 @@ func (e *Engine) acquire(id smb.Inode) (*inode, func()) {
 // load reads the committed size once. The I/O lock must be held.
 func (e *Engine) load(ctx context.Context, st *inode) (row, error) {
 	r, err := fileRow(ctx, e.db, st.id)
-	if err == nil && !st.snapshot().loaded {
-		st.update(func(l *live) { l.size, l.loaded = r.size, true })
+	if err == nil {
+		st.update(func(l *live) {
+			if !l.loaded {
+				l.size, l.loaded = r.size, true
+			}
+		})
 	}
 	return r, err
 }
@@ -158,7 +162,9 @@ func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*han
 	return h, release, nil
 }
 
-// Open returns a handle on an existing file or directory.
+// Open returns a handle on an existing file or directory. It does not wait
+// for the file's I/O, which an upload can hold for a whole S3 outage, and
+// CREATE opens a file while it guards the file's folder.
 func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (smb.Handle, error) {
 	if access&^(smb.AccessRead|smb.AccessWrite|smb.AccessAppend) != 0 || ino == 0 {
 		return nil, smb.ErrInvalidParameter
@@ -169,12 +175,19 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	st, release := e.acquire(ino)
-	defer release()
-	r, err := e.load(ctx, st)
+	st, unpin := e.pin(ino)
+	defer unpin()
+	r, err := fileRow(ctx, e.db, ino)
 	if err != nil {
 		return nil, err
 	}
+	// Only a handle changes a file's live size, so before the first one the
+	// committed size is current.
+	st.update(func(l *live) {
+		if !l.loaded {
+			l.size, l.loaded = r.size, true
+		}
+	})
 	kind := smb.KindFile
 	if r.directory {
 		kind = smb.KindDirectory
