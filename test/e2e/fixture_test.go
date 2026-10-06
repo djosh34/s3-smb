@@ -26,6 +26,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	smb "github.com/hirochachacha/go-smb2"
 
 	"github.com/djosh34/s3-smb/internal/s3fault"
@@ -109,8 +110,38 @@ func newFixture(t *testing.T) *fixture {
 	if _, err := f.store.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(f.bucket)}); err != nil {
 		t.Fatal(err)
 	}
+	// Registered first, so it runs after every daemon has stopped.
+	t.Cleanup(f.dropBucket)
 	f.freshLocal()
 	return f
+}
+
+// dropBucket deletes every object of the bucket, then the bucket. Some tests
+// write gigabytes, and each shard of them runs on one disk.
+func (f *fixture) dropBucket() {
+	ctx := context.WithoutCancel(f.t.Context())
+	pages := s3.NewListObjectsV2Paginator(f.store, &s3.ListObjectsV2Input{Bucket: aws.String(f.bucket)})
+	for pages.HasMorePages() {
+		page, err := pages.NextPage(ctx)
+		if err != nil {
+			f.t.Error(err)
+			return
+		}
+		var objects []types.ObjectIdentifier
+		for _, object := range page.Contents {
+			objects = append(objects, types.ObjectIdentifier{Key: object.Key})
+		}
+		if len(objects) == 0 {
+			continue
+		}
+		if _, err = f.store.DeleteObjects(ctx, &s3.DeleteObjectsInput{Bucket: aws.String(f.bucket), Delete: &types.Delete{Objects: objects}}); err != nil {
+			f.t.Error(err)
+			return
+		}
+	}
+	if _, err := f.store.DeleteBucket(ctx, &s3.DeleteBucketInput{Bucket: aws.String(f.bucket)}); err != nil {
+		f.t.Error(err)
+	}
 }
 
 // closeOnCleanup closes c at the end of the test.
