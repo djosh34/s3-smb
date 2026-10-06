@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,7 +32,12 @@ func TestCopiesTrashAndTakeoverUnderLoad(t *testing.T) {
 	if os.Getenv("S3_SMB_CHECK_MODE") == "gate" {
 		rounds, length = 8, 5*time.Second
 	}
-	m := &copyModel{files: map[string][]durable{}, captured: map[string]time.Time{}}
+	seed, err := strconv.ParseUint(os.Getenv("S3_SMB_CHAOS_SEED"), 10, 64)
+	if err != nil {
+		seed = rand.Uint64() //nolint:gosec // Test faults, not secrets.
+	}
+	t.Logf("seed %d: replay the draws with S3_SMB_CHAOS_SEED=%d", seed, seed)
+	m := &copyModel{files: map[string][]durable{}, captured: map[string]time.Time{}, seed: seed}
 	bucket := newMemBucket()
 	for server := range 2 {
 		f := &fixture{t: t, bucket: bucket, dir: t.TempDir(), tune: testTuning()}
@@ -45,7 +51,7 @@ func TestCopiesTrashAndTakeoverUnderLoad(t *testing.T) {
 		}
 		for round := range rounds {
 			target := []string{stepCopyCaptured, stepTrashDeleted}[round%2]
-			stopFaults := faultyBucket(bucket)
+			stopFaults := faultyBucket(bucket, m.source(uint64(100*server+round)))
 			armed := time.AfterFunc(length, func() { m.arm(target) })
 			m.load(t, e, 2*length)
 			armed.Stop()
@@ -82,7 +88,14 @@ type copyModel struct {
 	captured map[string]time.Time // by copy counter and history
 	target   string               // the step to kill at, until it fires
 	fired    string
+	seed     uint64 // seeds the draws of the faults and the writers
+	runs     uint64 // counts the load runs, so each draws anew
 	mu       sync.Mutex
+}
+
+// source returns a source for one user of the draws.
+func (m *copyModel) source(stream uint64) *rand.Rand {
+	return rand.New(rand.NewPCG(m.seed, stream)) //nolint:gosec // Test faults, not secrets.
 }
 
 // hook records the instant of each capture, while no commit runs, and kills
@@ -126,16 +139,22 @@ func (m *copyModel) crashed(step string) bool {
 // faultyBucket loses one reply in ten after the request took effect, and
 // holds one chunk PUT or DELETE in ten, or one copy DELETE, landing them
 // late. The returned function stops the faults and lands what is held.
-func faultyBucket(b *memBucket) func() {
+func faultyBucket(b *memBucket, rng *rand.Rand) func() {
+	var mu sync.Mutex
+	draw := func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return rng.IntN(10) == 0
+	}
 	b.setLanded(func(op, _ string) error {
-		if op != "get" && op != "list" && rand.N(10) == 0 { //nolint:gosec // Test faults, not secrets.
+		if op != "get" && op != "list" && draw() {
 			return errors.New("reply lost")
 		}
 		return nil
 	})
 	match := func(op, key string) bool {
 		late := strings.HasPrefix(key, chunkPrefix) || op == "delete" && strings.HasPrefix(key, copyPrefix)
-		return late && rand.N(10) == 0 //nolint:gosec // Test faults, not secrets.
+		return late && draw()
 	}
 	stop, done := make(chan struct{}), make(chan struct{})
 	go func() {
@@ -163,8 +182,10 @@ func faultyBucket(b *memBucket) func() {
 func (m *copyModel) load(t *testing.T, e *Engine, length time.Duration) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+	m.runs++
 	for w := range 8 {
-		wg.Go(func() { m.write(t, e, fmt.Sprintf("f%d", w), stop) })
+		rng := m.source(1000*m.runs + uint64(w))
+		wg.Go(func() { m.write(t, e, rng, fmt.Sprintf("f%d", w), stop) })
 	}
 	select {
 	case <-time.After(length):
@@ -177,7 +198,7 @@ func (m *copyModel) load(t *testing.T, e *Engine, length time.Duration) {
 }
 
 // write rewrites, creates and deletes one file, one operation at a time.
-func (m *copyModel) write(t *testing.T, e *Engine, name string, stop <-chan struct{}) {
+func (m *copyModel) write(t *testing.T, e *Engine, rng *rand.Rand, name string, stop <-chan struct{}) {
 	ctx := context.Background()
 	for v := 0; !stopped(stop) && e.Err() == nil; v++ {
 		switch {
@@ -189,7 +210,7 @@ func (m *copyModel) write(t *testing.T, e *Engine, name string, stop <-chan stru
 				}
 				return err
 			})
-		case rand.N(4) == 0: //nolint:gosec // Test load, not secrets.
+		case rng.IntN(4) == 0:
 			m.do(e, name, durable{}, func() error {
 				r, err := e.Lookup(ctx, name)
 				if err == nil {
