@@ -27,9 +27,12 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/mattn/go-sqlite3"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 )
@@ -486,7 +489,7 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 	}
 	tx, err := e.db.BeginTx(ctx, nil)
 	if err != nil {
-		return storageError(err)
+		return storageError(e.diskError(err))
 	}
 	err = fn(tx)
 	if err == nil {
@@ -497,12 +500,26 @@ func (e *Engine) commit(ctx context.Context, fn func(tx *sql.Tx) error) error {
 		err = e.check()
 	}
 	if err != nil {
-		return storageError(errors.Join(err, tx.Rollback()))
+		return storageError(e.diskError(errors.Join(err, tx.Rollback())))
 	}
 	if err = tx.Commit(); err != nil {
-		return storageError(err)
+		return storageError(e.diskError(err))
 	}
 	return e.step(stepCommit)
+}
+
+// diskError stops the engine for good when err comes from the local disk,
+// and returns err. After a failed write or fsync, Linux can keep the new
+// data only in memory, and SQLite can then lose or corrupt it (Rebello et
+// al., USENIX ATC 2020). The next start recovers from the local file, or
+// from S3 when that is lost or broken.
+func (e *Engine) diskError(err error) error {
+	var sqliteErr sqlite3.Error
+	disk := errors.As(err, &sqliteErr) && slices.Contains([]sqlite3.ErrNo{sqlite3.ErrIoErr, sqlite3.ErrFull, sqlite3.ErrCorrupt, sqlite3.ErrCantOpen, sqlite3.ErrNotADB}, sqliteErr.Code)
+	if disk || errors.Is(err, syscall.EIO) || errors.Is(err, syscall.ENOSPC) {
+		e.fail(fmt.Errorf("local disk: %w", err))
+	}
+	return err
 }
 
 // Shutdown flushes what is still dirty, stops the engine and deletes its

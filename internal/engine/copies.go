@@ -157,7 +157,7 @@ func (e *Engine) capture(ctx context.Context, seq int64, temp string) (int64, ti
 	e.captureSeq = seq
 	captured := time.Now()
 	if _, err := e.db.ExecContext(ctx, `VACUUM INTO ?`, temp); err != nil {
-		return 0, time.Time{}, fmt.Errorf("capture copy %d: %w", seq, err)
+		return 0, time.Time{}, e.diskError(fmt.Errorf("capture copy %d: %w", seq, err))
 	}
 	e.timesMu.Lock()
 	if e.newest.IsZero() {

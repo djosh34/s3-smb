@@ -140,6 +140,12 @@ exits with an error, since another server could own the bucket by then. If no
 database copy reaches S3 for 30 minutes, s3-smb also exits rather than risk
 losing more. Start it again, or let launchd do it.
 
+A failed write or sync on the local disk under the data folder, such as EIO or
+a full disk, makes s3-smb exit too. After a failed sync the system may hold
+the data only in memory, so going on could lose it later. The next start
+keeps the local database if it is sound, or restores the newest database copy
+from the bucket.
+
 ## Restart after a crash on a Mac
 
 Install the checked-in [launchd plist](docs/com.s3-smb.plist) once to keep

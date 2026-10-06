@@ -162,9 +162,11 @@ one kind of fault: an S3 outage, S3 requests that fail, stall or end out of
 order, kills, cut, silent and trickling links, file churn, LOGOFF and
 TREE_DISCONNECT while work waits, or a local disk whose syncs are slow or fail
 and whose writes fail, through an `LD_PRELOAD` library built from
-`test/e2e/testdata/diskfault.c`. Every request must get a reply or
-STATUS_PENDING within 3 seconds, because macOS fails a request without one
-after 2 minutes and drops its data. Every slot of every file is checked
+`test/e2e/testdata/diskfault.c`; the first failed write or sync must stop
+the daemon. Every request must get a reply or STATUS_PENDING within 3
+seconds, and STATUS_PENDING again while it waits longer than a minute,
+because macOS fails a request 2 minutes after it was sent or after its last
+STATUS_PENDING and drops its data. Every slot of every file is checked
 against a model, during the faults, after them, after a restart and after a
 cold start from S3 on a new data folder.
 

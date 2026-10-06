@@ -553,10 +553,12 @@ func (l *leaver) leave(ctx context.Context) *macRequest {
 
 // TestBreakDisk slows and fails the daemon's local disk under the Mac load:
 // syncs that take seconds, syncs that fail with EIO and writes that fail with
-// ENOSPC, on the SQLite database in the data folder. Requests may fail then,
-// but a FLUSH that succeeds must be durable: after the faults the test kills
-// the daemon, and the restart must keep its database, which must pass its
-// check, and show every flushed byte.
+// ENOSPC, on the SQLite database in the data folder. Slow syncs fail nothing,
+// so the test kills the daemon right after a FLUSH that succeeded. The first
+// failed write or sync must stop the daemon for good: after a failed fsync
+// Linux can keep data only in memory, so running on is not safe. Either way
+// the restart must keep its database, and every flushed byte must be there,
+// also after a cold start from S3.
 func TestBreakDisk(t *testing.T) {
 	rng := chaosRand(t)
 	rounds := 3
@@ -580,11 +582,23 @@ func TestBreakDisk(t *testing.T) {
 	l.connect(ctx)
 	faults := []string{"sync 1500 0 0", "sync 0 5 30", "write 0 28 30"}
 	for round := range rounds {
+		fault := faults[round%len(faults)]
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 4*time.Second))
-			setDisk(faults[round%len(faults)])
+			if round%len(faults) > 0 {
+				l.cutting(-1)
+				setDisk(fault)
+				err := d.waitExit(time.Minute)
+				setDisk("none 0 0 0")
+				if !bytes.Contains(d.output(), []byte("local disk")) {
+					t.Errorf("%q: the daemon did not stop for the disk error: %v; logs %s", fault, err, d.path())
+				}
+				return
+			}
+			setDisk(fault)
 			time.Sleep(between(rng, 10*time.Second, 20*time.Second))
 			setDisk("none 0 0 0")
+			d.alive()
 			// Kill right after a FLUSH that succeeded once the disk is back.
 			select {
 			case <-l.flushed:
@@ -593,16 +607,12 @@ func TestBreakDisk(t *testing.T) {
 			select {
 			case <-l.flushed:
 			case <-time.After(90 * time.Second):
-				t.Error("coverage: no FLUSH of one file succeeded after the disk faults")
+				t.Error("coverage: no FLUSH of one file succeeded after the slow syncs")
 			}
 			l.cutting(-1)
 			sigkill(t, d)
 		})
-		if failed := l.failed.Swap(0); round%len(faults) > 0 && failed == 0 {
-			t.Errorf("coverage: %q failed no request", faults[round%len(faults)])
-		} else {
-			t.Logf("%q: %d requests failed", faults[round%len(faults)], failed)
-		}
+		t.Logf("%q: %d requests failed", fault, l.failed.Swap(0))
 		d = f.start()
 		if !d.logged("keeping the local database") {
 			t.Fatalf("after disk faults, the restart did not keep its database; logs %s", d.path())

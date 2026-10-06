@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mattn/go-sqlite3"
+
 	"github.com/djosh34/s3-smb/internal/smb"
 )
 
@@ -1275,5 +1277,31 @@ func TestStorageOpenCloseAndRemoveDoNotWaitForUploads(t *testing.T) {
 			t.Fatal("the removed file was not dropped after the upload")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// An error of the local disk stops the engine for good, so the server exits.
+// An error of the request alone does not.
+func TestDiskErrorStopsEngine(t *testing.T) {
+	f := newFixture(t)
+	e, err := open(t.Context(), Options{Dir: f.dir}, f.bucket, f.tune)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { kill(t, e) })
+	if err = e.diskError(smb.ErrNameCollision); e.Err() != nil || err != smb.ErrNameCollision { //nolint:errorlint // The same error must come back.
+		t.Fatalf("a request error stopped the engine: %v", e.Err())
+	}
+	ioErr := fmt.Errorf("commit: %w", sqlite3.Error{Code: sqlite3.ErrIoErr, ExtendedCode: sqlite3.ErrIoErrFsync})
+	if err = e.diskError(ioErr); err != ioErr { //nolint:errorlint // The same error must come back.
+		t.Fatalf("diskError returned %v", err)
+	}
+	select {
+	case <-e.Dead():
+	default:
+		t.Fatal("a failed fsync did not stop the engine")
+	}
+	if !errors.Is(e.Err(), ioErr) {
+		t.Fatalf("engine stopped with %v", e.Err())
 	}
 }

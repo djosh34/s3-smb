@@ -431,6 +431,20 @@ func (d *daemon) alive() {
 	}
 }
 
+// waitExit waits until the daemon exits on its own and returns its exit
+// error.
+func (d *daemon) waitExit(timeout time.Duration) error {
+	d.t.Helper()
+	select {
+	case err := <-d.done:
+		d.exited()
+		return err
+	case <-time.After(timeout):
+		d.t.Fatalf("daemon did not exit within %v; logs %s", timeout, d.path())
+		return nil
+	}
+}
+
 // kill sends SIGKILL, waits for the exit and returns the exit error.
 func (d *daemon) kill() error {
 	d.t.Helper()
