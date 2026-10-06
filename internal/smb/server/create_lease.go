@@ -118,21 +118,26 @@ type leaseBreak struct {
 	target uint32
 }
 
+// createBreakRounds bounds how often one CREATE breaks a lease and tries
+// again. Other CREATEs can start breaks of the same lease meanwhile, and a
+// break in progress is in the way of every open, also a compatible one.
+const createBreakRounds = 8
+
 // runCreate breaks a lease in the way of the CREATE, waits for its holder, and
-// tries once more. Each attempt holds the parent guard only while it runs, so
-// the holder can close its handles meanwhile. A lease still in the way after
-// that gets SHARING_VIOLATION.
+// tries again. Each attempt holds the parent guard only while it runs, so the
+// holder can close its handles meanwhile. A broken H lease is no longer in the
+// way, so a sharing conflict ends after one round; a lease still in the way
+// after the last round gets SHARING_VIOLATION.
 func runCreate(ctx context.Context, request RequestContext, create wire.CreateRequest, contexts createContexts, granted uint32) (reply, error) {
 	result, conflict, err := createOnce(ctx, request, create, contexts, granted)
-	if conflict == nil || err != nil {
-		return result, err
-	}
-	if err = request.server.breakLease(ctx, *conflict); err != nil {
-		return reply{}, err
-	}
-	result, conflict, err = createOnce(ctx, request, create, contexts, granted)
-	if conflict != nil {
-		return reply{status: smb.StatusSharingViolation}, err
+	for round := 0; conflict != nil && err == nil; round++ {
+		if round == createBreakRounds {
+			return reply{status: smb.StatusSharingViolation}, nil
+		}
+		if err = request.server.breakLease(ctx, *conflict); err != nil {
+			return reply{}, err
+		}
+		result, conflict, err = createOnce(ctx, request, create, contexts, granted)
 	}
 	return result, err
 }
