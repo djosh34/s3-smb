@@ -53,6 +53,7 @@ type tuning struct {
 	hook         func(step string) error
 	chunkSize    uint64
 	dirtyChunks  int
+	readChunks   int
 	copiesKept   int
 	copyInterval time.Duration
 	stopAge      time.Duration
@@ -68,6 +69,7 @@ func defaultTuning() tuning {
 	return tuning{
 		chunkSize:    8 << 20,
 		dirtyChunks:  (256 << 20) / (8 << 20),
+		readChunks:   (128 << 20) / (8 << 20),
 		copiesKept:   keptCopies,
 		copyInterval: copyEvery,
 		stopAge:      30 * time.Minute,
@@ -104,6 +106,7 @@ type Engine struct {
 	newest     time.Time // capture time of the newest copy this run landed, or of the start copy before it lands
 	leaseUntil time.Time
 	objs       objects
+	cache      readCache
 	failErr    error
 	log        *slog.Logger
 	db         *sql.DB

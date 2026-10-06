@@ -197,7 +197,9 @@ read a file without s3-smb, are in [recovery](docs/recovery.md).
   stay until 4 newer database copies exist, about an hour. Unwritten gaps
   inside a chunk are stored as zeros. The share reports at most 1 TiB free, so
   Time Machine uses 268.4 MB bands.
-- Writes wait in memory, up to 256 MiB, until the Mac flushes them.
+- Writes wait in memory, up to 256 MiB, until the Mac flushes them. The last
+  16 chunks read from S3 stay in memory too, up to 128 MiB, so mounting the
+  backup image over a slow link needs few requests.
 - s3-smb runs in the foreground. There is no daemon mode or service installer.
   On a Mac, the [launchd plist](docs/com.s3-smb.plist) can keep it running.
 - The Time Machine tests kill the application or the Time Machine client, or

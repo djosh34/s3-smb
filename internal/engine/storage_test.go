@@ -1160,3 +1160,51 @@ func TestStorageManySmallWritesBeyondTheRAMBudget(t *testing.T) {
 		t.Fatalf("after restart = %q", got)
 	}
 }
+
+// Small reads of a stored chunk cost one GET while the chunk stays in the
+// read cache. A write into a cached chunk must not change the cached bytes.
+func TestStorageReadCacheFetchesEachChunkOnce(t *testing.T) {
+	f := newFixture(t)
+	f.tune.readChunks = 2
+	e := f.open()
+	data := "0123456789abcdefghijklmnopqrstuvABCDEFGHIJKLMNOP"
+	writeFile(t, e, "data", data)
+	h := openFile(t, e, "data", smb.AccessRead|smb.AccessWrite)
+	readBytes := func(from, to int) {
+		t.Helper()
+		b := make([]byte, 1)
+		for i := from; i < to; i++ {
+			if _, err := e.ReadAt(t.Context(), h, b, uint64(i)); err != nil || b[0] != data[i] {
+				t.Fatalf("byte %d = %q, %v", i, b, err)
+			}
+		}
+	}
+	gets := func(want int) {
+		t.Helper()
+		if n := chunkRequests(f.bucket); n != want {
+			t.Fatalf("%d chunk requests, want %d", n, want)
+		}
+	}
+	base := chunkRequests(f.bucket)
+	readBytes(0, 16)
+	gets(base + 1)
+	readBytes(0, len(data))
+	gets(base + 3)
+	// Two chunks fit, so the first one was dropped.
+	readBytes(0, 1)
+	gets(base + 4)
+	var second string
+	if err := e.db.QueryRowContext(t.Context(), `SELECT name FROM chunks WHERE idx = 1`).Scan(&second); err != nil {
+		t.Fatal(err)
+	}
+	readBytes(16, 17)
+	writeAt(t, e, h, "XY", 16)
+	if cached := string(e.cache.get(second)); cached != data[16:32] {
+		t.Fatalf("cached chunk changed to %q", cached)
+	}
+	requireContent(t, e, h, data[:16]+"XY"+data[18:])
+	closeFile(t, e, h)
+	if got := readFile(t, e, "data"); got != data[:16]+"XY"+data[18:] {
+		t.Fatalf("read %q", got)
+	}
+}

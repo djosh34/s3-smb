@@ -2,6 +2,7 @@
 package engine
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"errors"
@@ -535,15 +536,21 @@ func (e *Engine) stored(ctx context.Context, st *inode, idx uint64) (upload, err
 	return u, nil
 }
 
+// readStored returns a copy of length bytes at offset of an uploaded chunk.
+// It fetches the whole chunk into the read cache once.
 func (e *Engine) readStored(ctx context.Context, u upload, offset, length uint64) ([]byte, error) {
-	data, err := e.objs.get(ctx, chunkPrefix+u.name, offset, length)
-	if err != nil {
-		return nil, storageError(err)
+	data := e.cache.get(u.name)
+	if data == nil {
+		var err error
+		if data, err = e.objs.get(ctx, chunkPrefix+u.name, 0, 0); err != nil {
+			return nil, storageError(err)
+		}
+		e.cache.add(u.name, data, e.tune.readChunks)
 	}
-	if uint64(len(data)) != length {
+	if uint64(len(data)) < offset+length {
 		return nil, smb.ErrIO
 	}
-	return data, nil
+	return bytes.Clone(data[offset : offset+length]), nil
 }
 
 // ReadAt reads RAM, then S3. Holes and bytes past a chunk's length are zero.
