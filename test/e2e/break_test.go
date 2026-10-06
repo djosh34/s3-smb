@@ -5,6 +5,7 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -345,8 +346,8 @@ func TestBreakFileChurn(t *testing.T) {
 	// CREATE in the folder, which once brought the churn down to one a second.
 	rate := float64(c.made.Load()+c.deleted.Load()) / time.Since(start).Seconds()
 	t.Logf("churn: %d files made and %d deleted in %v, %.0f a second", c.made.Load(), c.deleted.Load(), time.Since(start), rate)
-	if rate < 5 {
-		t.Errorf("churn: %.1f files made or deleted a second, want at least 5", rate)
+	if rate < 10 {
+		t.Errorf("churn: %.1f files made or deleted a second, want at least 10", rate)
 	}
 	l.check(ctx, "S3 faults")
 	c.check(ctx, l.conns[0])
@@ -354,13 +355,81 @@ func TestBreakFileChurn(t *testing.T) {
 	d.alive()
 }
 
-// fileChurn makes and deletes small files.
+// TestBreakOverload offers far more file lifecycles than the server can
+// handle, about a thousand a second: 256 workers on each of two more
+// connections beside the band load, each sending the next request as soon as
+// the last is answered, so the credit window stays full. Requests may fail,
+// but each must get its reply in time, the daemon must keep running, and
+// every file made must read back exactly, also after a restart and a cold
+// start from S3.
+func TestBreakOverload(t *testing.T) {
+	rng := chaosRand(t)
+	length := 30 * time.Second
+	if gate() {
+		length = 5 * time.Minute
+	}
+	f := newFixture(t)
+	f.keepAlive, f.startupTimeout = true, 2*time.Minute
+	d := f.start()
+	ctx := t.Context()
+	l := newMacLoad(t, f, rng, f.addr, f.addr)
+	l.connect(ctx)
+	var conns []*macConn
+	for range 2 {
+		conn, err := f.macConnect(ctx, f.addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, conn)
+	}
+	c := &fileChurn{t: t, files: map[string][]byte{}, gone: map[string]bool{}, failures: true}
+	start := time.Now()
+	l.loadRound(ctx, func() {
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		for w := range 512 {
+			conn, source := conns[w%len(conns)], rand.New(rand.NewPCG(rng.Uint64(), uint64(w))) //nolint:gosec // Test faults need a replayable source.
+			wg.Go(func() { c.work(ctx, conn, w, source, stop) })
+		}
+		time.Sleep(length)
+		close(stop)
+		wg.Wait()
+	})
+	t.Logf("overload: %d files made, %d deleted and %d requests failed in %v", c.made.Load(), c.deleted.Load(), c.failed.Load(), time.Since(start))
+	if err := c.flush(ctx, conns[0]); err != nil {
+		t.Fatal(err)
+	}
+	for _, conn := range conns {
+		if err := conn.close(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	l.check(ctx, "overload")
+	c.check(ctx, l.conns[0])
+	d = restartAndCheck(l, f, d, func(conn *macConn) { c.check(ctx, conn) })
+	d.alive()
+}
+
+// fileChurn makes and deletes small files. With failures, a request may fail
+// with a status, as under overload; it is counted in failed and the file is
+// not in the model.
 type fileChurn struct {
-	t             *testing.T
-	files         map[string][]byte
-	gone          map[string]bool
-	made, deleted atomic.Int64
-	mu            sync.Mutex
+	t                     *testing.T
+	files                 map[string][]byte
+	gone                  map[string]bool
+	made, deleted, failed atomic.Int64
+	mu                    sync.Mutex
+	failures              bool
+}
+
+// allowed reports whether err is a failure the churn may see, and counts it.
+func (c *fileChurn) allowed(err error) bool {
+	var failed statusError
+	if c.failures && errors.As(err, &failed) {
+		c.failed.Add(1)
+		return true
+	}
+	return false
 }
 
 // work creates a file with data in one compound, then now and then deletes
@@ -373,6 +442,9 @@ func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand
 			createMessage(c.t, smbtest.CreateOptions{Request: wire.CreateRequest{Name: name, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 2}}),
 			relatedTo(writeMessage(c.t, related, 0, data)), relatedTo(closeMessage(c.t, related)),
 		}); err != nil {
+			if c.allowed(err) {
+				continue
+			}
 			c.t.Errorf("create %s: %v", name, err)
 			return
 		}
@@ -387,6 +459,9 @@ func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand
 		request := wire.CreateRequest{Name: old, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 1, Options: 0x1000}
 		replies, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: request}), relatedTo(closeMessage(c.t, related))}, smbproto.StatusObjectNameNotFound)
 		if err != nil {
+			if c.allowed(err) {
+				continue
+			}
 			c.t.Errorf("delete %s: %v", old, err)
 			return
 		}
@@ -404,7 +479,7 @@ func (c *fileChurn) work(ctx context.Context, conn *macConn, w int, source *rand
 func (c *fileChurn) flush(ctx context.Context, conn *macConn) error {
 	root := wire.CreateRequest{Name: "", DesiredAccess: 0x80, ShareAccess: 7, Disposition: 1}
 	_, err := conn.call(ctx, []wire.Message{createMessage(c.t, smbtest.CreateOptions{Request: root}), relatedTo(flushMessage(c.t, related, true)), relatedTo(closeMessage(c.t, related))})
-	if err != nil {
+	if err != nil && !c.allowed(err) {
 		c.t.Errorf("full FLUSH: %v", err)
 	}
 	return err
