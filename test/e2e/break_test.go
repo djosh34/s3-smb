@@ -91,7 +91,7 @@ func TestBreakS3OutageUnderLoad(t *testing.T) {
 			time.Sleep(between(rng, time.Second, 5*time.Second))
 			t.Log("outage starts after", proxy.ChunkPuts()-puts, "chunk PUTs")
 			start := proxy.FailS3For(outage)
-			l.waitStuck(ctx, rng)
+			l.waitStuck(ctx, rng, proxy)
 			// One client at a time, also when it is busy.
 			if err := f.otherClientRefused(ctx, f.addr); err != nil {
 				t.Error(err)
@@ -142,7 +142,7 @@ func TestBreakFaultyS3UnderLoad(t *testing.T) {
 			}
 			time.Sleep(between(rng, 0, length/2))
 			start := proxy.FailS3For(between(rng, 15*time.Second, 25*time.Second))
-			l.waitStuck(ctx, rng)
+			l.waitStuck(ctx, rng, proxy)
 			time.Sleep(length/2 - time.Since(start))
 			stopFaults()
 		})
@@ -204,8 +204,8 @@ func TestBreakKillUnderLoad(t *testing.T) {
 // the load runs and S3 is down: each round cuts it, holds it silent for up
 // to 30 seconds with no FIN or RST, or lets bytes trickle through it. The
 // other connection must keep its progress. The server keeps running, so
-// every acknowledged WRITE must be there afterwards, and the daemon must not
-// keep more file descriptors or threads than it started with.
+// every acknowledged WRITE must be there afterwards, and after the first
+// round the daemon's file descriptors and threads must not keep growing.
 func TestBreakNetworkUnderLoad(t *testing.T) {
 	rng := chaosRand(t)
 	rounds := 3
@@ -229,7 +229,7 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 6*time.Second))
 			s3.FailS3For(between(rng, 20*time.Second, 30*time.Second))
-			l.waitStuck(ctx, rng)
+			l.waitStuck(ctx, rng, s3)
 			time.Sleep(between(rng, 4*time.Second, 8*time.Second))
 			switch round % 3 {
 			case 0:
@@ -295,8 +295,8 @@ func daemonResources(t *testing.T, d *daemon) resources {
 }
 
 // TestBreakFileChurn creates, writes, closes and deletes as many small files
-// as it can over both connections of the Mac load, offering about a thousand
-// a second, while S3 misbehaves and goes away for a while. Flushes come in
+// as 32 workers can over both connections of the Mac load, at least 5 a
+// second, while S3 misbehaves and goes away for a while. Flushes come in
 // batches. Every file must be there with its bytes, and every deleted one
 // gone, also after a restart and a cold start from S3.
 func TestBreakFileChurn(t *testing.T) {
@@ -461,14 +461,20 @@ func TestBreakLogoffDuringOutage(t *testing.T) {
 				leavers = append(leavers, prepareLeave(ctx, t, f, fmt.Sprintf("leaving-%d-%d", round, i), command))
 			}
 			start := proxy.FailS3For(outage)
-			l.waitStuck(ctx, rng)
+			l.waitStuck(ctx, rng, proxy)
+			var cleanups []*macRequest
 			for _, leaving := range leavers {
-				leaving.leave(ctx)
+				cleanups = append(cleanups, leaving.leave(ctx))
 			}
 			if time.Since(start) >= outage {
 				t.Error("coverage: the cleanup came after the outage")
 			}
 			time.Sleep(outage - time.Since(start))
+			for i, cleanup := range cleanups {
+				if reply, err := leavers[i].conn.wait(cleanup); err != nil || reply.Header.Status != smbproto.StatusSuccess {
+					t.Errorf("%v after the outage: %v, status %#x", leavers[i].command, err, reply.Header.Status)
+				}
+			}
 		})
 		l.check(ctx, "LOGOFF during an outage")
 	}
@@ -514,8 +520,8 @@ func prepareLeave(ctx context.Context, t *testing.T, f *fixture, name string, co
 // leave starts a WRITE and a FLUSH of its file, which wait on S3, and a READ
 // of every band, which waits for the band's I/O while the load's stuck
 // uploads hold it. Once the FLUSH has waited a second, it sends its command
-// without waiting for any of them.
-func (l *leaver) leave(ctx context.Context) {
+// without waiting for any of them, and returns the command's request.
+func (l *leaver) leave(ctx context.Context) *macRequest {
 	if _, err := l.conn.start(ctx, []wire.Message{writeMessage(l.t, l.ids[0], 0, slotData(99, 0, 1))}); err != nil {
 		l.t.Fatal(err)
 	}
@@ -536,9 +542,11 @@ func (l *leaver) leave(ctx context.Context) {
 	if l.command == wire.TreeDisconnect {
 		encode = wire.EncodeTreeDisconnectRequest
 	}
-	if _, err = l.conn.start(ctx, []wire.Message{emptyMessage(l.t, l.command, encode)}); err != nil {
+	requests, err := l.conn.start(ctx, []wire.Message{emptyMessage(l.t, l.command, encode)})
+	if err != nil {
 		l.t.Fatal(err)
 	}
+	return requests[0]
 }
 
 // TestBreakDisk slows and fails the daemon's local disk under the Mac load:

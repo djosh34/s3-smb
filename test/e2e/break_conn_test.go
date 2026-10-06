@@ -56,7 +56,15 @@ type macConn struct {
 	sent, pending int
 	slowest       time.Duration
 	mu            sync.Mutex
+	// sendMu keeps the frames in the order their message IDs were given.
+	sendMu sync.Mutex
+	// left is set once a LOGOFF is sent: the server ends a connection that
+	// sends on a session it no longer knows.
+	left bool
 }
+
+// errLeft is a request after the connection's LOGOFF.
+var errLeft = errors.New("the session has logged off")
 
 // A request is queued until its frame is on the wire, then sent. STATUS_PENDING
 // for the first member of a compound covers the whole compound: the server
@@ -129,13 +137,19 @@ func (c *macConn) start(ctx context.Context, messages []wire.Message) ([]*macReq
 		messages[i].Header.CreditCharge = max(messages[i].Header.CreditCharge, 1)
 		charge += int(messages[i].Header.CreditCharge)
 	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
 	c.mu.Lock()
 	for c.credits < charge && c.err == nil {
 		c.credit.Wait()
 	}
-	if c.err != nil {
+	if c.err != nil || c.left {
+		err := c.err
+		if err == nil {
+			err = errLeft
+		}
 		c.mu.Unlock()
-		return nil, c.err
+		return nil, err
 	}
 	c.credits -= charge
 	requests := make([]*macRequest, len(messages))
@@ -146,6 +160,7 @@ func (c *macConn) start(ctx context.Context, messages []wire.Message) ([]*macReq
 		c.next += uint64(h.CreditCharge)
 		requests[i] = &macRequest{id: h.MessageID, command: h.Command, queued: now, reply: make(chan wire.Message, 1), compound: requests}
 		c.inFlight[h.MessageID] = requests[i]
+		c.left = c.left || h.Command == wire.Logoff
 		if h.Command == wire.Write {
 			if write, err := wire.DecodeWriteRequest(messages[i]); err == nil {
 				requests[i].file = write.ID
@@ -240,9 +255,7 @@ func (c *macConn) receive(ctx context.Context) {
 				c.t.Errorf("reply to message %d, which is not in flight", m.Header.MessageID)
 				continue
 			}
-			if !r.pending && !r.sent.IsZero() {
-				c.slowest = max(c.slowest, time.Since(r.sent))
-			}
+			c.firstReply(r)
 			if !whole(reply.Messages, j, r) {
 				c.t.Errorf("%v message %d: its compound came back split, which macOS cannot read", r.command, r.id)
 			}
@@ -259,6 +272,20 @@ func (c *macConn) receive(ctx context.Context) {
 		}
 		c.credit.Broadcast()
 		c.mu.Unlock()
+	}
+}
+
+// firstReply times a reply to r if it is the first. The caller holds c.mu.
+func (c *macConn) firstReply(r *macRequest) {
+	if r.pending || r.sent.IsZero() {
+		return
+	}
+	age := time.Since(r.sent)
+	c.slowest = max(c.slowest, age)
+	// The watchdog looks only every 250 ms.
+	if !r.late && age > c.patience {
+		r.late = true
+		c.t.Errorf("%v message %d got its first reply after %v: macOS would have failed it and dropped its data", r.command, r.id, age)
 	}
 }
 
@@ -325,7 +352,7 @@ func (c *macConn) acknowledgeBreaks(ctx context.Context) {
 			}
 			ack := build(c.t, wire.OplockBreak, wire.EncodeLeaseBreakRequest, wire.LeaseBreakRequest{Key: b.Key, State: b.NewState})
 			// The lease may have gone with its open; that is no failure.
-			if _, err := c.call(ctx, []wire.Message{ack}, smbproto.StatusUnsuccessful); err != nil && !c.done() {
+			if _, err := c.call(ctx, []wire.Message{ack}, smbproto.StatusUnsuccessful); err != nil && !c.done() && !errors.Is(err, errLeft) {
 				c.t.Errorf("lease break acknowledgment: %v", err)
 			}
 		}

@@ -136,36 +136,3 @@ func leaveAsync(t *testing.T, client *testClient, request wire.Header, release f
 		t.Fatalf("%v status %#x", request.Command, status)
 	}
 }
-
-// An async reply has no tree ID. When a CREATE after a TREE_CONNECT in one
-// compound waits for a band that a FLUSH holds while S3 is down, the
-// TREE_CONNECT keeps its own reply with the new tree ID.
-func TestTreeConnectCompoundWithAsyncMember(t *testing.T) {
-	srv, proxy := newS3Server(t)
-	client := srv.connect(t)
-	band := client.open(t, "band")
-	writeFile(t, client, band, []byte("band data waiting for S3"))
-	held, err := proxy.HoldNextChunkResponse()
-	if err != nil {
-		t.Fatal(err)
-	}
-	flush := sendIO(t, client, wire.Flush, band, 0, nil)
-	<-held
-	client.interim(t, flush)
-	tree := message(t, client, wire.TreeConnect, wire.EncodeTreeConnectRequest, wire.TreeConnectRequest{Path: `\\host\backup`})
-	create := related(createMessage(t, client, "band", fileOpenIf))
-	if err = client.raw.Send(t.Context(), []wire.Message{tree, create}); err != nil {
-		t.Fatal(err)
-	}
-	reply := client.next(t, tree.Header)
-	proxy.Release()
-	if header := reply.Header; header.Status != smb.StatusSuccess || header.Flags&wire.FlagAsync != 0 || header.TreeID == 0 {
-		t.Fatalf("TREE_CONNECT reply %+v, want a final reply with the tree ID", header)
-	}
-	if status := client.receive(t, create.Header).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("CREATE status %#x", status)
-	}
-	if status := client.receive(t, flush).Header.Status; status != smb.StatusSuccess {
-		t.Fatalf("FLUSH status %#x", status)
-	}
-}

@@ -5,16 +5,23 @@ package e2e
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"net/http"
+	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	_ "github.com/mattn/go-sqlite3" // The daemon's database.
+
+	"github.com/djosh34/s3-smb/internal/s3fault"
 	smbproto "github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
@@ -78,11 +85,11 @@ func (s *slotState) allowed(mode string) []uint32 {
 	}
 	switch {
 	case s.racy:
-		certain := s.done
+		versions, certain := append([]uint32{s.done}, s.since...), s.done
 		if mode == "kill" {
-			certain = s.flushed
+			versions, certain = append(versions, s.flushed), s.flushed
 		}
-		return slices.DeleteFunc(append([]uint32{s.flushed, s.done}, s.since...), func(v uint32) bool { return v == 0 && certain > 0 })
+		return slices.DeleteFunc(versions, func(v uint32) bool { return v == 0 && certain > 0 })
 	case mode == "kill":
 		return append([]uint32{s.flushed, s.done}, s.since...)
 	case mode == "drop":
@@ -94,7 +101,7 @@ func (s *slotState) allowed(mode string) []uint32 {
 
 // macLoad writes bands the way Time Machine does. Writers on two connections
 // of the same client keep many 1 MiB WRITEs in flight across several files,
-// enough to fill the 256 MiB RAM budget, and some race for the same slots.
+// more than the 256 MiB RAM budget holds, and some race for the same slots.
 // Readers check bytes all the time. Operators mix in FLUSH, full FLUSH,
 // CLOSE alone and later in compounds, also of a handle with its own WRITE
 // in flight, CREATE, QUERY_INFO and CLOSE compounds, delete on close,
@@ -277,7 +284,7 @@ func (l *macLoad) pick(rng *rand.Rand) int {
 
 // sendSlot writes the next version of a slot through connection c and
 // records it.
-func (l *macLoad) sendSlot(ctx context.Context, c, file, slot int, extra ...wire.Message) error {
+func (l *macLoad) sendSlot(ctx context.Context, c, file, slot int) error {
 	l.mu.Lock()
 	s := &l.slots[file][slot]
 	s.next++
@@ -285,8 +292,7 @@ func (l *macLoad) sendSlot(ctx context.Context, c, file, slot int, extra ...wire
 	s.since = append(s.since, v)
 	handle := l.handles[c][file]
 	l.mu.Unlock()
-	messages := append([]wire.Message{writeMessage(l.t, handle, uint64(slot)*slotSize, slotData(file, slot, v))}, extra...) //nolint:gosec // Small test indexes.
-	if _, err := l.conns[c].call(ctx, messages, smbproto.StatusFileClosed); err != nil {
+	if _, err := l.conns[c].call(ctx, []wire.Message{writeMessage(l.t, handle, uint64(slot)*slotSize, slotData(file, slot, v))}); err != nil { //nolint:gosec // Small test indexes.
 		return err
 	}
 	l.mu.Lock()
@@ -299,7 +305,7 @@ func (l *macLoad) sendSlot(ctx context.Context, c, file, slot int, extra ...wire
 // then, to a racy slot that another writer also writes. Each writer keeps to
 // one band, as Time Machine fills one band at a time, and owns every n-th of
 // its slots, where n is the number of writers of the band. A FLUSH that waits
-// on S3 so stops only its band's writers, and the others fill the RAM budget.
+// on S3 so stops only its band's writers.
 func (l *macLoad) write(ctx context.Context, rng *rand.Rand, w int, stop <-chan struct{}) {
 	c, band := w%len(l.conns), w%loadBands
 	rank, writers := w/loadBands, (l.writers-band+loadBands-1)/loadBands
@@ -312,7 +318,7 @@ func (l *macLoad) write(ctx context.Context, rng *rand.Rand, w int, stop <-chan 
 	for !stopped(stop) && !l.conns[c].done() {
 		file, index := band, own[rng.IntN(len(own))]
 		if rng.IntN(8) == 0 {
-			file, index = rng.IntN(loadBands), rng.IntN(loadSlots/7)*7
+			file, index = rng.IntN(loadBands), 7*rng.IntN((loadSlots+6)/7)
 		}
 		l.report(c, fmt.Sprintf("WRITE band %d slot %d: %%v", file, index), l.sendSlot(ctx, c, file, index))
 	}
@@ -426,14 +432,22 @@ var operationNames = []string{
 	"truncate", "rename", "lease break", "CLOSE behind its own WRITE", "conflicting open",
 }
 
-// waitStuck waits until WRITEs to three bands at once are stuck on S3, then
-// starts every operation but FLUSH once, each on its own. Only one operator
-// flushes, so at least two of those WRITEs wait for room in the RAM budget:
-// it is full, and the early uploads that would make room wait on S3.
-// loadRound waits for the operations.
-func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand) {
+// waitStuck fills a new file while S3 is down until WRITEs to three bands at
+// once are stuck and an early upload, which makes room in a full RAM budget,
+// has tried S3 during the outage. Then it starts every operation but FLUSH
+// once, each on its own. loadRound waits for the operations and the filling.
+func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand, proxy *s3fault.Proxy) {
 	l.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	refused := map[string]bool{}
+	filled := make(chan struct{})
+	defer close(filled)
+	l.mu.Lock()
+	l.serial++
+	name := fmt.Sprintf("fill-%d", l.serial)
+	l.mu.Unlock()
+	c := len(l.conns) - 1 // the first may be slowed on purpose
+	l.fired.Go(func() { l.report(c, "filling "+name+": %v", l.fill(ctx, c, name, filled)) })
 	for {
 		bands := map[int]bool{}
 		for c, conn := range l.conns {
@@ -443,11 +457,21 @@ func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand) {
 				}
 			}
 		}
-		if len(bands) >= 3 {
+		for drained := false; !drained; {
+			select {
+			case event := <-proxy.OutageSeen():
+				if _, name, ok := strings.Cut(event.Path, "/chunks/"); ok && event.Method == http.MethodPut {
+					refused[name] = true
+				}
+			default:
+				drained = true
+			}
+		}
+		if len(bands) >= 3 && l.earlyUpload(ctx, refused) {
 			break
 		}
 		if time.Now().After(deadline) {
-			l.t.Error("coverage: writes never got stuck on S3, so the RAM budget never filled")
+			l.t.Error("coverage: writes never got stuck on S3 with the RAM budget full")
 			return
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -458,6 +482,53 @@ func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand) {
 			l.report(c, operationNames[op]+" while writes were stuck: %v", l.operation(ctx, c, source, op))
 		})
 	}
+}
+
+// fill writes a new file of 40 chunks, more than the RAM budget holds, 1 MiB
+// at a time through connection c, until filled closes. It deletes the file
+// when it closes it. A WRITE to a new chunk reads nothing from S3, so during
+// an outage the budget fills, and the next WRITE has to make room with an
+// early upload. Once the band chunks are uploaded, the band WRITEs cannot
+// fill it: each first needs its chunk from S3.
+func (l *macLoad) fill(ctx context.Context, c int, name string, filled <-chan struct{}) error {
+	request := wire.CreateRequest{Name: name, DesiredAccess: fileAllAccess, ShareAccess: 7, Disposition: 2, Options: 0x1000}
+	id, err := l.open(ctx, l.conns[c], smbtest.CreateOptions{Request: request})
+	if err != nil {
+		return err
+	}
+	for slot := 0; slot < 40*8 && !stopped(filled) && err == nil; slot++ {
+		_, err = l.conns[c].call(ctx, []wire.Message{writeMessage(l.t, id, uint64(slot)*slotSize, slotData(loadBands+1, slot, 1))})
+	}
+	_, closeErr := l.conns[c].call(ctx, []wire.Message{closeMessage(l.t, id)})
+	return errors.Join(err, closeErr)
+}
+
+// earlyUpload reports whether one of the chunk names is an early upload of
+// the daemon: a row of the pending table in its live database, which only
+// early uploads record.
+func (l *macLoad) earlyUpload(ctx context.Context, names map[string]bool) bool {
+	if len(names) == 0 {
+		return false
+	}
+	db, err := sql.Open("sqlite3", "file:"+filepath.Join(l.f.root, "state", "db")+"?mode=ro")
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name FROM pending`)
+	found := false
+	for err == nil && rows.Next() {
+		var name string
+		if err = rows.Scan(&name); err == nil {
+			found = found || names[name]
+		}
+	}
+	if rows != nil {
+		err = errors.Join(err, rows.Err(), rows.Close())
+	}
+	if err = errors.Join(err, db.Close()); err != nil {
+		l.t.Fatal(err)
+	}
+	return found
 }
 
 // flush flushes one file through connection c, or with full every file.
@@ -526,7 +597,7 @@ func (l *macLoad) closeWhileWriting(ctx context.Context, c int, rng *rand.Rand, 
 	if err != nil {
 		return err
 	}
-	slot := 7 * rng.IntN(loadSlots/7)
+	slot := 7 * rng.IntN((loadSlots+6)/7)
 	l.mu.Lock()
 	s := &l.slots[band][slot]
 	s.next++
@@ -539,7 +610,10 @@ func (l *macLoad) closeWhileWriting(ctx context.Context, c int, rng *rand.Rand, 
 	l.mu.Lock()
 	s.done = max(s.done, v)
 	l.mu.Unlock()
-	_, err = l.conns[c].call(ctx, []wire.Message{readMessage(l.t, id, 0, 4096)}, smbproto.StatusFileClosed)
+	replies, err := l.conns[c].call(ctx, []wire.Message{readMessage(l.t, id, 0, 4096)}, smbproto.StatusFileClosed)
+	if err == nil && replies[0].Header.Status != smbproto.StatusFileClosed {
+		err = errors.New("a READ of a closed handle succeeded")
+	}
 	return err
 }
 
@@ -699,7 +773,7 @@ func (l *macLoad) check(ctx context.Context, mode string) {
 }
 
 // loadRound runs the load while fault runs on the test goroutine, and for a
-// second more, then stops it.
+// second more, then stops it, also when fault fails the test.
 func (l *macLoad) loadRound(ctx context.Context, fault func()) {
 	stop := make(chan struct{})
 	ended := make(chan struct{})
@@ -707,12 +781,14 @@ func (l *macLoad) loadRound(ctx context.Context, fault func()) {
 		defer close(ended)
 		l.run(ctx, stop)
 	}()
+	defer func() {
+		close(stop)
+		<-ended
+		l.fired.Wait()
+		for i, conn := range l.conns {
+			l.t.Logf("round, connection %d: %s", i, conn.summary())
+		}
+	}()
 	fault()
 	time.Sleep(time.Second)
-	close(stop)
-	<-ended
-	l.fired.Wait()
-	for i, conn := range l.conns {
-		l.t.Logf("round, connection %d: %s", i, conn.summary())
-	}
 }

@@ -339,9 +339,14 @@ func (e *Engine) Remove(ctx context.Context, name smb.Name, expect smb.Inode) er
 		return err
 	}
 	if !locked {
+		// An open file is dropped at its last close.
 		e.mu.Lock()
 		st.unlinked = true
+		open := st.refs > 0
 		e.mu.Unlock()
+		if open {
+			return nil
+		}
 		return e.dropWhenFree(ctx, st)
 	}
 	return e.settleUnlink(ctx, st, drop)

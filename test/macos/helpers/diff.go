@@ -39,7 +39,7 @@ func DiffBlocks(expected, actual string) (ranges []Range, err error) {
 			return append(ranges, Range{Start: offset, End: -1}), nil
 		}
 		if n == 0 {
-			return ranges, nil
+			return ranges, readEnd(errA, errB)
 		}
 		if !bytes.Equal(a[:n], b[:m]) {
 			isZero := bytes.Equal(b[:m], zero[:m])
@@ -50,11 +50,19 @@ func DiffBlocks(expected, actual string) (ranges []Range, err error) {
 			}
 		}
 		if errA != nil || errB != nil {
-			if errors.Is(errA, io.ErrUnexpectedEOF) || errors.Is(errA, io.EOF) {
-				return ranges, nil
-			}
-			return ranges, errors.Join(errA, errB)
+			return ranges, readEnd(errA, errB)
 		}
 	}
 	return ranges, nil
+}
+
+// readEnd returns the read errors that are not the end of a file.
+func readEnd(errs ...error) error {
+	var result error
+	for _, err := range errs {
+		if !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
 }

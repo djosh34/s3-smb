@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/binary"
 	"slices"
 	"testing"
@@ -83,6 +84,38 @@ func TestCompoundMembersRunInOrder(t *testing.T) {
 		t.Fatalf("READ after the WRITE = %q, %#x; want %q", read.Data, status, data)
 	}
 	client.noExtraReplies(t)
+}
+
+// An async reply has no tree ID. When a CREATE after a TREE_CONNECT in one
+// compound waits on storage, the TREE_CONNECT keeps its own reply with the
+// new tree ID.
+func TestTreeConnectCompoundWithAsyncMember(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	release := make(chan struct{})
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Open = func(ctx context.Context, object smb.Inode, access smb.Access) (smb.Handle, error) {
+			select {
+			case <-release:
+				return srv.storage.Open(ctx, object, access)
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	})
+	tree := message(t, client, wire.TreeConnect, wire.EncodeTreeConnectRequest, wire.TreeConnectRequest{Path: `\\host\backup`})
+	create := related(createMessage(t, client, "file", fileOpenIf))
+	if err := client.raw.Send(t.Context(), []wire.Message{tree, create}); err != nil {
+		t.Fatal(err)
+	}
+	reply := client.next(t, tree.Header)
+	close(release)
+	if header := reply.Header; header.Status != smb.StatusSuccess || header.Flags&wire.FlagAsync != 0 || header.TreeID == 0 {
+		t.Fatalf("TREE_CONNECT reply %+v, want a final reply with the tree ID", header)
+	}
+	if status := client.receive(t, create.Header).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("CREATE status %#x", status)
+	}
 }
 
 // A related member that needs a file fails with the error of the member

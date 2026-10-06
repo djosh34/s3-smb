@@ -207,7 +207,7 @@ func TestS3FailureEndsAsyncRequest(t *testing.T) {
 			if status := client.close(t, id); status != smb.StatusSuccess {
 				t.Fatalf("CLOSE status %#x", status)
 			}
-			// The data still in RAM uploads at shutdown.
+			// Let the shutdown upload the data still in RAM.
 			if err := proxy.SetFault(s3fault.Fault{}); err != nil {
 				t.Fatal(err)
 			}

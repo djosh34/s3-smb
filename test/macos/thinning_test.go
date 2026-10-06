@@ -52,17 +52,24 @@ func (h *harness) thinning() result {
 	})
 	h.compact()
 	h.storage("after-compact")
+	// Freed chunks go through the trash before they are deleted.
+	trashed := false
 	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
 		if err == nil && count.leaked > 0 {
 			err = fmt.Errorf("%d chunks of the deleted backup are neither in a file, in the trash nor deleted", count.leaked)
 		}
+		trashed = trashed || count.trashed > 0
 		return count.live == 0, err
 	}))
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
+		trashed = trashed || count.trashed > 0
 		return count.live+count.trashed+count.leaked == 0, err
 	}))
+	if !trashed {
+		h.t.Fatal("no chunk of the deleted backup was ever seen in the trash")
+	}
 	h.storage("after-thinning")
 	outcome.Resumed = fourth
 	h.restoreBackup(second, secondTree, "restore-second")
@@ -165,10 +172,12 @@ func (h *harness) deleteBackup(backup string, freed uint64) {
 	h.mount()
 	bundle := h.bundle()
 	devices, volumes := h.attach(bundle, false)
+	if len(devices) > 0 {
+		h.attachments = append(h.attachments, devices[0])
+	}
 	if len(devices) == 0 || len(volumes) != 1 {
 		h.t.Fatal("unknown Time Machine image volume layout", devices, volumes)
 	}
-	h.attachments = append(h.attachments, devices[0])
 	before := h.used(volumes[0])
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
