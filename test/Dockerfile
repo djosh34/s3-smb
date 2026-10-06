@@ -5,7 +5,7 @@ FROM golang:1.26.3-bookworm@sha256:386d475a660466863d9f8c766fec64d7fdad3edac2c6a
 COPY --from=minio /usr/local/bin/minio /usr/local/bin/minio
 ARG SAMBA_VERSION=2:4.17.12+dfsg-0+deb12u4
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    samba-testsuite=${SAMBA_VERSION} smbclient=${SAMBA_VERSION} \
+    samba-testsuite=${SAMBA_VERSION} smbclient=${SAMBA_VERSION} iptables \
     && rm -rf /var/lib/apt/lists/*
 ENV GOTOOLCHAIN=local CGO_ENABLED=1 GOFLAGS="-mod=readonly"
 WORKDIR /src

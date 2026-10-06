@@ -160,7 +160,8 @@ check_integration() {
     fi
     sleep 1
   done
-  docker create --name "$id-runner" --network "$id" \
+  # NET_ADMIN lets the dead-link test drop packets with iptables.
+  docker create --name "$id-runner" --network "$id" --cap-add NET_ADMIN \
     --add-host transport.test:127.0.0.1 --add-host transport-test.transport.test:127.0.0.1 \
     -v "$root:/src:ro" -v "$logs:/artifacts" \
     -v s3-smb-test-gomod:/go/pkg/mod -v s3-smb-test-gobuild:/root/.cache/go-build \

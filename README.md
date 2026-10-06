@@ -109,6 +109,14 @@ handles waits for a reconnect, the server refuses any other client. A reconnect
 from the same SMB client is let in. So a new Mac restoring from the share may
 wait until the first Mac's durable handles expire, at most 16 minutes. Mounting
 the share in Finder during a backup may be refused.
+
+macOS mounts with a new client GUID after a crash, a reboot, a long sleep or
+a failed reconnect, so the same Mac then counts as another client. s3-smb
+notices a dead link within about a minute, through TCP keepalive and a limit
+on unacknowledged data set on each SMB socket. The old client's durable
+opens then wait their 120 seconds, and the Mac gets in once they and their
+cleanup have ended, about 3 minutes after the link died. Restarting s3-smb on
+the same data folder lets it in at once.
 [The SMB server design](docs/smb-design.md) has the details.
 
 ## What survives a failure
