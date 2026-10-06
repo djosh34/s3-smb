@@ -183,7 +183,7 @@ func (h *harness) dropLog(start, end time.Time) helpers.DropLog {
 	format := "2006-01-02 15:04:05-0700"
 	// During an outage smbfs logs hundreds of thousands of reconnect attempts,
 	// so read only the lines ParseDropLog needs. log show still scans them all.
-	predicate := `process == "backupd" OR (senderImagePath CONTAINS "smbfs" AND (eventMessage CONTAINS "Non idempotent requests found" OR eventMessage CONTAINS "Reconnect completed successfully" OR eventMessage CONTAINS "Timed out waiting on the response"))`
+	predicate := `process == "backupd" OR (senderImagePath CONTAINS "smbfs" AND (eventMessage CONTAINS "Non idempotent requests found" OR eventMessage CONTAINS "Reconnect completed successfully" OR eventMessage CONTAINS "Timed out waiting on the response" OR eventMessage CONTAINS "WRITE failed with an error of"))`
 	h.run(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--end", end.Add(time.Second).Format(format), "--info", "--debug", "--predicate", predicate)
 	// try leaves log show output on disk rather than returning it.
 	data, err := h.evidenceDir.ReadFile(fmt.Sprintf("%04d-log.log", h.serial))

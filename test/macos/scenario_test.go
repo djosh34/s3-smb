@@ -140,7 +140,9 @@ func (h *harness) scenario(name string) result {
 	case "b2":
 		return h.b2Backup()
 	case "s3-outage":
-		return h.s3Outage()
+		return h.s3Outage(false)
+	case "s3-outage-long":
+		return h.s3Outage(true)
 	case "thinning":
 		return h.thinning()
 	case "rollback":

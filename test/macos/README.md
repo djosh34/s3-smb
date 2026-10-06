@@ -15,7 +15,10 @@ Scenarios beyond the failed-backup ones:
 
 - `incrementals`: a first backup, three incrementals and two restores.
 - `s3-outage`: S3 is cut for 5 minutes in the middle of a backup, which must
-  go on as the same backup.
+  go on as the same backup, with no request that macOS timed out.
+- `s3-outage-long`: S3 is cut for 6.5 minutes, longer than s3-smb waits on
+  it. The backup may fail if Time Machine shows it; a backup it reports as
+  good must restore exactly. The macOS log of failed writes is kept.
 - `thinning`: `tmutil delete` removes the only backup of a file, whose chunks
   must reach the trash and then be deleted.
 - `rollback`: s3-smb is killed right after a copy lands in the middle of a

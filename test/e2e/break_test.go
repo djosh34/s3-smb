@@ -109,6 +109,46 @@ func TestBreakS3OutageUnderLoad(t *testing.T) {
 	d.alive()
 }
 
+// TestBreakLongOutage cuts S3 for 6.5 minutes under the Mac load: longer
+// than the server waits on S3, shorter than its 8-minute bucket lock.
+// Requests that wait on S3 keep getting their interim replies, then fail with
+// STATUS_IO_DEVICE_ERROR, never STATUS_IO_TIMEOUT. The daemon keeps running,
+// and every acknowledged byte must be there, also after a restart and a cold
+// start from S3. The outage alone takes 6.5 minutes, so only the gate runs it.
+func TestBreakLongOutage(t *testing.T) {
+	rng := chaosRand(t)
+	if !gate() {
+		t.Skip("the 6.5-minute outage runs in the gate")
+	}
+	f := newFixture(t)
+	proxy := f.newFaultProxy()
+	t.Cleanup(proxy.RestoreS3)
+	d := f.start()
+	ctx := t.Context()
+	l := newMacLoad(t, f, rng, f.addr, f.addr)
+	l.failures = true
+	l.connect(ctx)
+	outage := 6*time.Minute + 30*time.Second
+	l.loadRound(ctx, func() {
+		time.Sleep(between(rng, time.Second, 5*time.Second))
+		start := proxy.FailS3For(outage)
+		l.waitStuck(ctx, rng, proxy)
+		time.Sleep(outage - time.Since(start))
+	})
+	if l.deviceErrors.Load() == 0 {
+		t.Error("coverage: no request failed with STATUS_IO_DEVICE_ERROR")
+	}
+	t.Logf("%d requests failed, %d with STATUS_IO_DEVICE_ERROR", l.failed.Load(), l.deviceErrors.Load())
+	// A failed WRITE may have landed or not.
+	l.check(ctx, "drop")
+	l.failures = false
+	if err := l.flush(ctx, 0, nil, true); err != nil {
+		t.Fatal(err)
+	}
+	d = restartAndCheck(l, f, d)
+	d.alive()
+}
+
 // TestBreakFaultyS3UnderLoad runs the Mac load while S3 misbehaves, with an
 // outage in each round. Even rounds draw a fault for every request on its
 // own, so requests in flight end out of order, some fail while others

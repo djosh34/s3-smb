@@ -45,9 +45,10 @@ func TestParseDropLog(t *testing.T) {
 	}
 	got, err = ParseDropLog([]byte(`[
 		{"senderImagePath":"/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs","eventMessage":"smb_iod_sendall: Timed out waiting on the response for 0x0 message_id = 4986 state 0x1"},
-		{"senderImagePath":"/other","eventMessage":"smb_iod_sendall: Timed out waiting on the response for 0x0 message_id = 4993 state 0x1"}
+		{"senderImagePath":"/other","eventMessage":"smb_iod_sendall: Timed out waiting on the response for 0x0 message_id = 4993 state 0x1"},
+		{"senderImagePath":"/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs","eventMessage":"smbfs_do_strategy: 7: WRITE failed with an error of 5"}
 	]`))
-	if err != nil || got.TimedOut != 1 {
+	if err != nil || got.TimedOut != 1 || got.FailedWrites != 1 {
 		t.Fatal(got, err)
 	}
 	// A failure counts only after the attempt's own start.

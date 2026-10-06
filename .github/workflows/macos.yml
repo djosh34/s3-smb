@@ -18,7 +18,7 @@ on:
       scenarios:
         description: Scenarios to run on MinIO, as a JSON list
         required: true
-        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage", "incrementals", "s3-outage", "thinning", "rollback", "large"]'
+        default: '["server-kill-restart", "launchd-kill-restart", "server-kill-cold", "server-kill-cold-midpoint", "client-abort-cold", "machine-loss", "network-drop", "network-outage", "incrementals", "s3-outage", "s3-outage-long", "thinning", "rollback", "large"]'
         type: string
 permissions:
   contents: read

@@ -134,6 +134,9 @@ type macLoad struct {
 	// model either way.
 	failures bool
 	failed   atomic.Int64
+	// deviceErrors counts the failed requests answered
+	// STATUS_IO_DEVICE_ERROR.
+	deviceErrors atomic.Int64
 }
 
 // loadBands is the number of band files, and loadSlots the slots of each:
@@ -251,8 +254,14 @@ func stopped(stop <-chan struct{}) bool {
 // connection on purpose or lets requests fail.
 func (l *macLoad) report(c int, format string, err error) {
 	var failed statusError
+	if errors.As(err, &failed) && failed.status == smbproto.StatusIOTimeout {
+		l.t.Errorf("%v: macOS drops the written data without an error for STATUS_IO_TIMEOUT", err)
+	}
 	if l.failures && errors.As(err, &failed) {
 		l.failed.Add(1)
+		if failed.status == smbproto.StatusIODeviceError {
+			l.deviceErrors.Add(1)
+		}
 		return
 	}
 	if err == nil || l.cut[c].Load() && l.conns[c].lost() {
