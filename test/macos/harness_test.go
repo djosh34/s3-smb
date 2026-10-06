@@ -263,7 +263,12 @@ func (h *harness) exclusions(diagnostic bool) {
 }
 
 func (h *harness) checkExclusions() {
-	for path, excluded := range map[string]bool{h.proof: false, filepath.Join(h.proof, "nested/message.txt"): false, filepath.Join(h.proof, "empty"): false, filepath.Join(h.work, "objects"): true, "/Users/runner/Library": true} {
+	paths := map[string]bool{h.proof: false, filepath.Join(h.proof, "nested/message.txt"): false, filepath.Join(h.proof, "empty"): false, "/Users/runner/Library": true}
+	// A B2 run has no MinIO store.
+	if !h.b2 {
+		paths[filepath.Join(h.work, "objects")] = true
+	}
+	for path, excluded := range paths {
 		output := h.run(2*time.Minute, "/usr/bin/tmutil", "isexcluded", path)
 		h.t.Log(output)
 		h.must(helpers.CheckExclusion(output, excluded))
