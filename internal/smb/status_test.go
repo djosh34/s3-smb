@@ -27,7 +27,7 @@ func TestStatusFromError(t *testing.T) {
 		{errors.New("backend detail"), "unknown", smb.StatusInternalError},
 		{smb.ErrorKind("future category"), "unknown-kind", smb.StatusInternalError},
 		{errors.Join(smb.ErrIO, context.Canceled), "cancel-precedence", smb.StatusCancelled},
-		{errors.Join(smb.ErrIO, context.DeadlineExceeded), "deadline-precedence", smb.StatusIOTimeout},
+		{errors.Join(smb.ErrIO, context.DeadlineExceeded), "deadline-precedence", smb.StatusIODeviceError},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

@@ -2,6 +2,8 @@ package server
 
 import (
 	"bytes"
+	"context"
+	"fmt"
 	"net/http"
 	"os"
 	"testing"
@@ -294,4 +296,24 @@ func TestCloseAfterSlowWriteRepliesAsync(t *testing.T) {
 		}
 	}
 	srv.expectContent(t, map[string]string{"slow": string(data)})
+}
+
+// When storage gives up on S3 after its time limit, the reply is
+// STATUS_IO_DEVICE_ERROR, never STATUS_IO_TIMEOUT: macOS drops the written
+// pages without an error for a timeout, and keeps them and fails the next
+// fsync for a device error.
+func TestS3TimeLimitRepliesDeviceError(t *testing.T) {
+	srv := newTestServer(t)
+	client := srv.connect(t)
+	id := client.open(t, "file")
+	writeFile(t, client, id, []byte("never reaches S3"))
+	srv.faults.set(func(hooks *storageHooks) {
+		hooks.Flush = func(context.Context, smb.Handle, smb.SyncMode) error {
+			return fmt.Errorf("%w: put chunks/a: %w", smb.ErrIO, context.DeadlineExceeded)
+		}
+	})
+	if status := client.flush(t, wire.FlushRequest{ID: id}); status != smb.StatusIODeviceError {
+		t.Fatalf("FLUSH status %#x, want STATUS_IO_DEVICE_ERROR", status)
+	}
+	srv.faults.set(func(hooks *storageHooks) { hooks.Flush = nil })
 }

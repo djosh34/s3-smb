@@ -77,7 +77,7 @@ func (connection *connection) execute(ctx context.Context, message wire.Message,
 // serverFault reports whether a failed request is the server's fault rather
 // than an answer to what the client asked, such as a name that is not there.
 func serverFault(status smb.Status) bool {
-	return status == smb.StatusInternalError || status == smb.StatusIODeviceError || status == smb.StatusIOTimeout ||
+	return status == smb.StatusInternalError || status == smb.StatusIODeviceError ||
 		status == smb.StatusInsufficientResources || status == smb.StatusDiskFull
 }
 

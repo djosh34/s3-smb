@@ -118,8 +118,12 @@ reply has no tree ID, so it keeps its own reply and the rest follow in a
 second packet. A request that finishes locally gets one synchronous reply.
 Each pending request owns its async ID and completion state. The server
 keeps serving other requests and ECHO while S3 is slow. The engine retries
-each S3 request for up to six minutes; after that the server returns the
-storage error.
+each S3 request for up to six minutes; after that the server replies
+STATUS_IO_DEVICE_ERROR. macOS keeps the written pages for that and fails a
+later fsync, where it would drop them without an error for
+STATUS_IO_TIMEOUT. A request that waits longer than 30 seconds gets its
+interim reply again, because macOS fails a request 2 minutes after its last
+one.
 
 The server validates the whole compound and checks request signatures and
 credit charges before changing any state. A missing or bad signature, or
