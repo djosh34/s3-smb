@@ -5,8 +5,8 @@
 # shard, like fuzz 2/4, which runs every fourth fuzz target from the second on.
 # integration takes an optional job, as test/run-linux.sh says: rest, a chaos
 # or break test, or one round of a break test like TestBreakDisk-2. jobs prints
-# the integration jobs as a JSON list: each chaos and break test, or in the
-# gate each break test round, then rest.
+# the integration jobs as a JSON list: each chaos test, each break test round,
+# then rest.
 set -Eeuo pipefail
 
 usage() {
@@ -182,11 +182,7 @@ check_jobs() {
     done < "$work/chaos"
     while read -r word test rounds; do
       [[ $word == rounds ]] || continue
-      if [[ $S3_SMB_CHECK_MODE == gate ]]; then
-        for ((round = 0; round < rounds; round++)); do echo "$test-$round"; done
-      elif (( rounds > 0 )); then
-        echo "$test"
-      fi
+      for ((round = 0; round < rounds; round++)); do echo "$test-$round"; done
     done < "$work/rounds"
     echo rest
   } | jq -R . | jq -cs .

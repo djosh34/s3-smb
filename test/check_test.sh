@@ -159,10 +159,10 @@ contains '-e S3_SMB_JOB=TestBreakA-2'
 run_check integration
 succeeds
 contains '-e S3_SMB_JOB=all'
-# jobs lists each chaos and break test, or in the gate each break test round.
+# jobs lists each chaos test and each break test round.
 run_check jobs
 succeeds
-[[ $(cat "$fixture/output") == '["TestChaosX","TestBreakA","rest"]' ]] || fail "PR jobs: $(cat "$fixture/output")"
+[[ $(cat "$fixture/output") == '["TestChaosX","TestBreakA-0","TestBreakA-1","rest"]' ]] || fail "PR jobs: $(cat "$fixture/output")"
 run_check --gate jobs
 succeeds
 [[ $(cat "$fixture/output") == '["TestChaosX","TestBreakA-0","TestBreakA-1","TestBreakA-2","TestBreakB-0","rest"]' ]] ||

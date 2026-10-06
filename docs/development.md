@@ -174,8 +174,7 @@ cold start from S3 on a new data folder.
 With a job, `integration JOB` runs part of the Docker tests: `rest` runs all
 but the chaos and break tests, a test name runs that test, and a name with a
 round, like `TestBreakDisk-2`, runs one round of a break test. `jobs` prints
-the jobs CI runs: each chaos and break test in PR mode, each break test round
-in the gate, and `rest`.
+the jobs CI runs: each chaos test, each break test round, and `rest`.
 
 The Docker tests get 120 minutes in gate mode and 60 minutes in PR mode.
 
@@ -209,8 +208,9 @@ changes the pin.
 The `check` workflow runs on every pull request, on `main` and for merge queue
 groups. Each part of `scripts/check.sh` runs as its own job, in parallel: lint,
 unit tests, and one integration job per entry of `scripts/check.sh jobs`, each
-with its own chaos seed. Dispatch it with `gate=true` for a gate run, which runs
-every break test round as its own job and adds six fuzzing jobs. GitHub queues
+with its own chaos seed. Every break test round runs as its own job.
+Dispatch it with `gate=true` for a gate run, which has more and longer rounds
+and adds six fuzzing jobs. GitHub queues
 the jobs over the account's limit, so a gate run takes about as long as its
 slowest job, a few times over. A last job named `check` passes only when every part passed;
 the name is fixed because branch protection requires it. A failed integration

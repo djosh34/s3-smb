@@ -260,10 +260,12 @@ func TestBreakNetworkUnderLoad(t *testing.T) {
 	l := newMacLoad(t, f, rng, network.Address(), f.addr)
 	l.slow[0] = true
 	l.connect(ctx)
-	// Pools and threads grow in the first round. Later rounds must not keep
-	// growing.
+	// Pools and threads grow in a first round, so the first round runs twice:
+	// once to warm up, then again, and from then on the daemon's file
+	// descriptors and threads must not keep growing. A job of one round
+	// checks it too.
 	var baseline resources
-	for i, round := range rounds {
+	for i, round := range append([]int{rounds[0]}, rounds...) {
 		mode := "quiet"
 		l.loadRound(ctx, func() {
 			time.Sleep(between(rng, time.Second, 6*time.Second))

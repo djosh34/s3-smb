@@ -62,9 +62,10 @@ func TestCopiesTrashAndTakeoverUnderLoad(t *testing.T) {
 			kill(t, e)
 			e = f.open()
 			m.reconcile(t, tree(t, e))
+			// Before copies move on, the ones kept from the faulty run.
+			m.checkKeptCopies(t, bucket)
 		}
 		drainTrash(t, e)
-		checkCopies(t, bucket)
 		m.checkKeptCopies(t, bucket)
 		// The next server takes over from a crash.
 		kill(t, e)
@@ -373,12 +374,15 @@ func drainTrash(t *testing.T, e *Engine) {
 	})
 }
 
-// checkKeptCopies restores each copy in the bucket on its own, on a new data
-// folder from a clone without the newer copies, and checks every file
-// against the states allowed when that copy was captured.
+// checkKeptCopies takes a snapshot of the bucket, while copies go on, and
+// requires every chunk its copies name. Then it restores each copy on its
+// own, on a new data folder from the snapshot without the newer copies, and
+// checks every file against the states allowed when that copy was captured.
 func (m *copyModel) checkKeptCopies(t *testing.T, bucket *memBucket) {
 	t.Helper()
-	keys := bucket.keys(copyPrefix)
+	snapshot := bucket.clone()
+	checkCopies(t, snapshot)
+	keys := snapshot.keys(copyPrefix)
 	if len(keys) < testTuning().copiesKept {
 		t.Fatalf("only %d copies kept: %q", len(keys), keys)
 	}
@@ -393,7 +397,7 @@ func (m *copyModel) checkKeptCopies(t *testing.T, bucket *memBucket) {
 		if !recorded {
 			t.Fatalf("copy %s has no recorded capture", key)
 		}
-		clone := bucket.clone()
+		clone := snapshot.clone()
 		for _, other := range keys {
 			if n, ok := parseCopy(other); ok && n.seq > c.seq {
 				delete(clone.objects, other)
