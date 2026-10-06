@@ -173,13 +173,15 @@ type Grant struct {
 // retains delete-pending until CompleteDelete on every removal outcome, and
 // drains active request references before closing Handle without a parent guard.
 // A transport drop cannot close a storage reference still in use by an async
-// request.
+// request. The server reports the end of every action with CleanupDone: until
+// then the open's client still counts as present for the one-client rule.
 type CloseAction struct {
-	Handle smb.Handle
-	Name   smb.Name
-	Object smb.Inode
-	FileID FileID
-	Remove bool
+	Handle     smb.Handle
+	Name       smb.Name
+	Object     smb.Inode
+	FileID     FileID
+	ClientGUID GUID
+	Remove     bool
 }
 
 // ReconnectRequest must match every identity, including user, share, client,
@@ -214,12 +216,16 @@ type Break struct {
 // sharing check.
 // The zero value is not usable; callers must use New.
 type Table struct {
-	now             func() time.Time
-	opens           map[uint64]*openEntry
-	reservations    map[Reservation]OpenRequest
-	objects         map[smb.Inode]*objectEntry
-	creates         map[createIdentity]createEntry
-	leaseObjects    map[leaseIdentity]smb.Inode
+	now          func() time.Time
+	opens        map[uint64]*openEntry
+	reservations map[Reservation]OpenRequest
+	objects      map[smb.Inode]*objectEntry
+	creates      map[createIdentity]createEntry
+	leaseObjects map[leaseIdentity]smb.Inode
+	// cleaning counts each client's close actions whose cleanup has not
+	// ended; failed holds clients whose cleanup failed.
+	cleaning        map[GUID]int
+	failed          map[GUID]bool
 	breakChanges    chan struct{}
 	mu              sync.Mutex
 	nextReservation uint64

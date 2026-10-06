@@ -268,17 +268,18 @@ func createSelected(ctx context.Context, request RequestContext, create wire.Cre
 
 // A failed reply has never exposed this grant to a client. Its parent is still
 // guarded, so storage cleanup must not try to acquire that guard again.
-func closeFailedCreate(ctx context.Context, request RequestContext, open state.Open) error {
+func closeFailedCreate(ctx context.Context, request RequestContext, open state.Open) (err error) {
 	action, status := request.Opens.Close(open.ID, request.Binding())
 	if status != smb.StatusSuccess {
 		return fmt.Errorf("close failed CREATE: status %#x", status)
 	}
-	closeErr := request.Storage.Close(ctx, action.Handle)
+	defer func() { request.Opens.CleanupDone(action, err) }()
+	err = request.Storage.Close(ctx, action.Handle)
 	if action.Remove {
 		defer request.Opens.CompleteDelete(action.Object)
-		return errors.Join(closeErr, request.Storage.Remove(ctx, action.Name, action.Object))
+		err = errors.Join(err, request.Storage.Remove(ctx, action.Name, action.Object))
 	}
-	return closeErr
+	return err
 }
 
 func createResponse(attr smb.Attr, action uint32) (wire.CreateResponse, error) {

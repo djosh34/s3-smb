@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha512"
 	"encoding/binary"
 	"errors"
@@ -255,6 +256,68 @@ func TestOneClientAtATime(t *testing.T) {
 	srv.clock.advance(smb.DefaultDurableTimeout)
 	srv.expire(t)
 	srv.dial(t, other).echo(t)
+}
+
+// Expiry takes the opens out of the table before their storage cleanup ends.
+// Until it ends, also for a delete on close, the old client still counts,
+// and a cleanup that failed keeps it until the server restarts.
+func TestOneClientWaitsForExpiryCleanup(t *testing.T) {
+	for _, fail := range []bool{false, true} {
+		t.Run(fmt.Sprintf("cleanup fails %v", fail), func(t *testing.T) {
+			srv := newTestServer(t)
+			mac := srv.connect(t)
+			mustCreate(t, mac, durableCreate("kept", 1))
+			gone := durableCreate("gone", 2)
+			gone.Request.Options |= fileDeleteOnClose
+			mustCreate(t, mac, gone)
+			mac.drop(t)
+			entered, release := make(chan struct{}, 2), make(chan struct{})
+			srv.faults.set(func(hooks *storageHooks) {
+				hooks.Remove = func(ctx context.Context, name smb.Name, expect smb.Inode) error {
+					entered <- struct{}{}
+					<-release
+					if fail {
+						return smb.ErrIO
+					}
+					return srv.storage.Remove(ctx, name, expect)
+				}
+			})
+			srv.clock.advance(smb.DefaultDurableTimeout)
+			srv.server.expire(t.Context())
+			<-entered
+			other := smbtest.LoginOptions{Share: "backup", Account: srv.server.options.Account, Signing: smb.SigningGMAC, ClientGUID: [16]byte{2}}
+			login := func() error {
+				client := srv.accept(t)
+				_, err := client.raw.Login(t.Context(), other)
+				if err != nil {
+					return errors.Join(err, client.ended())
+				}
+				return nil
+			}
+			err := login()
+			close(release)
+			if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%#x", smb.StatusRequestNotAccepted)) {
+				t.Fatalf("another client logged in while the old delete on close ran: %v", err)
+			}
+			srv.server.scavengerCleanup.Wait()
+			err = login()
+			switch {
+			case fail && (err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%#x", smb.StatusRequestNotAccepted))):
+				t.Fatalf("another client logged in after the old cleanup failed: %v", err)
+			case !fail && err != nil:
+				t.Fatalf("another client was refused after the old cleanup ended: %v", err)
+			case !fail:
+				// The old client's delete is done and none of its opens is left.
+				client := srv.dial(t, other)
+				if _, status := rawCreate(t, client, wire.CreateRequest{Name: "kept", DesiredAccess: fileAllAccess, Disposition: fileOpen}); status != smb.StatusSuccess {
+					t.Fatalf("an open denying all sharing failed after the old cleanup: %#x", status)
+				}
+				if _, status := rawCreate(t, client, wire.CreateRequest{Name: "gone", DesiredAccess: 0x80, ShareAccess: 7, Disposition: fileOpen}); status != smb.StatusObjectNameNotFound {
+					t.Fatalf("the old client's delete on close left the file: %#x", status)
+				}
+			}
+		})
+	}
 }
 
 // A connection keeps at most 64 logins going at a time.

@@ -20,11 +20,11 @@ func (server *Server) cleanup(ctx context.Context, actions []state.CloseAction) 
 	return result
 }
 
-func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction) error {
+func (server *Server) cleanupAction(ctx context.Context, action state.CloseAction) (result error) {
+	defer func() { server.options.State.CleanupDone(action, result) }()
 	if action.Remove {
 		defer server.options.State.CompleteDelete(action.Object)
 	}
-	var result error
 	if action.Handle != nil {
 		server.drainOpen(action.FileID)
 		if err := server.options.Storage.Close(ctx, action.Handle); err != nil {
