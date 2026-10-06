@@ -141,14 +141,17 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 	readOK(t, client, wire.ReadRequest{ID: cached, Length: 64}, cachedData)
 	// Every final reply must come after S3 is back. Replies sent before the
 	// cached READ's reply are buffered already; the rest are timed as they
-	// arrive.
+	// arrive. A long outage repeats the interim replies.
 	finals := make(map[uint64]wire.Message)
 	for _, request := range requests {
-		if buffered := client.replies[request.MessageID]; len(buffered) != 0 {
+		for _, buffered := range client.replies[request.MessageID] {
+			if buffered.Header.Status == smb.StatusPending {
+				continue
+			}
 			if time.Since(start) < outage {
 				t.Fatalf("%v finished during the outage", request.Command)
 			}
-			finals[request.MessageID] = buffered[0]
+			finals[request.MessageID] = buffered
 		}
 	}
 	for len(finals) < len(requests) {
@@ -157,6 +160,9 @@ func TestS3OutageRepliesAsync(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, message := range reply.Messages {
+			if message.Header.Status == smb.StatusPending {
+				continue
+			}
 			if time.Since(start) < outage {
 				t.Fatalf("%v finished during the outage", message.Header.Command)
 			}
