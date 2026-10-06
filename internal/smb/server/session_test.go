@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/auth"
@@ -386,4 +387,96 @@ func TestForeignSessionAndTree(t *testing.T) {
 	}
 	client.echo(t)
 	plain.echo(t)
+}
+
+// An old client's requests that still run when its link drops keep it
+// present: another client gets in only after they ended. So no old WRITE,
+// truncate or rename can change data, sizes or names once the new client is
+// in.
+func TestOneClientWaitsForOldRequests(t *testing.T) {
+	setInfoBody := func(class wire.FileInfoClass, id wire.FileID, input []byte) []byte {
+		return encode(t, wire.EncodeSetInfoRequest, wire.SetInfoRequest{ID: id, InfoType: wire.InfoFile, InfoClass: uint8(class), Input: input})
+	}
+	for _, test := range []struct {
+		name string
+		send func(t *testing.T, client *testClient, id wire.FileID)
+		want map[string]string
+	}{
+		{"WRITE", func(t *testing.T, client *testClient, id wire.FileID) {
+			client.send(t, wire.Write, encode(t, wire.EncodeWriteRequest, wire.WriteRequest{ID: id, Data: []byte("new")}), 1)
+		}, map[string]string{"file": "new data"}},
+		{"truncate", func(t *testing.T, client *testClient, id wire.FileID) {
+			client.send(t, wire.SetInfo, setInfoBody(wire.ClassFileEndOfFile, id, encode(t, wire.EncodeFileEndOfFileInformation, wire.FileEndOfFileInformation{EndOfFile: 3})), 1)
+		}, map[string]string{"file": "old"}},
+		{"rename", func(t *testing.T, client *testClient, id wire.FileID) {
+			client.send(t, wire.SetInfo, setInfoBody(wire.ClassFileRename, id, encode(t, wire.EncodeFileRenameInformation, wire.FileRenameInformation{Name: "moved"})), 1)
+		}, map[string]string{"file": "", "moved": "old data"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv := newTestServer(t)
+			mac := srv.connect(t)
+			id := mac.open(t, "file")
+			writeFile(t, mac, id, []byte("old data"))
+			entered, release := make(chan struct{}), make(chan struct{})
+			hold := func() error {
+				close(entered)
+				<-release
+				return nil
+			}
+			srv.faults.set(func(hooks *storageHooks) {
+				hooks.WriteAt = func(ctx context.Context, h smb.Handle, src []byte, offset uint64) (int, error) {
+					if err := hold(); err != nil {
+						return 0, err
+					}
+					return srv.storage.WriteAt(ctx, h, src, offset)
+				}
+				hooks.SetAttr = func(ctx context.Context, object smb.Inode, change smb.AttrChange) error {
+					return errors.Join(hold(), srv.storage.SetAttr(ctx, object, change))
+				}
+				hooks.Rename = func(ctx context.Context, request smb.RenameRequest) error {
+					return errors.Join(hold(), srv.storage.Rename(ctx, request))
+				}
+			})
+			test.send(t, mac, id)
+			<-entered
+			// The link drops while the request runs.
+			if err := mac.conn.CloseWrite(); err != nil {
+				t.Fatal(err)
+			}
+			// Also once the server has seen the link drop.
+			other := smbtest.LoginOptions{Share: "backup", Account: srv.server.options.Account, Signing: smb.SigningGMAC, ClientGUID: [16]byte{2}}
+			for deadline := time.Now().Add(300 * time.Millisecond); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+				client := srv.accept(t)
+				_, err := client.raw.Login(t.Context(), other)
+				if err == nil || !strings.Contains(err.Error(), fmt.Sprintf("%#x", smb.StatusRequestNotAccepted)) {
+					close(release)
+					t.Fatalf("another client logged in while an old %s ran: %v", test.name, err)
+				}
+				if err = client.ended(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			close(release)
+			if err := <-mac.served; err != nil {
+				t.Fatal(err)
+			}
+			mac.served = nil
+			srv.faults.set(func(hooks *storageHooks) { *hooks = storageHooks{} })
+			srv.dial(t, other).echo(t)
+			// The drop cancels the request, so it may have ended either way,
+			// but before the new client got in.
+			holds := func(want map[string]string) bool {
+				for name, data := range want {
+					if data == "" && srv.exists(t, name) || data != "" && (!srv.exists(t, name) || srv.content(t, name) != data) {
+						return false
+					}
+				}
+				return true
+			}
+			before := map[string]string{"file": "old data", "moved": ""}
+			if !holds(before) && !holds(test.want) {
+				t.Fatalf("after the old %s, the files are neither as before nor as after it", test.name)
+			}
+		})
+	}
 }
