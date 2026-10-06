@@ -24,14 +24,15 @@ const maxFileSize = uint64(1) << 50
 const uploads = 4
 
 // inode is the in-memory state of a file that is open, pinned or has data
-// not yet committed. mu orders I/O on the file and guards everything but
-// live and users. liveMu guards live, so attribute reads never wait for I/O.
+// not yet committed. mu orders I/O on the file and guards dirty and early.
+// Engine.mu guards users, refs and unlinked, so CLOSE never waits for I/O.
+// liveMu guards live, so attribute reads never wait for I/O either.
 type inode struct {
 	dirty    map[uint64]*dirtyChunk
 	early    map[uint64]earlyChunk
 	live     live
 	id       smb.Inode
-	users    int // pins, guarded by Engine.mu
+	users    int // pins
 	refs     int // open handles
 	mu       sync.Mutex
 	liveMu   sync.Mutex
@@ -124,7 +125,7 @@ type handle struct {
 	key    smb.Inode
 	access smb.Access
 	kind   smb.Kind
-	closed bool
+	closed bool // guarded by Engine.mu
 }
 
 func (h *handle) Key() smb.Inode { return h.key }
@@ -135,7 +136,10 @@ func (e *Engine) selected(ctx context.Context, ref smb.Handle, write bool) (*han
 		return nil, nil, smb.ErrInvalidHandle
 	}
 	st, release := e.acquire(h.key)
-	if st != h.st || h.closed {
+	e.mu.Lock()
+	closed := h.closed
+	e.mu.Unlock()
+	if st != h.st || closed {
 		release()
 		return nil, nil, smb.ErrInvalidHandle
 	}
@@ -175,31 +179,58 @@ func (e *Engine) Open(ctx context.Context, ino smb.Inode, access smb.Access) (sm
 	if r.directory {
 		kind = smb.KindDirectory
 	}
+	e.mu.Lock()
 	st.refs++
+	e.mu.Unlock()
 	return &handle{st: st, key: ino, access: access, kind: kind}, nil
 }
 
 // Close releases the handle, even when ctx is canceled. Dirty data waits for
-// the next FLUSH: CLOSE promises nothing about durability, and it must never
-// wait on S3. The last close of an unlinked file drops it.
+// the next FLUSH: CLOSE promises nothing about durability. It must never
+// wait on S3, so it does not wait for the file's I/O, which can. Only the
+// last close of an unlinked file takes the I/O lock, to drop the file.
 func (e *Engine) Close(ctx context.Context, ref smb.Handle) error {
-	cleanup := context.WithoutCancel(ctx)
-	h, release, err := e.selected(cleanup, ref, false)
-	if err != nil {
+	h, ok := ref.(*handle)
+	if !ok || h == nil {
+		return smb.ErrInvalidHandle
+	}
+	st, unpin := e.pin(h.key)
+	defer unpin()
+	e.mu.Lock()
+	if st != h.st || h.closed {
+		e.mu.Unlock()
+		return smb.ErrInvalidHandle
+	}
+	h.closed = true
+	st.refs--
+	last := st.refs == 0 && st.unlinked
+	e.mu.Unlock()
+	var err error
+	if last {
+		st.mu.Lock()
+		err = e.dropUnlinked(context.WithoutCancel(ctx), st)
+		st.mu.Unlock()
+	}
+	return errors.Join(err, ctx.Err())
+}
+
+// dropUnlinked drops an unlinked file that nothing has open anymore. The I/O
+// lock must be held.
+func (e *Engine) dropUnlinked(ctx context.Context, st *inode) error {
+	e.mu.Lock()
+	drop := st.refs == 0 && st.unlinked
+	e.mu.Unlock()
+	if !drop {
+		return nil
+	}
+	if err := e.commit(ctx, func(tx *sql.Tx) error { return e.dropFile(ctx, tx, st.id, st) }); err != nil {
 		return err
 	}
-	defer release()
-	h.closed = true
-	st := h.st
-	if st.unlinked && st.refs == 1 {
-		err = e.commit(cleanup, func(tx *sql.Tx) error { return e.dropFile(cleanup, tx, st.id, st) })
-		if err == nil {
-			st.unlinked = false
-			e.discard(st)
-		}
-	}
-	st.refs--
-	return errors.Join(err, ctx.Err())
+	e.mu.Lock()
+	st.unlinked = false
+	e.mu.Unlock()
+	e.discard(st)
+	return nil
 }
 
 // discard forgets a dropped file's data. The I/O lock must be held.
