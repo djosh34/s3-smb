@@ -59,7 +59,7 @@ func (h *harness) s3Outage() result {
 	attempt.Log = h.dropLog(started.Add(-30*time.Second), time.Now().UTC())
 	h.save("s3-outage-result.json", attempt)
 	h.must(commandErr)
-	if attempt.Log.Failed || attempt.Log.Refused || attempt.Log.BackupStarts != 1 {
+	if attempt.Log.Failed || attempt.Log.Refused || attempt.Log.BackupStarts != 1 || attempt.Log.TimedOut != 0 {
 		h.t.Fatalf("the backup did not go on through the S3 outage as one backup: %+v", attempt.Log)
 	}
 	h.must(h.detach())

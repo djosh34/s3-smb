@@ -43,6 +43,13 @@ func TestParseDropLog(t *testing.T) {
 	if err != nil || got.BackupStarts != 2 || got.Failed {
 		t.Fatal(got, err)
 	}
+	got, err = ParseDropLog([]byte(`[
+		{"senderImagePath":"/System/Library/Extensions/smbfs.kext/Contents/MacOS/smbfs","eventMessage":"smb_iod_sendall: Timed out waiting on the response for 0x0 message_id = 4986 state 0x1"},
+		{"senderImagePath":"/other","eventMessage":"smb_iod_sendall: Timed out waiting on the response for 0x0 message_id = 4993 state 0x1"}
+	]`))
+	if err != nil || got.TimedOut != 1 {
+		t.Fatal(got, err)
+	}
 	// A failure counts only after the attempt's own start.
 	backupd := `{"processImagePath":"/System/Library/CoreServices/TimeMachine/backupd","eventMessage":%q}`
 	start, failed := fmt.Sprintf(backupd, `Starting backup with mode "manual backup"`), fmt.Sprintf(backupd, "Backup failed: BACKUP_FAILED_DISCONNECTED_NETWORK (26)")

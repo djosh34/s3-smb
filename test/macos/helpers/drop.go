@@ -18,6 +18,9 @@ type DropLog struct {
 	// Failed is backupd's "Backup failed" line, the failure a user sees.
 	// tmutil startbackup --block exits 0 also when the backup fails.
 	Failed bool `json:"backup_failed"`
+	// TimedOut counts requests that smbfs failed after 2 minutes without a
+	// reply. Data written through such a request can be lost silently.
+	TimedOut int `json:"timed_out_requests"`
 }
 
 // ParseDropLog reads `log show --style json` output. It matches the exact
@@ -37,6 +40,9 @@ func ParseDropLog(data []byte) (DropLog, error) {
 		if strings.HasSuffix(record.Sender, "/smbfs") {
 			result.Refused = result.Refused || strings.Contains(record.Message, "Non idempotent requests found, failing reconnect")
 			result.Reconnected = result.Reconnected || strings.Contains(record.Message, "Reconnect completed successfully.")
+			if strings.Contains(record.Message, "Timed out waiting on the response") {
+				result.TimedOut++
+			}
 		}
 		// macOS 15.7 logs `Starting backup with mode "manual backup"`.
 		if strings.HasSuffix(record.Process, "/backupd") && strings.HasPrefix(record.Message, "Starting backup with mode ") {
