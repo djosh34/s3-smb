@@ -67,16 +67,22 @@ jobs:
           name: fuzz-corpus-${{ matrix.shard }}
           path: '**/testdata/fuzz/**'
           retention-days: 7
+  # Shard 1 runs the integration, smbtorture and chaos tests. The others share
+  # the break tests, each with its own chaos seed.
   integration:
-    name: integration, smbtorture and chaos
+    name: integration ${{ matrix.shard }}/4
     runs-on: ubuntu-24.04-arm
     timeout-minutes: ${{ inputs.gate && 150 || 75 }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.26.3'
-      - run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} integration
+      - run: scripts/check.sh ${{ inputs.gate && '--gate' || '' }} integration ${{ matrix.shard }}/4
         env:
           S3_SMB_TEST_LOGS: ${{ runner.temp }}/s3-smb-logs
           S3_SMB_CHAOS_SEED: ${{ inputs.chaos_seed }}
@@ -84,14 +90,14 @@ jobs:
         name: Save namespace measurements
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: namespace-measurement
+          name: namespace-measurement-${{ matrix.shard }}
           path: ${{ runner.temp }}/s3-smb-logs/namespace-measurement.json
           if-no-files-found: ignore
           retention-days: 7
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: daemon-logs
+          name: daemon-logs-${{ matrix.shard }}
           path: ${{ runner.temp }}/s3-smb-logs
           retention-days: 7
   # Branch protection requires this one job. Fuzzing is skipped outside the gate.

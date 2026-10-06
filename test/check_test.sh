@@ -38,6 +38,7 @@ case "$command $*" in
     [[ ${S3_SMB_E2E_BINARY:-} == /tmp/s3-smb && ${GORACE:-} == halt_on_error=1 && ${S3_SMB_CHAOS_SEED:-} =~ ^[0-9]+$ ]]
     printf 'chaos seed %s\n' "$S3_SMB_CHAOS_SEED" >> "$CHECK_TEST_COMMANDS" ;;
   'go list '*) printf 'example/one\n\nexample/two\n' ;;
+  'go test -list ^TestBreak ./test/e2e') printf 'TestBreakA\nTestBreakB\nTestBreakC\nok example/e2e 0.01s\n' ;;
   "go test -list ^Fuzz example/one")
     if [[ ${CHECK_TEST_TARGETS:-yes} == yes ]]; then printf 'FuzzFirst\nFuzzSecond\n'; fi
     printf 'ok example/one 0.01s\n' ;;
@@ -144,6 +145,12 @@ succeeds
 contains '^FuzzFirst$'
 contains '^FuzzOther$'
 absent '^FuzzSecond$'
+run_check --gate integration 3/4
+succeeds
+contains '-e S3_SMB_SHARD=3/4'
+run_check integration
+succeeds
+contains '-e S3_SMB_SHARD=1/1'
 
 # A failure stops later stages. Test and fuzz failures request fuzz artifacts.
 for command in 'golangci-lint run ./...' \
@@ -194,7 +201,7 @@ contains 'docker [pr] rm -f'
 unset CHECK_TEST_CONTAINER_EXIT
 
 for arguments in --help --pr nonsense '' '--gate --gate' 'lint unit' 'unit 1/2' 'fuzz 0/2' 'fuzz 3/2' \
-  'fuzz 1/2 lint' 'fuzz 1-2' 'lint --gate'; do
+  'fuzz 1/2 lint' 'fuzz 1-2' 'lint --gate' 'integration 0/2' 'integration 3/2'; do
   if [[ -z $arguments ]]; then run_check ''; else read -ra words <<< "$arguments"; run_check "${words[@]}"; fi
   [[ $result == 2 ]] || fail "arguments $arguments accepted"
   [[ ! -s $CHECK_TEST_COMMANDS ]] || fail 'invalid arguments ran commands'
@@ -222,6 +229,16 @@ contains 'go [pr] test -race -shuffle=on -count=1 -timeout=60m ./internal/engine
 S3_SMB_CHAOS_SEED=42 run_internal || fail 'run-linux.sh failed with a chaos seed'
 contains 'chaos seed 42'
 grep -F 'replay with S3_SMB_CHAOS_SEED=42' "$fixture/internal-output" >/dev/null || fail 'chaos seed not printed'
+# With shards, shard 1 runs all but the break tests, and each later shard every
+# (SHARDS-1)-th break test.
+S3_SMB_SHARD=1/4 run_internal || fail 'run-linux.sh failed as shard 1'
+contains "-skip ^TestBreak ./internal/engine ./test/e2e"
+S3_SMB_SHARD=3/4 run_internal || fail 'run-linux.sh failed as shard 3'
+contains '-run ^(TestBreakB)$ ./test/e2e'
+absent 'TestBreakA|'
+export CHECK_TEST_FAIL='go test -list ^TestBreak ./test/e2e'
+if S3_SMB_SHARD=2/4 run_internal; then fail 'run-linux.sh ignored a failed test list'; fi
+unset CHECK_TEST_FAIL
 for command in 'go build -race -buildvcs=false -o /tmp/s3-smb .' \
   'go test -race -shuffle=on -count=1 -timeout=120m ./internal/engine ./test/e2e'; do
   export CHECK_TEST_FAIL=$command

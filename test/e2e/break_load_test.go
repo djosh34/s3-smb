@@ -6,10 +6,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -112,6 +114,11 @@ type macLoad struct {
 	sideMu  sync.Mutex // one operator at a time uses the side file
 	// fileFlushes makes the flushing operator flush one file at a time.
 	fileFlushes bool
+	// failures lets requests fail with a status, as they may while the disk
+	// fails, and counts them in failed. Only replies that succeed change the
+	// model either way.
+	failures bool
+	failed   atomic.Int64
 }
 
 // loadBands is the number of band files, and loadSlots the slots of each:
@@ -225,6 +232,20 @@ func stopped(stop <-chan struct{}) bool {
 	}
 }
 
+// report fails the test for err from connection c, unless the connection is
+// gone or the test lets requests fail.
+func (l *macLoad) report(c int, format string, err error) {
+	var failed statusError
+	if l.failures && errors.As(err, &failed) {
+		l.failed.Add(1)
+		return
+	}
+	if err == nil || l.conns[c].lost() {
+		return
+	}
+	l.t.Errorf(format, err)
+}
+
 // pick chooses a connection that still works, or returns -1.
 func (l *macLoad) pick(rng *rand.Rand) int {
 	start := rng.IntN(len(l.conns))
@@ -270,9 +291,7 @@ func (l *macLoad) write(ctx context.Context, rng *rand.Rand, w int, stop <-chan 
 				}
 			}
 		}
-		if err := l.sendSlot(ctx, c, band, index); err != nil && !l.conns[c].lost() {
-			l.t.Errorf("WRITE band %d slot %d: %v", band, index, err)
-		}
+		l.report(c, fmt.Sprintf("WRITE band %d slot %d: %%v", band, index), l.sendSlot(ctx, c, band, index))
 	}
 }
 
@@ -291,9 +310,7 @@ func (l *macLoad) read(ctx context.Context, rng *rand.Rand, stop <-chan struct{}
 		l.mu.Unlock()
 		replies, err := l.conns[c].call(ctx, []wire.Message{readMessage(l.t, l.handles[c][band], uint64(slot)*slotSize, slotSize)}, smbproto.StatusEndOfFile) //nolint:gosec // Small test indexes.
 		if err != nil {
-			if !l.conns[c].lost() {
-				l.t.Errorf("READ band %d slot %d: %v", band, slot, err)
-			}
+			l.report(c, fmt.Sprintf("READ band %d slot %d: %%v", band, slot), err)
 			continue
 		}
 		got, err := slotVersion(band, slot, readData(l.t, replies[0]))
@@ -338,9 +355,7 @@ func (l *macLoad) operate(ctx context.Context, rng *rand.Rand, flushes bool, sto
 				op = 0
 			}
 		}
-		if err := l.operation(ctx, c, rng, op); err != nil && !l.conns[c].lost() {
-			l.t.Errorf("%s on connection %d: %v", operationNames[op], c, err)
-		}
+		l.report(c, operationNames[op]+": %v", l.operation(ctx, c, rng, op))
 	}
 }
 
@@ -411,9 +426,7 @@ func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand) {
 	for op := 2; op < len(operationNames); op++ {
 		c, source := rng.IntN(len(l.conns)), rand.New(rand.NewPCG(rng.Uint64(), uint64(op))) //nolint:gosec // Test faults need a replayable source.
 		l.fired.Go(func() {
-			if err := l.operation(ctx, c, source, op); err != nil && !l.conns[c].lost() {
-				l.t.Errorf("%s while writes were stuck: %v", operationNames[op], err)
-			}
+			l.report(c, operationNames[op]+" while writes were stuck: %v", l.operation(ctx, c, source, op))
 		})
 	}
 }

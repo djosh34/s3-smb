@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -83,6 +85,10 @@ func TestBreakS3OutageUnderLoad(t *testing.T) {
 			t.Log("outage starts after", proxy.ChunkPuts()-puts, "chunk PUTs")
 			start := proxy.FailS3For(outage)
 			l.waitStuck(ctx, rng)
+			// One client at a time, also when it is busy.
+			if err := f.otherClientRefused(ctx, f.addr); err != nil {
+				t.Error(err)
+			}
 			time.Sleep(outage - time.Since(start))
 		})
 		l.check(ctx, "an S3 outage")
@@ -500,4 +506,79 @@ func leaveDuringOutage(ctx context.Context, t *testing.T, f *fixture, name strin
 	if _, err = conn.start(ctx, []wire.Message{emptyMessage(t, command, encode)}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// TestBreakDisk slows and fails the daemon's local disk under the Mac load:
+// syncs that take seconds, syncs that fail with EIO and writes that fail with
+// ENOSPC, on the SQLite database in the data folder. Requests may fail then,
+// but a FLUSH that succeeds must be durable: after the faults the test kills
+// the daemon, and the restart must keep its database, which must pass its
+// check, and show every flushed byte.
+func TestBreakDisk(t *testing.T) {
+	rng := chaosRand(t)
+	rounds := 3
+	if gate() {
+		rounds = 9
+	}
+	f := newFixture(t)
+	f.keepAlive, f.startupTimeout = true, 2*time.Minute
+	control := filepath.Join(t.TempDir(), "control")
+	setDisk := func(line string) {
+		if err := os.WriteFile(control, []byte(line), 0o600); err != nil {
+			t.Error(err)
+		}
+	}
+	setDisk("none 0 0 0")
+	f.env = []string{"LD_PRELOAD=" + buildDiskFault(t), "DISKFAULT_DIR=" + filepath.Join(f.root, "state"), "DISKFAULT_CONTROL=" + control}
+	d := f.start()
+	ctx := t.Context()
+	l := newMacLoad(t, f, rng, f.addr, f.addr)
+	l.failures, l.fileFlushes = true, true
+	l.connect(ctx)
+	faults := []string{"sync 1500 0 0", "sync 0 5 30", "write 0 28 30"}
+	for round := range rounds {
+		l.loadRound(ctx, func() {
+			time.Sleep(between(rng, time.Second, 4*time.Second))
+			setDisk(faults[round%len(faults)])
+			time.Sleep(between(rng, 10*time.Second, 20*time.Second))
+			setDisk("none 0 0 0")
+			// Kill right after a FLUSH that succeeded once the disk is back.
+			select {
+			case <-l.flushed:
+			default:
+			}
+			select {
+			case <-l.flushed:
+			case <-time.After(90 * time.Second):
+				t.Error("coverage: no FLUSH of one file succeeded after the disk faults")
+			}
+			sigkill(t, d)
+		})
+		if failed := l.failed.Swap(0); round%len(faults) > 0 && failed == 0 {
+			t.Errorf("coverage: %q failed no request", faults[round%len(faults)])
+		} else {
+			t.Logf("%q: %d requests failed", faults[round%len(faults)], failed)
+		}
+		d = f.start()
+		if !d.logged("keeping the local database") {
+			t.Fatalf("after disk faults, the restart did not keep its database; logs %s", d.path())
+		}
+		l.connect(ctx)
+		l.check(ctx, "kill")
+	}
+	f.env = nil
+	d = restartAndCheck(l, f, d)
+	d.alive()
+}
+
+// buildDiskFault compiles the disk fault library for LD_PRELOAD.
+func buildDiskFault(t *testing.T) string {
+	t.Helper()
+	library := filepath.Join(t.TempDir(), "diskfault.so")
+	build := exec.CommandContext(t.Context(), "cc", "-shared", "-fPIC", "-O2", "-o", library, "testdata/diskfault.c", "-ldl", "-lpthread") //nolint:gosec // The test builds its own library from its own source.
+	output, err := build.CombinedOutput()
+	if err != nil {
+		t.Fatalf("build the disk fault library: %v\n%s", err, output)
+	}
+	return library
 }

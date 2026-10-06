@@ -3,10 +3,12 @@
 # part it runs lint, unit tests, fuzzing in gate mode and the Docker integration
 # one after another. CI runs each part as its own job. fuzz takes an optional
 # shard, like fuzz 2/4, which runs every fourth fuzz target from the second on.
+# integration takes one too: shard 1 runs the integration tests, and the others
+# share the break tests, as test/run-linux.sh says.
 set -Eeuo pipefail
 
 usage() {
-  echo 'Usage: scripts/check.sh [--gate] [lint | unit | fuzz [SHARD/SHARDS] | integration]' >&2
+  echo 'Usage: scripts/check.sh [--gate] [lint | unit | fuzz [SHARD/SHARDS] | integration [SHARD/SHARDS]]' >&2
   exit 2
 }
 export S3_SMB_CHECK_MODE=pr
@@ -18,11 +20,11 @@ part=all shard=1 shards=1
 case "$#:${1:-}" in
   0:) ;;
   1:lint | 1:unit | 1:fuzz | 1:integration) part=$1 ;;
-  2:fuzz)
+  2:fuzz | 2:integration)
     if [[ ! $2 =~ ^([1-9][0-9]*)/([1-9][0-9]*)$ ]] || (( BASH_REMATCH[1] > BASH_REMATCH[2] )); then
       usage
     fi
-    part=fuzz shard=${BASH_REMATCH[1]} shards=${BASH_REMATCH[2]} ;;
+    part=$1 shard=${BASH_REMATCH[1]} shards=${BASH_REMATCH[2]} ;;
   *) usage ;;
 esac
 root=$(cd "$(dirname "$0")/.." && pwd)
@@ -156,7 +158,7 @@ check_integration() {
     -v "$root:/src:ro" -v "$logs:/artifacts" \
     -v s3-smb-test-gomod:/go/pkg/mod -v s3-smb-test-gobuild:/root/.cache/go-build \
     -e S3_SMB_E2E_ENDPOINT=http://minio:9000 -e S3_SMB_TEST_ARTIFACTS=/artifacts \
-    -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" -e S3_SMB_CHAOS_SEED \
+    -e "S3_SMB_CHECK_MODE=$S3_SMB_CHECK_MODE" -e S3_SMB_CHAOS_SEED -e "S3_SMB_SHARD=$shard/$shards" \
     "$image" bash /src/test/run-linux.sh >/dev/null
   containers=("$id-runner" "${containers[@]}")
   docker start -a "$id-runner"

@@ -59,6 +59,7 @@ type fixture struct {
 	password                     string
 	signingKey                   string        // S3 secret key in the config.
 	storageCapacity              string        // Empty means the default.
+	env                          []string      // added to the daemon's environment
 	startupTimeout               time.Duration // Zero means 45s.
 	readonly                     bool
 	// failStart expects the daemon to exit during startup.
@@ -283,6 +284,9 @@ func (f *fixture) launch() *daemon {
 		cmd: exec.CommandContext(context.Background(), daemonBinary, "serve", "-c", "config.yaml"),
 	}
 	d.cmd.Dir = f.root
+	if len(f.env) > 0 {
+		d.cmd.Env = append(os.Environ(), f.env...)
+	}
 	stdout, stderr := d.create("stdout.log"), d.create("stderr.log")
 	d.cmd.Stdout, d.cmd.Stderr = stdout, stderr
 	err := d.cmd.Start()

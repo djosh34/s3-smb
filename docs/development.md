@@ -72,6 +72,7 @@ scripts/check.sh               # PR checks, including fuzz seed replay
 scripts/check.sh --gate        # release gate: full-length outage tests and fuzzing
 scripts/check.sh unit          # one part: lint, unit, fuzz or integration
 scripts/check.sh --gate fuzz 2/6  # every sixth fuzz target, from the second on
+scripts/check.sh integration 3/4  # the third of four integration shards
 ```
 
 Both modes need Linux ARM64 or AMD64, Bash, curl, tar, Docker, Go 1.26.3,
@@ -153,6 +154,23 @@ the Mac. They check exactly the promises of "What survives which failure",
 faults go through `internal/netfault` and S3 faults through `internal/s3fault`;
 nothing needs privileges. The gate runs more rounds and longer faults.
 
+The break tests, `TestBreak*`, try harder. Two raw connections of one client
+keep many requests in flight across several files, with the 256 MiB RAM budget
+full, while operators mix in FLUSH, CLOSE alone and later in compounds, delete
+on close, truncate, rename, conflicting opens and lease breaks. Each test adds
+one kind of fault: an S3 outage, S3 requests that fail, stall or end out of
+order, kills, cut, silent and trickling links, file churn, LOGOFF and
+TREE_DISCONNECT while work waits, or a local disk whose syncs are slow or fail
+and whose writes fail, through an `LD_PRELOAD` library built from
+`test/e2e/testdata/diskfault.c`. Every request must get a reply or
+STATUS_PENDING within 3 seconds, because macOS fails a request without one
+after 2 minutes and drops its data. Every slot of every file is checked
+against a model, during the faults, after them, after a restart and after a
+cold start from S3 on a new data folder.
+
+With a shard, `integration SHARD/SHARDS` splits the Docker tests: shard 1 runs
+all but the break tests, and every later shard every (SHARDS-1)-th break test.
+
 The Docker tests get 120 minutes in gate mode and 60 minutes in PR mode.
 
 `test/run-linux.sh` picks a random seed and prints it. Every fault, cut point
@@ -184,7 +202,8 @@ changes the pin.
 
 The `check` workflow runs on every pull request, on `main` and for merge queue
 groups. Each part of `scripts/check.sh` runs as its own job, in parallel: lint,
-unit tests and the integration. Dispatch it with `gate=true` for a gate run,
+unit tests and four integration shards, each with its own chaos seed. Dispatch
+it with `gate=true` for a gate run,
 which adds six fuzzing jobs, one per shard, so a gate run takes about as long as
 its slowest job. A last job named `check` passes only when every part passed;
 the name is fixed because branch protection requires it. A failed integration

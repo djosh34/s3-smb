@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"sync"
-	"time"
 
 	"github.com/djosh34/s3-smb/internal/smb"
 	"github.com/djosh34/s3-smb/internal/smb/crypt"
@@ -142,17 +140,8 @@ func (connection *connection) receive(ctx context.Context) error {
 		if err := connection.checkNegotiationState(messages); err != nil {
 			return err
 		}
-		started := time.Now()
 		if err := connection.process(ctx, messages, denied); err != nil {
 			return err
-		}
-		// Temporary for #620: find what holds the request loop.
-		if took := time.Since(started); took > time.Second {
-			var commands []string
-			for _, message := range messages {
-				commands = append(commands, fmt.Sprintf("%v/%d", message.Header.Command, message.Header.MessageID))
-			}
-			connection.server.options.Logger.Info("request loop held", "took", took, "requests", commands)
 		}
 	}
 }

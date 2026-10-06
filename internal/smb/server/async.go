@@ -89,13 +89,8 @@ func (connection *connection) startWork(ctx context.Context, message wire.Messag
 				return
 			}
 		}
-		started := time.Now()
 		operation.result = connection.execute(ctx, message, previous)
 		operation.compound = previous.after(operation.result)
-		// Temporary for #620.
-		if took := time.Since(started); took > 30*time.Second {
-			connection.server.options.Logger.Info("slow request", "took", took, "command", message.Header.Command, "message_id", message.Header.MessageID, "async", true)
-		}
 	}()
 	return operation
 }

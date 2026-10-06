@@ -6,11 +6,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	smbproto "github.com/djosh34/s3-smb/internal/smb"
+	"github.com/djosh34/s3-smb/internal/smb/auth"
 	"github.com/djosh34/s3-smb/internal/smb/smbtest"
 	"github.com/djosh34/s3-smb/internal/smb/wire"
 )
@@ -90,6 +93,31 @@ func (f *fixture) macConnectWith(ctx context.Context, addr string, limit time.Du
 	return c, nil
 }
 
+// otherClientRefused logs in at addr as another client, which the server
+// must refuse while the Mac is connected.
+func (f *fixture) otherClientRefused(ctx context.Context, addr string) error {
+	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return err
+	}
+	client, err := smbtest.NewClient(conn)
+	if err != nil {
+		return errors.Join(err, conn.Close())
+	}
+	_, err = client.Login(ctx, smbtest.LoginOptions{
+		Share: "TimeMachine", Account: auth.Account{User: "backup", Password: f.password}, ClientGUID: [16]byte{'o', 't', 'h', 'e', 'r'},
+		Cipher: smbproto.CipherAES128GCM, Signing: smbproto.SigningGMAC,
+	})
+	closeErr := client.Close()
+	switch {
+	case err == nil:
+		return errors.Join(errors.New("another client logged in while the Mac is connected"), closeErr)
+	case !strings.Contains(err.Error(), fmt.Sprintf("%#x", smbproto.StatusRequestNotAccepted)):
+		return errors.Join(fmt.Errorf("another client was refused for the wrong reason: %w", err), closeErr)
+	}
+	return nil
+}
+
 // start sends one compound and returns its requests. Members must set
 // Command, CreditCharge for large I/O and FlagRelated where needed.
 func (c *macConn) start(ctx context.Context, messages []wire.Message) ([]*macRequest, error) {
@@ -156,11 +184,19 @@ func (c *macConn) call(ctx context.Context, messages []wire.Message, allowed ...
 			return nil, err
 		}
 		if status := replies[i].Header.Status; status != smbproto.StatusSuccess && !containsStatus(allowed, status) {
-			err = errors.Join(err, fmt.Errorf("%v: status %#x", r.command, status))
+			err = errors.Join(err, statusError{command: r.command, status: status})
 		}
 	}
 	return replies, err
 }
+
+// statusError is a request the server answered with a failure.
+type statusError struct {
+	command wire.Command
+	status  smbproto.Status
+}
+
+func (e statusError) Error() string { return fmt.Sprintf("%v: status %#x", e.command, e.status) }
 
 func containsStatus(statuses []smbproto.Status, status smbproto.Status) bool {
 	for _, s := range statuses {
