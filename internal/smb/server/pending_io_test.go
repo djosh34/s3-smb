@@ -257,3 +257,30 @@ func TestS3OutageInCompound(t *testing.T) {
 	}
 	client.noExtraReplies(t)
 }
+
+// A CLOSE waits for the open's pending WRITE, which waits on S3. It must reply
+// STATUS_PENDING and let the connection go on: macOS fails a request with no
+// reply after 2 minutes, and data written through it is lost.
+func TestCloseAfterSlowWriteRepliesAsync(t *testing.T) {
+	srv, proxy := newS3Server(t)
+	client := srv.connect(t)
+	id := client.open(t, "slow")
+	held, err := proxy.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte("written before the close")
+	write := sendIO(t, client, wire.Write, id, 0, data)
+	<-held
+	client.interim(t, write)
+	closing := client.send(t, wire.Close, encode(t, wire.EncodeCloseRequest, wire.CloseRequest{ID: id}), 1)
+	client.interim(t, closing)
+	client.echo(t)
+	proxy.Release()
+	for _, request := range []wire.Header{write, closing} {
+		if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
+			t.Fatalf("%v final status %#x", request.Command, status)
+		}
+	}
+	srv.expectContent(t, map[string]string{"slow": string(data)})
+}

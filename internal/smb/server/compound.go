@@ -72,7 +72,7 @@ func (connection *connection) process(ctx context.Context, messages []wire.Messa
 			continue
 		}
 		prerequisite = nil
-		operation, completed, err := connection.runMember(ctx, message, chainRejection, dependency, previous)
+		operation, completed, err := connection.runMember(ctx, message, chainRejection, dependency, previous, index == 0)
 		if err != nil {
 			return err
 		}
@@ -152,7 +152,12 @@ func (replies *compoundReplies) startHeld() {
 	}
 }
 
-func (connection *connection) runMember(ctx context.Context, message wire.Message, rejection smb.Status, dependency *work, previous compoundState) (*work, bool, error) {
+// runMember runs one member, async if it may wait on storage. CLOSE waits
+// for the open's pending requests, which can wait on S3, so it goes async too,
+// but only as the first member: macOS cannot read a compound whose CLOSE
+// comes back split. A request that gets no reply, final or interim, within 2
+// minutes fails on macOS, and its data is lost.
+func (connection *connection) runMember(ctx context.Context, message wire.Message, rejection smb.Status, dependency *work, previous compoundState, first bool) (*work, bool, error) {
 	if rejection != smb.StatusSuccess {
 		return &work{result: reply{status: rejection}}, true, nil
 	}
@@ -161,7 +166,8 @@ func (connection *connection) runMember(ctx context.Context, message wire.Messag
 		// its predecessor completes. Even a quick dependent reply stays async.
 		return connection.startWork(ctx, message, dependency, previous), false, nil
 	}
-	if asyncEligible(message.Header.Command) && connection.server.handlers[message.Header.Command] != nil {
+	command := message.Header.Command
+	if (asyncEligible(command) || first && command == wire.Close) && connection.server.handlers[command] != nil {
 		operation := connection.startWork(ctx, message, nil, previous)
 		completed, err := connection.waitLocal(operation)
 		return operation, completed, err
