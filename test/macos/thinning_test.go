@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -47,15 +46,17 @@ func (h *harness) thinning() result {
 	if len(holders)*(8<<20) < size/2 {
 		h.t.Fatalf("only %d chunks of whole bands hold the oldest backup's file", len(holders))
 	}
-	// Freed chunks go through the trash before they are deleted. Copies are
-	// kept only minutes here, so the watch starts before anything is freed.
-	trashed := h.watchTrash(holders)
 	h.deleteBackup(outcome.Baseline)
+	// Freed chunks go through the trash before they are deleted. The trash
+	// holds them until 2 more copies land, minutes after the compact frees
+	// them, so the checks every 10 seconds see them there.
+	trashed := false
 	left := func() (bool, error) {
 		count, err := h.holderStates(holders)
 		if err == nil && count.leaked > 0 {
 			err = fmt.Errorf("%d chunks of the deleted backup are neither in a file, in the trash nor deleted", count.leaked)
 		}
+		trashed = trashed || count.trashed > 0
 		return count.live == 0, err
 	}
 	// APFS frees a deleted backup lazily. When it has, the next backup and a
@@ -79,9 +80,10 @@ func (h *harness) thinning() result {
 	}
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
+		trashed = trashed || count.trashed > 0
 		return count.live+count.trashed+count.leaked == 0, err
 	}))
-	if !trashed() {
+	if !trashed {
 		h.t.Fatal("no chunk of the deleted backup was ever seen in the trash")
 	}
 	h.storage("after-thinning")
@@ -144,39 +146,6 @@ func (h *harness) markedChunks() map[string]bool {
 	}
 	h.t.Log("marked-chunks", found, "whole-band", len(holders), "of", len(tables.live))
 	return holders
-}
-
-// watchTrash looks at the trash every 5 seconds until the returned function
-// is called, which reports whether any holder was ever seen there.
-func (h *harness) watchTrash(holders map[string]bool) func() bool {
-	var seen atomic.Bool
-	stop, done := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(done)
-		for {
-			tables, err := h.chunkTables()
-			if err != nil {
-				h.t.Log("trash-watch", err)
-			}
-			for key := range holders {
-				if tables.trash[key] {
-					seen.Store(true)
-				}
-			}
-			select {
-			case <-stop:
-				return
-			case <-h.ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-		}
-	}()
-	return func() bool {
-		close(stop)
-		<-done
-		return seen.Load()
-	}
 }
 
 type holderCount struct {
