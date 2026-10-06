@@ -72,3 +72,100 @@ func closeDuringOutage(t *testing.T, compound, same bool) {
 		}
 	}
 }
+
+// LOGOFF, TREE_DISCONNECT and a reconnect that replaces the session stop the
+// session's requests and wait for them. A READ that waits for the band's I/O
+// lock, which a FLUSH on another connection holds while S3 is down, cannot
+// stop. The cleanup request must still get a reply, interim or final, at once.
+func TestCleanupDuringOutageRepliesAtOnce(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		cleanup func(t *testing.T, client *testClient, release func())
+	}{
+		{"LOGOFF", func(t *testing.T, client *testClient, release func()) {
+			leaveAsync(t, client, client.send(t, wire.Logoff, encode(t, wire.EncodeLogoffRequest, wire.EmptyRequest{}), 1), release)
+		}},
+		{"TREE_DISCONNECT", func(t *testing.T, client *testClient, release func()) {
+			leaveAsync(t, client, client.send(t, wire.TreeDisconnect, encode(t, wire.EncodeTreeDisconnectRequest, wire.EmptyRequest{}), 1), release)
+		}},
+		{"reconnect", func(t *testing.T, client *testClient, release func()) {
+			client.reconnect(t)
+			release()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			srv, proxy := newS3Server(t)
+			flusher := srv.connect(t)
+			band := flusher.open(t, "band")
+			writeFile(t, flusher, band, []byte("band data waiting for S3"))
+			leaver := srv.connect(t)
+			other := leaver.open(t, "band")
+			held, err := proxy.HoldNextChunkResponse()
+			if err != nil {
+				t.Fatal(err)
+			}
+			flush := sendIO(t, flusher, wire.Flush, band, 0, nil)
+			<-held
+			flusher.interim(t, flush)
+			leaver.interim(t, sendIO(t, leaver, wire.Read, other, 0, nil))
+			stalled := time.AfterFunc(3*time.Second, proxy.Release)
+			test.cleanup(t, leaver, func() {
+				if !stalled.Stop() {
+					t.Error("no reply within 3 seconds: the cleanup waited in the request loop")
+				}
+				proxy.Release()
+			})
+			if status := flusher.receive(t, flush).Header.Status; status != smb.StatusSuccess {
+				t.Fatalf("FLUSH status %#x", status)
+			}
+		})
+	}
+}
+
+// leaveAsync expects an interim reply to request, then calls release and
+// expects the final reply to succeed.
+func leaveAsync(t *testing.T, client *testClient, request wire.Header, release func()) {
+	t.Helper()
+	reply := client.next(t, request)
+	release()
+	if reply.Header.Status != smb.StatusPending {
+		t.Fatalf("%v answered %#x before its session's requests ended", request.Command, reply.Header.Status)
+	}
+	client.pending(t, reply.Header)
+	if status := client.receive(t, request).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("%v status %#x", request.Command, status)
+	}
+}
+
+// An async reply has no tree ID. When a CREATE after a TREE_CONNECT in one
+// compound waits for a band that a FLUSH holds while S3 is down, the
+// TREE_CONNECT keeps its own reply with the new tree ID.
+func TestTreeConnectCompoundWithAsyncMember(t *testing.T) {
+	srv, proxy := newS3Server(t)
+	client := srv.connect(t)
+	band := client.open(t, "band")
+	writeFile(t, client, band, []byte("band data waiting for S3"))
+	held, err := proxy.HoldNextChunkResponse()
+	if err != nil {
+		t.Fatal(err)
+	}
+	flush := sendIO(t, client, wire.Flush, band, 0, nil)
+	<-held
+	client.interim(t, flush)
+	tree := message(t, client, wire.TreeConnect, wire.EncodeTreeConnectRequest, wire.TreeConnectRequest{Path: `\\host\backup`})
+	create := related(createMessage(t, client, "band", fileOpenIf))
+	if err = client.raw.Send(t.Context(), []wire.Message{tree, create}); err != nil {
+		t.Fatal(err)
+	}
+	reply := client.next(t, tree.Header)
+	proxy.Release()
+	if header := reply.Header; header.Status != smb.StatusSuccess || header.Flags&wire.FlagAsync != 0 || header.TreeID == 0 {
+		t.Fatalf("TREE_CONNECT reply %+v, want a final reply with the tree ID", header)
+	}
+	if status := client.receive(t, create.Header).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("CREATE status %#x", status)
+	}
+	if status := client.receive(t, flush).Header.Status; status != smb.StatusSuccess {
+		t.Fatalf("FLUSH status %#x", status)
+	}
+}

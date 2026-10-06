@@ -31,10 +31,17 @@ type pendingRequest struct {
 	asyncID uint64
 }
 
-// asyncEligible reports the commands that can wait on storage. CLOSE waits
-// for the open's pending requests.
+// asyncEligible reports the commands that can wait on storage. CLOSE and a
+// lease break acknowledgment wait for the pending requests of the opens they
+// close, and LOGOFF and TREE_DISCONNECT for every request of their session or
+// tree. Cancelling such a request does not stop it while it waits for a file
+// that S3 work holds.
 func asyncEligible(command wire.Command) bool {
-	return command == wire.Create || command == wire.Read || command == wire.Write || command == wire.Flush || command == wire.SetInfo || command == wire.Close
+	switch command {
+	case wire.Create, wire.Read, wire.Write, wire.Flush, wire.SetInfo, wire.Close, wire.OplockBreak, wire.Logoff, wire.TreeDisconnect:
+		return true
+	}
+	return false
 }
 
 func (connection *connection) execute(ctx context.Context, message wire.Message, previous compoundState) reply {

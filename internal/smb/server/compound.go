@@ -115,7 +115,14 @@ type compoundReplies struct {
 // pending answers a member that did not complete in time.
 func (replies *compoundReplies) pending(header wire.Header, operation *work) error {
 	if replies.first == nil && len(replies.responses) > 0 {
-		if err := replies.holdAnswered(); err != nil {
+		// An async reply has no tree ID, so a TREE_CONNECT head keeps its
+		// reply and the compound splits after it.
+		if replies.headResult.treeID != 0 {
+			if err := replies.connection.send(replies.responses); err != nil {
+				return err
+			}
+			replies.responses = nil
+		} else if err := replies.holdAnswered(); err != nil {
 			return err
 		}
 	}
@@ -187,7 +194,7 @@ func (connection *connection) runMember(ctx context.Context, message wire.Messag
 		// its predecessor completes. Even a quick dependent reply stays async.
 		return connection.startWork(ctx, message, dependency, previous), false, nil
 	}
-	if asyncEligible(message.Header.Command) && connection.server.handlers[message.Header.Command] != nil {
+	if asyncEligible(message.Header.Command) {
 		operation := connection.startWork(ctx, message, nil, previous)
 		completed, err := connection.waitLocal(operation)
 		return operation, completed, err

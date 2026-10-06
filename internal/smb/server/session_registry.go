@@ -34,22 +34,32 @@ func (connection *connection) removeSession(id uint64, user string) *sessionEntr
 	return session
 }
 
-func (server *Server) replaceSession(ctx context.Context, currentID, previousID uint64, user string) error {
+// replaceSession ends the previous session of a reconnecting client. It
+// detaches the session's durable opens at once, so the client can reclaim
+// them, and finishes in the background: the old session's requests can wait
+// on S3 for minutes, and SESSION_SETUP runs in the request loop.
+func (connection *connection) replaceSession(ctx context.Context, currentID, previousID uint64, user string) {
+	server := connection.server
 	if previousID == 0 || previousID == currentID {
-		return nil
+		return
 	}
 	server.mu.Lock()
 	owner := server.sessions[previousID]
 	server.mu.Unlock()
 	if owner == nil || owner.removeSession(previousID, user) == nil {
-		return nil
+		return
 	}
 	// Protocol disconnect cleanup detaches durable opens before waiting for
 	// old work. It is not LOGOFF, which would close durable opens too.
 	actions := server.options.State.Disconnect(previousID)
-	owner.stopRequests(previousID, 0, 0)
-	// A handler already using the old identity can finish a storage call and
-	// publish an open while cancellation drains. Detach those late grants too.
-	actions = append(actions, server.options.State.Disconnect(previousID)...)
-	return server.cleanup(ctx, actions)
+	connection.workers.Go(func() {
+		owner.stopRequests(previousID, 0, 0)
+		// A handler already using the old identity can finish a storage call
+		// and publish an open while cancellation drains. Detach those late
+		// grants too.
+		actions = append(actions, server.options.State.Disconnect(previousID)...)
+		if err := server.cleanup(ctx, actions); err != nil {
+			server.options.Logger.Error("previous session cleanup", "error", err)
+		}
+	})
 }
