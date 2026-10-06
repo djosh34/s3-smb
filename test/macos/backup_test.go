@@ -282,22 +282,18 @@ func (h *harness) attach(bundle string, readonly bool) ([]string, []string) {
 }
 
 func (h *harness) remoteBackup(label, identifier string) string {
-	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
-	h.must(err)
-	if len(bundles) != 1 {
-		h.t.Fatal("expected one real Time Machine sparsebundle", bundles)
-	}
-	devices, volumes := h.attach(bundles[0], true)
+	bundle := h.bundle()
+	devices, volumes := h.attach(bundle, true)
 	if len(volumes) != 1 {
 		if len(devices) > 0 {
 			h.run(2*time.Minute, "/usr/bin/hdiutil", "detach", "-force", devices[0])
 		}
-		devices, _ = h.attach(bundles[0], false)
+		devices, _ = h.attach(bundle, false)
 		if len(devices) == 0 {
 			h.t.Fatal("writable replay attach failed")
 		}
 		h.run(5*time.Minute, "/usr/bin/hdiutil", "detach", devices[0])
-		devices, volumes = h.attach(bundles[0], true)
+		devices, volumes = h.attach(bundle, true)
 	}
 	if len(devices) == 0 || len(volumes) != 1 {
 		h.t.Fatal("unknown Time Machine image volume layout")
@@ -324,7 +320,7 @@ func (h *harness) remoteBackup(label, identifier string) string {
 	selected = h.holdBackup(selected, volumes[0])
 	h.run(2*time.Minute, "/usr/bin/hdiutil", "info", "-plist")
 	h.run(2*time.Minute, "/sbin/mount")
-	h.save(label+"-remote-selection.json", map[string]any{"image": bundles[0], "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
+	h.save(label+"-remote-selection.json", map[string]any{"image": bundle, "device": devices[0], "image_volume": volumes[0], "completed_backups": backups, "selected": selected})
 	return selected
 }
 

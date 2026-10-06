@@ -22,12 +22,13 @@ import (
 	"github.com/djosh34/s3-smb/test/macos/helpers"
 )
 
-// thinning backs up a file that only the oldest backup holds, deletes that
-// backup with tmutil and checks that the chunks holding the file go to the
-// trash and are then deleted. Only band files that the file fills count: a
-// band that also holds other data stays, and s3-smb cannot punch holes. s3-smb
-// keeps 2 copies and makes one every 2 minutes here. The remaining backups
-// must restore.
+// thinning backs up a file that only the oldest backup holds and deletes
+// that backup with tmutil. Time Machine reaps a deleted backup during its
+// next backup, and compacting the image gives the freed bands back to the
+// share, as Time Machine does to reclaim space. Then every chunk of a band
+// that the file filled must go to the trash and be deleted. A band that also
+// holds other data stays, as SMB cannot punch holes. s3-smb keeps 2 copies
+// and makes one every 2 minutes here. The remaining backups must restore.
 func (h *harness) thinning() result {
 	const size = 2 << 30
 	h.prepare = func() { h.markedFile("oldest-only.bin", size) }
@@ -44,25 +45,19 @@ func (h *harness) thinning() result {
 	if len(holders)*(8<<20) < size/2 {
 		h.t.Fatalf("only %d chunks of whole bands hold the oldest backup's file", len(holders))
 	}
-	freed := func() (bool, error) {
+	h.deleteBackup(outcome.Baseline)
+	fourth, fourthTree := h.incremental("fourth", third, func() {
+		h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed in the fourth backup\n"), 0o600))
+	})
+	h.compact()
+	h.storage("after-compact")
+	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
 		if err == nil && count.leaked > 0 {
 			err = fmt.Errorf("%d chunks of the deleted backup are neither in a file, in the trash nor deleted", count.leaked)
 		}
 		return count.live == 0, err
-	}
-	probeStart := time.Now().UTC()
-	h.deleteBackup(outcome.Baseline, freed)
-	h.storage("after-delete")
-	// Temporary probe: a backup after the delete may let backupd reap the
-	// deleted snapshot.
-	fourth, fourthTree := h.incremental("fourth", third, func() {
-		h.must(h.proofDir.WriteFile("nested/message.txt", []byte("changed in the fourth backup\n"), 0o600))
-	})
-	done, err := freed()
-	h.t.Log("reclaim-probe after the fourth backup", done, err)
-	h.reclaimProbe(probeStart, freed)
-	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, freed))
+	}))
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
 		return count.live+count.trashed+count.leaked == 0, err
@@ -161,81 +156,37 @@ func (h *harness) holderStates(holders map[string]bool) (holderCount, error) {
 	return count, nil
 }
 
-// deleteBackup deletes one backup with tmutil, as thinning does, on the
-// destination image attached read-write. APFS may free the blocks in the
-// background, so the image stays attached for up to 5 minutes until freed
-// reports true.
-func (h *harness) deleteBackup(backup string, freed func() (bool, error)) {
+// deleteBackup deletes one backup with tmutil on the destination image
+// attached read-write.
+func (h *harness) deleteBackup(backup string) {
 	h.mount()
-	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
-	h.must(err)
-	if len(bundles) != 1 {
-		h.t.Fatal("expected one real Time Machine sparsebundle", bundles)
-	}
-	devices, volumes := h.attach(bundles[0], false)
+	bundle := h.bundle()
+	devices, volumes := h.attach(bundle, false)
 	if len(devices) == 0 || len(volumes) != 1 {
 		h.t.Fatal("unknown Time Machine image volume layout", devices, volumes)
 	}
 	h.attachments = append(h.attachments, devices[0])
-	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
-	h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volumes[0])
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
-	}
-	err = h.waitFor("chunks freed while the image is attached", 5*time.Minute, 10*time.Second, freed)
-	if err != nil && (h.ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded)) {
-		h.must(err)
 	}
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)
 }
 
-// reclaimProbe is temporary: it tries what may make macOS give the deleted
-// backup's bands back, and logs the holders after each step.
-func (h *harness) reclaimProbe(start time.Time, freed func() (bool, error)) {
-	step := func(label string) {
-		done, err := freed()
-		h.t.Log("reclaim-probe", label, done, err)
-	}
-	bands := func() {
-		bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
-		h.must(err)
-		h.run(2*time.Minute, "/bin/ls", "-l", filepath.Join(bundles[0], "bands"))
-		h.run(2*time.Minute, "/usr/bin/du", "-sk", bundles[0])
-	}
-	step("detached")
+// compact gives the image's free bands back to the share.
+func (h *harness) compact() {
 	h.mount()
-	bands()
-	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
-	h.must(err)
-	devices, volumes := h.attach(bundles[0], false)
-	if len(devices) > 0 {
-		h.attachments = append(h.attachments, devices[0])
-	}
-	for _, volume := range volumes {
-		h.diagnostic("/usr/sbin/diskutil", "apfs", "listSnapshots", volume)
-		h.diagnostic("/bin/df", "-k", volume)
-	}
-	err = h.waitFor("chunks freed after a new attach", 3*time.Minute, 15*time.Second, freed)
-	h.t.Log("reclaim-probe reattached", err)
-	bands()
+	h.run(30*time.Minute, "/usr/bin/hdiutil", "compact", h.bundle())
 	h.must(h.detach())
-	step("reattached and detached")
-	h.mount()
-	output, err := h.try(30*time.Minute, "/usr/bin/hdiutil", "compact", bundles[0])
-	h.t.Log("reclaim-probe compact", output, err)
-	bands()
-	h.must(h.detach())
-	step("compacted")
-	format := "2006-01-02 15:04:05-0700"
-	_, err = h.try(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--info", "--debug", "--predicate", `process == "diskimagesiod" OR process == "diskimages-helper" OR subsystem BEGINSWITH "com.apple.DiskImages" OR senderImagePath CONTAINS "smbfs" OR process == "apfsd" OR senderImagePath CONTAINS "apfs"`)
-	h.t.Log("reclaim-probe log", err)
 }
 
-// diagnostic runs a command for evidence only and logs a failure.
-func (h *harness) diagnostic(args ...string) {
-	if _, err := h.try(2*time.Minute, args...); err != nil {
-		h.t.Log("diagnostic failed", args, err)
+// bundle returns the one Time Machine image on the mounted share.
+func (h *harness) bundle() string {
+	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
+	h.must(err)
+	if len(bundles) != 1 {
+		h.t.Fatal("expected one real Time Machine sparsebundle", bundles)
 	}
+	return bundles[0]
 }
