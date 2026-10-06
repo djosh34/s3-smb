@@ -73,3 +73,18 @@ func (h *harness) s3Outage() result {
 	outcome.BaselineRestore = h.restoreBackup(outcome.Baseline, h.reference(), "restore-baseline")
 	return outcome
 }
+
+// bandWrites waits until the running backup copies and has uploaded chunks
+// that before did not have. It returns the last tmutil status.
+func (h *harness) bandWrites(before map[string]int64) string {
+	var previous, current string
+	h.must(h.waitFor("band writes", 30*time.Minute, 2*time.Second, func() (bool, error) {
+		if h.backup.exited() {
+			return false, errors.New("Time Machine ended before band writes were seen")
+		}
+		previous, current = current, h.run(2*time.Minute, "/usr/bin/tmutil", "status")
+		return helpers.BandWriteReady(previous, current) && helpers.CheckRemoteChange(before, h.objects("chunks/")) == nil, nil
+	}))
+	h.t.Log("band-writes", current)
+	return current
+}

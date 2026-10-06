@@ -24,10 +24,12 @@ import (
 
 // thinning backs up a file that only the oldest backup holds, deletes that
 // backup with tmutil and checks that the chunks holding the file go to the
-// trash and are then deleted. s3-smb keeps 2 copies and makes one every 2
-// minutes here. The remaining backups must restore.
+// trash and are then deleted. Only band files that the file fills count: a
+// band that also holds other data stays, and s3-smb cannot punch holes. s3-smb
+// keeps 2 copies and makes one every 2 minutes here. The remaining backups
+// must restore.
 func (h *harness) thinning() result {
-	const size = 1 << 30
+	const size = 2 << 30
 	h.prepare = func() { h.markedFile("oldest-only.bin", size) }
 	outcome := h.baseline()
 	outcome.Scenario = "thinning"
@@ -39,18 +41,19 @@ func (h *harness) thinning() result {
 		h.randomFile("third.bin", 64<<20)
 	})
 	holders := h.markedChunks()
-	if len(holders)*(8<<20) < size {
-		h.t.Fatalf("only %d chunks hold the oldest backup's file", len(holders))
+	if len(holders)*(8<<20) < size/2 {
+		h.t.Fatalf("only %d chunks of whole bands hold the oldest backup's file", len(holders))
 	}
-	h.deleteBackup(outcome.Baseline)
-	h.storage("after-delete")
-	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, func() (bool, error) {
+	freed := func() (bool, error) {
 		count, err := h.holderStates(holders)
 		if err == nil && count.leaked > 0 {
 			err = fmt.Errorf("%d chunks of the deleted backup are neither in a file, in the trash nor deleted", count.leaked)
 		}
 		return count.live == 0, err
-	}))
+	}
+	h.deleteBackup(outcome.Baseline, freed)
+	h.storage("after-delete")
+	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, freed))
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
 		return count.live+count.trashed+count.leaked == 0, err
@@ -78,12 +81,13 @@ func (h *harness) markedFile(name string, size int64) {
 	h.must(errors.Join(err, writer.Flush(), file.Close()))
 }
 
-// markedChunks returns the live chunk objects that hold a block of the
-// marked file. It reads every live chunk.
+// markedChunks returns the live chunk objects of the band files in which
+// every chunk holds a block of the marked file. It reads every live chunk.
 func (h *harness) markedChunks() map[string]bool {
 	tables, err := h.chunkTables()
 	h.must(err)
-	holders := map[string]bool{}
+	marked := map[int64]bool{}
+	var found int
 	for key := range tables.live {
 		ctx, cancel := context.WithTimeout(h.ctx, 5*time.Minute)
 		object, err := h.s3.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(h.bucket), Key: aws.String(key)})
@@ -95,11 +99,23 @@ func (h *harness) markedChunks() map[string]bool {
 		err = errors.Join(err, object.Body.Close())
 		cancel()
 		h.must(err)
+		file := tables.file[key]
 		if helpers.HoldsMarker(data) {
+			found++
+			if _, seen := marked[file]; !seen {
+				marked[file] = true
+			}
+		} else {
+			marked[file] = false
+		}
+	}
+	holders := map[string]bool{}
+	for key, file := range tables.file {
+		if marked[file] {
 			holders[key] = true
 		}
 	}
-	h.t.Log("marked-chunks", len(holders), "of", len(tables.live))
+	h.t.Log("marked-chunks", found, "whole-band", len(holders), "of", len(tables.live))
 	return holders
 }
 
@@ -136,8 +152,10 @@ func (h *harness) holderStates(holders map[string]bool) (holderCount, error) {
 }
 
 // deleteBackup deletes one backup with tmutil, as thinning does, on the
-// destination image attached read-write.
-func (h *harness) deleteBackup(backup string) {
+// destination image attached read-write. APFS may free the blocks in the
+// background, so the image stays attached for up to 5 minutes until freed
+// reports true.
+func (h *harness) deleteBackup(backup string, freed func() (bool, error)) {
 	h.mount()
 	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
 	h.must(err)
@@ -152,6 +170,10 @@ func (h *harness) deleteBackup(backup string) {
 	h.run(30*time.Minute, "/usr/bin/tmutil", "delete", "-d", volumes[0], "-t", strings.TrimSuffix(backup, ".backup"))
 	if listed := h.run(10*time.Minute, "/usr/bin/tmutil", "listbackups", "-d", volumes[0], "-m"); strings.Contains(listed, backup) {
 		h.t.Fatal("tmutil delete left the backup", backup)
+	}
+	err = h.waitFor("chunks freed while the image is attached", 5*time.Minute, 10*time.Second, freed)
+	if err != nil && (h.ctx.Err() != nil || !errors.Is(err, context.DeadlineExceeded)) {
+		h.must(err)
 	}
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)

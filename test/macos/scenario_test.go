@@ -20,6 +20,7 @@ type result struct {
 	Baseline        string              `json:"baseline"`
 	Scenario        string              `json:"scenario,omitempty"`
 	AtKill          string              `json:"at_kill,omitempty"`
+	KilledAfter     string              `json:"killed_after_copy,omitempty"`
 	Resumed         string              `json:"resumed,omitempty"`
 	RestoredFrom    string              `json:"restored_from,omitempty"`
 	BaselineRestore helpers.Counts      `json:"baseline_restore,omitempty"`

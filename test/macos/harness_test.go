@@ -132,7 +132,7 @@ func TestTimeMachine(t *testing.T) {
 	}
 	scenario := os.Getenv("MAC_SCENARIO")
 	if phase == "scenario" && scenario == "large" {
-		budget = 335 * time.Minute
+		budget = 315 * time.Minute
 	}
 	ctx, stop := signal.NotifyContext(t.Context(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -316,16 +316,25 @@ func (h *harness) services(fresh bool) {
 	}
 }
 
-// objects returns the size of every object in the bucket under prefix. It
-// adds the chunk objects it sees to uploaded.
+// objects returns the size of every object in the bucket under prefix.
 func (h *harness) objects(prefix string) map[string]int64 {
+	objects, err := h.listObjects(prefix)
+	h.must(err)
+	return objects
+}
+
+// listObjects lists the bucket under prefix. It adds the chunk objects it
+// sees to uploaded.
+func (h *harness) listObjects(prefix string) (map[string]int64, error) {
 	ctx, cancel := context.WithTimeout(h.ctx, 5*time.Minute)
 	defer cancel()
 	objects := map[string]int64{}
 	pages := s3.NewListObjectsV2Paginator(h.s3, &s3.ListObjectsV2Input{Bucket: aws.String(h.bucket), Prefix: aws.String(prefix)})
 	for pages.HasMorePages() {
 		page, err := pages.NextPage(ctx)
-		h.must(err)
+		if err != nil {
+			return nil, err
+		}
 		for _, object := range page.Contents {
 			key, size := aws.ToString(object.Key), aws.ToInt64(object.Size)
 			objects[key] = size
@@ -335,7 +344,7 @@ func (h *harness) objects(prefix string) map[string]int64 {
 		}
 	}
 	h.t.Log("bucket-objects", prefix, len(objects))
-	return objects
+	return objects, nil
 }
 
 func (h *harness) mount() {

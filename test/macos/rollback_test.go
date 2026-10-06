@@ -33,17 +33,17 @@ func (h *harness) rollback() result {
 		}
 		copies := h.landed()
 		if len(copies) > landed {
-			outcome.AtKill = copies[len(copies)-1]
+			outcome.KilledAfter = copies[len(copies)-1]
 			return true, nil
 		}
 		return false, nil
 	}))
 	h.stopDaemon(true)
-	h.t.Log("killed-after-copy", outcome.AtKill)
+	h.t.Log("killed-after-copy", outcome.KilledAfter)
 	h.stopClient()
 	outcome.RestoredFrom = h.cold()
-	if outcome.RestoredFrom != outcome.AtKill {
-		h.t.Fatalf("restored %s, expected the copy from the middle of backup B %s", outcome.RestoredFrom, outcome.AtKill)
+	if outcome.RestoredFrom != outcome.KilledAfter {
+		h.t.Fatalf("restored %s, expected the copy from the middle of backup B %s", outcome.RestoredFrom, outcome.KilledAfter)
 	}
 	outcome.BaselineRestore = h.restoreBackup(outcome.Baseline, h.reference(), "restore-a")
 	h.must(h.proofDir.WriteFile("added-in-c.txt", []byte("added in backup C\n"), 0o600))

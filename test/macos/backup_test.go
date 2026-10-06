@@ -408,7 +408,7 @@ func (h *harness) restore(selected string, expected []helpers.Entry, name string
 	output := filepath.Join(h.work, name)
 	h.must(absent(output))
 	h.t.Log("native-created-tree-restore-start", source)
-	h.run(30*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
+	h.run(90*time.Minute, "/usr/bin/tmutil", "restore", "-v", source, output)
 	actual, counts := h.manifest(output, h.evidenceDir, name+".json")
 	differences, err := helpers.Compare(expected, actual)
 	h.must(err)

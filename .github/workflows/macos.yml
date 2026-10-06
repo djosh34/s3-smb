@@ -260,8 +260,6 @@ jobs:
     env:
       MAC_PHASE: scenario
       MAC_SCENARIO: b2
-      B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-      B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
       B2_ENDPOINT: ${{ vars.B2_ENDPOINT }}
       B2_BUCKET: ${{ vars.B2_BUCKET }}
     steps:
@@ -281,12 +279,21 @@ jobs:
           cache: false
       - name: Backup and restore against B2
         run: bash test/macos/run.sh
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
       # Also after a failure: stop s3-smb, then delete every object version.
+      # It runs as root like run.sh, which owns the Go caches by now.
       - name: Empty the B2 test bucket
         if: always()
         run: |
           sudo pkill -9 -x s3-smb || true
-          go test -tags macos -count=1 -run '^TestEmptyB2Bucket$' -v ./test/macos
+          sudo -n --preserve-env=B2_KEY_ID,B2_APPLICATION_KEY,B2_ENDPOINT,B2_BUCKET /usr/bin/env "PATH=$PATH" "HOME=$HOME" \
+            GOENV=off GOTOOLCHAIN=local GOWORK=off \
+            go test -tags macos -count=1 -run '^TestEmptyB2Bucket$' -v ./test/macos
+        env:
+          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
+          B2_APPLICATION_KEY: ${{ secrets.B2_APPLICATION_KEY }}
       - name: Make evidence readable by the uploader
         if: always()
         run: sudo chown -R "$(id -u):$(id -g)" "$MAC_ARTIFACTS" && chmod -R u+rwX "$MAC_ARTIFACTS"

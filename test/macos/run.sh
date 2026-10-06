@@ -12,7 +12,7 @@ case "$MAC_PHASE" in
   scenario) timeout=150m ;;
   *) echo 'MAC_PHASE must be discover, backup, recover or scenario' >&2; exit 1 ;;
 esac
-if [[ ${MAC_SCENARIO:-} == large ]]; then timeout=345m; fi
+if [[ ${MAC_SCENARIO:-} == large ]]; then timeout=325m; fi
 sudo -n --preserve-env=B2_KEY_ID,B2_APPLICATION_KEY,B2_ENDPOINT,B2_BUCKET /usr/bin/env "PATH=$PATH" "HOME=$HOME" "MAC_RUNNER_HOME=$HOME" \
   "MAC_WORK=$MAC_WORK" "MAC_ARTIFACTS=$MAC_ARTIFACTS" "MAC_TRANSFER=$MAC_TRANSFER" \
   "MAC_PHASE=$MAC_PHASE" "MAC_SCENARIO=${MAC_SCENARIO:-}" \
