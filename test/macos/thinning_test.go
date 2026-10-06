@@ -51,8 +51,10 @@ func (h *harness) thinning() result {
 		}
 		return count.live == 0, err
 	}
+	probeStart := time.Now().UTC()
 	h.deleteBackup(outcome.Baseline, freed)
 	h.storage("after-delete")
+	h.reclaimProbe(probeStart, freed)
 	h.must(h.waitFor("the deleted backup's chunks leaving the files", 10*time.Minute, 10*time.Second, freed))
 	h.must(h.waitFor("the deleted backup's chunks being deleted", 15*time.Minute, 15*time.Second, func() (bool, error) {
 		count, err := h.holderStates(holders)
@@ -177,4 +179,42 @@ func (h *harness) deleteBackup(backup string, freed func() (bool, error)) {
 	}
 	h.must(h.detach())
 	h.t.Log("backup-deleted", backup)
+}
+
+// reclaimProbe is temporary: it tries what may make macOS give the deleted
+// backup's bands back, and logs the holders after each step.
+func (h *harness) reclaimProbe(start time.Time, freed func() (bool, error)) {
+	step := func(label string) {
+		done, err := freed()
+		h.t.Log("reclaim-probe", label, done, err)
+	}
+	bands := func() {
+		bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
+		h.must(err)
+		h.run(2*time.Minute, "/bin/ls", "-l", filepath.Join(bundles[0], "bands"))
+		h.run(2*time.Minute, "/usr/bin/du", "-sk", bundles[0])
+	}
+	step("detached")
+	h.mount()
+	bands()
+	bundles, err := filepath.Glob(filepath.Join(h.share, "*.sparsebundle"))
+	h.must(err)
+	devices, _ := h.attach(bundles[0], false)
+	if len(devices) > 0 {
+		h.attachments = append(h.attachments, devices[0])
+	}
+	err = h.waitFor("chunks freed after a new attach", 3*time.Minute, 15*time.Second, freed)
+	h.t.Log("reclaim-probe reattached", err)
+	bands()
+	h.must(h.detach())
+	step("reattached and detached")
+	h.mount()
+	output, err := h.try(30*time.Minute, "/usr/bin/hdiutil", "compact", bundles[0])
+	h.t.Log("reclaim-probe compact", output, err)
+	bands()
+	h.must(h.detach())
+	step("compacted")
+	format := "2006-01-02 15:04:05-0700"
+	_, err = h.try(10*time.Minute, "/usr/bin/log", "show", "--style", "json", "--start", start.Format(format), "--info", "--debug", "--predicate", `process == "diskimagesiod" OR process == "diskimages-helper" OR subsystem BEGINSWITH "com.apple.DiskImages" OR senderImagePath CONTAINS "smbfs" OR process == "apfsd" OR senderImagePath CONTAINS "apfs"`)
+	h.t.Log("reclaim-probe log", err)
 }
