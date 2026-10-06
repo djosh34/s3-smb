@@ -439,6 +439,14 @@ var operationNames = []string{
 func (l *macLoad) waitStuck(ctx context.Context, rng *rand.Rand, proxy *s3fault.Proxy) {
 	l.t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
+	// Events left from an earlier outage could name an old early upload.
+	for drained := false; !drained; {
+		select {
+		case <-proxy.OutageSeen():
+		default:
+			drained = true
+		}
+	}
 	refused := map[string]bool{}
 	filled := make(chan struct{})
 	defer close(filled)
