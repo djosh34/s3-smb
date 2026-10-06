@@ -415,10 +415,18 @@ func tree(t testing.TB, e *Engine) map[string]string {
 // names to exist, so each one can still be restored.
 func checkCopies(t testing.TB, b objects) {
 	t.Helper()
+	if err := copiesComplete(b, t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// copiesComplete returns an error unless each chunk that a copy in the
+// bucket names exists. It keeps its files in dir.
+func copiesComplete(b objects, dir string) error {
 	ctx := context.Background()
 	chunks, err := b.list(ctx, chunkPrefix)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	present := make(map[string]bool, len(chunks))
 	for _, c := range chunks {
@@ -426,28 +434,29 @@ func checkCopies(t testing.TB, b objects) {
 	}
 	copies, err := b.list(ctx, copyPrefix)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	for _, c := range copies {
 		data, err := b.get(ctx, c.key, 0, 0)
 		if err != nil {
-			t.Fatal(err)
+			return err
 		}
-		path := filepath.Join(t.TempDir(), "copy")
+		path := filepath.Join(dir, "copy")
 		if err = os.WriteFile(path, data, 0o600); err != nil {
-			t.Fatal(err)
+			return err
 		}
 		db := openSQLite(path, "ro")
 		names, err := chunkNames(ctx, db)
 		if err = errors.Join(err, db.Close()); err != nil {
-			t.Fatal(c.key, err)
+			return fmt.Errorf("%s: %w", c.key, err)
 		}
 		for _, name := range names {
 			if !present[chunkPrefix+name] {
-				t.Fatalf("copy %s names chunk %s, which is gone", c.key, name)
+				return fmt.Errorf("copy %s names chunk %s, which is gone", c.key, name)
 			}
 		}
 	}
+	return nil
 }
 
 func chunkNames(ctx context.Context, db *sql.DB) (names []string, err error) {

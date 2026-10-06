@@ -53,7 +53,7 @@ func TestCopiesTrashAndTakeoverUnderLoad(t *testing.T) {
 			target := []string{stepCopyCaptured, stepTrashDeleted}[round%2]
 			stopFaults := faultyBucket(bucket, m.source(uint64(100*server+round)))
 			armed := time.AfterFunc(length, func() { m.arm(target) })
-			m.load(t, e, 2*length)
+			m.load(t, e, bucket, 2*length)
 			armed.Stop()
 			stopFaults()
 			if !m.crashed(target) {
@@ -179,11 +179,22 @@ func faultyBucket(b *memBucket, rng *rand.Rand) func() {
 }
 
 // load runs one writer per file until the engine dies, or at most for
-// length.
-func (m *copyModel) load(t *testing.T, e *Engine, length time.Duration) {
+// length. Meanwhile it checks that every kept copy has all its chunks.
+func (m *copyModel) load(t *testing.T, e *Engine, bucket *memBucket, length time.Duration) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	m.runs++
+	// While copies come and go, every one kept must have all its chunks.
+	dir := t.TempDir()
+	wg.Go(func() {
+		for !stopped(stop) {
+			if err := copiesComplete(bucket.clone(), dir); err != nil {
+				t.Error(err)
+				return
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	})
 	for w := range 8 {
 		rng := m.source(1000*m.runs + uint64(w))
 		wg.Go(func() { m.write(t, e, rng, fmt.Sprintf("f%d", w), stop) })

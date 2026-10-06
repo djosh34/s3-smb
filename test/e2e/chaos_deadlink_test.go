@@ -54,7 +54,8 @@ func deadLink(t *testing.T, busy bool, drop time.Duration) {
 		t.Fatal(status, err)
 	}
 	id := created.Reply.ID
-	if err = mac.write(ctx, id, 0, bytes.Repeat([]byte("dead link "), 6000)); err != nil {
+	written := bytes.Repeat([]byte("dead link "), 6000)
+	if err = mac.write(ctx, id, 0, written); err != nil {
 		t.Fatal(err)
 	}
 	_, port, err := net.SplitHostPort(mac.conn.LocalAddr().String())
@@ -102,8 +103,13 @@ func deadLink(t *testing.T, busy bool, drop time.Duration) {
 		time.Sleep(drop)
 		lose(false)
 		for _, read := range reads {
-			if _, err = mac.reply(ctx, read); err != nil {
-				t.Fatalf("after a %v interruption: %v", drop, err)
+			reply, replyErr := mac.reply(ctx, read)
+			if replyErr != nil {
+				t.Fatalf("after a %v interruption: %v", drop, replyErr)
+			}
+			response, decodeErr := wire.DecodeReadResponse(reply)
+			if reply.Header.Status != 0 || decodeErr != nil || !bytes.Equal(response.Data, written[:60000]) {
+				t.Fatalf("after a %v interruption a READ gave status %#x, %d bytes: %v", drop, reply.Header.Status, len(response.Data), decodeErr)
 			}
 		}
 		if got := closed(); got != before {
